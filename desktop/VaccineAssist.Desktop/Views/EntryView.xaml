@@ -1,0 +1,77 @@
+<UserControl x:Class="VaccineAssist.Desktop.Views.EntryView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Loaded="EntryView_OnLoaded">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Entry — quick-entry" FontSize="18" FontWeight="Bold"/>
+
+        <TextBlock Grid.Row="2" Text="Vaccine"/>
+        <ComboBox Grid.Row="3" ItemsSource="{Binding Vaccines}" DisplayMemberPath="Name"
+                  SelectedItem="{Binding SelectedVaccine}"/>
+
+        <TextBlock Grid.Row="4" Text="Lot (active lots for the selected vaccine)"/>
+        <ComboBox Grid.Row="5" ItemsSource="{Binding AvailableLots}" DisplayMemberPath="LotNumber"
+                  SelectedItem="{Binding SelectedLot}"/>
+
+        <TextBlock Grid.Row="6" Text="Administration site"/>
+        <ComboBox Grid.Row="7" ItemsSource="{Binding AdminSiteOptions}" SelectedItem="{Binding AdminSite}"/>
+
+        <StackPanel Grid.Row="8" Orientation="Horizontal">
+            <TextBlock Text="Patient age (years)" VerticalAlignment="Center"/>
+            <TextBox Text="{Binding PatientAgeYears, UpdateSourceTrigger=PropertyChanged}" Width="60" Margin="8,0,16,0"/>
+            <CheckBox Content="Pregnant" IsChecked="{Binding IsPregnant}" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <Button Grid.Row="10" Content="Check eligibility" Command="{Binding CheckEligibilityCommand}"
+                Padding="8,2" HorizontalAlignment="Left"/>
+
+        <StackPanel Grid.Row="12">
+            <TextBlock Text="{Binding EligibilityResult.Status}" FontWeight="Bold"/>
+            <ItemsControl ItemsSource="{Binding EligibilityResult.Reasons}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" Foreground="Red" TextWrapping="Wrap"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <ItemsControl ItemsSource="{Binding EligibilityResult.Warnings}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" Foreground="DarkOrange" TextWrapping="Wrap"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <Button Grid.Row="14" Content="Generate and copy to clipboard" Command="{Binding GenerateAndCopyCommand}"
+                Padding="8,2" HorizontalAlignment="Left"/>
+
+        <TextBlock Grid.Row="16" Text="{Binding GeneratedPayload}" FontFamily="Consolas"/>
+        <TextBlock Grid.Row="18" Text="{Binding StatusMessage}" Foreground="Green"/>
+
+        <TextBlock Grid.Row="19" Text="{Binding ErrorMessage}" Foreground="Red" TextWrapping="Wrap" VerticalAlignment="Bottom"/>
+    </Grid>
+</UserControl>

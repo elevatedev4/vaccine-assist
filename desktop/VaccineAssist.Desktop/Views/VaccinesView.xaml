@@ -1,0 +1,32 @@
+<UserControl x:Class="VaccineAssist.Desktop.Views.VaccinesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Loaded="VaccinesView_OnLoaded">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Vaccines — what we offer" FontSize="18" FontWeight="Bold"/>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal">
+            <Button Content="Refresh" Command="{Binding LoadCommand}" Padding="8,2"/>
+            <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="12,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <DataGrid Grid.Row="4" ItemsSource="{Binding Vaccines}" AutoGenerateColumns="False" IsReadOnly="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*"/>
+                <DataGridTextColumn Header="Short code" Binding="{Binding ShortCode}" Width="*"/>
+                <DataGridTextColumn Header="Dose" Binding="{Binding Dose}" Width="0.5*"/>
+                <DataGridTextColumn Header="NDC" Binding="{Binding Ndc}" Width="*"/>
+                <DataGridTextColumn Header="Cash price" Binding="{Binding CashPriceDisplay}" Width="*"/>
+                <DataGridCheckBoxColumn Header="Active" Binding="{Binding Active}" Width="0.5*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</UserControl>

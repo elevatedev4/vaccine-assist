@@ -1,0 +1,35 @@
+import { NextResponse } from "next/server";
+import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { requireAuthenticatedUser } from "@/lib/auth";
+
+/**
+ * REST endpoint for the desktop app's Vaccines screen (what we offer).
+ * GET returns the active formulary. Phase 1: no Supabase project exists
+ * yet, so a misconfigured environment surfaces as a 503 rather than a
+ * crash at build/import time.
+ */
+export async function GET(request: Request) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
+  try {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("vaccine")
+      .select("*")
+      .eq("active", true)
+      .order("name", { ascending: true });
+
+    if (error) {
+      console.error("GET /api/vaccines: Supabase error", error);
+      return NextResponse.json({ error: "Failed to load vaccines." }, { status: 500 });
+    }
+
+    return NextResponse.json({ vaccines: data });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Supabase is not configured." },
+      { status: 503 }
+    );
+  }
+}
