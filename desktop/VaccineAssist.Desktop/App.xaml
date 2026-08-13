@@ -1,0 +1,20 @@
+<Application x:Class="VaccineAssist.Desktop.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+    <!--
+        StartupUri intentionally omitted: App.xaml.cs's OnStartup builds
+        the composition root by hand (settings -> services -> LoginWindow)
+        instead of letting WPF construct a window before that wiring runs.
+
+        ShutdownMode="OnExplicitShutdown" instead of the default
+        OnLastWindowClose: this app cycles through LoginWindow ->
+        MainWindow -> (sign out) -> a new LoginWindow, and there's a brief
+        moment between closing one and showing the next with zero windows
+        open. The default would risk WPF treating that gap as "last
+        window closed" and exiting. App.xaml.cs calls Shutdown() itself
+        exactly when the user closes LoginWindow without signing in, or
+        closes MainWindow directly.
+    -->
+    <Application.Resources />
+</Application>

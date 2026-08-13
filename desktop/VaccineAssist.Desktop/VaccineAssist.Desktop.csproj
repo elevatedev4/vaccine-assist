@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>VaccineAssist.Desktop</RootNamespace>
+    <AssemblyName>VaccineAssist.Desktop</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Add <ApplicationIcon>Assets\vaccineassist.ico</ApplicationIcon> once a real icon exists;
+         omitted for phase 1 so the project builds as-is. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Supabase C# SDK (nuget id "Supabase" — the old "supabase-csharp" id
+      is deprecated at 0.16.2). Used narrowly, for auth only: Login screen
+      calls Client.Auth.SignIn(email, password) against the shared
+      pharmacy login (Supabase.Gotrue), then the resulting access token is
+      sent as an Authorization: Bearer header to the cloud app's own REST
+      API (Services/VaccineApiService.cs) for actual vaccine/lot/
+      eligibility data — see cloud/lib/auth.ts on the other side of that
+      call. This app does not use the SDK's Postgrest/Realtime/Storage
+      pieces; the cloud app is the only thing that talks to Postgres
+      directly.
+    -->
+    <PackageReference Include="Supabase" Version="1.6.0" />
+  </ItemGroup>
+
+</Project>
