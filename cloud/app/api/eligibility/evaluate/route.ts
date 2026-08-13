@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { evaluateEligibilityRules, type EligibilityRule } from "@/lib/eligibility";
+import { requireAuthenticatedUser } from "@/lib/auth";
 
 interface EvaluateRequestBody {
   vaccineId: string;
@@ -16,6 +17,9 @@ interface EvaluateRequestBody {
  * mental math + the old macro's hardcoded gates.
  */
 export async function POST(request: Request) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
   let body: EvaluateRequestBody;
   try {
     body = await request.json();

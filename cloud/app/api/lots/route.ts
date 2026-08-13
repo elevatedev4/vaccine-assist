@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { requireAuthenticatedUser } from "@/lib/auth";
 
 /**
  * REST endpoint for the desktop app's Lots screen (inventory +
@@ -8,6 +9,9 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
  * when staff add a new shipment).
  */
 export async function GET(request: Request) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
   try {
     const supabase = getSupabaseServerClient();
     const { searchParams } = new URL(request.url);
@@ -33,6 +37,9 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
   try {
     const supabase = getSupabaseServerClient();
     const body = await request.json();

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { requireAuthenticatedUser } from "@/lib/auth";
 
 /**
  * REST endpoint for the desktop app's Vaccines screen (what we offer).
@@ -7,7 +8,10 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
  * yet, so a misconfigured environment surfaces as a 503 rather than a
  * crash at build/import time.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
   try {
     const supabase = getSupabaseServerClient();
     const { data, error } = await supabase
