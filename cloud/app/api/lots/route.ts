@@ -24,7 +24,8 @@ export async function GET(request: Request) {
 
     const { data, error } = await query;
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("GET /api/lots: Supabase error", error);
+      return NextResponse.json({ error: "Failed to load lots." }, { status: 500 });
     }
 
     return NextResponse.json({ lots: data });
@@ -59,7 +60,8 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("POST /api/lots: Supabase error", error);
+      return NextResponse.json({ error: "Failed to create lot." }, { status: 500 });
     }
 
     return NextResponse.json({ lot: data }, { status: 201 });

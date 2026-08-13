@@ -7,6 +7,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
+      "server-only": path.join(dirname, "tests", "mocks", "server-only.ts"),
       "@": dirname,
     },
   },

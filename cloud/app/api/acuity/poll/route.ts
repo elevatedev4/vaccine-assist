@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
+import { requireAuthenticatedUser } from "@/lib/auth";
 
 /**
  * STUB — Acuity Scheduling appointment-count polling.
@@ -11,15 +12,19 @@ import { env } from "@/lib/env";
  * and cache the result for ACUITY_POLL_CACHE_SECONDS (default 300 = 5
  * min) so this route can be hit frequently without hammering Acuity.
  *
- * Phase 1: no live calls. Returns a fixed stub shape so the desktop app
- * and future reporting UI can be built against a stable contract before
- * Acuity credentials exist.
+ * Phase 1: no live calls, and today's stub payload has nothing sensitive
+ * in it — but the auth gate is added now anyway (same as the other three
+ * data routes) so phase 2 doesn't ship real appointment/scheduling data
+ * behind a route someone forgot was still wide open.
  */
 
 let cachedAt = 0;
 let cachedResult: unknown = null;
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
   const cacheSeconds = env.acuityPollCacheSeconds();
   const now = Date.now();
 

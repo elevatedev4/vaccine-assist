@@ -43,7 +43,8 @@ export async function POST(request: Request) {
       .eq("vaccine_id", vaccineId);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("POST /api/eligibility/evaluate: Supabase error", error);
+      return NextResponse.json({ error: "Failed to load eligibility rules." }, { status: 500 });
     }
 
     const rules: EligibilityRule[] = (data ?? []).map((row) => ({

@@ -21,7 +21,8 @@ export async function GET(request: Request) {
       .order("name", { ascending: true });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("GET /api/vaccines: Supabase error", error);
+      return NextResponse.json({ error: "Failed to load vaccines." }, { status: 500 });
     }
 
     return NextResponse.json({ vaccines: data });
