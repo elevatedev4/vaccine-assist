@@ -25,16 +25,25 @@
          regardless of local drift. GitHub is the source of truth on
          deploy-and-test machines, so this intentionally discards local
          modifications.
-      3. dotnet build (desktop\VaccineAssist.Desktop) - ALWAYS runs, every
+      3. Before building: stops any running VaccineAssist.Desktop.exe whose
+         path is under THIS checkout's own bin\Debug directory (never a
+         same-named process from a different checkout) - gracefully
+         (CloseMainWindow, then a short wait, then Stop-Process -Force if
+         it's still up) - so `dotnet build` doesn't fail trying to
+         overwrite a running exe (MSB3026).
+      4. dotnet build (desktop\VaccineAssist.Desktop) - ALWAYS runs, every
          invocation. No staleness guesswork; dotnet's incremental build
          makes repeat runs fast once warm.
-      4. Launches the freshly built .exe.
+      5. Launches the freshly built .exe, which then attempts one silent
+         auto-login using %LocalAppData%\VaccineAssist\autologin.json if
+         bootstrap-fresh.ps1 (repo root) seeded it - see that script and
+         ViewModels/LoginViewModel.cs (TryAutoSignInAsync).
 
-    Any failed step (git fetch/checkout, dotnet build, or not finding the
-    built .exe) prints exactly which step failed, then holds the window
-    open with "Press Enter to close" so the error is readable even when
-    this was launched via double-click. On success, it just launches and
-    exits.
+    Any failed step (git fetch/checkout, a running app that won't stop,
+    dotnet build, or not finding the built .exe) prints exactly which step
+    failed, then holds the window open with "Press Enter to close" so the
+    error is readable even when this was launched via double-click. On
+    success, it just launches and exits.
 
     PowerShell 5.1 compatible on purpose (Windows' default) - no PS7-only
     syntax (ternary, ??, &&/||, Join-Path -AdditionalChildPath, etc.).
@@ -147,6 +156,99 @@ function Find-DesktopExe {
         Select-Object -First 1
     if ($null -eq $found) { return $null }
     return $found.FullName
+}
+
+# ---------------------------------------------------------------------
+# Step 3a: stop a running instance of this app before rebuilding it.
+# `dotnet build` fails with MSB3026 ("Could not copy apphost.exe ...
+# because it is being used by another process") if the exe it's about to
+# overwrite is currently running — without this, re-running the shortcut
+# or the one-liner (bootstrap-fresh.ps1) while Vaccine Assist is still
+# open turns into a build-failure retry loop instead of a clean update.
+# Only ever stops a VaccineAssist.Desktop.exe whose path is under THIS
+# checkout's own bin\Debug dir ($binDebugDir, built from $RepoRoot above)
+# — never a same-named process from a different checkout/location.
+# Mirrors rx-verify's update-and-run.ps1 (~/claude/rx-verify) stop-before-
+# build pattern, minus its extra "close an old-location copy too" step
+# (W-T67-specific to rx-verify, not asked for here).
+# ---------------------------------------------------------------------
+# .HasExited (like .Path below) can throw — eg. a Win32Exception on an
+# access-denied/elevation-mismatch process. With $ErrorActionPreference =
+# 'Stop' that would crash the whole script before Stop-WithMessage ever
+# runs — on the double-click path, a window that just vanishes with no
+# message. Treat "can't tell" as "still running": it falls through to the
+# Stop-Process -Force attempt and then the final re-check below, both of
+# which already report a real failure loudly.
+function Test-ProcessStillRunning {
+    param($Process)
+    try {
+        $Process.Refresh()
+        return (-not $Process.HasExited)
+    } catch {
+        return $true
+    }
+}
+
+$appProcessName = 'VaccineAssist.Desktop'
+$runningAppProcesses = Get-Process -Name $appProcessName -ErrorAction SilentlyContinue
+$processesToStop = @()
+foreach ($proc in $runningAppProcesses) {
+    # .Path (MainModule.FileName under the hood) can throw — eg. access
+    # denied for an elevated process while this script runs non-elevated,
+    # or a process that exited between Get-Process and here. Treat
+    # "couldn't determine" the same as "different location": never stop
+    # something we can't positively confirm is our own exe.
+    $procPath = $null
+    try {
+        $procPath = $proc.Path
+    } catch {
+        $procPath = $null
+    }
+
+    if (($procPath -ne $null) -and $procPath.StartsWith($binDebugDir, [StringComparison]::OrdinalIgnoreCase)) {
+        $processesToStop += $proc
+    }
+}
+
+if ($processesToStop.Count -gt 0) {
+    Write-Step 'Stopping the running Vaccine Assist app so it can be updated...'
+    foreach ($proc in $processesToStop) {
+        Write-Detail "Stopping VaccineAssist.Desktop.exe (PID $($proc.Id))..."
+        try {
+            $proc.CloseMainWindow() | Out-Null
+        } catch {
+            # No message loop / already gone — fall through to the
+            # wait-then-force-kill below regardless.
+        }
+
+        $waited = 0
+        while ($waited -lt 5) {
+            if (-not (Test-ProcessStillRunning $proc)) { break }
+            Start-Sleep -Seconds 1
+            $waited++
+        }
+
+        if (Test-ProcessStillRunning $proc) {
+            try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+                Start-Sleep -Seconds 1
+            } catch {
+                # Failure is caught by the still-running re-check below.
+            }
+        }
+    }
+
+    $stillRunning = @(Get-Process -Name $appProcessName -ErrorAction SilentlyContinue | Where-Object {
+        $stillPath = $null
+        try { $stillPath = $_.Path } catch { $stillPath = $null }
+        ($stillPath -ne $null) -and $stillPath.StartsWith($binDebugDir, [StringComparison]::OrdinalIgnoreCase)
+    })
+
+    if ($stillRunning.Count -gt 0) {
+        $stillPids = ($stillRunning | ForEach-Object { $_.Id }) -join ', '
+        Stop-WithMessage "Vaccine Assist (PID(s): $stillPids) is still running and could not be stopped automatically. Close it by hand - right-click its window/taskbar icon and close, or End Task in Task Manager - then re-run this script."
+    }
+    Write-Detail 'Vaccine Assist stopped.'
 }
 
 Write-Step 'Building Vaccine Assist (dotnet build)...'
