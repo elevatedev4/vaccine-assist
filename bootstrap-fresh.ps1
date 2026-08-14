@@ -12,7 +12,15 @@
     invokes it as a scriptblock (NOT `iex` — this script takes
     parameters, and `irm ... | iex` has no way to pass any):
 
-        [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/elevatedev4/vaccine-assist/main/bootstrap-fresh.ps1))) -Email you@orchardsdrug.com -Password "the-shared-password" -ServerUrl https://your-vaccine-assist-cloud.vercel.app
+        [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/elevatedev4/vaccine-assist/main/bootstrap-fresh.ps1))) -Email you@orchardsdrug.com -Password 'the-shared-password' -ServerUrl https://your-vaccine-assist-cloud.vercel.app
+
+    -Password MUST be single-quoted, not double-quoted, in that one-liner.
+    Windows PowerShell expands `$` inside a double-quoted string, so a
+    password containing `$` (eg. Pa$sword1) would silently truncate to
+    "Pa" with zero diagnostic signal, and that truncated value would
+    round-trip straight into autologin.json. Single-quoted strings don't
+    expand `$` or backtick escapes (only a literal `'` inside the
+    password needs doubling to `''`).
 
     This is the ONE line for both cases Will asked for:
       - Fresh PC, nothing installed yet → full install + clone + shortcut
@@ -426,6 +434,16 @@ function Invoke-VaccineAssistBootstrap {
     # -------------------------------------------------------------
     Write-Step 'Handing off to desktop\update-and-run.ps1 (sync + build + launch)...'
     powershell -ExecutionPolicy Bypass -File "$LauncherScriptPath"
+    if ($LASTEXITCODE -ne 0) {
+        # update-and-run.ps1 already printed exactly which of its own steps
+        # failed (and, on the double-click path, held its window open with
+        # "Press Enter to close" - since it's a child process sharing this
+        # same console when launched this way, that prompt already
+        # happened above, before control returned here). Propagate the
+        # failure signal so this script's own try/catch below reports it
+        # too, instead of silently reporting overall success.
+        throw "desktop\update-and-run.ps1 exited with code $LASTEXITCODE - see its own output above for which step failed."
+    }
 }
 
 try {

@@ -16,7 +16,7 @@ yet) or a daily "just open it" launch (already installed), signed in
 either way:
 
 ```powershell
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/elevatedev4/vaccine-assist/main/bootstrap-fresh.ps1))) -Email you@orchardsdrug.com -Password "the-shared-password" -ServerUrl https://your-vaccine-assist-cloud.vercel.app
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/elevatedev4/vaccine-assist/main/bootstrap-fresh.ps1))) -Email you@orchardsdrug.com -Password 'the-shared-password' -ServerUrl https://your-vaccine-assist-cloud.vercel.app
 ```
 
 Paste the exact same line every time — no separate "first time" vs.
@@ -24,6 +24,12 @@ Paste the exact same line every time — no separate "first time" vs.
 header comment for exactly what each step does (installs Git/.NET 8 SDK
 via `winget` if missing, clones the repo, creates the "Vaccine Assist"
 Desktop shortcut, seeds the shared login, then builds and launches).
+
+**Keep `-Password` single-quoted, not double-quoted.** In Windows
+PowerShell, a double-quoted string expands `$` — a password containing
+`$` (eg. `Pa$sword1`) would silently truncate to `Pa` with no error.
+Single-quoted strings don't expand anything (only a literal `'` inside
+the password needs doubling to `''`).
 
 After the first run, double-clicking the "Vaccine Assist" Desktop
 shortcut does the same sync+build+launch as pasting the one-liner again.
