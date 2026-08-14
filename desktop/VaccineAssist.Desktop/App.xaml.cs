@@ -51,7 +51,7 @@ public partial class App : Application
         _clipboardService = new ClipboardService();
         _pioneerEntryAutomation = new PioneerEntryAutomationStub();
 
-        ShowLoginWindow();
+        ShowLoginWindow(attemptAutoLogin: true);
     }
 
     /// <summary>
@@ -60,18 +60,28 @@ public partial class App : Application
     /// app down — closing a login window without signing in means quit;
     /// closing it because sign-in just succeeded (see below) does not.
     ///
-    /// Immediately after showing the window, kicks off one silent
-    /// auto-login attempt (fire-and-forget — see
-    /// LoginViewModel.TryAutoSignInAsync) if bootstrap-fresh.ps1 seeded a
-    /// per-machine auto-login config. No interactive prompt is involved
-    /// either way: on success the SignedIn handler above swaps in the main
-    /// window before the user would ordinarily have finished reading the
-    /// screen; on failure the same window is simply left showing the
-    /// normal manual form with the error, never retried automatically.
+    /// <paramref name="attemptAutoLogin"/> is passed straight through to
+    /// LoginViewModel's allowAutoLogin constructor parameter: true for the
+    /// initial app-startup call (OnStartup, above), false for the call
+    /// from ShowMainWindow's Sign-out handler below. Without that
+    /// distinction, a workstation with autologin.json seeded would
+    /// silently re-authenticate the instant Sign out finished, making the
+    /// button a no-op — Sign-out must always land on the manual form, not
+    /// retry the same shared credentials.
+    ///
+    /// When auto-login is allowed, immediately after showing the window
+    /// this kicks off one silent auto-login attempt (fire-and-forget —
+    /// see LoginViewModel.TryAutoSignInAsync) if bootstrap-fresh.ps1
+    /// seeded a per-machine auto-login config. No interactive prompt is
+    /// involved either way: on success the SignedIn handler above swaps
+    /// in the main window before the user would ordinarily have finished
+    /// reading the screen; on failure the same window is simply left
+    /// showing the normal manual form with the error, never retried
+    /// automatically.
     /// </summary>
-    private void ShowLoginWindow()
+    private void ShowLoginWindow(bool attemptAutoLogin)
     {
-        var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService);
+        var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService, attemptAutoLogin);
         var loginWindow = new LoginWindow(loginViewModel);
         var signedIn = false;
 
@@ -115,7 +125,10 @@ public partial class App : Application
         {
             loggingOut = true;
             mainWindow.Close();
-            ShowLoginWindow();
+            // attemptAutoLogin: false — see ShowLoginWindow's doc comment.
+            // Sign out must actually sign out, even when autologin.json is
+            // seeded on this workstation.
+            ShowLoginWindow(attemptAutoLogin: false);
         };
 
         mainWindow.Closed += (_, _) =>

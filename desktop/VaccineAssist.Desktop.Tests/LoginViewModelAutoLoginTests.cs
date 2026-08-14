@@ -9,31 +9,35 @@ namespace VaccineAssist.Desktop.Tests;
 /// <summary>
 /// Unit tests for LoginViewModel.TryAutoSignInAsync — the auto-login path
 /// App.xaml.cs invokes once, right after showing the Login window (see
-/// ShowLoginWindow). Covers the three outcomes the brief calls out
-/// explicitly: no seeded config, a working seeded config, and a seeded
-/// config with a bad password (must fall back to the manual form's error
-/// state, never crash or loop).
+/// ShowLoginWindow). Covers the outcomes the brief calls out explicitly:
+/// no seeded config, a working seeded config, a seeded config with a bad
+/// password (must fall back to the manual form's error state, never
+/// crash or loop), and — per review feedback — the post-Sign-out screen,
+/// where auto-login must be suppressed even though the exact same seeded
+/// config is still sitting in autologin.json.
 /// </summary>
 public class LoginViewModelAutoLoginTests
 {
     private static LoginViewModel CreateViewModel(
         FakeAuthService authService,
         AutoLoginConfig? autoLoginConfig,
-        out FakeLocalSettingsService localSettingsService)
+        out FakeLocalSettingsService localSettingsService,
+        bool allowAutoLogin = true)
     {
         localSettingsService = new FakeLocalSettingsService(new AppSettings());
         return new LoginViewModel(
             authService,
             localSettingsService,
             new AppSettings(),
-            new FakeAutoLoginConfigService(autoLoginConfig));
+            new FakeAutoLoginConfigService(autoLoginConfig),
+            allowAutoLogin);
     }
 
     [Fact]
     public async Task DoesNothingWhenNoAutoLoginConfigIsSeeded()
     {
         var authService = new FakeAuthService(AuthResult.Ok());
-        var viewModel = CreateViewModel(authService, null, out _);
+        var viewModel = CreateViewModel(authService, null, out _, allowAutoLogin: true);
 
         var signedInRaised = false;
         viewModel.SignedIn += (_, _) => signedInRaised = true;
@@ -51,7 +55,7 @@ public class LoginViewModelAutoLoginTests
     {
         var authService = new FakeAuthService(AuthResult.Ok());
         var config = new AutoLoginConfig { Email = "pharmacy@example.test", Password = "hunter2" };
-        var viewModel = CreateViewModel(authService, config, out var localSettingsService);
+        var viewModel = CreateViewModel(authService, config, out var localSettingsService, allowAutoLogin: true);
 
         var signedInRaised = false;
         viewModel.SignedIn += (_, _) => signedInRaised = true;
@@ -72,7 +76,7 @@ public class LoginViewModelAutoLoginTests
     {
         var authService = new FakeAuthService(AuthResult.Fail("Sign-in failed: invalid credentials."));
         var config = new AutoLoginConfig { Email = "pharmacy@example.test", Password = "wrong-password" };
-        var viewModel = CreateViewModel(authService, config, out _);
+        var viewModel = CreateViewModel(authService, config, out _, allowAutoLogin: true);
 
         var signedInRaised = false;
         viewModel.SignedIn += (_, _) => signedInRaised = true;
@@ -87,5 +91,31 @@ public class LoginViewModelAutoLoginTests
         Assert.True(viewModel.SignInCommand.CanExecute(null));
         // Exactly one attempt - auto-login is never retried on its own.
         Assert.Equal(1, authService.SignInCallCount);
+    }
+
+    [Fact]
+    public async Task DoesNotAutoSignInOnTheScreenShownAfterSignOut()
+    {
+        // Mirrors App.xaml.cs's ShowMainWindow LoggedOut handler, which
+        // constructs the post-Sign-out LoginViewModel with
+        // allowAutoLogin: false — even though autologin.json (here, the
+        // fake's config) still has the exact same valid credentials that
+        // signed the user in originally. Without the allowAutoLogin gate,
+        // TryAutoSignInAsync would silently re-authenticate immediately,
+        // making the Sign-out button a no-op.
+        var authService = new FakeAuthService(AuthResult.Ok());
+        var config = new AutoLoginConfig { Email = "pharmacy@example.test", Password = "hunter2" };
+        var viewModel = CreateViewModel(authService, config, out var localSettingsService, allowAutoLogin: false);
+
+        var signedInRaised = false;
+        viewModel.SignedIn += (_, _) => signedInRaised = true;
+
+        await viewModel.TryAutoSignInAsync();
+
+        Assert.Equal(0, authService.SignInCallCount);
+        Assert.False(signedInRaised);
+        Assert.Null(viewModel.ErrorMessage);
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal(0, localSettingsService.SaveCallCount);
     }
 }

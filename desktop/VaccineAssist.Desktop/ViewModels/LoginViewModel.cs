@@ -19,21 +19,35 @@ public sealed class LoginViewModel : ObservableObject
     private readonly ILocalSettingsService _localSettingsService;
     private readonly IAutoLoginConfigService _autoLoginConfigService;
     private readonly AppSettings _settings;
+    private readonly bool _allowAutoLogin;
 
     private string _email;
     private bool _isBusy;
     private string? _errorMessage;
 
+    /// <param name="allowAutoLogin">
+    /// Gate on whether TryAutoSignInAsync is allowed to do anything at all
+    /// for this Login screen instance. App.xaml.cs passes true for the
+    /// initial startup screen, but false for the screen shown right after
+    /// Sign out (MainWindow.LoggedOut -> ShowLoginWindow) — without this,
+    /// a workstation with autologin.json seeded would silently and
+    /// immediately re-authenticate with the same shared credentials the
+    /// instant Sign out finishes, making the button a no-op. Sign-out
+    /// always means "show the manual form," never "try the seeded
+    /// credentials again."
+    /// </param>
     public LoginViewModel(
         IAuthService authService,
         ILocalSettingsService localSettingsService,
         AppSettings settings,
-        IAutoLoginConfigService autoLoginConfigService)
+        IAutoLoginConfigService autoLoginConfigService,
+        bool allowAutoLogin)
     {
         _authService = authService;
         _localSettingsService = localSettingsService;
         _autoLoginConfigService = autoLoginConfigService;
         _settings = settings;
+        _allowAutoLogin = allowAutoLogin;
         _email = settings.LastSignedInEmail ?? "";
 
         SignInCommand = new AsyncRelayCommand(() => SignInAsync(Email.Trim(), PendingPassword ?? ""), () => !IsBusy);
@@ -104,6 +118,9 @@ public sealed class LoginViewModel : ObservableObject
     /// bootstrap-fresh.ps1 (see Settings/AutoLoginConfigService.cs), if any
     /// exists. Called once by App.xaml.cs right after the Login window is
     /// shown. No prompts either way:
+    ///   - allowAutoLogin was false at construction (the post-Sign-out
+    ///     screen) → returns immediately without even reading
+    ///     autologin.json. Sign out must actually sign out.
     ///   - No config seeded (AutoLoginDecision says no) → returns
     ///     immediately, the window just shows the normal manual form.
     ///   - Config seeded and sign-in succeeds → SignedIn fires exactly like
@@ -117,6 +134,11 @@ public sealed class LoginViewModel : ObservableObject
     /// </summary>
     public async Task TryAutoSignInAsync()
     {
+        if (!_allowAutoLogin)
+        {
+            return;
+        }
+
         var config = _autoLoginConfigService.Load();
         if (!AutoLoginDecision.ShouldAttemptAutoLogin(config))
         {
