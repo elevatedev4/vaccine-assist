@@ -9,6 +9,25 @@ Pharmacy vaccine workflow app for Orchards Drug: offering/lot management, eligib
 
 No PHI is stored anywhere in this system. Vaccination records live in PioneerRx.
 
+## Windows pharmacy workstation: one-liner setup + launch
+
+One PowerShell line does everything — fresh install (nothing on the PC
+yet) or a daily "just open it" launch (already installed), signed in
+either way:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/elevatedev4/vaccine-assist/main/bootstrap-fresh.ps1))) -Email you@orchardsdrug.com -Password "the-shared-password" -ServerUrl https://your-vaccine-assist-cloud.vercel.app
+```
+
+Paste the exact same line every time — no separate "first time" vs.
+"every day after" command to remember. See `bootstrap-fresh.ps1`'s own
+header comment for exactly what each step does (installs Git/.NET 8 SDK
+via `winget` if missing, clones the repo, creates the "Vaccine Assist"
+Desktop shortcut, seeds the shared login, then builds and launches).
+
+After the first run, double-clicking the "Vaccine Assist" Desktop
+shortcut does the same sync+build+launch as pasting the one-liner again.
+
 ## Status
 
 Phase 1 scaffold (2026-08-13): schema, seed data, cloud API skeleton, and
