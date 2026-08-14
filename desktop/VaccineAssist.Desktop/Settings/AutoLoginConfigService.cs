@@ -13,6 +13,14 @@ namespace VaccineAssist.Desktop.Settings;
 /// along in a roaming profile. Tolerant by design, matching
 /// LocalSettingsService: a missing or corrupt file means "no auto-login
 /// configured" rather than a startup crash.
+///
+/// Known tradeoff: the password is stored in plaintext, readable by
+/// anything running as the same Windows user. DPAPI
+/// (System.Security.Cryptography.ProtectedData, CurrentUser scope) would
+/// let bootstrap-fresh.ps1 (or this app, on first read) encrypt it at
+/// rest instead — queued as a follow-up rather than done here, since it
+/// adds a new NuGet dependency this change couldn't verify resolves
+/// without a real `dotnet restore` on Windows.
 /// </summary>
 public sealed class AutoLoginConfigService : IAutoLoginConfigService
 {
