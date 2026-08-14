@@ -148,6 +148,11 @@ if (-not (Test-Path $desktopProjectDir)) {
 }
 
 $binDebugDir = Join-Path $desktopProjectDir 'bin\Debug'
+# Trailing-separator-normalized form used for the StartsWith() prefix
+# checks below - without the trailing '\', "...\bin\Debug" would also
+# match an unrelated sibling folder like "...\bin\DebugOld" that merely
+# starts with the same characters.
+$binDebugDirPrefix = $binDebugDir.TrimEnd('\') + '\'
 
 function Find-DesktopExe {
     if (-not (Test-Path $binDebugDir)) { return $null }
@@ -205,7 +210,7 @@ foreach ($proc in $runningAppProcesses) {
         $procPath = $null
     }
 
-    if (($procPath -ne $null) -and $procPath.StartsWith($binDebugDir, [StringComparison]::OrdinalIgnoreCase)) {
+    if (($procPath -ne $null) -and $procPath.StartsWith($binDebugDirPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         $processesToStop += $proc
     }
 }
@@ -241,7 +246,7 @@ if ($processesToStop.Count -gt 0) {
     $stillRunning = @(Get-Process -Name $appProcessName -ErrorAction SilentlyContinue | Where-Object {
         $stillPath = $null
         try { $stillPath = $_.Path } catch { $stillPath = $null }
-        ($stillPath -ne $null) -and $stillPath.StartsWith($binDebugDir, [StringComparison]::OrdinalIgnoreCase)
+        ($stillPath -ne $null) -and $stillPath.StartsWith($binDebugDirPrefix, [StringComparison]::OrdinalIgnoreCase)
     })
 
     if ($stillRunning.Count -gt 0) {
