@@ -18,6 +18,7 @@ namespace VaccineAssist.Desktop;
 public partial class App : Application
 {
     private ILocalSettingsService _localSettingsService = null!;
+    private IAutoLoginConfigService _autoLoginConfigService = null!;
     private AppSettings _settings = null!;
     private HttpClient _httpClient = null!;
     private IAuthService _authService = null!;
@@ -30,6 +31,7 @@ public partial class App : Application
         base.OnStartup(e);
 
         _localSettingsService = new LocalSettingsService();
+        _autoLoginConfigService = new AutoLoginConfigService();
         _settings = _localSettingsService.Load();
 
         _httpClient = new HttpClient();
@@ -57,10 +59,19 @@ public partial class App : Application
     /// field) tracks whether THIS window's Closed event should shut the
     /// app down — closing a login window without signing in means quit;
     /// closing it because sign-in just succeeded (see below) does not.
+    ///
+    /// Immediately after showing the window, kicks off one silent
+    /// auto-login attempt (fire-and-forget — see
+    /// LoginViewModel.TryAutoSignInAsync) if bootstrap-fresh.ps1 seeded a
+    /// per-machine auto-login config. No interactive prompt is involved
+    /// either way: on success the SignedIn handler above swaps in the main
+    /// window before the user would ordinarily have finished reading the
+    /// screen; on failure the same window is simply left showing the
+    /// normal manual form with the error, never retried automatically.
     /// </summary>
     private void ShowLoginWindow()
     {
-        var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings);
+        var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService);
         var loginWindow = new LoginWindow(loginViewModel);
         var signedIn = false;
 
@@ -81,6 +92,8 @@ public partial class App : Application
 
         MainWindow = loginWindow;
         loginWindow.Show();
+
+        _ = loginViewModel.TryAutoSignInAsync();
     }
 
     /// <summary>
