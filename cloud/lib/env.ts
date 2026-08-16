@@ -14,12 +14,25 @@ function readOptional(name: string): string | undefined {
   return value && value.trim().length > 0 ? value : undefined;
 }
 
+// Same trim/empty->undefined semantics as readOptional, but takes the value
+// directly instead of a dynamic process.env[name] lookup. Next.js's client
+// bundler only inlines NEXT_PUBLIC_* vars when it sees a literal
+// `process.env.NEXT_PUBLIC_X` member expression at build time — a dynamic
+// `process.env[name]` (what readOptional does) is invisible to that static
+// replacement, so in the browser it's always undefined even when the var is
+// set in Vercel. publicSupabaseUrl/publicSupabaseAnonKey are the only two of
+// these accessors ever called from client code (lib/supabase/client.ts), so
+// they're the only two that need the literal-access form.
+function readValue(value: string | undefined): string | undefined {
+  return value && value.trim().length > 0 ? value : undefined;
+}
+
 export const env = {
   supabaseUrl: () => readOptional("SUPABASE_URL"),
   supabaseAnonKey: () => readOptional("SUPABASE_ANON_KEY"),
   supabaseServiceRoleKey: () => readOptional("SUPABASE_SERVICE_ROLE_KEY"),
-  publicSupabaseUrl: () => readOptional("NEXT_PUBLIC_SUPABASE_URL"),
-  publicSupabaseAnonKey: () => readOptional("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+  publicSupabaseUrl: () => readValue(process.env.NEXT_PUBLIC_SUPABASE_URL),
+  publicSupabaseAnonKey: () => readValue(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
   acuityUserId: () => readOptional("ACUITY_USER_ID"),
   acuityApiKey: () => readOptional("ACUITY_API_KEY"),
   acuityPollCacheSeconds: () => {
