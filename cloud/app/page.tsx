@@ -7,6 +7,9 @@ export default function HomePage() {
         foundation — the reporting UI is not built yet. See <code>/api</code>{" "}
         routes for the desktop app&apos;s REST endpoints.
       </p>
+      <p>
+        <a href="/settings">Acuity Scheduling settings</a>
+      </p>
     </main>
   );
 }
