@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
+import { chicagoDayRange } from "@/lib/chicago-date";
+import { buildAppointmentTable, type AppointmentTypeCount } from "@/lib/appointment-table";
 
-type AppointmentTypeCount = {
-  date: string;
-  appointmentTypeId: number;
-  appointmentTypeName: string;
-  count: number;
-};
+// Re-poll cadence while the page is open and signed in (Will, 2026-08-16:
+// "a reasonable refresh rate, maybe every 15 minutes"). Comfortably above
+// ACUITY_POLL_CACHE_SECONDS (~5 min default) so most auto-refreshes still
+// hit the server cache rather than Acuity.
+const AUTO_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 
 type PollResponse = {
   configured: boolean;
@@ -24,6 +25,7 @@ type PollResponse = {
 
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 640 },
+  mainWide: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 960 },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
   button: { padding: "0.5rem 1rem", marginRight: "0.5rem" },
@@ -39,34 +41,25 @@ const styles = {
     background: "#f0f4f8",
     borderRadius: 4,
   },
-  day: {
-    border: "1px solid #ddd",
-    borderRadius: 4,
-    padding: "0.75rem 1rem",
-    marginBottom: "0.75rem",
-  },
-  dayHeader: { display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: "0.5rem" },
-  typeRow: { display: "flex", justifyContent: "space-between", padding: "0.125rem 0" },
+  table: { width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" },
+  th: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "2px solid #ccc", whiteSpace: "nowrap" },
+  thType: { textAlign: "left", padding: "0.4rem 0.6rem", borderBottom: "2px solid #ccc", whiteSpace: "nowrap" },
+  td: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee" },
+  tdType: { textAlign: "left", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee", fontWeight: 500 },
+  totalCell: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee", fontWeight: 600 },
+  totalRowLabel: { textAlign: "left", padding: "0.4rem 0.6rem", fontWeight: 700, borderTop: "2px solid #ccc" },
+  totalRowCell: { textAlign: "right", padding: "0.4rem 0.6rem", fontWeight: 700, borderTop: "2px solid #ccc" },
+  tableWrap: { overflowX: "auto", marginTop: "0.75rem" },
 } as const;
 
-/** "YYYY-MM-DD" in the browser's LOCAL timezone (not UTC) — the pharmacy
- * cares about its own local day, and the server has no reliable notion of
- * that, so the client computes the range and passes it explicitly. */
-function localDateString(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
+/**
+ * Every "day" this page shows is a fixed America/Chicago calendar day
+ * (lib/chicago-date.ts) — not the browser's own local day — so the range
+ * requested from the poll API, and the columns rendered here, stay
+ * correct regardless of what timezone a staff device happens to report.
+ */
 function nextSevenDayRange(): { start: string; end: string; days: string[] } {
-  const today = new Date();
-  const days: string[] = [];
-  for (let i = 0; i <= 7; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    days.push(localDateString(d));
-  }
+  const days = chicagoDayRange(7);
   return { start: days[0], end: days[days.length - 1], days };
 }
 
@@ -106,12 +99,13 @@ export default function AppointmentsPage() {
     };
   }, []);
 
-  const loadCounts = useCallback(async (token: string) => {
+  const loadCounts = useCallback(async (token: string, options?: { force?: boolean }) => {
     setLoading(true);
     setLoadError(null);
     try {
       const { start, end } = nextSevenDayRange();
-      const response = await fetch(`/api/acuity/poll?start=${start}&end=${end}`, {
+      const forceParam = options?.force ? "&force=1" : "";
+      const response = await fetch(`/api/acuity/poll?start=${start}&end=${end}${forceParam}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json();
@@ -129,6 +123,18 @@ export default function AppointmentsPage() {
 
   useEffect(() => {
     if (session) void loadCounts(session.accessToken);
+  }, [session, loadCounts]);
+
+  // Auto-refresh every AUTO_REFRESH_INTERVAL_MS while signed in — cleared
+  // on sign-out (session becomes null, effect re-runs and tears down the
+  // old interval) and on unmount (the same cleanup path).
+  useEffect(() => {
+    if (!session) return;
+    const token = session.accessToken;
+    const intervalId = setInterval(() => {
+      void loadCounts(token);
+    }, AUTO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
   }, [session, loadCounts]);
 
   async function handleSignIn(event: FormEvent) {
@@ -217,15 +223,10 @@ export default function AppointmentsPage() {
   }
 
   const { days } = nextSevenDayRange();
-  const countsByDay = new Map<string, AppointmentTypeCount[]>();
-  for (const entry of poll?.counts ?? []) {
-    const existing = countsByDay.get(entry.date) ?? [];
-    existing.push(entry);
-    countsByDay.set(entry.date, existing);
-  }
+  const table = buildAppointmentTable(poll?.counts ?? [], days);
 
   return (
-    <main style={styles.main}>
+    <main style={styles.mainWide}>
       <div style={styles.sessionBar}>
         <span>
           Signed in as <strong>{session.email ?? "unknown user"}</strong>
@@ -238,7 +239,12 @@ export default function AppointmentsPage() {
       <h1>Upcoming appointments</h1>
 
       <p>
-        <button style={styles.button} type="button" onClick={() => void loadCounts(session.accessToken)} disabled={loading}>
+        <button
+          style={styles.button}
+          type="button"
+          onClick={() => void loadCounts(session.accessToken, { force: true })}
+          disabled={loading}
+        >
           {loading ? "Refreshing…" : "Refresh"}
         </button>
         {poll?.asOf && (
@@ -248,6 +254,7 @@ export default function AppointmentsPage() {
           </span>
         )}
       </p>
+      <p style={styles.muted}>Auto-refreshes every 15 minutes while this page is open.</p>
 
       {loadError && <p style={styles.error}>{loadError}</p>}
 
@@ -265,29 +272,52 @@ export default function AppointmentsPage() {
       )}
 
       {poll && poll.configured && (
-        <div>
-          {days.map((day) => {
-            const entries = countsByDay.get(day) ?? [];
-            const total = entries.reduce((sum, e) => sum + e.count, 0);
-            return (
-              <div key={day} style={styles.day}>
-                <div style={styles.dayHeader}>
-                  <span>{formatDayLabel(day)}</span>
-                  <span>{total} total</span>
-                </div>
-                {entries.length === 0 ? (
-                  <p style={styles.muted}>No appointments.</p>
-                ) : (
-                  entries.map((entry) => (
-                    <div key={`${entry.date}-${entry.appointmentTypeId}`} style={styles.typeRow}>
-                      <span>{entry.appointmentTypeName}</span>
-                      <span>{entry.count}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            );
-          })}
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.thType}>Vaccine</th>
+                {table.days.map((day) => (
+                  <th key={day} style={styles.th}>
+                    {formatDayLabel(day)}
+                  </th>
+                ))}
+                <th style={styles.th}>7-day total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {table.rows.length === 0 ? (
+                <tr>
+                  <td style={styles.tdType} colSpan={table.days.length + 2}>
+                    No appointments in this range.
+                  </td>
+                </tr>
+              ) : (
+                table.rows.map((row) => (
+                  <tr key={row.appointmentTypeId}>
+                    <td style={styles.tdType}>{row.appointmentTypeName}</td>
+                    {table.days.map((day) => (
+                      <td key={day} style={styles.td}>
+                        {row.countsByDay[day]}
+                      </td>
+                    ))}
+                    <td style={styles.totalCell}>{row.total}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td style={styles.totalRowLabel}>Daily total</td>
+                {table.days.map((day) => (
+                  <td key={day} style={styles.totalRowCell}>
+                    {table.dailyTotals[day]}
+                  </td>
+                ))}
+                <td style={styles.totalRowCell}>{table.grandTotal}</td>
+              </tr>
+            </tfoot>
+          </table>
         </div>
       )}
     </main>

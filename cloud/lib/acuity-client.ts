@@ -1,4 +1,5 @@
 import "server-only";
+import { chicagoDateString } from "@/lib/chicago-date";
 
 /**
  * Minimal server-side Acuity Scheduling API client. Acuity uses HTTP
@@ -126,7 +127,21 @@ export async function fetchAppointmentTypes(
  * patient data even by accident.
  */
 export type CountableAppointment = {
-  date: string; // "YYYY-MM-DD", per the Acuity API
+  /**
+   * "YYYY-MM-DD" — the America/Chicago calendar day the appointment falls
+   * on, derived from Acuity's `datetime` field (ISO 8601 WITH the
+   * business's UTC offset, e.g. "2026-08-16T22:00:00-0500") via
+   * chicagoDateString. Deliberately NOT Acuity's own `date` field: that
+   * field is a human-readable string like "August 16, 2026" (see the
+   * developers.acuityscheduling.com sample response), not "YYYY-MM-DD" as
+   * an earlier version of this code assumed — using it directly meant no
+   * fetched appointment's date ever matched a "YYYY-MM-DD" range/day key
+   * downstream, so nothing ever showed up on the dashboard for ANY day,
+   * not just ones near a UTC boundary. Deriving from `datetime` instead
+   * also fixes the related bug where a naive UTC-day read of `datetime`
+   * put a late-evening Central appointment on the wrong (next) day.
+   */
+  date: string;
   appointmentTypeId: number;
 };
 
@@ -143,6 +158,19 @@ export type AppointmentRangeResult = {
 };
 
 const ACUITY_APPOINTMENTS_MAX = 100;
+
+/**
+ * "" on anything not parseable — callers filter empty-date entries out,
+ * same fail-soft-and-drop behavior as the previous appointmentTypeID
+ * NaN check. See CountableAppointment for why this reads `datetime`
+ * (ISO 8601 + offset) rather than Acuity's own `date` field.
+ */
+function acuityDatetimeToChicagoDate(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return chicagoDateString(parsed);
+}
 
 /**
  * Fetches appointments in [minDate, maxDate] (both "YYYY-MM-DD", inclusive
@@ -204,7 +232,7 @@ export async function fetchAppointmentsForRange(
   const appointments = data
     .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
     .map((entry) => ({
-      date: typeof entry.date === "string" ? entry.date : "",
+      date: acuityDatetimeToChicagoDate(entry.datetime),
       appointmentTypeId: Number(entry.appointmentTypeID),
     }))
     .filter((entry) => entry.date && Number.isFinite(entry.appointmentTypeId));
