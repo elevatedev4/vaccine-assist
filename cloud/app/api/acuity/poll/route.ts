@@ -2,66 +2,123 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { getAcuityCredentials } from "@/lib/acuity-credentials";
+import {
+  AcuityApiError,
+  aggregateAppointmentCounts,
+  fetchAppointmentsForRange,
+  fetchAppointmentTypes,
+} from "@/lib/acuity-client";
+import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
 
 /**
- * STUB — Acuity Scheduling appointment-count polling.
+ * Acuity Scheduling appointment-count polling (phase 2 v1, V-Q1).
  *
- * Real plan (phase 2+): call the Acuity API for upcoming appointments,
- * aggregate counts by vaccine type + date (no PHI — counts only,
- * matching the current Google-Sheets dashboard), upsert into the
- * `appointment_count` table, and cache the result for
- * ACUITY_POLL_CACHE_SECONDS (default 300 = 5 min) so this route can be
- * hit frequently without hammering Acuity.
+ * Fetches appointments for a date range (default: today through the next
+ * 7 days), aggregates them to counts per appointment type per day (no
+ * PHI — see lib/acuity-client.ts's CountableAppointment/PHI-stripping
+ * boundary), and returns that aggregate. Results are cached ~5 min
+ * (ACUITY_POLL_CACHE_SECONDS) in the acuity_poll_cache table so the
+ * dashboard's refresh button and repeat polls don't hammer Acuity —
+ * appointments are fetched on-demand, this is NOT a cron.
  *
- * Credentials come from getAcuityCredentials() — the `acuity_credentials`
- * table (set via /settings, per V-Q4) first, falling back to
- * ACUITY_USER_ID/ACUITY_API_KEY env vars if that row doesn't exist.
- *
- * Phase 1: no live calls, and today's stub payload has nothing sensitive
- * in it — but the auth gate is added now anyway (same as the other three
- * data routes) so phase 2 doesn't ship real appointment/scheduling data
- * behind a route someone forgot was still wide open.
+ * ?start=YYYY-MM-DD&end=YYYY-MM-DD lets a caller (the /appointments
+ * dashboard) request an explicit range computed from the browser's local
+ * "today" — the server has no reliable notion of the pharmacy's local
+ * day, so it only falls back to a UTC-based default when neither param
+ * is given.
  */
 
-let cachedAt = 0;
-let cachedResult: unknown = null;
+function isValidDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
+}
+
+function defaultRange(): { start: string; end: string } {
+  const now = new Date();
+  const start = now.toISOString().slice(0, 10);
+  const endDate = new Date(now);
+  endDate.setUTCDate(endDate.getUTCDate() + 7);
+  const end = endDate.toISOString().slice(0, 10);
+  return { start, end };
+}
 
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
 
-  const cacheSeconds = env.acuityPollCacheSeconds();
-  const now = Date.now();
+  const requestUrl = new URL(request.url);
+  const startParam = requestUrl.searchParams.get("start");
+  const endParam = requestUrl.searchParams.get("end");
 
-  if (cachedResult && now - cachedAt < cacheSeconds * 1000) {
-    return NextResponse.json({ ...(cachedResult as object), cacheHit: true });
+  let start: string;
+  let end: string;
+  if (startParam || endParam) {
+    if (!startParam || !endParam || !isValidDate(startParam) || !isValidDate(endParam)) {
+      return NextResponse.json(
+        { error: "start and end must both be provided as YYYY-MM-DD." },
+        { status: 400 }
+      );
+    }
+    start = startParam;
+    end = endParam;
+  } else {
+    const defaults = defaultRange();
+    start = defaults.start;
+    end = defaults.end;
   }
+
+  if (start > end) {
+    return NextResponse.json({ error: "start must not be after end." }, { status: 400 });
+  }
+
+  const cacheSeconds = env.acuityPollCacheSeconds();
 
   const credentials = await getAcuityCredentials();
-
   if (!credentials) {
-    const stub = {
-      stub: true,
+    return NextResponse.json({
+      configured: false,
       message:
-        "Acuity credentials are not configured. This endpoint is a phase-1 stub — " +
-        "set them in Settings → Acuity (or ACUITY_USER_ID/ACUITY_API_KEY as a " +
-        "fallback), then replace this handler with a real poll.",
-      cacheSeconds,
-      counts: [] as Array<{ date: string; vaccineType: string; count: number }>,
-    };
-    cachedResult = stub;
-    cachedAt = now;
-    return NextResponse.json({ ...stub, cacheHit: false });
+        "Acuity credentials are not configured yet. Set them in Settings before polling appointment counts.",
+      settingsUrl: "/settings",
+      range: { start, end },
+      counts: [],
+      cacheHit: false,
+      asOf: null,
+    });
   }
 
-  // TODO(phase 2): fetch from Acuity using `credentials`, aggregate, upsert appointment_count.
-  const result = {
-    stub: true,
-    message: `Acuity credentials found (source: ${credentials.source}), but polling is not implemented yet.`,
-    cacheSeconds,
-    counts: [] as Array<{ date: string; vaccineType: string; count: number }>,
-  };
-  cachedResult = result;
-  cachedAt = now;
-  return NextResponse.json({ ...result, cacheHit: false });
+  const cached = await getCachedCounts(start, end, cacheSeconds);
+  if (cached) {
+    return NextResponse.json({
+      configured: true,
+      range: { start, end },
+      counts: cached.counts,
+      cacheHit: true,
+      asOf: cached.computedAt,
+    });
+  }
+
+  try {
+    const [appointmentTypes, appointments] = await Promise.all([
+      fetchAppointmentTypes(credentials.userId, credentials.apiKey),
+      fetchAppointmentsForRange(credentials.userId, credentials.apiKey, start, end),
+    ]);
+
+    const nameById = new Map(appointmentTypes.map((type) => [type.id, type.name]));
+    const counts = aggregateAppointmentCounts(appointments, nameById);
+    const asOf = new Date().toISOString();
+
+    await setCachedCounts(start, end, counts);
+
+    return NextResponse.json({
+      configured: true,
+      range: { start, end },
+      counts,
+      cacheHit: false,
+      asOf,
+    });
+  } catch (err) {
+    const message = err instanceof AcuityApiError ? err.message : "Failed to poll Acuity for appointments.";
+    console.error("GET /api/acuity/poll: Acuity fetch failed", message);
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 }
