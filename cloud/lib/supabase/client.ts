@@ -2,10 +2,15 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { env } from "@/lib/env";
 
 /**
- * Browser-safe Supabase client (anon key only). Used by the future
- * reporting UI (skipped in phase 1) — kept here so the desktop app and
- * cloud app share the same auth model (one shared pharmacy login via
- * Supabase Auth, email/password) without duplicating client setup logic.
+ * Browser-safe Supabase client (anon key only). Backs the /settings
+ * sign-in flow (one shared pharmacy login via Supabase Auth,
+ * email/password) — the desktop app authenticates directly against
+ * Supabase and never touches this client.
+ *
+ * persistSession/autoRefreshToken are supabase-js's browser defaults,
+ * but set explicitly here so a session survives refresh/nav: without
+ * this, a page that only tracks the token in component state loses it
+ * on every reload with no indication anything changed.
  */
 let cached: SupabaseClient | null = null;
 
@@ -22,6 +27,11 @@ export function getSupabaseBrowserClient(): SupabaseClient {
     );
   }
 
-  cached = createClient(url, anonKey);
+  cached = createClient(url, anonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+    },
+  });
   return cached;
 }
