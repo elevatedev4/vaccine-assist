@@ -9,6 +9,7 @@ import {
   fetchAppointmentTypes,
 } from "@/lib/acuity-client";
 import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
+import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
 
 /**
  * Acuity Scheduling appointment-count polling (phase 2 v1, V-Q1).
@@ -22,10 +23,18 @@ import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
  * appointments are fetched on-demand, this is NOT a cron.
  *
  * ?start=YYYY-MM-DD&end=YYYY-MM-DD lets a caller (the /appointments
- * dashboard) request an explicit range computed from the browser's local
- * "today" — the server has no reliable notion of the pharmacy's local
- * day, so it only falls back to a UTC-based default when neither param
- * is given.
+ * dashboard) request an explicit range — the dashboard computes this from
+ * the pharmacy's fixed America/Chicago calendar day (lib/chicago-date.ts),
+ * not the browser's own local timezone, so it stays correct even if a
+ * staff device's clock/locale is set to something else. When neither
+ * param is given, this route falls back to the same Chicago-day default
+ * range (today .. today+7) rather than a UTC one — a UTC default used to
+ * cause the "today" boundary to be off by up to 6 hours for Central time.
+ *
+ * ?force=1 bypasses the normal ACUITY_POLL_CACHE_SECONDS (~5 min) cache
+ * read so a caller can get a just-booked appointment to show up without
+ * waiting out the cache — see FORCE_COOLDOWN_SECONDS below for the much
+ * shorter floor that still applies so a force request can't hammer Acuity.
  *
  * Range spans are capped at MAX_RANGE_DAYS, checked before any
  * cache/Acuity work — an unbounded caller-supplied range (e.g.
@@ -36,6 +45,19 @@ import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
  */
 
 const MAX_RANGE_DAYS = 31;
+
+/**
+ * Floor on how often a `force=1` request is allowed to actually skip the
+ * cache and hit Acuity, for a given (start, end) range — this app is a
+ * single shared-login pharmacy tenant (see lib/auth.ts), so a per-range
+ * cooldown reusing the existing acuity_poll_cache row IS effectively a
+ * per-user limiter here: there's only ever one account's worth of
+ * traffic hitting a given range key. Deliberately much shorter than
+ * ACUITY_POLL_CACHE_SECONDS (5 min) so "force" is still meaningfully
+ * faster than waiting out the normal cache, while a double-click or a
+ * refresh-key mash can't fire more than one real Acuity call per window.
+ */
+const FORCE_COOLDOWN_SECONDS = 20;
 
 function isValidDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
@@ -49,11 +71,8 @@ function rangeSpanDays(start: string, end: string): number {
 }
 
 function defaultRange(): { start: string; end: string } {
-  const now = new Date();
-  const start = now.toISOString().slice(0, 10);
-  const endDate = new Date(now);
-  endDate.setUTCDate(endDate.getUTCDate() + 7);
-  const end = endDate.toISOString().slice(0, 10);
+  const start = todayInChicago();
+  const end = addDaysToChicagoDate(start, 7);
   return { start, end };
 }
 
@@ -95,6 +114,10 @@ export async function GET(request: Request) {
   }
 
   const cacheSeconds = env.acuityPollCacheSeconds();
+  const force = requestUrl.searchParams.get("force") === "1";
+  // A forced request still respects FORCE_COOLDOWN_SECONDS instead of the
+  // normal (longer) cache TTL — see that constant's comment.
+  const effectiveCacheSeconds = force ? FORCE_COOLDOWN_SECONDS : cacheSeconds;
 
   const credentials = await getAcuityCredentials();
   if (!credentials) {
@@ -111,7 +134,7 @@ export async function GET(request: Request) {
     });
   }
 
-  const cached = await getCachedCounts(start, end, cacheSeconds);
+  const cached = await getCachedCounts(start, end, effectiveCacheSeconds);
   if (cached) {
     return NextResponse.json({
       configured: true,

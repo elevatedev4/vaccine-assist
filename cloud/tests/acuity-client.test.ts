@@ -56,10 +56,18 @@ describe("testAcuityConnection", () => {
   });
 });
 
-// A fixture appointment shaped like a real Acuity API response — includes
+// A fixture appointment shaped like a REAL Acuity API response — includes
 // every PHI field Acuity actually returns (firstName/lastName/phone/email/
 // notes/forms) precisely so the assertions below can prove none of it
-// survives fetchAppointmentsForRange's projection.
+// survives fetchAppointmentsForRange's projection. Also shaped to match
+// Acuity's actual `date`/`datetime` formats (verified against
+// developers.acuityscheduling.com's sample response): `date` is a
+// human-readable string ("August 17, 2026"), NOT "YYYY-MM-DD" — an
+// earlier version of this code wrongly assumed it was ISO-formatted and
+// used it directly, which meant no appointment's date ever matched a
+// "YYYY-MM-DD" range/day key downstream (see acuity-client.ts's
+// CountableAppointment doc comment for the full story). `datetime` is
+// the reliable ISO 8601 + UTC-offset field this code now reads instead.
 function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
   return {
     id: 12345,
@@ -67,8 +75,9 @@ function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
     lastName: "Doe",
     phone: "555-123-4567",
     email: "jane.doe@example.com",
-    date: "2026-08-17",
+    date: "August 17, 2026",
     time: "10:00am",
+    datetime: "2026-08-17T10:00:00-0500",
     appointmentTypeID: 111,
     notes: "Allergic to eggs",
     forms: [{ id: 1, name: "Intake", values: [] }],
@@ -84,7 +93,13 @@ describe("fetchAppointmentsForRange", () => {
   it("strips every field down to {date, appointmentTypeId} — no PHI keys survive", async () => {
     const fixture = [
       acuityAppointmentFixture(),
-      acuityAppointmentFixture({ id: 67890, firstName: "John", lastName: "Smith", date: "2026-08-18" }),
+      acuityAppointmentFixture({
+        id: 67890,
+        firstName: "John",
+        lastName: "Smith",
+        date: "August 18, 2026",
+        datetime: "2026-08-18T09:00:00-0500",
+      }),
     ];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
 
@@ -104,10 +119,36 @@ describe("fetchAppointmentsForRange", () => {
     }
   });
 
+  // Reproduces the reported bug: Will booked a real appointment ~10pm
+  // Central. A naive `datetime.toISOString().slice(0, 10)` (UTC day) or
+  // Acuity's own human-readable `date` field would silently push a
+  // late-evening Central appointment to the next day (or fail to match a
+  // "YYYY-MM-DD" key at all) — see CountableAppointment's doc comment.
+  // Fixed by deriving the day from `datetime` (ISO + Central UTC offset)
+  // re-rendered in America/Chicago.
+  it("assigns a 10pm Central appointment to the Central calendar day, not the UTC day", async () => {
+    // 2026-08-16T22:00:00-05:00 Central == 2026-08-17T03:00:00Z UTC — a
+    // naive UTC-day read would land this on 2026-08-17 instead of 2026-08-16.
+    const fixture = [acuityAppointmentFixture({ date: "August 16, 2026", datetime: "2026-08-16T22:00:00-0500" })];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+    const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
+
+    expect(result.appointments).toEqual([{ date: "2026-08-16", appointmentTypeId: 111 }]);
+  });
+
+  it("assigns an appointment right at 11:45pm Central to the Central day, even though it's after midnight UTC", async () => {
+    // 2026-08-16T23:45:00-05:00 Central == 2026-08-17T04:45:00Z UTC.
+    const fixture = [acuityAppointmentFixture({ date: "August 16, 2026", datetime: "2026-08-16T23:45:00-0500" })];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+    const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
+
+    expect(result.appointments).toEqual([{ date: "2026-08-16", appointmentTypeId: 111 }]);
+  });
+
   it("flags possiblyTruncated when the response hits the 100-row max cap", async () => {
-    const fixture = Array.from({ length: 100 }, (_, i) =>
-      acuityAppointmentFixture({ id: i, date: "2026-08-17" })
-    );
+    const fixture = Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
@@ -117,7 +158,7 @@ describe("fetchAppointmentsForRange", () => {
   });
 
   it("does not flag possiblyTruncated when the response is under the cap", async () => {
-    const fixture = Array.from({ length: 99 }, (_, i) => acuityAppointmentFixture({ id: i, date: "2026-08-17" }));
+    const fixture = Array.from({ length: 99 }, (_, i) => acuityAppointmentFixture({ id: i }));
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
@@ -133,11 +174,12 @@ describe("fetchAppointmentsForRange", () => {
     );
   });
 
-  it("skips malformed entries (missing date or non-numeric type id)", async () => {
+  it("skips malformed entries (missing/invalid datetime or non-numeric type id)", async () => {
     const fixture = [
-      acuityAppointmentFixture({ date: undefined }),
+      acuityAppointmentFixture({ datetime: undefined }),
+      acuityAppointmentFixture({ datetime: "not-a-real-datetime" }),
       acuityAppointmentFixture({ appointmentTypeID: "not-a-number" }),
-      acuityAppointmentFixture({ date: "2026-08-19", appointmentTypeID: 222 }),
+      acuityAppointmentFixture({ date: "August 19, 2026", datetime: "2026-08-19T09:00:00-0500", appointmentTypeID: 222 }),
     ];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
 
