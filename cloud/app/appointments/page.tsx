@@ -17,6 +17,7 @@ type PollResponse = {
   settingsUrl?: string;
   range: { start: string; end: string };
   counts: AppointmentTypeCount[];
+  possiblyTruncated: boolean;
   cacheHit: boolean;
   asOf: string | null;
 };
@@ -27,6 +28,7 @@ const styles = {
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
   button: { padding: "0.5rem 1rem", marginRight: "0.5rem" },
   error: { color: "#b00020" },
+  warning: { color: "#8a5300", background: "#fff4e0", padding: "0.5rem 0.75rem", borderRadius: 4 },
   muted: { color: "#555", fontSize: "0.875rem" },
   sessionBar: {
     display: "flex",
@@ -253,6 +255,12 @@ export default function AppointmentsPage() {
         <p>
           {poll.message ?? "Acuity credentials are not configured yet."}{" "}
           <a href={poll.settingsUrl ?? "/settings"}>Go to Settings</a>
+        </p>
+      )}
+
+      {poll?.configured && poll.possiblyTruncated && (
+        <p style={styles.warning}>
+          100+ appointments in range — counts may be incomplete.
         </p>
       )}
 

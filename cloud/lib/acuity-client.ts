@@ -130,26 +130,42 @@ export type CountableAppointment = {
   appointmentTypeId: number;
 };
 
+export type AppointmentRangeResult = {
+  appointments: CountableAppointment[];
+  /**
+   * True when the raw Acuity response came back at exactly the requested
+   * `max` cap (100) — a signal, not a certainty, that more appointments
+   * exist in the range than were returned (Acuity's API documents no
+   * offset/pagination param, so there's no way to fetch a next page).
+   * Callers must surface this rather than silently under-counting.
+   */
+  possiblyTruncated: boolean;
+};
+
+const ACUITY_APPOINTMENTS_MAX = 100;
+
 /**
  * Fetches appointments in [minDate, maxDate] (both "YYYY-MM-DD", inclusive
  * per Acuity's minDate/maxDate semantics) and strips every field down to
  * {date, appointmentTypeId} — see CountableAppointment above.
  *
  * Acuity's documented `max` param defaults to 100 with no documented
- * offset/pagination parameter; a single pharmacy's vaccine-appointment
- * volume over a ~7-day window is expected to stay well under that, so
- * this does not attempt multi-page fetching. Revisit if volume grows.
+ * offset/pagination parameter, so a range that actually contains more
+ * than 100 appointments cannot be fully fetched — see possiblyTruncated
+ * above, which the caller (the poll route) must propagate through the
+ * cache and into the dashboard as a visible warning rather than silently
+ * under-counting.
  */
 export async function fetchAppointmentsForRange(
   userId: string,
   apiKey: string,
   minDate: string,
   maxDate: string
-): Promise<CountableAppointment[]> {
+): Promise<AppointmentRangeResult> {
   const url = new URL(ACUITY_APPOINTMENTS_URL);
   url.searchParams.set("minDate", minDate);
   url.searchParams.set("maxDate", maxDate);
-  url.searchParams.set("max", "100");
+  url.searchParams.set("max", String(ACUITY_APPOINTMENTS_MAX));
   url.searchParams.set("canceled", "false");
 
   let response: Response;
@@ -177,16 +193,23 @@ export async function fetchAppointmentsForRange(
     throw new AcuityApiError("Acuity returned an unexpected appointments response.");
   }
 
+  // Truncation signal: computed off the raw response length, before the
+  // PHI-stripping/malformed-entry filtering below — a full page (exactly
+  // ACUITY_APPOINTMENTS_MAX rows) means more may exist beyond it.
+  const possiblyTruncated = data.length === ACUITY_APPOINTMENTS_MAX;
+
   // PHI-stripping projection — see CountableAppointment doc comment.
   // Every other field on `entry` (name/email/phone/notes/forms/...) is
   // dropped right here and never touched again.
-  return data
+  const appointments = data
     .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
     .map((entry) => ({
       date: typeof entry.date === "string" ? entry.date : "",
       appointmentTypeId: Number(entry.appointmentTypeID),
     }))
     .filter((entry) => entry.date && Number.isFinite(entry.appointmentTypeId));
+
+  return { appointments, possiblyTruncated };
 }
 
 export type AppointmentTypeCount = {

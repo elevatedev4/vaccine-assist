@@ -90,17 +90,39 @@ describe("fetchAppointmentsForRange", () => {
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
-    expect(result).toEqual([
+    expect(result.possiblyTruncated).toBe(false);
+    expect(result.appointments).toEqual([
       { date: "2026-08-17", appointmentTypeId: 111 },
       { date: "2026-08-18", appointmentTypeId: 111 },
     ]);
 
     const phiKeys = ["firstName", "lastName", "phone", "email", "notes", "forms", "id", "time"];
-    for (const entry of result) {
+    for (const entry of result.appointments) {
       for (const key of phiKeys) {
         expect(Object.prototype.hasOwnProperty.call(entry, key)).toBe(false);
       }
     }
+  });
+
+  it("flags possiblyTruncated when the response hits the 100-row max cap", async () => {
+    const fixture = Array.from({ length: 100 }, (_, i) =>
+      acuityAppointmentFixture({ id: i, date: "2026-08-17" })
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+    const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+    expect(result.possiblyTruncated).toBe(true);
+    expect(result.appointments).toHaveLength(100);
+  });
+
+  it("does not flag possiblyTruncated when the response is under the cap", async () => {
+    const fixture = Array.from({ length: 99 }, (_, i) => acuityAppointmentFixture({ id: i, date: "2026-08-17" }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+    const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+    expect(result.possiblyTruncated).toBe(false);
   });
 
   it("throws AcuityApiError on a non-ok response without leaking the key", async () => {
@@ -121,7 +143,7 @@ describe("fetchAppointmentsForRange", () => {
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
-    expect(result).toEqual([{ date: "2026-08-19", appointmentTypeId: 222 }]);
+    expect(result.appointments).toEqual([{ date: "2026-08-19", appointmentTypeId: 222 }]);
   });
 });
 
