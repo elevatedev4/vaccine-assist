@@ -10,6 +10,7 @@ import {
 } from "@/lib/acuity-client";
 import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
+import { buildAppointmentTable, type AppointmentTable } from "@/lib/appointment-table";
 
 /**
  * Acuity Scheduling appointment-count polling (phase 2 v1, V-Q1).
@@ -42,6 +43,36 @@ import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
  * with a huge query and grow the acuity_poll_cache table by one row per
  * distinct range forever (see that table's migration for the deferred
  * pruning note).
+ *
+ * RESPONSE CONTRACT — desktop's Scheduling tab (built in parallel,
+ * cloud/README or ask the manager if this drifts) reads this route
+ * directly, reusing this same ~5-min Acuity poll cache instead of
+ * hitting Acuity itself. When `configured` is true, the JSON body is:
+ *
+ *   {
+ *     configured: true,
+ *     range: { start: "YYYY-MM-DD", end: "YYYY-MM-DD" },
+ *     counts: VaccineCount[],       // flat {date, vaccineName, count} list
+ *     table: {
+ *       days: string[],             // "YYYY-MM-DD", ascending, inclusive of range
+ *       rows: Array<{ vaccineName: string, countsByDay: Record<string, number>, total: number }>,
+ *       dailyTotals: Record<string, number>,
+ *       grandTotal: number
+ *     },
+ *     possiblyTruncated: boolean,
+ *     cacheHit: boolean,
+ *     asOf: string,                 // ISO 8601
+ *   }
+ *
+ * `table` is the SAME grouping the cloud dashboard renders
+ * (app/appointments/page.tsx), built by lib/appointment-table.ts's
+ * buildAppointmentTable from `counts` — vaccine name is now the exact
+ * vaccine (e.g. "COVID-Pfizer", "Flu"), not the generic Acuity
+ * appointment-type name; see lib/acuity-client.ts's
+ * extractVaccineNamesFromForms / isVaccineFormFieldName for how that's
+ * derived. When `configured` is false (no Acuity credentials set yet),
+ * the body has no `table` field — same as `counts: []`, there is nothing
+ * to pivot yet.
  */
 
 const MAX_RANGE_DAYS = 31;
@@ -74,6 +105,15 @@ function defaultRange(): { start: string; end: string } {
   const start = todayInChicago();
   const end = addDaysToChicagoDate(start, 7);
   return { start, end };
+}
+
+/** Every "YYYY-MM-DD" day in [start, end] inclusive, ascending — the
+ * column headers for the `table` field (see RESPONSE CONTRACT above). */
+function daysInRange(start: string, end: string): string[] {
+  const span = rangeSpanDays(start, end);
+  const days: string[] = [];
+  for (let i = 0; i < span; i++) days.push(addDaysToChicagoDate(start, i));
+  return days;
 }
 
 export async function GET(request: Request) {
@@ -134,12 +174,15 @@ export async function GET(request: Request) {
     });
   }
 
+  const days = daysInRange(start, end);
+
   const cached = await getCachedCounts(start, end, effectiveCacheSeconds);
   if (cached) {
     return NextResponse.json({
       configured: true,
       range: { start, end },
       counts: cached.counts,
+      table: buildAppointmentTable(cached.counts, days),
       possiblyTruncated: cached.possiblyTruncated,
       cacheHit: true,
       asOf: cached.computedAt,
@@ -154,6 +197,7 @@ export async function GET(request: Request) {
 
     const nameById = new Map(appointmentTypes.map((type) => [type.id, type.name]));
     const counts = aggregateAppointmentCounts(appointments, nameById);
+    const table: AppointmentTable = buildAppointmentTable(counts, days);
     const asOf = new Date().toISOString();
 
     await setCachedCounts(start, end, counts, possiblyTruncated);
@@ -162,6 +206,7 @@ export async function GET(request: Request) {
       configured: true,
       range: { start, end },
       counts,
+      table,
       possiblyTruncated,
       cacheHit: false,
       asOf,

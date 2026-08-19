@@ -143,6 +143,20 @@ export type CountableAppointment = {
    */
   date: string;
   appointmentTypeId: number;
+  /**
+   * PHI boundary, extension of the CountableAppointment doc comment above:
+   * this is the ONLY other field this module ever reads off a raw
+   * appointment's `forms` array (see extractVaccineNamesFromForms) — the
+   * exact vaccine name(s) the patient is getting, per V-T-something
+   * (Will, 2026-08-19): "I want to see the exact vaccines ... COVID-Pfizer,
+   * COVID-Moderna, Flu, RSV, etc." rather than the generic Acuity
+   * appointment-type name. Every other form question/answer (insurance,
+   * consent, symptoms, etc.) on that same form is discarded and never
+   * touches this type or anything downstream of it. Empty when no form
+   * field matched isVaccineFormFieldName — callers fall back to the
+   * appointment type's name in that case (see aggregateAppointmentCounts).
+   */
+  vaccineNames: string[];
 };
 
 export type AppointmentRangeResult = {
@@ -170,6 +184,62 @@ function acuityDatetimeToChicagoDate(value: unknown): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "";
   return chicagoDateString(parsed);
+}
+
+/**
+ * Matches an Acuity intake-form field's `name` against a "does this look
+ * like the vaccine-selection question" heuristic: case-insensitive
+ * substring match on "vaccine" (e.g. "Which vaccine(s) are you
+ * receiving?"). Deliberately a small, separately-exported, separately-
+ * tested function — Will's real Acuity form field label hasn't been
+ * confirmed yet (no live account to inspect while building this), so if
+ * this heuristic turns out wrong once he can test on Windows, fixing it
+ * is a one-function change rather than a hunt through fetch/aggregation
+ * logic. See the residual-risk note in the poll route's doc comment.
+ */
+export function isVaccineFormFieldName(name: string): boolean {
+  return typeof name === "string" && name.toLowerCase().includes("vaccine");
+}
+
+/**
+ * PHI boundary: this function must only ever be called with
+ * `entry.forms` — never the full raw appointment entry — so it has no
+ * way to read name/email/phone/notes even by accident; those never
+ * appear on `forms`.
+ *
+ * Finds the first form field whose name matches isVaccineFormFieldName
+ * and splits its answer into individual vaccine names. Acuity represents
+ * a multi-select/checkbox answer as a comma-, pipe-, or newline-
+ * separated string in `value` — split on any of those so a single
+ * appointment can count toward multiple vaccine columns (e.g. a patient
+ * getting both Flu and COVID-Pfizer in one visit). Trims whitespace and
+ * drops empty entries. Returns [] if no matching field is found or its
+ * value is blank — callers fall back to the appointment type's name.
+ */
+function extractVaccineNamesFromForms(forms: unknown): string[] {
+  if (!Array.isArray(forms)) return [];
+
+  for (const form of forms) {
+    if (typeof form !== "object" || form === null) continue;
+    const values = (form as Record<string, unknown>).values;
+    if (!Array.isArray(values)) continue;
+
+    for (const field of values) {
+      if (typeof field !== "object" || field === null) continue;
+      const fieldName = (field as Record<string, unknown>).name;
+      const fieldValue = (field as Record<string, unknown>).value;
+      if (typeof fieldName !== "string" || !isVaccineFormFieldName(fieldName)) continue;
+      if (typeof fieldValue !== "string") continue;
+
+      const names = fieldValue
+        .split(/[,|\n]/)
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0);
+      if (names.length > 0) return names;
+    }
+  }
+
+  return [];
 }
 
 /**
@@ -227,54 +297,65 @@ export async function fetchAppointmentsForRange(
   const possiblyTruncated = data.length === ACUITY_APPOINTMENTS_MAX;
 
   // PHI-stripping projection — see CountableAppointment doc comment.
-  // Every other field on `entry` (name/email/phone/notes/forms/...) is
-  // dropped right here and never touched again.
+  // Every other field on `entry` (name/email/phone/notes/...) is dropped
+  // right here and never touched again. `forms` is read ONLY through
+  // extractVaccineNamesFromForms, which itself only ever extracts the
+  // vaccine-question answer string(s) — nothing else off `forms` survives
+  // this projection either.
   const appointments = data
     .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
     .map((entry) => ({
       date: acuityDatetimeToChicagoDate(entry.datetime),
       appointmentTypeId: Number(entry.appointmentTypeID),
+      vaccineNames: extractVaccineNamesFromForms(entry.forms),
     }))
     .filter((entry) => entry.date && Number.isFinite(entry.appointmentTypeId));
 
   return { appointments, possiblyTruncated };
 }
 
-export type AppointmentTypeCount = {
+export type VaccineCount = {
   date: string;
-  appointmentTypeId: number;
-  appointmentTypeName: string;
+  vaccineName: string;
   count: number;
 };
 
 /**
  * Pure aggregation: groups already-PHI-stripped appointments by
- * (date, appointmentTypeId) and counts them, labeling each group with the
- * matching appointment type's name. Only ever reads `.date` and
- * `.appointmentTypeId` off each input — see CountableAppointment.
+ * (date, vaccineName) and counts them. `vaccineName` is normally each of
+ * an appointment's `vaccineNames` (see CountableAppointment) — an
+ * appointment with two vaccine names counts once toward EACH name, not
+ * split fractionally. When an appointment has no vaccineNames (its form
+ * didn't have a field isVaccineFormFieldName matched, or Acuity returned
+ * no forms at all), this falls back to the appointment type's name, same
+ * behavior as before the vaccine-name pivot existed. Only ever reads
+ * `.date`, `.appointmentTypeId`, and `.vaccineNames` off each input — see
+ * CountableAppointment.
  */
 export function aggregateAppointmentCounts(
   appointments: CountableAppointment[],
   appointmentTypeNames: Map<number, string>
-): AppointmentTypeCount[] {
-  const groups = new Map<string, AppointmentTypeCount>();
+): VaccineCount[] {
+  const groups = new Map<string, VaccineCount>();
 
-  for (const { date, appointmentTypeId } of appointments) {
-    const key = `${date}::${appointmentTypeId}`;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.count += 1;
-      continue;
+  for (const { date, appointmentTypeId, vaccineNames } of appointments) {
+    const names =
+      vaccineNames.length > 0
+        ? vaccineNames
+        : [appointmentTypeNames.get(appointmentTypeId) ?? `Type ${appointmentTypeId}`];
+
+    for (const vaccineName of names) {
+      const key = `${date}::${vaccineName}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.count += 1;
+        continue;
+      }
+      groups.set(key, { date, vaccineName, count: 1 });
     }
-    groups.set(key, {
-      date,
-      appointmentTypeId,
-      appointmentTypeName: appointmentTypeNames.get(appointmentTypeId) ?? `Type ${appointmentTypeId}`,
-      count: 1,
-    });
   }
 
   return Array.from(groups.values()).sort(
-    (a, b) => a.date.localeCompare(b.date) || a.appointmentTypeName.localeCompare(b.appointmentTypeName)
+    (a, b) => a.date.localeCompare(b.date) || a.vaccineName.localeCompare(b.vaccineName)
   );
 }

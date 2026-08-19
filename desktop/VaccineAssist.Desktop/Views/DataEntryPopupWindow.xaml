@@ -35,14 +35,21 @@
         <TextBlock Grid.Row="0" Text="Vaccine data entry" FontSize="16" FontWeight="Bold"/>
 
         <TextBlock Grid.Row="2" Text="Vaccine"/>
-        <ComboBox Grid.Row="3" ItemsSource="{Binding Vaccines}" DisplayMemberPath="Name"
-                  SelectedItem="{Binding SelectedVaccine}"/>
+        <ComboBox Grid.Row="3" x:Name="VaccineComboBox"
+                  ItemsSource="{Binding Vaccines}" DisplayMemberPath="Name"
+                  SelectedItem="{Binding SelectedVaccine}"
+                  FontSize="14" Padding="6,4" MinHeight="30" MinWidth="200"
+                  Foreground="Black" Background="White"
+                  DropDownOpened="VaccineComboBox_OnDropDownOpened"/>
 
         <StackPanel Grid.Row="4" Orientation="Horizontal">
             <TextBlock Text="Patient age (years)" VerticalAlignment="Center"/>
             <TextBox Text="{Binding PatientAgeYears, UpdateSourceTrigger=PropertyChanged}" Width="60" Margin="8,0,16,0"/>
-            <TextBlock Text="Admin site" VerticalAlignment="Center"/>
-            <ComboBox ItemsSource="{Binding AdminSiteOptions}" SelectedItem="{Binding AdminSite}" Width="90" Margin="8,0,0,0"/>
+            <!-- Admin site is hidden by default and always defaults to Left
+                 arm (see DataEntryPopupViewModel.AdminSite/IsRightArm) —
+                 this compact CheckBox is the one trivial way to override
+                 it to Right without bringing back the full dropdown. -->
+            <CheckBox Content="Right arm" IsChecked="{Binding IsRightArm}" VerticalAlignment="Center"/>
         </StackPanel>
 
         <Button Grid.Row="6" Content="Validate" Command="{Binding ValidateCommand}" Padding="8,2" HorizontalAlignment="Left"/>

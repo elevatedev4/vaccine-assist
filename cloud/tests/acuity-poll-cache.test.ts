@@ -47,7 +47,7 @@ describe("acuity poll cache", () => {
       setCachedCounts(
         "2026-08-17",
         "2026-08-24",
-        [{ date: "2026-08-17", appointmentTypeId: 111, appointmentTypeName: "Flu Shot", count: 3 }],
+        [{ date: "2026-08-17", vaccineName: "Flu Shot", count: 3 }],
         false
       )
     ).resolves.toBeUndefined();
@@ -65,7 +65,7 @@ describe("acuity poll cache", () => {
 
   it("returns the cached payload, including possiblyTruncated, when still within ttlSeconds", async () => {
     const freshComputedAt = new Date(Date.now() - 60 * 1000).toISOString(); // 1 min ago
-    const counts = [{ date: "2026-08-17", appointmentTypeId: 111, appointmentTypeName: "Flu Shot", count: 5 }];
+    const counts = [{ date: "2026-08-17", vaccineName: "Flu Shot", count: 5 }];
     vi.mocked(getSupabaseServerClient).mockReturnValue(
       fakeSupabaseClient({ counts, computed_at: freshComputedAt, possibly_truncated: true }) as never
     );

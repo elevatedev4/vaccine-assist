@@ -1,0 +1,26 @@
+<UserControl x:Class="VaccineAssist.Desktop.Views.SchedulingView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Loaded="SchedulingView_OnLoaded">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Scheduling — upcoming vaccine appointments" FontSize="18" FontWeight="Bold"/>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal">
+            <Button Content="Refresh" Command="{Binding LoadCommand}" Padding="8,2"/>
+            <TextBlock Text="{Binding AsOfDisplay}" Foreground="Gray" Margin="12,0,0,0" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding StatusMessage}" Foreground="Gray" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <DataGrid x:Name="ScheduleGrid" Grid.Row="4" ItemsSource="{Binding Rows}"
+                  AutoGenerateColumns="False" IsReadOnly="True"/>
+    </Grid>
+</UserControl>

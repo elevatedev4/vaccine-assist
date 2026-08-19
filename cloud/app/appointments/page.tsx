@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { chicagoDayRange } from "@/lib/chicago-date";
-import { buildAppointmentTable, type AppointmentTypeCount } from "@/lib/appointment-table";
+import { buildAppointmentTable, type VaccineCount } from "@/lib/appointment-table";
 
 // Re-poll cadence while the page is open and signed in (Will, 2026-08-16:
 // "a reasonable refresh rate, maybe every 15 minutes"). Comfortably above
@@ -17,7 +17,7 @@ type PollResponse = {
   message?: string;
   settingsUrl?: string;
   range: { start: string; end: string };
-  counts: AppointmentTypeCount[];
+  counts: VaccineCount[];
   possiblyTruncated: boolean;
   cacheHit: boolean;
   asOf: string | null;
@@ -294,8 +294,8 @@ export default function AppointmentsPage() {
               <tr>
                 <th style={styles.thType}>Date</th>
                 {table.rows.map((row) => (
-                  <th key={row.appointmentTypeId} style={styles.th}>
-                    {row.appointmentTypeName}
+                  <th key={row.vaccineName} style={styles.th}>
+                    {row.vaccineName}
                   </th>
                 ))}
                 <th style={styles.th}>Total</th>
@@ -313,7 +313,7 @@ export default function AppointmentsPage() {
                   <tr>
                     <td style={styles.sumRowLabel}>7-day total</td>
                     {table.rows.map((row) => (
-                      <td key={row.appointmentTypeId} style={styles.sumRowCell}>
+                      <td key={row.vaccineName} style={styles.sumRowCell}>
                         {row.total}
                       </td>
                     ))}
@@ -323,7 +323,7 @@ export default function AppointmentsPage() {
                     <tr key={day}>
                       <td style={styles.tdType}>{formatDayLabel(day)}</td>
                       {table.rows.map((row) => (
-                        <td key={row.appointmentTypeId} style={styles.td}>
+                        <td key={row.vaccineName} style={styles.td}>
                           {row.countsByDay[day]}
                         </td>
                       ))}

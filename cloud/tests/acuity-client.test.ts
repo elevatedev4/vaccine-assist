@@ -3,6 +3,7 @@ import {
   aggregateAppointmentCounts,
   fetchAppointmentsForRange,
   fetchAppointmentTypes,
+  isVaccineFormFieldName,
   testAcuityConnection,
 } from "@/lib/acuity-client";
 
@@ -90,7 +91,7 @@ describe("fetchAppointmentsForRange", () => {
     vi.unstubAllGlobals();
   });
 
-  it("strips every field down to {date, appointmentTypeId} — no PHI keys survive", async () => {
+  it("strips every field down to {date, appointmentTypeId, vaccineNames} — no PHI keys survive", async () => {
     const fixture = [
       acuityAppointmentFixture(),
       acuityAppointmentFixture({
@@ -107,8 +108,8 @@ describe("fetchAppointmentsForRange", () => {
 
     expect(result.possiblyTruncated).toBe(false);
     expect(result.appointments).toEqual([
-      { date: "2026-08-17", appointmentTypeId: 111 },
-      { date: "2026-08-18", appointmentTypeId: 111 },
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [] },
+      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [] },
     ]);
 
     const phiKeys = ["firstName", "lastName", "phone", "email", "notes", "forms", "id", "time"];
@@ -117,6 +118,114 @@ describe("fetchAppointmentsForRange", () => {
         expect(Object.prototype.hasOwnProperty.call(entry, key)).toBe(false);
       }
     }
+  });
+
+  // The vaccine-name pivot (V-T-something, Will 2026-08-19): the exact
+  // vaccine(s) a patient is getting come from an Acuity intake-form
+  // question, not the generic appointment-type name. See
+  // isVaccineFormFieldName's doc comment for why the field-name match is
+  // a heuristic that needs live verification against Will's real form.
+  describe("vaccine name extraction from forms", () => {
+    it("extracts a single vaccine name from a form field matching 'vaccine' (case-insensitive)", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [{ fieldID: 9, name: "Which Vaccine(s) are you receiving?", value: "Flu" }],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([{ date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu"] }]);
+    });
+
+    it("splits a comma-separated multi-vaccine answer into individual trimmed names", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [{ fieldID: 9, name: "vaccine question", value: "COVID-Pfizer,  Flu ,RSV" }],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([
+        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["COVID-Pfizer", "Flu", "RSV"] },
+      ]);
+    });
+
+    it("splits a pipe- or newline-separated multi-vaccine answer too, dropping empty entries", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          id: 1,
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Vaccine", value: "Flu|COVID-Moderna|" }] }],
+        }),
+        acuityAppointmentFixture({
+          id: 2,
+          date: "August 18, 2026",
+          datetime: "2026-08-18T09:00:00-0500",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Vaccine", value: "Flu\nRSV" }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([
+        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu", "COVID-Moderna"] },
+        { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: ["Flu", "RSV"] },
+      ]);
+    });
+
+    it("falls back to an empty vaccineNames list (caller falls back to appointmentTypeName) when no form field matches", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          forms: [
+            { id: 1, name: "Intake", values: [{ fieldID: 9, name: "Insurance provider", value: "Acme Health" }] },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([{ date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [] }]);
+    });
+
+    it("falls back to an empty vaccineNames list when the account has no forms at all", async () => {
+      const fixture = [acuityAppointmentFixture({ forms: undefined })];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([{ date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [] }]);
+    });
+  });
+
+  describe("isVaccineFormFieldName", () => {
+    it("matches field names containing 'vaccine' case-insensitively", () => {
+      expect(isVaccineFormFieldName("Which vaccine(s) are you receiving?")).toBe(true);
+      expect(isVaccineFormFieldName("VACCINE TYPE")).toBe(true);
+      expect(isVaccineFormFieldName("Preferred Vaccine")).toBe(true);
+    });
+
+    it("does not match unrelated field names", () => {
+      expect(isVaccineFormFieldName("Insurance provider")).toBe(false);
+      expect(isVaccineFormFieldName("Date of birth")).toBe(false);
+      expect(isVaccineFormFieldName("")).toBe(false);
+    });
   });
 
   // Reproduces the reported bug: Will booked a real appointment ~10pm
@@ -134,7 +243,7 @@ describe("fetchAppointmentsForRange", () => {
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
 
-    expect(result.appointments).toEqual([{ date: "2026-08-16", appointmentTypeId: 111 }]);
+    expect(result.appointments).toEqual([{ date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [] }]);
   });
 
   it("assigns an appointment right at 11:45pm Central to the Central day, even though it's after midnight UTC", async () => {
@@ -144,7 +253,7 @@ describe("fetchAppointmentsForRange", () => {
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
 
-    expect(result.appointments).toEqual([{ date: "2026-08-16", appointmentTypeId: 111 }]);
+    expect(result.appointments).toEqual([{ date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [] }]);
   });
 
   it("flags possiblyTruncated when the response hits the 100-row max cap", async () => {
@@ -185,7 +294,7 @@ describe("fetchAppointmentsForRange", () => {
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
-    expect(result.appointments).toEqual([{ date: "2026-08-19", appointmentTypeId: 222 }]);
+    expect(result.appointments).toEqual([{ date: "2026-08-19", appointmentTypeId: 222, vaccineNames: [] }]);
   });
 });
 
@@ -211,12 +320,12 @@ describe("fetchAppointmentTypes", () => {
 });
 
 describe("aggregateAppointmentCounts", () => {
-  it("groups by date + appointmentTypeId and counts, labeling with the type name", () => {
+  it("falls back to the appointment type's name, grouped by date + name, when vaccineNames is empty", () => {
     const appointments = [
-      { date: "2026-08-17", appointmentTypeId: 111 },
-      { date: "2026-08-17", appointmentTypeId: 111 },
-      { date: "2026-08-17", appointmentTypeId: 222 },
-      { date: "2026-08-18", appointmentTypeId: 111 },
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [] },
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [] },
+      { date: "2026-08-17", appointmentTypeId: 222, vaccineNames: [] },
+      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [] },
     ];
     const names = new Map([
       [111, "Flu Shot"],
@@ -225,30 +334,51 @@ describe("aggregateAppointmentCounts", () => {
 
     const result = aggregateAppointmentCounts(appointments, names);
 
-    // Sorted by date, then appointmentTypeName (alphabetical) — "COVID
-    // Booster" sorts before "Flu Shot" within the same day.
+    // Sorted by date, then vaccineName (alphabetical) — "COVID Booster"
+    // sorts before "Flu Shot" within the same day.
     expect(result).toEqual([
-      { date: "2026-08-17", appointmentTypeId: 222, appointmentTypeName: "COVID Booster", count: 1 },
-      { date: "2026-08-17", appointmentTypeId: 111, appointmentTypeName: "Flu Shot", count: 2 },
-      { date: "2026-08-18", appointmentTypeId: 111, appointmentTypeName: "Flu Shot", count: 1 },
+      { date: "2026-08-17", vaccineName: "COVID Booster", count: 1 },
+      { date: "2026-08-17", vaccineName: "Flu Shot", count: 2 },
+      { date: "2026-08-18", vaccineName: "Flu Shot", count: 1 },
     ]);
   });
 
   it("falls back to a generic label when the type id has no matching name", () => {
-    const result = aggregateAppointmentCounts([{ date: "2026-08-17", appointmentTypeId: 999 }], new Map());
+    const result = aggregateAppointmentCounts(
+      [{ date: "2026-08-17", appointmentTypeId: 999, vaccineNames: [] }],
+      new Map()
+    );
 
-    expect(result).toEqual([{ date: "2026-08-17", appointmentTypeId: 999, appointmentTypeName: "Type 999", count: 1 }]);
+    expect(result).toEqual([{ date: "2026-08-17", vaccineName: "Type 999", count: 1 }]);
   });
 
-  it("never emits PHI keys even if a caller (incorrectly) passed extra fields through", () => {
-    // aggregateAppointmentCounts only ever destructures {date, appointmentTypeId}
-    // off each input — extra fields on the input object must not leak into output.
+  it("groups by each of an appointment's vaccineNames, ignoring appointmentTypeId entirely, when present", () => {
+    // A single appointment whose form answer lists two vaccines counts
+    // once toward EACH vaccine's column, per Will: "a patient getting
+    // both Flu and COVID-Pfizer" in one visit.
     const appointments = [
-      { date: "2026-08-17", appointmentTypeId: 111, firstName: "Jane", email: "jane@example.com" },
-    ] as unknown as { date: string; appointmentTypeId: number }[];
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu", "COVID-Pfizer"] },
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu"] },
+    ];
 
     const result = aggregateAppointmentCounts(appointments, new Map());
 
-    expect(Object.keys(result[0])).toEqual(["date", "appointmentTypeId", "appointmentTypeName", "count"]);
+    expect(result).toEqual([
+      { date: "2026-08-17", vaccineName: "COVID-Pfizer", count: 1 },
+      { date: "2026-08-17", vaccineName: "Flu", count: 2 },
+    ]);
+  });
+
+  it("never emits PHI keys even if a caller (incorrectly) passed extra fields through", () => {
+    // aggregateAppointmentCounts only ever destructures {date,
+    // appointmentTypeId, vaccineNames} off each input — extra fields on
+    // the input object must not leak into output.
+    const appointments = [
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], firstName: "Jane", email: "jane@example.com" },
+    ] as unknown as { date: string; appointmentTypeId: number; vaccineNames: string[] }[];
+
+    const result = aggregateAppointmentCounts(appointments, new Map());
+
+    expect(Object.keys(result[0])).toEqual(["date", "vaccineName", "count"]);
   });
 });
