@@ -33,6 +33,22 @@ public partial class MainWindow : Window
     private readonly IPioneerEntrySequence _pioneerEntrySequence;
     private GlobalHotKey? _dataEntryHotKey;
 
+    /// <summary>
+    /// The currently-open data-entry popup, if any — at most one can be
+    /// open at a time (ShowDataEntryPopup doesn't check this; see that
+    /// method's doc comment). Tracked so MainWindow can explicitly close
+    /// it on sign-out/window-close (see MainWindow_OnClosed and
+    /// LogoutButton_OnClick) now that it's no longer an owned window (see
+    /// ShowDataEntryPopup's doc comment on removing Owner=this) — without
+    /// this, the popup would survive past logout, left bound to a
+    /// DataEntryPopupViewModel/IVaccineApiService whose bearer token is
+    /// now stale (calls would just start 401ing). Cleared via the popup's
+    /// own Closed event so a user closing it normally (or a second
+    /// ShowDataEntryPopup call replacing it) doesn't leave a stale
+    /// reference or cause a double-Close.
+    /// </summary>
+    private DataEntryPopupWindow? _openDataEntryPopup;
+
     /// <summary>Process-unique id for RegisterHotKey — arbitrary but must not collide with another hotkey id this process registers (only one exists today).</summary>
     private const int DataEntryHotKeyId = 1;
 
@@ -108,6 +124,14 @@ public partial class MainWindow : Window
     {
         _dataEntryHotKey?.Dispose();
         _dataEntryHotKey = null;
+
+        // Covers both exit paths: MainWindow closing directly (chrome/
+        // Alt+F4) and Sign out (LogoutButton_OnClick -> App.xaml.cs's
+        // LoggedOut handler calls mainWindow.Close(), which raises this
+        // same Closed event) — see _openDataEntryPopup's doc comment for
+        // why an orphaned popup is a real problem, not just cosmetic.
+        _openDataEntryPopup?.Close();
+        _openDataEntryPopup = null;
     }
 
     /// <summary>
@@ -139,6 +163,23 @@ public partial class MainWindow : Window
         var pioneerDetected = PioneerRxPresence.IsPresent();
         var viewModel = new DataEntryPopupViewModel(_vaccineApiService, _clipboardService, _pioneerEntrySequence, pioneerDetected);
         var popup = new DataEntryPopupWindow(viewModel);
+
+        // Tracked so MainWindow_OnClosed can explicitly close this popup
+        // on sign-out/window-close rather than leaving it orphaned (see
+        // _openDataEntryPopup's doc comment). If a popup from an earlier
+        // hotkey press/button click is still open, this only replaces
+        // the tracked reference — it does not close the old one first;
+        // that's an existing, unchanged behavior (multiple popups can
+        // stack), not something this lifecycle fix is scoped to change.
+        popup.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_openDataEntryPopup, popup))
+            {
+                _openDataEntryPopup = null;
+            }
+        };
+        _openDataEntryPopup = popup;
+
         popup.Show();
     }
 
