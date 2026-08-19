@@ -1,10 +1,42 @@
 # PioneerEntryAutomation — wiring it up for real
 
-Phase 1 ships `IPioneerEntryAutomation` + `PioneerEntryAutomationStub` only.
-`TryAttachAsync` always returns `false`, so the Entry screen always falls back
-to its clipboard-payload flow (`VaccineEntryPayload.ToClipboardPayload()` —
-the same `code,lot,exp` string the old macro read from `%vaccinedata%`,
-shown on screen and copied to the clipboard for a staff member to paste).
+Phase 1 shipped `IPioneerEntryAutomation` + `PioneerEntryAutomationStub` only
+(still true, untouched by V-T3 below). `TryAttachAsync` always returns
+`false`, so the Entry screen (Views/EntryView.xaml, the left-nav "Entry"
+page) always falls back to its clipboard-payload flow
+(`VaccineEntryPayload.ToClipboardPayload()` — the same `code,lot,exp`
+string the old macro read from `%vaccinedata%`, shown on screen and copied
+to the clipboard for a staff member to paste).
+
+## V-T3 update (data-entry mode / Ctrl+NumPad2) — 2026-08-19
+
+The headline feature ("replacing my macro") is now built as a SEPARATE
+flow from the Entry screen above: `Hotkeys/GlobalHotKey.cs` registers
+Ctrl+NumPad2 (MainWindow.xaml.cs), which shows
+`Views/DataEntryPopupWindow.xaml` (`ViewModels/DataEntryPopupViewModel.cs`)
+— vaccine + age only, `Validate` against the existing
+`/api/eligibility/evaluate` call, then `Enter into Pioneer`.
+
+That button runs `Sequencing/PlaceholderVaccineEntrySequence` via
+`Sequencing/PioneerEntrySequenceRunner` — a NEW, more granular
+abstraction than `IPioneerEntryAutomation` above (`IPioneerEntrySequence`
+= an ordered list of `IPioneerEntryStep`s, each with its own dry-run
+handling, logging, and pass/fail result). This is what's now
+"cleanly pluggable" per the original brief:
+
+- `Sequencing/Steps/FocusPioneerWindowStep.cs` is REAL — attaches via
+  `Uia/PioneerRxAttachment.cs` (FlaUI UIA3, modeled on rx-verify's
+  `PioneerRxWindow.TryAttach`).
+- `NavigateToVaccineFieldsStep` / `InputVaccineCodeStep` /
+  `InputLotAndExpirationStep` / `ConfirmEntryStep` are STILL STUBBED —
+  each returns a failed `PioneerEntryStepResult` with a
+  `PENDING-MACRO-FILE` message in live mode, and a "would do X" log line
+  in dry-run mode. Wiring them for real is what's below, unchanged from
+  before this update.
+
+Still not designed at all: the Medicare home-visit special case (item 3
+below) — no popup field for it yet, same reason as before (no live
+target).
 
 Real automation needs to happen live, on the pharmacy's own machine, against
 a real PioneerRx window — it can't be built or tested from here. When that

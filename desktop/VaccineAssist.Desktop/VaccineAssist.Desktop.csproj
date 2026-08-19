@@ -27,6 +27,17 @@
       directly.
     -->
     <PackageReference Include="Supabase" Version="1.6.0" />
+
+    <!--
+      FlaUI wraps UIA2/UIA3 COM interop with a much friendlier, testable
+      API than raw System.Windows.Automation. Same package + version as
+      rx-verify's overlay/RxVerifyOverlay.csproj (already proven to
+      restore/build in this environment) — used here for the vaccine
+      data-entry mode's PioneerRx window attach + (once wired) field
+      automation. See Uia/ and PioneerEntryAutomation/Sequencing/.
+    -->
+    <PackageReference Include="FlaUI.Core" Version="4.0.0" />
+    <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
   </ItemGroup>
 
 </Project>

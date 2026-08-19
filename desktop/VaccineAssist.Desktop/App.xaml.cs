@@ -2,6 +2,7 @@ using System;
 using System.Net.Http;
 using System.Windows;
 using VaccineAssist.Desktop.PioneerEntryAutomation;
+using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
 using VaccineAssist.Desktop.ViewModels;
@@ -25,6 +26,7 @@ public partial class App : Application
     private IVaccineApiService _vaccineApiService = null!;
     private IClipboardService _clipboardService = null!;
     private IPioneerEntryAutomation _pioneerEntryAutomation = null!;
+    private IPioneerEntrySequence _pioneerEntrySequence = null!;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -50,6 +52,11 @@ public partial class App : Application
         _vaccineApiService = new VaccineApiService(_httpClient, _authService);
         _clipboardService = new ClipboardService();
         _pioneerEntryAutomation = new PioneerEntryAutomationStub();
+        // V-T3: the ONE sequence implementation shipped in phase 1 — see
+        // PioneerEntryAutomation/Sequencing/PlaceholderVaccineEntrySequence.cs.
+        // Swapping in the real sequence once vaccine-add-new.mxe is available
+        // is a one-line change here, not a rebuild of MainWindow/DataEntryPopupViewModel.
+        _pioneerEntrySequence = new PlaceholderVaccineEntrySequence();
 
         ShowLoginWindow(attemptAutoLogin: true);
     }
@@ -118,7 +125,9 @@ public partial class App : Application
         var lotsViewModel = new LotsViewModel(_vaccineApiService);
         var entryViewModel = new EntryViewModel(_vaccineApiService, _clipboardService, _pioneerEntryAutomation);
 
-        var mainWindow = new MainWindow(vaccinesViewModel, lotsViewModel, entryViewModel, _authService);
+        var mainWindow = new MainWindow(
+            vaccinesViewModel, lotsViewModel, entryViewModel, _authService,
+            _vaccineApiService, _clipboardService, _pioneerEntrySequence);
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>
