@@ -47,8 +47,20 @@ const styles = {
   td: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee" },
   tdType: { textAlign: "left", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee", fontWeight: 500 },
   totalCell: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee", fontWeight: 600 },
-  totalRowLabel: { textAlign: "left", padding: "0.4rem 0.6rem", fontWeight: 700, borderTop: "2px solid #ccc" },
-  totalRowCell: { textAlign: "right", padding: "0.4rem 0.6rem", fontWeight: 700, borderTop: "2px solid #ccc" },
+  // 7-day-sum row: bold, sits directly under the header, separated from
+  // the daily-breakdown rows below it by a heavier bottom border.
+  sumRowLabel: {
+    textAlign: "left",
+    padding: "0.4rem 0.6rem",
+    fontWeight: 700,
+    borderBottom: "2px solid #ccc",
+  },
+  sumRowCell: {
+    textAlign: "right",
+    padding: "0.4rem 0.6rem",
+    fontWeight: 700,
+    borderBottom: "2px solid #ccc",
+  },
   tableWrap: { overflowX: "auto", marginTop: "0.75rem" },
 } as const;
 
@@ -272,51 +284,55 @@ export default function AppointmentsPage() {
       )}
 
       {poll && poll.configured && (
+        // Vaccine types run across the top (columns); dates run down the
+        // left (rows) — Will, V-T7: "type go across the top ... dates go
+        // down". First data row under the header is the 7-day sum per
+        // type, before the day-by-day breakdown starts.
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.thType}>Vaccine</th>
-                {table.days.map((day) => (
-                  <th key={day} style={styles.th}>
-                    {formatDayLabel(day)}
+                <th style={styles.thType}>Date</th>
+                {table.rows.map((row) => (
+                  <th key={row.appointmentTypeId} style={styles.th}>
+                    {row.appointmentTypeName}
                   </th>
                 ))}
-                <th style={styles.th}>7-day total</th>
+                <th style={styles.th}>Total</th>
               </tr>
             </thead>
             <tbody>
               {table.rows.length === 0 ? (
                 <tr>
-                  <td style={styles.tdType} colSpan={table.days.length + 2}>
+                  <td style={styles.tdType} colSpan={2}>
                     No appointments in this range.
                   </td>
                 </tr>
               ) : (
-                table.rows.map((row) => (
-                  <tr key={row.appointmentTypeId}>
-                    <td style={styles.tdType}>{row.appointmentTypeName}</td>
-                    {table.days.map((day) => (
-                      <td key={day} style={styles.td}>
-                        {row.countsByDay[day]}
+                <>
+                  <tr>
+                    <td style={styles.sumRowLabel}>7-day total</td>
+                    {table.rows.map((row) => (
+                      <td key={row.appointmentTypeId} style={styles.sumRowCell}>
+                        {row.total}
                       </td>
                     ))}
-                    <td style={styles.totalCell}>{row.total}</td>
+                    <td style={styles.sumRowCell}>{table.grandTotal}</td>
                   </tr>
-                ))
+                  {table.days.map((day) => (
+                    <tr key={day}>
+                      <td style={styles.tdType}>{formatDayLabel(day)}</td>
+                      {table.rows.map((row) => (
+                        <td key={row.appointmentTypeId} style={styles.td}>
+                          {row.countsByDay[day]}
+                        </td>
+                      ))}
+                      <td style={styles.totalCell}>{table.dailyTotals[day]}</td>
+                    </tr>
+                  ))}
+                </>
               )}
             </tbody>
-            <tfoot>
-              <tr>
-                <td style={styles.totalRowLabel}>Daily total</td>
-                {table.days.map((day) => (
-                  <td key={day} style={styles.totalRowCell}>
-                    {table.dailyTotals[day]}
-                  </td>
-                ))}
-                <td style={styles.totalRowCell}>{table.grandTotal}</td>
-              </tr>
-            </tfoot>
           </table>
         </div>
       )}
