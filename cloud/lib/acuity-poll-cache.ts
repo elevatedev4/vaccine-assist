@@ -1,6 +1,6 @@
 import "server-only";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import type { AppointmentTypeCount } from "@/lib/acuity-client";
+import type { VaccineCount } from "@/lib/acuity-client";
 
 /**
  * Server-side cache for app/api/acuity/poll/route.ts, backed by the
@@ -28,7 +28,7 @@ import type { AppointmentTypeCount } from "@/lib/acuity-client";
  */
 
 export type CachedPoll = {
-  counts: AppointmentTypeCount[];
+  counts: VaccineCount[];
   possiblyTruncated: boolean;
   computedAt: string;
 };
@@ -57,7 +57,7 @@ export async function getCachedCounts(
     if (Date.now() - computedAt.getTime() >= ttlSeconds * 1000) return null;
 
     return {
-      counts: data.counts as AppointmentTypeCount[],
+      counts: data.counts as VaccineCount[],
       possiblyTruncated: Boolean(data.possibly_truncated),
       computedAt: data.computed_at,
     };
@@ -70,7 +70,7 @@ export async function getCachedCounts(
 export async function setCachedCounts(
   minDate: string,
   maxDate: string,
-  counts: AppointmentTypeCount[],
+  counts: VaccineCount[],
   possiblyTruncated: boolean
 ): Promise<void> {
   try {

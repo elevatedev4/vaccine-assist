@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // tests/acuity-poll-route.test.ts covers the real auth gate (401 with no
 // Authorization header). This file mocks requireAuthenticatedUser to
@@ -74,6 +74,61 @@ describe("GET /api/acuity/poll — validation", () => {
       possiblyTruncated: false,
       cacheHit: false,
       asOf: null,
+    });
+    // No `table` field yet — nothing to pivot without credentials, same
+    // as the empty `counts` array (see route.ts's RESPONSE CONTRACT doc).
+    expect(body.table).toBeUndefined();
+  });
+
+  // Task 2 (V-scheduling-tab): the desktop app's Scheduling tab reads
+  // `table` off this same route instead of hitting Acuity directly.
+  describe("table field (Task 2 — desktop Scheduling tab contract)", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      for (const key of ACUITY_ENV_KEYS) delete process.env[key];
+    });
+
+    function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 1,
+        datetime: "2026-08-17T10:00:00-0500",
+        appointmentTypeID: 111,
+        forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Vaccine", value: "Flu" }] }],
+        ...overrides,
+      };
+    }
+
+    it("includes a days x vaccine-name pivoted table alongside counts when configured", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+
+      const fetchMock = vi.fn(async (url: string | URL) => {
+        const urlStr = url.toString();
+        if (urlStr.includes("appointment-types")) {
+          return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
+        }
+        return new Response(JSON.stringify([acuityAppointmentFixture()]), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(pollRequest("?start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.configured).toBe(true);
+      expect(body.counts).toEqual([{ date: "2026-08-17", vaccineName: "Flu", count: 1 }]);
+      expect(body.table).toEqual({
+        days: ["2026-08-17", "2026-08-18"],
+        rows: [
+          {
+            vaccineName: "Flu",
+            countsByDay: { "2026-08-17": 1, "2026-08-18": 0 },
+            total: 1,
+          },
+        ],
+        dailyTotals: { "2026-08-17": 1, "2026-08-18": 0 },
+        grandTotal: 1,
+      });
     });
   });
 });
