@@ -73,6 +73,12 @@ public sealed class VaccineApiService : IVaccineApiService
         return await SendAsync<EligibilityResult>(request, cancellationToken);
     }
 
+    public async Task<AppointmentScheduleResult> GetAppointmentScheduleAsync(CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, "/api/acuity/poll");
+        return await SendAsync<AppointmentScheduleResult>(request, cancellationToken);
+    }
+
     private HttpRequestMessage CreateRequest(HttpMethod method, string relativePath)
     {
         var request = new HttpRequestMessage(method, relativePath);

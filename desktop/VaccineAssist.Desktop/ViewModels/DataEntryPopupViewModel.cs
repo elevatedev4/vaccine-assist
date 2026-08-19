@@ -123,6 +123,23 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         set => SetProperty(ref _adminSite, value);
     }
 
+    /// <summary>
+    /// Compact popup control for the (rare) Right-arm override (Will,
+    /// 2026-08-19: "Hide Admin site ... always default it to Left Arm ...
+    /// keep a way to switch to Right if trivial"). AdminSite already
+    /// defaults to LeftArm via the field initializer above, and a fresh
+    /// DataEntryPopupViewModel is constructed every time the popup opens
+    /// (see MainWindow.ShowDataEntryPopup), so this is guaranteed to start
+    /// unchecked/Left every time, never carrying a Right selection over
+    /// from a prior popup. Backs a small CheckBox instead of the old full
+    /// ComboBox — see DataEntryPopupWindow.xaml.
+    /// </summary>
+    public bool IsRightArm
+    {
+        get => AdminSite == AdminSite.RightArm;
+        set => AdminSite = value ? AdminSite.RightArm : AdminSite.LeftArm;
+    }
+
     /// <summary>True = PioneerEntrySequenceRunner logs each step without touching PioneerRx. Defaults from pioneerWindowDetected; user-toggleable.</summary>
     public bool IsDryRun
     {

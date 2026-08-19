@@ -34,4 +34,14 @@ public interface IVaccineApiService
         int ageYears,
         bool? isPregnant = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Calls GET /api/acuity/poll (default range: today .. today+7) for
+    /// the Scheduling tab — see cloud/app/api/acuity/poll/route.ts's
+    /// RESPONSE CONTRACT doc comment for the JSON shape this maps to.
+    /// Returns Configured=false (not an exception) when Acuity isn't set
+    /// up yet on the cloud side; that's a normal, expected state, not an
+    /// error.
+    /// </summary>
+    Task<AppointmentScheduleResult> GetAppointmentScheduleAsync(CancellationToken cancellationToken = default);
 }
