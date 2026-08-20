@@ -76,6 +76,12 @@ public class DataEntryPopupViewModelAdminSiteTests
         public Task<IReadOnlyList<Vaccine>> GetVaccinesAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<IReadOnlyList<Vaccine>> GetAllVaccinesAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<IReadOnlyList<Lot>> GetLotsAsync(Guid? vaccineId = null, string? status = null, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

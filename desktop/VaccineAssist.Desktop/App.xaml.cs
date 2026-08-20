@@ -56,8 +56,7 @@ public partial class App : Application
         // which was repurposed 2026-08-19 into a lightweight hotkey
         // status tab that doesn't need it. Left in place rather than
         // removed in case a future screen needs the IPioneerEntryAutomation
-        // abstraction again (same "leave unused, don't delete" treatment
-        // as VaccinesView/VaccinesViewModel below).
+        // abstraction again.
         _pioneerEntryAutomation = new PioneerEntryAutomationStub();
         // V-T3: the ONE sequence implementation shipped in phase 1 — see
         // PioneerEntryAutomation/Sequencing/PlaceholderVaccineEntrySequence.cs.
@@ -128,14 +127,13 @@ public partial class App : Application
     /// </summary>
     private void ShowMainWindow()
     {
-        // VaccinesViewModel is intentionally not constructed/wired here —
-        // VaccinesView/VaccinesViewModel are left in the repo untouched
-        // but unused; the new "Active vaccines" tab is a placeholder, not
-        // that catalog view (see MainWindow.xaml.cs's constructor comment).
         var lotsViewModel = new LotsViewModel(_vaccineApiService);
+        // Backs the Active vaccines tab — see MainWindow.xaml.cs's
+        // constructor comment and VaccinesViewModel's doc comment.
+        var vaccinesViewModel = new VaccinesViewModel(_vaccineApiService);
 
         var mainWindow = new MainWindow(
-            lotsViewModel, _authService,
+            lotsViewModel, vaccinesViewModel, _authService,
             _vaccineApiService, _clipboardService, _pioneerEntrySequence);
         var loggingOut = false;
 

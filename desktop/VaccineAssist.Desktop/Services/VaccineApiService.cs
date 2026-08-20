@@ -31,6 +31,22 @@ public sealed class VaccineApiService : IVaccineApiService
         return result.Vaccines;
     }
 
+    public async Task<IReadOnlyList<Vaccine>> GetAllVaccinesAsync(CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, "/api/vaccines?includeInactive=true");
+        var result = await SendAsync<VaccinesResponse>(request, cancellationToken);
+        return result.Vaccines;
+    }
+
+    public async Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Patch, $"/api/vaccines/{id}");
+        request.Content = JsonContent.Create(new SetVaccineActiveRequest(active));
+
+        var result = await SendAsync<VaccineResponse>(request, cancellationToken);
+        return result.Vaccine;
+    }
+
     public async Task<IReadOnlyList<Lot>> GetLotsAsync(
         Guid? vaccineId = null,
         string? status = null,
@@ -126,6 +142,12 @@ public sealed class VaccineApiService : IVaccineApiService
         public List<Vaccine> Vaccines { get; set; } = new();
     }
 
+    private sealed class VaccineResponse
+    {
+        [JsonPropertyName("vaccine")]
+        public Vaccine Vaccine { get; set; } = new();
+    }
+
     private sealed class LotsResponse
     {
         [JsonPropertyName("lots")]
@@ -155,4 +177,7 @@ public sealed class VaccineApiService : IVaccineApiService
         [property: JsonPropertyName("vaccineId")] Guid VaccineId,
         [property: JsonPropertyName("ageYears")] int AgeYears,
         [property: JsonPropertyName("isPregnant")] bool? IsPregnant);
+
+    private sealed record SetVaccineActiveRequest(
+        [property: JsonPropertyName("active")] bool Active);
 }

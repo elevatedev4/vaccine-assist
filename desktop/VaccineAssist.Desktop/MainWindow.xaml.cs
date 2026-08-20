@@ -27,6 +27,7 @@ public partial class MainWindow : Window
     private readonly LotsViewModel _lotsViewModel;
     private readonly SchedulingViewModel _schedulingViewModel;
     private readonly EntryViewModel _entryViewModel;
+    private readonly VaccinesViewModel _vaccinesViewModel;
     private readonly IAuthService _authService;
     private readonly IVaccineApiService _vaccineApiService;
     private readonly IClipboardService _clipboardService;
@@ -54,6 +55,7 @@ public partial class MainWindow : Window
 
     public MainWindow(
         LotsViewModel lotsViewModel,
+        VaccinesViewModel vaccinesViewModel,
         IAuthService authService,
         IVaccineApiService vaccineApiService,
         IClipboardService clipboardService,
@@ -61,6 +63,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _lotsViewModel = lotsViewModel;
+        _vaccinesViewModel = vaccinesViewModel;
         _authService = authService;
         _vaccineApiService = vaccineApiService;
         _clipboardService = clipboardService;
@@ -72,14 +75,12 @@ public partial class MainWindow : Window
         SchedulingContent.Content = new SchedulingView(_schedulingViewModel);
         DataEntryTabContent.Content = new EntryView(_entryViewModel);
         LotsContent.Content = new LotsView(_lotsViewModel);
-        // Active vaccines / Ordering tabs are static placeholder content
-        // declared directly in MainWindow.xaml — nothing to wire here.
-        //
-        // VaccinesView/VaccinesViewModel (the old read-only catalog grid)
-        // are deliberately NOT surfaced in any tab — Will asked for a
-        // clean placeholder on "Active vaccines" instead, distinct from
-        // that existing catalog view. Left untouched/unused in the repo
-        // in case that content is wanted elsewhere later.
+        // Active vaccines now hosts VaccinesView — adapted 2026-08-19 from
+        // the old read-only catalog grid into the admin view (active +
+        // inactive, "current lot" indicator, editable/persisted Active
+        // toggle; see VaccinesViewModel). Ordering stays a static
+        // placeholder declared directly in MainWindow.xaml — out of scope.
+        ActiveVaccinesContent.Content = new VaccinesView(_vaccinesViewModel);
 
         SourceInitialized += MainWindow_OnSourceInitialized;
         Closed += MainWindow_OnClosed;

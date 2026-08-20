@@ -22,12 +22,7 @@
                 <ContentControl x:Name="LotsContent"/>
             </TabItem>
             <TabItem Header="Active vaccines">
-                <Grid>
-                    <TextBlock Text="Active vaccines — a live view of which vaccines you currently have in stock will go here."
-                               TextWrapping="Wrap" TextAlignment="Center"
-                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                               Foreground="Gray" FontSize="14" Width="420"/>
-                </Grid>
+                <ContentControl x:Name="ActiveVaccinesContent"/>
             </TabItem>
             <TabItem Header="Ordering">
                 <Grid>
