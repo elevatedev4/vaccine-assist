@@ -32,6 +32,15 @@ public sealed class Vaccine
     [JsonPropertyName("active")]
     public bool Active { get; set; }
 
+    /// <summary>Only populated by GET /api/vaccines?includeInactive=true
+    /// (the desktop Active vaccines tab's admin call) — true when `lot`
+    /// has at least one row for this vaccine with status='active'. The
+    /// default (no-query-param) GET used by Lots/Data-entry doesn't
+    /// compute this and the JSON simply omits the field, so it stays
+    /// false there — harmless, since neither of those screens reads it.</summary>
+    [JsonPropertyName("hasActiveLot")]
+    public bool HasActiveLot { get; set; }
+
     /// <summary>Formatted for display, e.g. "$147.99" or "—" when unknown.</summary>
     public string CashPriceDisplay => CashPriceCents is int cents ? (cents / 100.0).ToString("C") : "—";
 

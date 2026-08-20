@@ -16,6 +16,22 @@ public interface IVaccineApiService
 {
     Task<IReadOnlyList<Vaccine>> GetVaccinesAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Calls GET /api/vaccines?includeInactive=true — the admin/full list
+    /// for the desktop Active vaccines tab: every vaccine regardless of
+    /// Active, each with HasActiveLot populated. Unlike GetVaccinesAsync,
+    /// NOT active-only — do not use this for the Lots dropdown or the
+    /// Data-entry popup's vaccine picker, both of which rely on
+    /// GetVaccinesAsync staying active-only.
+    /// </summary>
+    Task<IReadOnlyList<Vaccine>> GetAllVaccinesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Calls PATCH /api/vaccines/{id} with {"active": active} to persist
+    /// the Active vaccines tab's toggle. Returns the updated Vaccine.
+    /// </summary>
+    Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<Lot>> GetLotsAsync(
         Guid? vaccineId = null,
         string? status = null,

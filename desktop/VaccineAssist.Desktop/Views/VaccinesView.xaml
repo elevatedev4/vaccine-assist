@@ -11,21 +11,29 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Vaccines — what we offer" FontSize="18" FontWeight="Bold"/>
+        <TextBlock Grid.Row="0" Text="Active vaccines" FontSize="18" FontWeight="Bold"/>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal">
             <Button Content="Refresh" Command="{Binding LoadCommand}" Padding="8,2"/>
             <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="12,0,0,0" VerticalAlignment="Center"/>
         </StackPanel>
 
-        <DataGrid Grid.Row="4" ItemsSource="{Binding Vaccines}" AutoGenerateColumns="False" IsReadOnly="True">
+        <!-- IsReadOnly="False" at the grid level so the Active column's
+             checkbox is genuinely editable; every other column is marked
+             IsReadOnly="True" individually so only Active can be changed.
+             CanUserAddRows/CanUserDeleteRows are off — this grid edits an
+             existing row's Active flag only, it never creates or removes
+             vaccine rows. -->
+        <DataGrid Grid.Row="4" ItemsSource="{Binding Vaccines}" AutoGenerateColumns="False"
+                  IsReadOnly="False" CanUserAddRows="False" CanUserDeleteRows="False">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*"/>
-                <DataGridTextColumn Header="Short code" Binding="{Binding ShortCode}" Width="*"/>
-                <DataGridTextColumn Header="Dose" Binding="{Binding Dose}" Width="0.5*"/>
-                <DataGridTextColumn Header="NDC" Binding="{Binding Ndc}" Width="*"/>
-                <DataGridTextColumn Header="Cash price" Binding="{Binding CashPriceDisplay}" Width="*"/>
-                <DataGridCheckBoxColumn Header="Active" Binding="{Binding Active}" Width="0.5*"/>
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Short code" Binding="{Binding ShortCode}" Width="*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Dose" Binding="{Binding Dose}" Width="0.5*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="NDC" Binding="{Binding Ndc}" Width="*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Cash price" Binding="{Binding CashPriceDisplay}" Width="*" IsReadOnly="True"/>
+                <DataGridCheckBoxColumn Header="Current lot" Binding="{Binding HasActiveLot}" Width="0.6*" IsReadOnly="True"/>
+                <DataGridCheckBoxColumn Header="Active" Binding="{Binding Active, Mode=TwoWay}" Width="0.5*" IsReadOnly="False"/>
             </DataGrid.Columns>
         </DataGrid>
     </Grid>
