@@ -60,4 +60,15 @@ public interface IVaccineApiService
     /// error.
     /// </summary>
     Task<AppointmentScheduleResult> GetAppointmentScheduleAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Calls GET /api/ordering/recommendation for the Ordering tab — see
+    /// cloud/app/api/ordering/recommendation/route.ts's RESPONSE CONTRACT
+    /// doc comment for the JSON shape this maps to. Unlike
+    /// GetAppointmentScheduleAsync, there's no Configured=false state
+    /// here: the route always returns a row per active vaccine (upcoming7d
+    /// falls back to 0 when Acuity isn't configured yet), so an empty/zero
+    /// result is a normal response, not an error.
+    /// </summary>
+    Task<OrderingRecommendationResult> GetOrderingRecommendationAsync(CancellationToken cancellationToken = default);
 }

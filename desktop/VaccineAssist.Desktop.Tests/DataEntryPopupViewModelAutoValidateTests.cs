@@ -163,6 +163,9 @@ public class DataEntryPopupViewModelAutoValidateTests
 
         public Task<AppointmentScheduleResult> GetAppointmentScheduleAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<OrderingRecommendationResult> GetOrderingRecommendationAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class NoOpClipboardService : IClipboardService

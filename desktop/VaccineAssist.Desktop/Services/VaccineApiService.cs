@@ -95,6 +95,12 @@ public sealed class VaccineApiService : IVaccineApiService
         return await SendAsync<AppointmentScheduleResult>(request, cancellationToken);
     }
 
+    public async Task<OrderingRecommendationResult> GetOrderingRecommendationAsync(CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, "/api/ordering/recommendation");
+        return await SendAsync<OrderingRecommendationResult>(request, cancellationToken);
+    }
+
     private HttpRequestMessage CreateRequest(HttpMethod method, string relativePath)
     {
         var request = new HttpRequestMessage(method, relativePath);

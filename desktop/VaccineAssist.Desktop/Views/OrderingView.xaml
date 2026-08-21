@@ -1,0 +1,35 @@
+<UserControl x:Class="VaccineAssist.Desktop.Views.OrderingView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Loaded="OrderingView_OnLoaded">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Ordering — recommended vaccine reorder quantities" FontSize="18" FontWeight="Bold"/>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal">
+            <Button Content="Refresh" Command="{Binding LoadCommand}" Padding="8,2"/>
+            <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="4" Text="{Binding OnHandStatusMessage}" Foreground="Gray" TextWrapping="Wrap"/>
+
+        <DataGrid x:Name="OrderingGrid" Grid.Row="6" ItemsSource="{Binding Rows}"
+                  AutoGenerateColumns="False" IsReadOnly="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Vaccine" Binding="{Binding VaccineName}" Width="2*"/>
+                <DataGridTextColumn Header="Upcoming 7d" Binding="{Binding Upcoming7d}" Width="*"/>
+                <DataGridTextColumn Header="On hand (as of date)" Binding="{Binding OnHandDisplay}" Width="2*"/>
+                <DataGridTextColumn Header="Recommended order" Binding="{Binding RecommendedOrder}" Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</UserControl>
