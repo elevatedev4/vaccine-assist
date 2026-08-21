@@ -25,12 +25,7 @@
                 <ContentControl x:Name="ActiveVaccinesContent"/>
             </TabItem>
             <TabItem Header="Ordering">
-                <Grid>
-                    <TextBlock Text="Ordering — vaccine ordering and reorder tracking will go here."
-                               TextWrapping="Wrap" TextAlignment="Center"
-                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                               Foreground="Gray" FontSize="14" Width="420"/>
-                </Grid>
+                <ContentControl x:Name="OrderingContent"/>
             </TabItem>
         </TabControl>
     </DockPanel>

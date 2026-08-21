@@ -26,6 +26,7 @@ public partial class MainWindow : Window
 {
     private readonly LotsViewModel _lotsViewModel;
     private readonly SchedulingViewModel _schedulingViewModel;
+    private readonly OrderingViewModel _orderingViewModel;
     private readonly EntryViewModel _entryViewModel;
     private readonly VaccinesViewModel _vaccinesViewModel;
     private readonly IAuthService _authService;
@@ -70,6 +71,7 @@ public partial class MainWindow : Window
         _pioneerEntrySequence = pioneerEntrySequence;
 
         _schedulingViewModel = new SchedulingViewModel(_vaccineApiService);
+        _orderingViewModel = new OrderingViewModel(_vaccineApiService);
         _entryViewModel = new EntryViewModel(ShowDataEntryPopup);
 
         SchedulingContent.Content = new SchedulingView(_schedulingViewModel);
@@ -78,9 +80,13 @@ public partial class MainWindow : Window
         // Active vaccines now hosts VaccinesView — adapted 2026-08-19 from
         // the old read-only catalog grid into the admin view (active +
         // inactive, "current lot" indicator, editable/persisted Active
-        // toggle; see VaccinesViewModel). Ordering stays a static
-        // placeholder declared directly in MainWindow.xaml — out of scope.
+        // toggle; see VaccinesViewModel).
         ActiveVaccinesContent.Content = new VaccinesView(_vaccinesViewModel);
+        // Ordering — reorder recommendations from GET
+        // /api/ordering/recommendation (see OrderingViewModel). Replaces
+        // the static placeholder that used to live directly in
+        // MainWindow.xaml.
+        OrderingContent.Content = new OrderingView(_orderingViewModel);
 
         SourceInitialized += MainWindow_OnSourceInitialized;
         Closed += MainWindow_OnClosed;
