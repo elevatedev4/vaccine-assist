@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
@@ -48,6 +49,12 @@ internal sealed class FakeLocalSettingsService : ILocalSettingsService
 {
     private readonly AppSettings _settings;
 
+    /// <summary>When set, Save() throws this instead of succeeding —
+    /// regression coverage for the crash fix in LoginViewModel.SignInAsync
+    /// (Will, 2026-08-19/20): a locked/unwritable settings.json on a real
+    /// workstation must not stop sign-in from completing.</summary>
+    public Exception? ThrowOnSave { get; set; }
+
     public FakeLocalSettingsService(AppSettings settings)
     {
         _settings = settings;
@@ -60,6 +67,10 @@ internal sealed class FakeLocalSettingsService : ILocalSettingsService
     public void Save(AppSettings settings)
     {
         SaveCallCount++;
+        if (ThrowOnSave is not null)
+        {
+            throw ThrowOnSave;
+        }
     }
 }
 

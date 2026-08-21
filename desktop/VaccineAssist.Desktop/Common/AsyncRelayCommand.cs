@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using VaccineAssist.Desktop.Logging;
 
 namespace VaccineAssist.Desktop.Common;
 
@@ -17,6 +18,29 @@ namespace VaccineAssist.Desktop.Common;
 /// PatientAgeYears, etc.) only got queried once, at binding time, and
 /// then never again — it looked and behaved permanently disabled no
 /// matter what the user typed/selected afterward.
+///
+/// CRASH FIX (Will, 2026-08-19/20: "clicking lots make it crash" /
+/// "crashes when I try to look at several tabs"): Execute is necessarily
+/// `async void` (ICommand.Execute returns void, so there's no Task for a
+/// caller to await/observe) — before this fix, an exception thrown by
+/// `_execute()` itself, or by the awaited Task faulting, had no catch
+/// here at all and propagated straight out of an async void method. Most
+/// ViewModels' Load/Save methods already wrap their own bodies in
+/// try/catch and surface an inline ErrorMessage (the right per-tab UX),
+/// but that only helps if EVERY current and future command handler
+/// remembers to do it — one that doesn't (LoginViewModel.SignInAsync's
+/// missing catch around the settings-file save was exactly this) turned
+/// a recoverable failure into a hard app-wide crash. This catch is the
+/// backstop: it can't produce the same nice inline per-field message a
+/// ViewModel's own try/catch can (this class has no ErrorMessage
+/// property to set), but it guarantees a faulted command can never take
+/// the whole app down, and the finally clause still resets IsExecuting
+/// so the button isn't left permanently disabled afterward. Logged (never
+/// shown to the user directly) via AppFileLog so a crash-shaped bug still
+/// leaves a trace; App.xaml.cs's DispatcherUnhandledException handler is
+/// the second, independent backstop for anything that still slips past
+/// this (e.g. a synchronous RelayCommand.Execute, which has no Task to
+/// catch around at all).
 /// </summary>
 public sealed class AsyncRelayCommand : ICommand
 {
@@ -47,6 +71,15 @@ public sealed class AsyncRelayCommand : ICommand
         try
         {
             await _execute();
+        }
+        catch (Exception ex)
+        {
+            // See class doc comment — this is a backstop, not a
+            // substitute for the ViewModel's own inline ErrorMessage
+            // handling. Swallowed deliberately: an unhandled exception
+            // here (async void, no Task for anyone to observe) would
+            // otherwise crash the whole app.
+            AppFileLog.LogException("AsyncRelayCommand", ex);
         }
         finally
         {

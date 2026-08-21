@@ -9,52 +9,65 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         Loaded="DataEntryPopupWindow_OnLoaded">
+    <!--
+        V-T3 item 4 rework (Will, 2026-08-19/20):
+          - Vaccine picker is a RadioButton list now, not a ComboBox (see
+            VaccineRadioList_OnChecked in code-behind — WPF has no native
+            "SelectedItem" binding for a set of individually-templated
+            RadioButtons). Active vaccines only — same Vaccines collection
+            DataEntryPopupViewModel.LoadAsync already populated from
+            GetVaccinesAsync (active-only; see IVaccineApiService's doc
+            comment), no VM change needed for that part.
+          - Right arm checkbox, Validate button, and Dry run checkbox are
+            gone entirely ("we won't be using any of that right now") —
+            AdminSite/IsDryRun are computed, fixed values now (see
+            DataEntryPopupViewModel), and eligibility validation runs
+            automatically once vaccine + age are both filled in instead of
+            behind a button (see TryAutoValidate).
+          - "Copy logs" button added next to the other two action buttons.
+
+        Every row here is its own Auto-height Grid row with the row's own
+        top margin, instead of the old design's separate fixed-size
+        spacer rows interleaved with content rows. That old pattern is
+        exactly what caused the Vaccine ComboBox to render as a 6px-tall
+        hairline (Will's dropdown-sizing screenshot) — it landed in a
+        spacer row instead of its own Auto row because the manual row
+        count didn't match the content count. Auto rows + per-child
+        margin can't have that class of off-by-one bug: every child always
+        gets exactly the height its own content needs.
+    -->
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="6"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="6"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="10"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="10"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="6"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="8"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="Vaccine data entry" FontSize="16" FontWeight="Bold"/>
 
-        <TextBlock Grid.Row="2" Text="Vaccine"/>
-        <ComboBox Grid.Row="3" x:Name="VaccineComboBox"
-                  ItemsSource="{Binding Vaccines}" DisplayMemberPath="Name"
-                  SelectedItem="{Binding SelectedVaccine}"
-                  FontSize="14" Padding="6,4" MinHeight="30" MinWidth="200"
-                  Foreground="Black" Background="White"
-                  DropDownOpened="VaccineComboBox_OnDropDownOpened"/>
+        <TextBlock Grid.Row="1" Text="Vaccine" Margin="0,10,0,2"/>
+        <ItemsControl Grid.Row="2" ItemsSource="{Binding Vaccines}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <RadioButton GroupName="VaccineChoice" Content="{Binding Name}"
+                                 Margin="0,2,0,2"
+                                 Checked="VaccineRadioList_OnChecked"/>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
 
-        <StackPanel Grid.Row="4" Orientation="Horizontal">
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
             <TextBlock Text="Patient age (years)" VerticalAlignment="Center"/>
-            <TextBox Text="{Binding PatientAgeYears, UpdateSourceTrigger=PropertyChanged}" Width="60" Margin="8,0,16,0"/>
-            <!-- Admin site is hidden by default and always defaults to Left
-                 arm (see DataEntryPopupViewModel.AdminSite/IsRightArm) —
-                 this compact CheckBox is the one trivial way to override
-                 it to Right without bringing back the full dropdown. -->
-            <CheckBox Content="Right arm" IsChecked="{Binding IsRightArm}" VerticalAlignment="Center"/>
+            <TextBox Text="{Binding PatientAgeYears, UpdateSourceTrigger=PropertyChanged}" Width="60" Margin="8,0,0,0"/>
         </StackPanel>
 
-        <Button Grid.Row="6" Content="Validate" Command="{Binding ValidateCommand}" Padding="8,2" HorizontalAlignment="Left"/>
-
-        <StackPanel Grid.Row="8">
+        <StackPanel Grid.Row="4" Margin="0,8,0,0">
             <TextBlock Text="{Binding Gate.BlockMessage}" Foreground="Red" TextWrapping="Wrap"/>
             <ItemsControl ItemsSource="{Binding EligibilityResult.Warnings}">
                 <ItemsControl.ItemTemplate>
@@ -65,17 +78,16 @@
             </ItemsControl>
         </StackPanel>
 
-        <CheckBox Grid.Row="10" Content="Dry run (log steps, don't touch PioneerRx)" IsChecked="{Binding IsDryRun}"/>
-
-        <StackPanel Grid.Row="12" Orientation="Horizontal">
+        <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,10,0,0">
             <Button Content="Enter into Pioneer" Command="{Binding EnterIntoPioneerCommand}" Padding="8,2" Margin="0,0,8,0"/>
-            <Button Content="Copy to clipboard" Command="{Binding CopyToClipboardCommand}" Padding="8,2"/>
+            <Button Content="Copy to clipboard" Command="{Binding CopyToClipboardCommand}" Padding="8,2" Margin="0,0,8,0"/>
+            <Button Content="Copy logs" Command="{Binding CopyLogsCommand}" Padding="8,2"/>
         </StackPanel>
 
-        <TextBlock Grid.Row="14" Text="Step log" FontWeight="Bold"/>
-        <ListBox Grid.Row="16" ItemsSource="{Binding StepLog}" Height="90" FontFamily="Consolas" FontSize="11"/>
+        <TextBlock Grid.Row="6" Text="Step log" FontWeight="Bold" Margin="0,8,0,0"/>
+        <ListBox Grid.Row="7" ItemsSource="{Binding StepLog}" Height="90" FontFamily="Consolas" FontSize="11" Margin="0,2,0,0"/>
 
-        <StackPanel Grid.Row="18">
+        <StackPanel Grid.Row="8" Margin="0,8,0,0">
             <TextBlock Text="{Binding StatusMessage}" Foreground="Green" TextWrapping="Wrap"/>
             <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" TextWrapping="Wrap"/>
         </StackPanel>

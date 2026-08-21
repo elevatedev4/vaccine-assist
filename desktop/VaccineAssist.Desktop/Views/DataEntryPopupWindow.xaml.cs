@@ -1,5 +1,6 @@
-using System;
 using System.Windows;
+using System.Windows.Controls;
+using VaccineAssist.Desktop.Models;
 using VaccineAssist.Desktop.ViewModels;
 
 namespace VaccineAssist.Desktop.Views;
@@ -29,19 +30,24 @@ public partial class DataEntryPopupWindow : Window
     }
 
     /// <summary>
-    /// Known WPF quirk: a ComboBox's drop-down Popup doesn't reliably
-    /// inherit its parent window's Topmost placement on an owner-less/
-    /// Topmost utility window like this one — it can render behind other
-    /// topmost windows (e.g. PioneerRx itself), which is exactly what
-    /// "hard to see" looks like. Toggling Topmost off/on forces WPF to
-    /// reissue the underlying SetWindowPos(...HWND_TOPMOST...) call for
-    /// this window right as the drop-down opens, pulling it (and its
-    /// popup) back above everything else. UNVERIFIED without a live
-    /// Windows/PioneerRx session — see report.
+    /// V-T3 item 4 (Will, 2026-08-19/20): the vaccine picker is a
+    /// RadioButton list (see DataEntryPopupWindow.xaml), not a ComboBox.
+    /// WPF has no built-in "SelectedItem" concept for a
+    /// group of individually-templated RadioButtons — a MultiBinding
+    /// converter can't reach a row's own item either (ConverterParameter
+    /// isn't bindable), so this handles it the same plain code-behind way
+    /// the rest of this app wires things (see App.xaml.cs's composition-
+    /// root doc comment on the DI-light style): every RadioButton the
+    /// ItemsControl's DataTemplate instantiates has its own Checked="..."
+    /// handler (see DataEntryPopupWindow.xaml) pointed at this one method;
+    /// `sender` is whichever RadioButton the user just checked, and its
+    /// DataContext (set by the DataTemplate) is that row's Vaccine.
     /// </summary>
-    private void VaccineComboBox_OnDropDownOpened(object? sender, EventArgs e)
+    private void VaccineRadioList_OnChecked(object sender, RoutedEventArgs e)
     {
-        Topmost = false;
-        Topmost = true;
+        if (sender is RadioButton { DataContext: Vaccine vaccine })
+        {
+            _viewModel.SelectedVaccine = vaccine;
+        }
     }
 }
