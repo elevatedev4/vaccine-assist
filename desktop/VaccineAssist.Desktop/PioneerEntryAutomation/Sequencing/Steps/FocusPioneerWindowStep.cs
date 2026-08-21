@@ -26,8 +26,13 @@ public sealed class FocusPioneerWindowStep : IPioneerEntryStep
         var window = PioneerRxAttachment.TryAttach();
         if (window is null)
         {
+            // PioneerRxAttachment already logged which top-level windows
+            // it DID see (titles/classes, no PHI) to AppFileLog — the
+            // popup's "Copy logs" button (V-T3 item 4) grabs that for
+            // sending back, without needing a live UIA dump session.
             return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "No PioneerRx window found — open the patient's Rx profile before entering data."));
+                "No PioneerRx window found — open the patient's Rx profile before entering data. " +
+                "Use \"Copy logs\" to send the list of windows that WERE detected."));
         }
 
         context.AttachedWindow = window;

@@ -118,4 +118,37 @@ public class LoginViewModelAutoLoginTests
         Assert.False(viewModel.IsBusy);
         Assert.Equal(0, localSettingsService.SaveCallCount);
     }
+
+    [Fact]
+    public async Task ASettingsSaveFailureDuringSignInStillSignsInInsteadOfCrashing()
+    {
+        // Regression test for the crash Will hit 2026-08-19/20 ("Clicking
+        // lots make it crash" / tabs crashing). Root cause found here:
+        // SignInAsync's write to %AppData%\VaccineAssist\settings.json had
+        // no catch around it at all — on a real workstation a locked
+        // file, a permissions issue, or a roaming-profile sync conflict
+        // throws IOException/UnauthorizedAccessException straight out of
+        // this method. AsyncRelayCommand.Execute's own catch (see
+        // AsyncRelayCommandExceptionTests.cs) would have stopped this
+        // specific case from crashing the whole app even before this
+        // fix, but the user-visible result without THIS fix would still
+        // have been "clicked Sign in, nothing happened, no error shown" —
+        // the cloud sign-in had already succeeded and just never got
+        // reported. The fix (LoginViewModel.SignInAsync's new inner
+        // try/catch around the save) means sign-in completes normally
+        // regardless.
+        var authService = new FakeAuthService(AuthResult.Ok());
+        var config = new AutoLoginConfig { Email = "pharmacy@example.test", Password = "hunter2" };
+        var viewModel = CreateViewModel(authService, config, out var localSettingsService, allowAutoLogin: true);
+        localSettingsService.ThrowOnSave = new System.IO.IOException("The process cannot access the file because it is being used by another process.");
+
+        var signedInRaised = false;
+        viewModel.SignedIn += (_, _) => signedInRaised = true;
+
+        await viewModel.TryAutoSignInAsync();
+
+        Assert.True(signedInRaised);
+        Assert.Null(viewModel.ErrorMessage);
+        Assert.False(viewModel.IsBusy);
+    }
 }

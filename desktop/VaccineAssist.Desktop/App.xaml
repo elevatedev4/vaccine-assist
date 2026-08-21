@@ -16,5 +16,32 @@
         exactly when the user closes LoginWindow without signing in, or
         closes MainWindow directly.
     -->
-    <Application.Resources />
+    <Application.Resources>
+        <!--
+            Will, 2026-08-19: "The dropdowns in this app are all vertically
+            undersized for some reason. Fix them all." App-wide fix rather
+            than per-control, so any dropdown anywhere in the app — current
+            (Lots screen's vaccine picker) or future — gets a usable height
+            without every screen having to remember its own explicit
+            MinHeight. (The data-entry popup's own vaccine ComboBox turned
+            out to have a separate, worse bug — a Grid.Row indexing mistake
+            that put it in a 6px spacer row instead of its own Auto row,
+            squashing it to a hairline; see DataEntryPopupWindow.xaml's
+            history and VaccineAssist.Desktop.Tests — that control was
+            replaced with a radio-button list for V-T3 item 4 anyway, so
+            this style is the real, general fix for every OTHER dropdown.) -->
+        <Style TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="MinHeight" Value="24"/>
+            <Setter Property="Padding" Value="6,2"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="DatePickerTextBox">
+            <Setter Property="MinHeight" Value="28"/>
+        </Style>
+    </Application.Resources>
 </Application>

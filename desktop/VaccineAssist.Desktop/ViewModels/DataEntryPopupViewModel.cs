@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using VaccineAssist.Desktop.Common;
+using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Models;
 using VaccineAssist.Desktop.PioneerEntryAutomation;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
@@ -24,6 +25,20 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// never sent anywhere except the (age-only, no identifiers) eligibility
 /// check. Closing the popup (see DataEntryPopupWindow) drops this
 /// instance entirely, discarding it.
+///
+/// Will, 2026-08-19/20: "Remove Right Arm and Validate and Dry run... We
+/// won't be using any of that right now." Right Arm and Dry run are
+/// removed outright — AdminSite is always LeftArm now (no way to override
+/// it from the UI; see AdminSite's own doc comment), and IsDryRun is
+/// still computed from pioneerWindowDetected but is no longer a visible,
+/// user-toggleable checkbox. The Validate BUTTON is removed, but the
+/// eligibility check it triggered is still a real safety gate (blocks
+/// "Enter into Pioneer" for an age-inappropriate vaccine — see
+/// DataEntryGate) — removing that entirely felt like a bigger, riskier
+/// change than "hide a button," so instead SelectedVaccine/PatientAgeYears's
+/// setters now trigger it automatically the moment both are filled in
+/// (see TryAutoValidate). Flagged in the report back to Will as a judgment
+/// call worth confirming, not a literal reading of "remove Validate."
 /// </summary>
 public sealed class DataEntryPopupViewModel : ObservableObject
 {
@@ -36,17 +51,20 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     private string? _statusMessage;
     private Vaccine? _selectedVaccine;
     private int? _patientAgeYears;
-    private AdminSite _adminSite = AdminSite.LeftArm;
-    private bool _isDryRun;
+    private readonly AdminSite _adminSite = AdminSite.LeftArm;
+    private readonly bool _isDryRun;
     private EligibilityResult? _eligibilityResult;
 
     /// <param name="pioneerWindowDetected">
     /// Whether the hotkey handler's light presence check (Uia/PioneerRxPresence)
-    /// found a PioneerRx window before showing this popup — seeds IsDryRun's
-    /// default (no point defaulting to a live run when nothing was found a
-    /// moment ago), but stays a visible, user-toggleable checkbox rather than
-    /// a hidden decision, since PioneerRx's foreground window can change
-    /// between the hotkey press and clicking "Enter into Pioneer".
+    /// found a PioneerRx window before showing this popup — decides
+    /// IsDryRun for the whole life of this popup instance (no point
+    /// defaulting to a live run when nothing was found a moment ago).
+    /// No longer a user-toggleable checkbox (Will, 2026-08-19/20: "Remove
+    /// ... Dry run ... we won't be using any of that right now") — if
+    /// PioneerRx isn't detected, the popup silently runs the sequence in
+    /// dry-run/log-only mode rather than attempting a live entry against
+    /// a window that isn't there.
     /// </param>
     public DataEntryPopupViewModel(
         IVaccineApiService apiService,
@@ -60,18 +78,18 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         _isDryRun = !pioneerWindowDetected;
         if (!pioneerWindowDetected)
         {
-            _statusMessage = "PioneerRx window not detected — Dry run is on by default. Open the patient's Rx profile, then uncheck Dry run once ready to enter data for real.";
+            _statusMessage = "PioneerRx window not detected — entering data will run in dry-run/log-only mode. Open the patient's Rx profile first if you want a live entry.";
         }
 
         LoadCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
         ValidateCommand = new AsyncRelayCommand(ValidateAsync, () => !IsBusy && SelectedVaccine is not null && PatientAgeYears is not null);
         EnterIntoPioneerCommand = new AsyncRelayCommand(EnterIntoPioneerAsync, () => !IsBusy && Gate.CanEnterIntoPioneer);
         CopyToClipboardCommand = new AsyncRelayCommand(CopyToClipboardAsync, () => !IsBusy && SelectedVaccine is not null);
+        CopyLogsCommand = new RelayCommand(CopyLogsToClipboard);
     }
 
     public ObservableCollection<Vaccine> Vaccines { get; } = new();
     public ObservableCollection<string> StepLog { get; } = new();
-    public AdminSite[] AdminSiteOptions { get; } = { AdminSite.LeftArm, AdminSite.RightArm };
 
     public bool IsBusy
     {
@@ -100,6 +118,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             {
                 EligibilityResult = null;
                 StepLog.Clear();
+                TryAutoValidate();
             }
         }
     }
@@ -113,38 +132,39 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             if (SetProperty(ref _patientAgeYears, value))
             {
                 EligibilityResult = null;
+                TryAutoValidate();
             }
         }
     }
 
-    public AdminSite AdminSite
-    {
-        get => _adminSite;
-        set => SetProperty(ref _adminSite, value);
-    }
+    /// <summary>
+    /// Always LeftArm — Will, 2026-08-19/20: "Remove Right Arm ... we
+    /// won't be using any of that right now." No setter/UI anymore; a
+    /// fresh DataEntryPopupViewModel is constructed every time the popup
+    /// opens (see MainWindow.ShowDataEntryPopup), so this is guaranteed
+    /// LeftArm every time.
+    /// </summary>
+    public AdminSite AdminSite => _adminSite;
+
+    /// <summary>True = PioneerEntrySequenceRunner logs each step without touching PioneerRx. Fixed for the life of the popup from pioneerWindowDetected (see constructor) — no longer a user-toggleable checkbox (Will, 2026-08-19/20: "Remove ... Dry run ... we won't be using any of that right now").</summary>
+    public bool IsDryRun => _isDryRun;
 
     /// <summary>
-    /// Compact popup control for the (rare) Right-arm override (Will,
-    /// 2026-08-19: "Hide Admin site ... always default it to Left Arm ...
-    /// keep a way to switch to Right if trivial"). AdminSite already
-    /// defaults to LeftArm via the field initializer above, and a fresh
-    /// DataEntryPopupViewModel is constructed every time the popup opens
-    /// (see MainWindow.ShowDataEntryPopup), so this is guaranteed to start
-    /// unchecked/Left every time, never carrying a Right selection over
-    /// from a prior popup. Backs a small CheckBox instead of the old full
-    /// ComboBox — see DataEntryPopupWindow.xaml.
+    /// Runs the eligibility check automatically once both a vaccine and an
+    /// age are entered, replacing the removed "Validate" button (see class
+    /// doc comment) — fire-and-forget is safe here because ValidateAsync
+    /// already fully wraps its own body in try/catch and sets
+    /// IsBusy/ErrorMessage itself, and AsyncRelayCommand.Execute (used via
+    /// ValidateCommand) has its own catch-all backstop too. Re-entrancy
+    /// (e.g. the user changes the age again while a check is in flight) is
+    /// handled by ValidateCommand's existing CanExecute guard.
     /// </summary>
-    public bool IsRightArm
+    private void TryAutoValidate()
     {
-        get => AdminSite == AdminSite.RightArm;
-        set => AdminSite = value ? AdminSite.RightArm : AdminSite.LeftArm;
-    }
-
-    /// <summary>True = PioneerEntrySequenceRunner logs each step without touching PioneerRx. Defaults from pioneerWindowDetected; user-toggleable.</summary>
-    public bool IsDryRun
-    {
-        get => _isDryRun;
-        set => SetProperty(ref _isDryRun, value);
+        if (ValidateCommand.CanExecute(null))
+        {
+            ValidateCommand.Execute(null);
+        }
     }
 
     public EligibilityResult? EligibilityResult
@@ -166,6 +186,19 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     public ICommand ValidateCommand { get; }
     public ICommand EnterIntoPioneerCommand { get; }
     public ICommand CopyToClipboardCommand { get; }
+
+    /// <summary>
+    /// Will, 2026-08-19/20: "make a way to copy those logs to send to
+    /// you" — after a failed "Enter into Pioneer" ("FAILED - No PioneerRx
+    /// window"). Copies the recent lines from %AppData%\VaccineAssist\
+    /// logs\app.log (see AppFileLog) to the clipboard: crash records, plus
+    /// every step this popup's own sequence runs log via context.Log,
+    /// which now also writes to that same file (see EnterIntoPioneerAsync)
+    /// so a failure is still copyable even after StepLog.Clear() wipes the
+    /// on-screen list (e.g. the user picked a different vaccine before
+    /// clicking Copy logs).
+    /// </summary>
+    public ICommand CopyLogsCommand { get; }
 
     public async Task LoadAsync()
     {
@@ -222,7 +255,14 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             var payload = await BuildPayloadAsync();
             if (payload is null) return; // BuildPayloadAsync already set ErrorMessage
 
-            var context = new PioneerEntryStepContext(payload, IsDryRun, message => StepLog.Add(message));
+            var context = new PioneerEntryStepContext(payload, IsDryRun, message =>
+            {
+                StepLog.Add(message);
+                // Also persisted to the file log (see AppFileLog) so "Copy
+                // logs" can still grab this after StepLog.Clear() wipes
+                // the on-screen list — see CopyLogsCommand's doc comment.
+                AppFileLog.Log($"[DataEntry] {message}");
+            });
             var result = await PioneerEntrySequenceRunner.RunAsync(_sequence, context);
 
             StatusMessage = result.Success
@@ -260,6 +300,29 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+        }
+    }
+
+    private void CopyLogsToClipboard()
+    {
+        try
+        {
+            var lines = AppFileLog.ReadRecentLines();
+            if (string.IsNullOrEmpty(lines))
+            {
+                StatusMessage = "No logs recorded yet.";
+                return;
+            }
+
+            _clipboardService.SetText(lines);
+            StatusMessage = "Recent logs copied to clipboard.";
+        }
+        catch (Exception ex)
+        {
+            // The clipboard API can throw (another process holding it
+            // open, common on Windows) — this button must never crash the
+            // popup, just tell the user it didn't work this time.
+            ErrorMessage = $"Couldn't copy logs: {ex.Message}";
         }
     }
 

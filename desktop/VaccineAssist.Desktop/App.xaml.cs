@@ -1,6 +1,9 @@
 using System;
 using System.Net.Http;
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
+using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.PioneerEntryAutomation;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 using VaccineAssist.Desktop.Services;
@@ -31,6 +34,22 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // CRASH FIX (Will, 2026-08-19/20: "Clicking lots make it crash" /
+        // "App crashes when I try to look at several tabs"). Root causes
+        // found in the ViewModels/commands themselves are fixed at their
+        // source (see AsyncRelayCommand.Execute's new catch clause and
+        // LoginViewModel.SignInAsync's new catch around the settings
+        // save) — those give the nicer per-tab inline ErrorMessage UX.
+        // These three handlers are the last-resort backstop for anything
+        // that still isn't caught somewhere more specific: instead of the
+        // .NET default (silently terminate the process with no trace),
+        // log what happened to %AppData%\VaccineAssist\logs\app.log and
+        // tell the user, then keep the app running wherever that's
+        // actually possible.
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
         _localSettingsService = new LocalSettingsService();
         _autoLoginConfigService = new AutoLoginConfigService();
@@ -157,5 +176,67 @@ public partial class App : Application
 
         MainWindow = mainWindow;
         mainWindow.Show();
+    }
+
+    /// <summary>
+    /// The primary crash backstop: any exception raised while WPF's
+    /// Dispatcher processes a UI-thread callback (routed events like
+    /// Button.Click, async-void continuations posted back to the UI
+    /// thread — which is how AsyncRelayCommand.Execute's own exceptions
+    /// would surface if its new catch clause were ever bypassed, property
+    /// binding/converter errors, etc.) and that isn't already caught
+    /// closer to its source lands here instead of the .NET default of
+    /// silently killing the process. e.Handled = true keeps the app
+    /// running — a wrong/stale screen is recoverable; a dead process
+    /// mid-shift is not.
+    /// </summary>
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        AppFileLog.LogException("DispatcherUnhandledException", e.Exception);
+
+        MessageBox.Show(
+            "Vaccine Assist ran into a problem and had to recover from it. " +
+            "The details were saved to a log file (%AppData%\\VaccineAssist\\logs\\app.log) — " +
+            "use the Data entry popup's \"Copy logs\" button to grab recent lines if this keeps happening.\n\n" +
+            $"{e.Exception.GetType().Name}: {e.Exception.Message}",
+            "Vaccine Assist",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Backstop for exceptions on a thread other than the UI thread (e.g.
+    /// raw ThreadPool work not marshaled back through the Dispatcher).
+    /// The CLR does not allow this to be "handled" — if IsTerminating is
+    /// true the process is going down regardless — but logging it first
+    /// means a crash of this kind still leaves a trace instead of nothing
+    /// at all.
+    /// </summary>
+    private void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        if (e.ExceptionObject is Exception ex)
+        {
+            AppFileLog.LogException("AppDomainUnhandledException" + (e.IsTerminating ? " (terminating)" : ""), ex);
+        }
+        else
+        {
+            AppFileLog.Log($"[AppDomainUnhandledException] non-Exception payload: {e.ExceptionObject}");
+        }
+    }
+
+    /// <summary>
+    /// Backstop for a faulted Task that nobody ever awaited or observed —
+    /// e.g. ShowLoginWindow's `_ = loginViewModel.TryAutoSignInAsync();`
+    /// fire-and-forget call. Modern .NET no longer crashes the process
+    /// for this by default (unlike .NET Framework), so this handler is
+    /// purely for visibility: without it, a fault here would just vanish
+    /// silently once the GC collected the Task.
+    /// </summary>
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        AppFileLog.LogException("UnobservedTaskException", e.Exception);
+        e.SetObserved();
     }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using VaccineAssist.Desktop.Common;
+using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
 
@@ -103,9 +104,35 @@ public sealed class LoginViewModel : ObservableObject
 
             Email = email.Trim();
             _settings.LastSignedInEmail = Email;
-            _localSettingsService.Save(_settings);
+            // CRASH FIX (Will, 2026-08-19/20): this write to
+            // %AppData%\VaccineAssist\settings.json had no catch around
+            // it — a locked file, a permissions issue, or a roaming-
+            // profile sync conflict on a real pharmacy workstation would
+            // throw an IOException straight out of this async method.
+            // Sign-in already succeeded at this point (the cloud session
+            // is real), so a failed local "remember the email" write
+            // should never block getting into the app: log it, keep
+            // going, still raise SignedIn below.
+            try
+            {
+                _localSettingsService.Save(_settings);
+            }
+            catch (Exception ex)
+            {
+                AppFileLog.LogException("LoginViewModel.SignInAsync (settings save)", ex);
+            }
 
             SignedIn?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            // Backstop for anything else unexpected in this method (e.g.
+            // a SignedIn subscriber throwing) — surfaced the same way
+            // every other screen's failed action is (inline ErrorMessage,
+            // never a crash), matching LotsViewModel/VaccinesViewModel/
+            // SchedulingViewModel/DataEntryPopupViewModel's pattern.
+            ErrorMessage = $"Sign-in failed unexpectedly: {ex.Message}";
+            AppFileLog.LogException("LoginViewModel.SignInAsync", ex);
         }
         finally
         {

@@ -41,4 +41,15 @@ export const env = {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
   },
   sesWebhookSecret: () => readOptional("SES_WEBHOOK_SECRET"),
+  // --- Outbound email (SES) — see lib/email.ts. Same pattern as
+  // ~/claude/elevate and ~/claude/clarify's lib/email.ts (Will, V-T3 item
+  // 5: "Use amazon SES for email like we use in other apps"), but reading
+  // through this file's existing readOptional (already trims — Vercel CLI
+  // env vars can carry trailing whitespace, see
+  // reference_vercel_env_newline_headers) instead of a second ad hoc
+  // trim helper duplicating that logic.
+  awsRegion: () => readOptional("AWS_REGION") ?? "us-east-1",
+  awsAccessKeyId: () => readOptional("AWS_ACCESS_KEY_ID"),
+  awsSecretAccessKey: () => readOptional("AWS_SECRET_ACCESS_KEY"),
+  sesFromAddress: () => readOptional("SES_FROM") ?? "noreply@orchardsdrug.com",
 };

@@ -13,9 +13,12 @@ namespace VaccineAssist.Desktop.Uia;
 /// vaccine data entry (V-T3's brief: "pull up the patient's rx profile,
 /// then activate data entry mode" — so one of these same three screens is
 /// the LIKELY target, but not yet verified against a live UIA dump). Kept
-/// as the best available signal for now; PioneerRxAttachment logs which
-/// title it actually matched so this list can be corrected once wired up
-/// live, without needing a rebuild (see PioneerEntryAutomation/TODO.md).
+/// as the best available signal for now; when TryAttach can't match
+/// anything, PioneerRxAttachment logs every top-level window it DID see
+/// (screen-name portion of the title, plus process name) to AppFileLog,
+/// retrievable via the data-entry popup's "Copy logs" button, so this
+/// list can be corrected from a real failure report without needing a
+/// live UIA dump session (see PioneerEntryAutomation/TODO.md).
 /// </summary>
 public static class PioneerRxTitles
 {
