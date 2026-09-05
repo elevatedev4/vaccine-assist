@@ -126,6 +126,7 @@ describe("GET /api/acuity/poll — validation", () => {
             total: 1,
           },
         ],
+        columns: [{ vaccineName: "Flu", group: null, label: "Flu" }],
         dailyTotals: { "2026-08-17": 1, "2026-08-18": 0 },
         grandTotal: 1,
       });
