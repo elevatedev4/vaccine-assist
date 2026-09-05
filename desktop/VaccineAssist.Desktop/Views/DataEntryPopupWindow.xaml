@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Vaccine data entry"
-        Width="380" SizeToContent="Height"
+        Width="400" SizeToContent="Height"
         WindowStyle="ToolWindow"
         Topmost="True"
         ShowInTaskbar="False"
@@ -10,65 +10,150 @@
         WindowStartupLocation="CenterScreen"
         Loaded="DataEntryPopupWindow_OnLoaded">
     <!--
-        V-T3 item 4 rework (Will, 2026-08-19/20):
-          - Vaccine picker is a RadioButton list now, not a ComboBox (see
-            VaccineRadioList_OnChecked in code-behind — WPF has no native
-            "SelectedItem" binding for a set of individually-templated
-            RadioButtons). Active vaccines only — same Vaccines collection
-            DataEntryPopupViewModel.LoadAsync already populated from
-            GetVaccinesAsync (active-only; see IVaccineApiService's doc
-            comment), no VM change needed for that part.
-          - Right arm checkbox, Validate button, and Dry run checkbox are
-            gone entirely ("we won't be using any of that right now") —
-            AdminSite/IsDryRun are computed, fixed values now (see
-            DataEntryPopupViewModel), and eligibility validation runs
-            automatically once vaccine + age are both filled in instead of
-            behind a button (see TryAutoValidate).
-          - "Copy logs" button added next to the other two action buttons.
+        GUIDED FLOW rework (V-... Part B): one question at a time, all
+        radio buttons: age, then vaccine GROUP, then PRODUCT, then DOSE
+        (only when the product has more than one dose row), then
+        review/enter. Each stage lives in its own Auto-height Grid row and
+        is shown/hidden via a Style.Triggers DataTrigger on Visibility (the
+        same DataTrigger mechanism EntryView.xaml already uses, just
+        targeting Visibility instead of Text/Foreground; no converter class
+        needed). An Auto row whose only child is Collapsed takes zero
+        height, so hidden stages don't leave blank space (same "Auto rows +
+        per-child margin" reasoning the old flat layout below this comment
+        used to avoid a hairline-row bug; see git history).
 
-        Every row here is its own Auto-height Grid row with the row's own
-        top margin, instead of the old design's separate fixed-size
-        spacer rows interleaved with content rows. That old pattern is
-        exactly what caused the Vaccine ComboBox to render as a 6px-tall
-        hairline (Will's dropdown-sizing screenshot) — it landed in a
-        spacer row instead of its own Auto row because the manual row
-        count didn't match the content count. Auto rows + per-child
-        margin can't have that class of off-by-one bug: every child always
-        gets exactly the height its own content needs.
+        Radio-button lists are still plain code-behind Checked handlers
+        (WPF has no built-in "SelectedItem" concept for a set of
+        individually templated RadioButtons; see
+        DataEntryPopupWindow.xaml.cs), same pattern the pre-guided-flow
+        vaccine picker used.
     -->
     <Grid Margin="14">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/> <!-- 0: title -->
+            <RowDefinition Height="Auto"/> <!-- 1: back button -->
+            <RowDefinition Height="Auto"/> <!-- 2: age stage -->
+            <RowDefinition Height="Auto"/> <!-- 3: group stage -->
+            <RowDefinition Height="Auto"/> <!-- 4: product stage -->
+            <RowDefinition Height="Auto"/> <!-- 5: dose stage -->
+            <RowDefinition Height="Auto"/> <!-- 6: review stage (summary + eligibility + expiration gate) -->
+            <RowDefinition Height="Auto"/> <!-- 7: primary action buttons (review stage only) -->
+            <RowDefinition Height="Auto"/> <!-- 8: step log label -->
+            <RowDefinition Height="Auto"/> <!-- 9: step log listbox -->
+            <RowDefinition Height="Auto"/> <!-- 10: diagnostics buttons -->
+            <RowDefinition Height="Auto"/> <!-- 11: status/error -->
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="Vaccine data entry" FontSize="16" FontWeight="Bold"/>
 
-        <TextBlock Grid.Row="1" Text="Vaccine" Margin="0,10,0,2"/>
-        <ItemsControl Grid.Row="2" ItemsSource="{Binding Vaccines}">
-            <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                    <RadioButton GroupName="VaccineChoice" Content="{Binding Name}"
-                                 Margin="0,2,0,2"
-                                 Checked="VaccineRadioList_OnChecked"/>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
+        <Button Grid.Row="1" Content="&lt; Back" Command="{Binding BackCommand}"
+                Padding="8,2" Margin="0,6,0,0" HorizontalAlignment="Left"/>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
-            <TextBlock Text="Patient age (years)" VerticalAlignment="Center"/>
-            <TextBox Text="{Binding PatientAgeYears, UpdateSourceTrigger=PropertyChanged}" Width="60" Margin="8,0,0,0"/>
+        <!-- STAGE 1: age -->
+        <StackPanel Grid.Row="2" Margin="0,10,0,0">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsAgeStage}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
+            <TextBlock Text="Patient age (years)" FontWeight="Bold"/>
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                <TextBox x:Name="AgeTextBox" Text="{Binding PatientAgeYears, UpdateSourceTrigger=PropertyChanged}"
+                         Width="60" KeyDown="AgeTextBox_OnKeyDown"/>
+                <Button Content="Continue" Command="{Binding ContinueFromAgeCommand}" Padding="8,2" Margin="8,0,0,0"/>
+            </StackPanel>
         </StackPanel>
 
-        <StackPanel Grid.Row="4" Margin="0,8,0,0">
-            <TextBlock Text="{Binding Gate.BlockMessage}" Foreground="Red" TextWrapping="Wrap"/>
+        <!-- STAGE 2: vaccine group (common name) -->
+        <StackPanel Grid.Row="3" Margin="0,10,0,0">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsGroupStage}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
+            <TextBlock Text="Vaccine group" FontWeight="Bold"/>
+            <ItemsControl ItemsSource="{Binding AvailableGroups}" Margin="0,4,0,0">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <RadioButton GroupName="GroupChoice" Content="{Binding}"
+                                     Margin="0,2,0,2" Checked="GroupRadioList_OnChecked"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <!-- STAGE 3: product within the chosen group -->
+        <StackPanel Grid.Row="4" Margin="0,10,0,0">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsProductStage}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
+            <TextBlock Text="{Binding SelectedGroup, StringFormat='{}{0} product'}" FontWeight="Bold"/>
+            <ItemsControl ItemsSource="{Binding ProductOptions}" Margin="0,4,0,0">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <RadioButton GroupName="ProductChoice" Content="{Binding Name}"
+                                     Margin="0,2,0,2" Checked="ProductRadioList_OnChecked"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <!-- STAGE 4: dose number (only for a multi-dose product) -->
+        <StackPanel Grid.Row="5" Margin="0,10,0,0">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsDoseStage}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
+            <TextBlock Text="Dose number" FontWeight="Bold"/>
+            <ItemsControl ItemsSource="{Binding DoseOptions}" Margin="0,4,0,0">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <RadioButton GroupName="DoseChoice" Content="{Binding Dose, StringFormat='Dose {0}'}"
+                                     Margin="0,2,0,2" Checked="DoseRadioList_OnChecked"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <!-- STAGE 5: review; selected vaccine, eligibility block/warnings, expiration gate -->
+        <StackPanel Grid.Row="6" Margin="0,10,0,0">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsReviewStage}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
+
+            <TextBlock Text="{Binding SelectedVaccine.Name, StringFormat='Selected: {0}'}" FontWeight="Bold" TextWrapping="Wrap"/>
+
+            <TextBlock Text="{Binding Gate.BlockMessage}" Foreground="Red" TextWrapping="Wrap" Margin="0,4,0,0"/>
             <ItemsControl ItemsSource="{Binding EligibilityResult.Warnings}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
@@ -76,18 +161,61 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+
+            <!-- V-... Part C: expiration gate -->
+            <Border Margin="0,8,0,0" Padding="8" BorderBrush="DarkOrange" BorderThickness="1">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsLotExpiredOrMissing}" Value="True">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel>
+                    <TextBlock Text="No unexpired lot on file for this vaccine." Foreground="DarkOrange"
+                               FontWeight="Bold" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <TextBox Text="{Binding NewLotNumber, UpdateSourceTrigger=PropertyChanged}" Width="90" ToolTip="Lot number"/>
+                        <DatePicker SelectedDate="{Binding NewLotExpiration}" Width="120" Margin="6,0,0,0"/>
+                        <Button Content="Add lot" Command="{Binding AddLotCommand}" Padding="6,2" Margin="6,0,0,0"/>
+                    </StackPanel>
+                    <Button Content="Leave lot/expiration blank and proceed" Command="{Binding SkipLotAndExpirationCommand}"
+                            Padding="6,2" Margin="0,6,0,0" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Border>
         </StackPanel>
 
-        <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,10,0,0">
+        <StackPanel Grid.Row="7" Orientation="Horizontal" Margin="0,10,0,0">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsReviewStage}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
             <Button Content="Enter into Pioneer" Command="{Binding EnterIntoPioneerCommand}" Padding="8,2" Margin="0,0,8,0"/>
-            <Button Content="Copy to clipboard" Command="{Binding CopyToClipboardCommand}" Padding="8,2" Margin="0,0,8,0"/>
-            <Button Content="Copy logs" Command="{Binding CopyLogsCommand}" Padding="8,2"/>
+            <Button Content="Copy to clipboard" Command="{Binding CopyToClipboardCommand}" Padding="8,2"/>
         </StackPanel>
 
-        <TextBlock Grid.Row="6" Text="Step log" FontWeight="Bold" Margin="0,8,0,0"/>
-        <ListBox Grid.Row="7" ItemsSource="{Binding StepLog}" Height="90" FontFamily="Consolas" FontSize="11" Margin="0,2,0,0"/>
+        <TextBlock Grid.Row="8" Text="Step log" FontWeight="Bold" Margin="0,8,0,0"/>
+        <ListBox Grid.Row="9" ItemsSource="{Binding StepLog}" Height="90" FontFamily="Consolas" FontSize="11" Margin="0,2,0,0"/>
 
-        <StackPanel Grid.Row="8" Margin="0,8,0,0">
+        <!-- Diagnostics: always available regardless of stage (Copy logs
+             pre-dates the guided flow; Dump Pioneer UIA tree is new, V-...
+             Part A; see Uia/UiaTreeDumper.cs and
+             PioneerEntryAutomation/TODO.md). -->
+        <StackPanel Grid.Row="10" Orientation="Horizontal" Margin="0,8,0,0">
+            <Button Content="Copy logs" Command="{Binding CopyLogsCommand}" Padding="8,2" Margin="0,0,8,0"/>
+            <Button Content="Dump Pioneer UIA tree" Command="{Binding DumpUiaTreeCommand}" Padding="8,2"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="11" Margin="0,8,0,0">
             <TextBlock Text="{Binding StatusMessage}" Foreground="Green" TextWrapping="Wrap"/>
             <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" TextWrapping="Wrap"/>
         </StackPanel>

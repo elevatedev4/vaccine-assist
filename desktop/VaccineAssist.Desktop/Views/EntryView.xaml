@@ -8,6 +8,9 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="16"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="24"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -32,5 +35,22 @@
 
         <Button Grid.Row="4" Content="Open data entry popup" Command="{Binding OpenPopupCommand}"
                 Padding="10,4" HorizontalAlignment="Left"/>
+
+        <!--
+            V-... Part A debug corner: one-click UIA tree-dump collector
+            (Uia/UiaTreeDumper.cs) — unblocks PioneerEntryAutomation/TODO.md's
+            stubbed navigation/input steps. Lives here (a lightweight
+            status/debug tab, not the fast-entry popup) so it's reachable
+            without needing an active data-entry session — the popup has
+            its own copy of the same button for mid-entry use.
+        -->
+        <TextBlock Grid.Row="6" Text="Debug: Pioneer UIA tree dump" FontSize="13" FontWeight="Bold"/>
+        <Button Grid.Row="7" Content="Dump Pioneer UIA tree" Command="{Binding DumpUiaTreeCommand}"
+                Padding="10,4" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+        <StackPanel Grid.Row="8" Margin="0,8,0,0">
+            <TextBlock Text="{Binding StatusMessage}" Foreground="Green" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" TextWrapping="Wrap"/>
+        </StackPanel>
     </Grid>
 </UserControl>

@@ -38,6 +38,21 @@ Still not designed at all: the Medicare home-visit special case (item 3
 below) — no popup field for it yet, same reason as before (no live
 target).
 
+## V-... update — UIA tree-dump collector shipped (2026-09-05)
+
+The app now has its own one-click UIA tree-dump collector, so getting the
+live dumps this file has been blocked on all along no longer needs
+Accessibility Insights or a separate tool: `Uia/UiaTreeDumper.cs`, wired to
+a "Dump Pioneer UIA tree" button on both the Data entry tab (main window)
+and the Ctrl+NumPad2 popup. It walks the ENTIRE tree of whichever PioneerRx
+window is currently attached (same widened match `FocusPioneerWindowStep`
+uses) and writes a timestamped text dump to
+`%AppData%\VaccineAssist\uia-dumps\` (path copied to clipboard, README in
+that folder explains the PHI handling). Once real dumps exist for the
+vaccine-entry screen(s), THIS is the data `TryAttach`'s title/process match
+and the stubbed steps below should be confirmed/rewritten against — see the
+Will-facing collection instructions posted alongside this change.
+
 Real automation needs to happen live, on the pharmacy's own machine, against
 a real PioneerRx window — it can't be built or tested from here. When that
 happens, follow the pattern already proven in the `rx-verify` repo rather

@@ -124,6 +124,15 @@ public class DataEntryPopupViewModelAutoValidateTests
         {
             await Task.Delay(10);
         }
+
+        // V-... Part C: SelectedVaccine's setter also fires a SEPARATE
+        // fire-and-forget lot-status check (RefreshSelectedVaccineActiveLotAsync)
+        // that never touches IsBusy, so the loop above doesn't cover it.
+        // FakeVaccineApiService.GetLotsAsync resolves via Task.FromResult
+        // (no real async work), which .NET's await guarantees continues
+        // synchronously when already-completed — but this extra beat
+        // avoids this test depending on that runtime detail.
+        await Task.Delay(20);
     }
 
     private static class EligibilityResultFactory
@@ -149,8 +158,26 @@ public class DataEntryPopupViewModelAutoValidateTests
         public Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<IReadOnlyList<Vaccine>> GetEligibleVaccinesForAgeAsync(int ageYears, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        // V-... Part C: always returns one active, unexpired lot, so this
+        // file's tests keep exercising ONLY the eligibility gate they were
+        // written for — the separate lot-expiration gate (IsLotExpiredOrMissing)
+        // has its own dedicated tests in
+        // DataEntryPopupViewModelExpirationGateTests.cs.
         public Task<IReadOnlyList<Lot>> GetLotsAsync(Guid? vaccineId = null, string? status = null, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<Lot>>(new List<Lot>());
+            Task.FromResult<IReadOnlyList<Lot>>(new List<Lot>
+            {
+                new()
+                {
+                    Id = Guid.NewGuid(),
+                    VaccineId = vaccineId ?? Guid.Empty,
+                    LotNumber = "LOT1",
+                    Expiration = DateOnly.FromDateTime(DateTime.Today.AddYears(1)),
+                    Status = "active",
+                },
+            });
 
         public Task<Lot> CreateLotAsync(Guid vaccineId, string lotNumber, DateOnly expiration, string status = "active", string? note = null, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();

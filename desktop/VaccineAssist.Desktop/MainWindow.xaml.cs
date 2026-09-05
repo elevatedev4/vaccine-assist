@@ -72,7 +72,7 @@ public partial class MainWindow : Window
 
         _schedulingViewModel = new SchedulingViewModel(_vaccineApiService);
         _orderingViewModel = new OrderingViewModel(_vaccineApiService);
-        _entryViewModel = new EntryViewModel(ShowDataEntryPopup);
+        _entryViewModel = new EntryViewModel(ShowDataEntryPopup, _clipboardService);
 
         SchedulingContent.Content = new SchedulingView(_schedulingViewModel);
         DataEntryTabContent.Content = new EntryView(_entryViewModel);

@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using VaccineAssist.Desktop.Models;
 using VaccineAssist.Desktop.ViewModels;
 
@@ -24,30 +25,63 @@ public partial class DataEntryPopupWindow : Window
         DataContext = _viewModel;
     }
 
-    private async void DataEntryPopupWindow_OnLoaded(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// GUIDED FLOW rework (V-... Part B): the popup no longer preloads a
+    /// flat vaccine list (there's nothing to load until an age is entered
+    /// — see DataEntryPopupViewModel.ContinueFromAgeAsync), so this now
+    /// just autofocuses the age textbox — "keep it a fast textbox,
+    /// autofocused" per the brief — instead of the old LoadAsync() call.
+    /// </summary>
+    private void DataEntryPopupWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
-        await _viewModel.LoadAsync();
+        AgeTextBox.Focus();
+        Keyboard.Focus(AgeTextBox);
+    }
+
+    /// <summary>Enter in the age textbox is the fast path to the next
+    /// question — same "keep it a fast textbox" reasoning as autofocus
+    /// above. No-ops via CanExecute if the age isn't valid/present yet.</summary>
+    private void AgeTextBox_OnKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        if (_viewModel.ContinueFromAgeCommand.CanExecute(null))
+        {
+            _viewModel.ContinueFromAgeCommand.Execute(null);
+        }
     }
 
     /// <summary>
-    /// V-T3 item 4 (Will, 2026-08-19/20): the vaccine picker is a
-    /// RadioButton list (see DataEntryPopupWindow.xaml), not a ComboBox.
-    /// WPF has no built-in "SelectedItem" concept for a
-    /// group of individually-templated RadioButtons — a MultiBinding
-    /// converter can't reach a row's own item either (ConverterParameter
-    /// isn't bindable), so this handles it the same plain code-behind way
-    /// the rest of this app wires things (see App.xaml.cs's composition-
-    /// root doc comment on the DI-light style): every RadioButton the
-    /// ItemsControl's DataTemplate instantiates has its own Checked="..."
-    /// handler (see DataEntryPopupWindow.xaml) pointed at this one method;
-    /// `sender` is whichever RadioButton the user just checked, and its
-    /// DataContext (set by the DataTemplate) is that row's Vaccine.
+    /// V-... Part B: each of the guided flow's three RadioButton lists
+    /// (group / product / dose) is a plain ItemsControl with its own
+    /// per-row Checked="..." handler pointed at one of these three
+    /// methods — same pattern the pre-guided-flow vaccine picker used
+    /// (WPF has no built-in "SelectedItem" concept for a set of
+    /// individually templated RadioButtons — a MultiBinding converter
+    /// can't reach a row's own item either, ConverterParameter isn't
+    /// bindable). `sender` is whichever RadioButton the user just checked;
+    /// its DataContext (set by the DataTemplate) is that row's item.
     /// </summary>
-    private void VaccineRadioList_OnChecked(object sender, RoutedEventArgs e)
+    private void GroupRadioList_OnChecked(object sender, RoutedEventArgs e)
     {
-        if (sender is RadioButton { DataContext: Vaccine vaccine })
+        if (sender is RadioButton { DataContext: string group })
         {
-            _viewModel.SelectedVaccine = vaccine;
+            _viewModel.SelectGroup(group);
+        }
+    }
+
+    private void ProductRadioList_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (sender is RadioButton { DataContext: VaccineProductOption product })
+        {
+            _viewModel.SelectProduct(product);
+        }
+    }
+
+    private void DoseRadioList_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (sender is RadioButton { DataContext: Vaccine doseVaccine })
+        {
+            _viewModel.SelectDose(doseVaccine);
         }
     }
 }
