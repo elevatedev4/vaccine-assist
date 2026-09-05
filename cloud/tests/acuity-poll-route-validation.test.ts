@@ -24,7 +24,6 @@ vi.mock("@/lib/acuity-poll-cache", () => ({
 
 import { GET } from "@/app/api/acuity/poll/route";
 import { getCachedCounts } from "@/lib/acuity-poll-cache";
-import { todayInChicago } from "@/lib/chicago-date";
 
 const ACUITY_ENV_KEYS = ["ACUITY_USER_ID", "ACUITY_API_KEY"] as const;
 
@@ -158,23 +157,34 @@ describe("GET /api/acuity/poll — validation", () => {
       expect(fluColumn).toEqual({ vaccineName: "flu_unknown", group: "Flu", subgroup: null, label: "Unk" });
       expect(body.table.dailyTotals).toEqual({ "2026-08-17": 1, "2026-08-18": 0 });
       expect(body.table.grandTotal).toBe(1);
-      // ROUND 4: opt-in only — this request never passed ?afterToday=1,
-      // so the (much heavier, 13-window) extended fetch never ran and
-      // this field is simply absent, exactly like before this round.
+      // ROUND 4, reliability fix: "After today" is a COMPLETELY SEPARATE
+      // request (`?afterTodayOnly=1`, see the describe block below) — the
+      // normal range response never carries this field at all, regardless
+      // of any param, so the main table can never be made to wait on the
+      // heavier 13-window fetch.
       expect(body.afterToday).toBeUndefined();
       expect(body.afterTodayError).toBeUndefined();
     });
   });
 
-  // ROUND 4 (V-T9 answer): "add a 'total vaccines remaining after today'
-  // row that sums up all the future appointments too" — app/appointments
-  // /page.tsx is the one caller that passes ?afterToday=1 (see that
-  // route's doc comment for why this is opt-in).
-  describe("afterToday field (ROUND 4 — ?afterToday=1)", () => {
+  // ROUND 4 (V-T9 answer: "add a 'total vaccines remaining after today'
+  // row that sums up all the future appointments too"), reliability fix
+  // 2026-09-05: this is now a fully SEPARATE request from the main range
+  // fetch (app/appointments/page.tsx fetches the main table first, then
+  // issues this one independently) — see the route's doc comment for why
+  // an inline `?afterToday=1` flag on the main request was replaced with
+  // this dedicated mode.
+  describe("?afterTodayOnly=1 (ROUND 4 — separate request, reliability fix)", () => {
     afterEach(() => {
       vi.unstubAllGlobals();
       for (const key of ACUITY_ENV_KEYS) delete process.env[key];
     });
+
+    function afterTodayRequest(query = "") {
+      return new Request(`http://localhost/api/acuity/poll?afterTodayOnly=1${query}`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+    }
 
     function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
       return {
@@ -185,32 +195,33 @@ describe("GET /api/acuity/poll — validation", () => {
       };
     }
 
-    it("is absent when ?afterToday=1 is not passed, even with credentials configured", async () => {
-      process.env.ACUITY_USER_ID = "12345";
-      process.env.ACUITY_API_KEY = "test-key";
-      const fetchMock = vi.fn(async (url: string | URL) => {
-        if (url.toString().includes("appointment-types")) {
-          return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
-        }
-        return new Response(JSON.stringify([]), { status: 200 });
-      });
-      vi.stubGlobal("fetch", fetchMock);
-
-      const response = await GET(pollRequest("?start=2026-08-17&end=2026-08-18"));
+    it("returns configured: false, afterToday: null when Acuity credentials aren't set — no start/end needed at all", async () => {
+      const response = await GET(afterTodayRequest());
+      expect(response.status).toBe(200);
       const body = await response.json();
-
-      expect(body.afterToday).toBeUndefined();
-      // Only the main range's fetch happened — no 13-window extended
-      // fetch was triggered.
-      expect(fetchMock.mock.calls.filter((call) => !call[0].toString().includes("appointment-types"))).toHaveLength(
-        1
-      );
+      expect(body).toEqual({ configured: false, afterToday: null });
     });
 
-    it("computes afterToday alongside the main table when ?afterToday=1 is passed (fresh, cache-miss path)", async () => {
+    it("skips range validation entirely — an invalid/huge range in the query string is simply ignored by this mode", async () => {
       process.env.ACUITY_USER_ID = "12345";
       process.env.ACUITY_API_KEY = "test-key";
-      const today = todayInChicago();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify([]), { status: 200 }))
+      );
+
+      // This exact query 400s under the normal range mode (see "rejects a
+      // wide-open unbounded range" above) — afterTodayOnly ignores it.
+      const response = await GET(afterTodayRequest("&start=0000-01-01&end=2999-12-31"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.configured).toBe(true);
+      expect(body.error).toBeUndefined();
+    });
+
+    it("computes afterToday via the chunked fetch when credentials are configured (fresh, cache-miss path)", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
 
       const fetchMock = vi.fn(async (url: string | URL) => {
         const urlStr = url.toString();
@@ -218,101 +229,61 @@ describe("GET /api/acuity/poll — validation", () => {
           return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
         }
         const minDate = new URL(urlStr).searchParams.get("minDate");
-        if (minDate === today) {
-          // The main today..+7 range request.
-          return new Response(
-            JSON.stringify([acuityAppointmentFixture({ datetime: `${today}T10:00:00-0500` })]),
-            { status: 200 }
-          );
-        }
         // Every one of the 13 further-out windows contributes exactly 1
         // Flu (unknown-age) appointment.
         return new Response(
-          JSON.stringify([acuityAppointmentFixture({ id: 2, datetime: `${minDate}T10:00:00-0500` })]),
+          JSON.stringify([acuityAppointmentFixture({ datetime: `${minDate}T10:00:00-0500` })]),
           { status: 200 }
         );
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      const response = await GET(pollRequest(`?start=${today}&end=${today}&afterToday=1`));
+      const response = await GET(afterTodayRequest());
       expect(response.status).toBe(200);
       const body = await response.json();
 
       expect(body.configured).toBe(true);
-      // Main table is unaffected by the extended fetch running alongside it.
-      expect(body.table.dailyTotals[today]).toBe(1);
+      // No range/table/counts fields at all — this mode's response shape
+      // is completely separate from the normal one (see route.ts's
+      // "?afterTodayOnly=1 RESPONSE CONTRACT" doc comment).
+      expect(body.table).toBeUndefined();
+      expect(body.counts).toBeUndefined();
+      expect(body.range).toBeUndefined();
       expect(body.afterTodayError).toBeUndefined();
       expect(body.afterToday.total).toBe(13); // 1 per window x 13 windows
       expect(body.afterToday.byColumnId["flu_unknown"]).toBe(13);
       expect(body.afterToday.truncatedWindows).toEqual([]);
     });
 
-    it("degrades to afterToday: null with afterTodayError, WITHOUT failing the whole response, when the extended fetch errors", async () => {
+    it("degrades to afterToday: null with afterTodayError, returning 200 (not 502), when the chunked fetch errors", async () => {
       process.env.ACUITY_USER_ID = "12345";
       process.env.ACUITY_API_KEY = "test-key";
-      const today = todayInChicago();
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));
 
-      const fetchMock = vi.fn(async (url: string | URL) => {
-        const urlStr = url.toString();
-        if (urlStr.includes("appointment-types")) {
-          return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
-        }
-        const minDate = new URL(urlStr).searchParams.get("minDate");
-        if (minDate === today) {
-          return new Response(JSON.stringify([acuityAppointmentFixture({ datetime: `${today}T10:00:00-0500` })]), {
-            status: 200,
-          });
-        }
-        // Every further-out window fails.
-        return new Response("", { status: 500 });
-      });
-      vi.stubGlobal("fetch", fetchMock);
-
-      const response = await GET(pollRequest(`?start=${today}&end=${today}&afterToday=1`));
+      const response = await GET(afterTodayRequest());
       expect(response.status).toBe(200);
       const body = await response.json();
 
       expect(body.configured).toBe(true);
-      // Main table still came through fine.
-      expect(body.table.dailyTotals[today]).toBe(1);
       expect(body.afterToday).toBeNull();
       expect(body.afterTodayError).toEqual(expect.stringMatching(/unexpected status/i));
     });
 
-    it("still computes afterToday when the main range is served from cache (cacheHit: true)", async () => {
+    it("honors ?force=1 by using the shorter FORCE_COOLDOWN_SECONDS cache floor for every window", async () => {
       process.env.ACUITY_USER_ID = "12345";
       process.env.ACUITY_API_KEY = "test-key";
-      const today = todayInChicago();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify([]), { status: 200 }))
+      );
 
-      vi.mocked(getCachedCounts).mockImplementation(async (minDate) => {
-        if (minDate === today) {
-          return {
-            counts: [{ date: today, vaccineName: "Flu · Unknown", count: 7 }],
-            possiblyTruncated: false,
-            computedAt: new Date().toISOString(),
-          };
-        }
-        return null; // every extended window still misses and hits Acuity
-      });
+      await GET(afterTodayRequest("&force=1"));
 
-      const fetchMock = vi.fn(async (url: string | URL) => {
-        const urlStr = url.toString();
-        if (urlStr.includes("appointment-types")) {
-          return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
-        }
-        return new Response(JSON.stringify([]), { status: 200 });
-      });
-      vi.stubGlobal("fetch", fetchMock);
-
-      const response = await GET(pollRequest(`?start=${today}&end=${today}&afterToday=1`));
-      const body = await response.json();
-
-      expect(body.cacheHit).toBe(true);
-      expect(body.table.dailyTotals[today]).toBe(7);
-      // afterToday still computed (all-zero here since every window's
-      // Acuity response was empty), NOT skipped just because the main
-      // range came from cache.
-      expect(body.afterToday).toEqual({ byColumnId: {}, total: 0, truncatedWindows: [] });
+      // Every getCachedCounts call for this request used the short (20s)
+      // force-cooldown TTL, not the normal (much longer) poll cache TTL.
+      const ttlArgsUsed = vi.mocked(getCachedCounts).mock.calls.map((call) => call[2]);
+      expect(ttlArgsUsed.length).toBeGreaterThan(0);
+      for (const ttl of ttlArgsUsed) expect(ttl).toBe(20);
     });
   });
 });

@@ -656,17 +656,23 @@ describe("buildColumnTotals", () => {
 
 // ROUND 4 (V-T9 answer): "So the rows should be 'Today' 'Next 7 days'
 // 'After today' then the breakdown for the next today and the following
-// 7 days."
+// 7 days." Reviewer fix (2026-09-05): "Today" and "Next 7 days" are a
+// clean, non-overlapping partition of the daily breakdown — "Next 7
+// days" is days[1..7] (today+1..today+7), NOT days[0..6] — the original
+// ROUND 4 pick double-counted today in both rows. See
+// computeTodayAndNext7Summaries's doc comment for the full partition
+// rationale, including why "After today" (elsewhere) deliberately DOES
+// still overlap "Next 7 days".
 describe("computeTodayAndNext7Summaries", () => {
   const EIGHT_DAYS = [
-    "2026-09-05", // today
-    "2026-09-06",
+    "2026-09-05", // today — counted ONLY in "Today", never in "Next 7 days"
+    "2026-09-06", // today+1 — first day counted in "Next 7 days"
     "2026-09-07",
     "2026-09-08",
     "2026-09-09",
     "2026-09-10",
-    "2026-09-11", // today+6 — last day counted in "Next 7 days"
-    "2026-09-12", // today+7 — NOT counted in "Next 7 days", still a daily row
+    "2026-09-11",
+    "2026-09-12", // today+7 — last day counted in "Next 7 days"
   ];
 
   it("'Today' is exactly table.days[0]'s counts, per column and total", () => {
@@ -682,32 +688,33 @@ describe("computeTodayAndNext7Summaries", () => {
     expect(today.total).toBe(3);
   });
 
-  it("'Next 7 days' sums days[0..6] (today through today+6) — 7 calendar days, NOT the 8th day", () => {
+  it("'Next 7 days' sums days[1..7] (today+1 through today+7) — 7 calendar days, and does NOT double-count today", () => {
     const counts = [
-      { date: "2026-09-05", vaccineName: "MMR-II", count: 1 }, // today
-      { date: "2026-09-11", vaccineName: "MMR-II", count: 2 }, // today+6, last day IN the window
-      { date: "2026-09-12", vaccineName: "MMR-II", count: 100 }, // today+7, OUTSIDE the window
+      { date: "2026-09-05", vaccineName: "MMR-II", count: 100 }, // today — must NOT bleed into Next 7 days
+      { date: "2026-09-06", vaccineName: "MMR-II", count: 1 }, // today+1, first day IN the window
+      { date: "2026-09-12", vaccineName: "MMR-II", count: 2 }, // today+7, last day IN the window
     ];
     const table = buildAppointmentTable(counts, EIGHT_DAYS);
 
     const { next7 } = computeTodayAndNext7Summaries(table);
     expect(next7.label).toBe("Next 7 days");
-    expect(next7.byColumnId["mmr"]).toBe(3); // 1 + 2, NOT +100
+    expect(next7.byColumnId["mmr"]).toBe(3); // 1 + 2, NOT +100 from today
     expect(next7.total).toBe(3);
   });
 
-  it("'Today' and 'Next 7 days' agree with table.dailyTotals for their respective day sets", () => {
+  it("'Today' and 'Next 7 days' partition cleanly — their totals sum to the WHOLE 8-day daily total, with no overlap", () => {
     const counts = [
-      { date: "2026-09-05", vaccineName: "RSV", count: 2 },
-      { date: "2026-09-06", vaccineName: "HPV Vaccine", count: 4 },
+      { date: "2026-09-05", vaccineName: "RSV", count: 2 }, // today
+      { date: "2026-09-06", vaccineName: "HPV Vaccine", count: 4 }, // today+1
+      { date: "2026-09-12", vaccineName: "Shingrix", count: 5 }, // today+7
     ];
     const table = buildAppointmentTable(counts, EIGHT_DAYS);
     const { today, next7 } = computeTodayAndNext7Summaries(table);
 
     expect(today.total).toBe(table.dailyTotals["2026-09-05"]);
-    expect(next7.total).toBe(
-      EIGHT_DAYS.slice(0, 7).reduce((sum, day) => sum + table.dailyTotals[day], 0)
-    );
+    expect(next7.total).toBe(EIGHT_DAYS.slice(1, 8).reduce((sum, day) => sum + table.dailyTotals[day], 0));
+    // No double-count: Today + Next7 == the full 8-day grand total exactly.
+    expect(today.total + next7.total).toBe(table.grandTotal);
   });
 
   it("degrades to an all-zero Today row instead of throwing when table.days is empty", () => {

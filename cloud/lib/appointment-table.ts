@@ -654,26 +654,30 @@ export type TableSummaryRow = {
  * request start=today) — degrades to an all-zero "Today" row rather than
  * throwing if `table.days` is ever empty.
  *
- * "Next 7 days" = `days[0..6]` (today through today+6 inclusive, 7
- * calendar days), NOT `days[0..7]` (8 days) — a JUDGMENT CALL (Will's
- * wording: "the breakdown for the next today and the following 7 days"
- * is genuinely ambiguous between the two). Picked today-through-+6
- * because "today" is already its own separate row here — folding an 8th
- * day into a row literally named "Next 7 days" would make the name wrong
- * by one day. `days[7]` (today+7) is never hidden either way: it's still
- * fully visible in the plain daily-breakdown rows below both summaries.
- *
- * "After today" is deliberately NOT computed here — see
- * lib/acuity-future-summary.ts's fetchAfterTodaySummary and this module's
- * ColumnTotals doc comment for why that summary needs its own,
- * further-out fetch this table's `days` never covers.
+ * PARTITION SEMANTICS (reviewer fix, 2026-09-05, revising the original
+ * ROUND 4 pick): "Today" and "Next 7 days" are a clean, non-overlapping
+ * partition of this table's 8 daily-breakdown rows — "Today" is
+ * `days[0]` only, "Next 7 days" is `days[1..7]` (today+1 through
+ * today+7 inclusive, 7 calendar days, via `slice(1, 8)`), EXCLUDING
+ * today. The original ROUND 2/4 pick (`days[0..6]`, today THROUGH
+ * today+6) double-counted today in both rows — every appointment
+ * scheduled today silently inflated "Next 7 days" too. "After today"
+ * (computed elsewhere — see below) is NOT part of this partition: it
+ * deliberately DOES overlap "Next 7 days" (both cover today+1 onward),
+ * because Will's spec for it is "sums up all the future appointments,"
+ * i.e. a cumulative running total from tomorrow out to the edge of the
+ * extended fetch — not a third disjoint bucket. So the correct mental
+ * model is: {Today} and {Next 7 days} partition today..+7 cleanly (no
+ * overlap, no gap); "Next 7 days" ⊂ "After today" by design (every
+ * appointment in the former is also in the latter); only "Today" is
+ * disjoint from "After today".
  */
 export function computeTodayAndNext7Summaries(table: AppointmentTable): {
   today: TableSummaryRow;
   next7: TableSummaryRow;
 } {
   const todayDay: string | undefined = table.days[0];
-  const next7Days = table.days.slice(0, 7);
+  const next7Days = table.days.slice(1, 8);
 
   const todayByColumnId: Record<string, number> = {};
   const next7ByColumnId: Record<string, number> = {};

@@ -13,6 +13,7 @@ vi.mock("@/lib/acuity-poll-cache", () => ({
 }));
 
 import {
+  AFTER_TODAY_FETCH_CONCURRENCY,
   AFTER_TODAY_WINDOW_COUNT,
   AFTER_TODAY_WINDOW_DAYS,
   buildAfterTodayWindows,
@@ -156,6 +157,36 @@ describe("fetchAfterTodaySummary", () => {
 
     expect(summary.truncatedWindows).toEqual(["2026-09-06..2026-09-12"]);
     expect(summary.byColumnId["rsv"]).toBe(100);
+  });
+
+  it("fetches windows with limited concurrency — more than 1 in flight at once, but never more than AFTER_TODAY_FETCH_CONCURRENCY (reliability fix)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const urlStr = url.toString();
+      if (urlStr.includes("appointment-types")) {
+        return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
+      }
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // A small real delay so overlapping calls actually get a chance to
+      // stack up before any of them resolves — without this, a fast mock
+      // could resolve each call before the next worker even starts,
+      // masking a fully-sequential implementation as "concurrent."
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inFlight--;
+      return new Response(JSON.stringify([]), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchAfterTodaySummary("user-1", "key-1", "2026-09-05", 300);
+
+    // Genuinely concurrent (not the old strictly-sequential loop, which
+    // would have topped out at maxInFlight === 1)...
+    expect(maxInFlight).toBeGreaterThan(1);
+    // ...but bounded, not "fire all 13 at once."
+    expect(maxInFlight).toBeLessThanOrEqual(AFTER_TODAY_FETCH_CONCURRENCY);
   });
 
   it("propagates an AcuityApiError from a window's fetch instead of swallowing it", async () => {

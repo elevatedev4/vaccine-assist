@@ -38,18 +38,26 @@ import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-fut
  * waiting out the cache — see FORCE_COOLDOWN_SECONDS below for the much
  * shorter floor that still applies so a force request can't hammer Acuity.
  *
- * ?afterToday=1 (ROUND 4, V-T9 answer, Will 2026-09-05: "add a 'total
+ * ?afterTodayOnly=1 (ROUND 4, V-T9 answer, Will 2026-09-05: "add a 'total
  * vaccines remaining after today' row that sums up all the future
- * appointments too") additionally computes the `afterToday` field below
- * via lib/acuity-future-summary.ts's fetchAfterTodaySummary — a 13-window
- * chunked fetch out to +90 days, well beyond MAX_RANGE_DAYS. Deliberately
- * opt-in rather than always-on: it's ~13x heavier than the normal
- * request (though each window is independently cached at the same TTL,
- * so only the FIRST request after a cache expiry actually pays that
- * cost), and the desktop Scheduling tab (see RESPONSE CONTRACT below)
- * reads this same route without needing that row — omitting the param
- * keeps desktop's request exactly as cheap as before this round. Only
- * app/appointments/page.tsx passes it today.
+ * appointments too"; reliability fix 2026-09-05 replacing an earlier
+ * always-inline `?afterToday=1`) computes ONLY the `afterToday` field via
+ * lib/acuity-future-summary.ts's fetchAfterTodaySummary — a 13-window
+ * chunked fetch out to +90 days, well beyond MAX_RANGE_DAYS — and skips
+ * every bit of the normal range/table work entirely (no `start`/`end`
+ * needed, no `table`/`counts` in the response). This is DELIBERATELY a
+ * separate request, not a flag added onto the normal one: 13 window
+ * fetches (even with the limited concurrency fetchAfterTodaySummary now
+ * uses) is heavy and more failure-prone than the main range fetch, and
+ * since each window's cache key derives from "today," EVERY window is a
+ * guaranteed cache miss on the first request of a new day — bundling that
+ * inline with the main table risked a platform function timeout taking
+ * down the whole response, including the today..+7 table that has
+ * nothing to do with it. app/appointments/page.tsx now fetches the main
+ * table first, renders it, and only THEN issues this as a second,
+ * independent request — the table never waits on it. The desktop
+ * Scheduling tab never requests this mode, so it's completely unaffected.
+ * See `export const maxDuration` below, sized for this mode's worst case.
  *
  * Range spans are capped at MAX_RANGE_DAYS, checked before any
  * cache/Acuity work — an unbounded caller-supplied range (e.g.
@@ -77,12 +85,6 @@ import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-fut
  *     possiblyTruncated: boolean,
  *     cacheHit: boolean,
  *     asOf: string,                 // ISO 8601
- *     afterToday: {                 // ONLY present when ?afterToday=1 was passed
- *       byColumnId: Record<string, number>,
- *       total: number,
- *       truncatedWindows: string[], // "YYYY-MM-DD..YYYY-MM-DD" per over-100-cap week
- *     } | null,                     // null if the extended fetch itself failed
- *     afterTodayError?: string,     // present only alongside afterToday: null
  *   }
  *
  * `table` is the SAME grouping the cloud dashboard renders
@@ -105,18 +107,41 @@ import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-fut
  * Pfizer column). `counts` (the flat list) uses this same composite
  * name; `columns` is provided purely so a renderer doesn't have to
  * re-parse it. When `configured` is false (no Acuity credentials set
- * yet), the body has no `table`/`afterToday` field — same as
- * `counts: []`, there is nothing to pivot yet.
+ * yet), the body has no `table` field — same as `counts: []`, there is
+ * nothing to pivot yet.
  *
- * `afterToday` (ROUND 4, additive — see the ?afterToday=1 doc above) is
- * a ColumnTotals-shaped summary (lib/appointment-table.ts) of every
- * appointment strictly after today, out to +90ish days, keyed by the
- * SAME column ids `table.columns` uses — a renderer looks values up by
- * `table.columns[i].vaccineName` the same way it already reads
- * `table.rows[i]`. See lib/acuity-future-summary.ts for the chunked-fetch
- * mechanics and ColumnTotals's doc comment for the one documented
- * column-alignment tradeoff.
+ * `?afterTodayOnly=1` RESPONSE CONTRACT (ROUND 4, a completely separate
+ * shape from the one above — see the doc above for why this is its own
+ * mode rather than a field bolted onto the normal response):
+ *
+ *   {
+ *     configured: boolean,
+ *     afterToday: {
+ *       byColumnId: Record<string, number>,
+ *       total: number,
+ *       truncatedWindows: string[], // "YYYY-MM-DD..YYYY-MM-DD" per over-100-cap week
+ *     } | null,                     // null if credentials aren't configured, OR the fetch itself failed
+ *     afterTodayError?: string,     // present only alongside afterToday: null AND configured: true
+ *   }
+ *
+ * `afterToday` is a ColumnTotals-shaped summary (lib/appointment-table.ts)
+ * of every appointment strictly after today, out to +90ish days, keyed by
+ * the SAME column ids the main `table.columns` response uses — a renderer
+ * looks values up by `table.columns[i].vaccineName` the same way it
+ * already reads `table.rows[i]`. See lib/acuity-future-summary.ts for the
+ * chunked-fetch mechanics (including its concurrency limit) and
+ * ColumnTotals's doc comment for the one documented column-alignment
+ * tradeoff.
  */
+
+// Reliability fix (2026-09-05): the `?afterTodayOnly=1` mode can run up to
+// AFTER_TODAY_WINDOW_COUNT Acuity round-trips (fetchAfterTodaySummary,
+// concurrency-limited but still real network I/O) on a full cache-miss
+// day. Next.js/Vercel's default function timeout (10-15s on most plans)
+// is comfortably enough for the normal range request but was cutting it
+// close for that mode — sized generously here since this route now never
+// blocks the main table on that work (see the doc above).
+export const maxDuration = 60;
 
 const MAX_RANGE_DAYS = 31;
 
@@ -160,13 +185,13 @@ function daysInRange(start: string, end: string): string[] {
 }
 
 /**
- * Computes the `afterToday`/`afterTodayError` response fields (ROUND 4,
- * ?afterToday=1 — see this route's doc comment above). Failure-soft by
- * design: the 13-window future fetch is heavier and more failure-prone
- * than the main range fetch, and its data feeds one extra summary row,
- * not the whole page — a failure here degrades that one row rather than
- * failing the entire poll response (which would also take down the
- * today..+7 table this same request already successfully computed).
+ * Computes the `afterToday`/`afterTodayError` response fields for the
+ * `?afterTodayOnly=1` mode (ROUND 4 — see this route's doc comment
+ * above). Failure-soft by design: the 13-window future fetch is heavier
+ * and more failure-prone than the main range fetch — a failure here
+ * degrades to `afterToday: null` + a message rather than a 502, since a
+ * caller (app/appointments/page.tsx) treats this as "couldn't load the
+ * after-today row" and leaves everything else on the page alone.
  */
 async function resolveAfterToday(
   credentials: { userId: string; apiKey: string },
@@ -183,11 +208,38 @@ async function resolveAfterToday(
   }
 }
 
+/**
+ * `?afterTodayOnly=1` — see this route's doc comment for why this is a
+ * fully separate, later request rather than a flag on the main one.
+ * Deliberately skips start/end validation, MAX_RANGE_DAYS, and the whole
+ * table/counts pipeline entirely: this mode has nothing to do with a
+ * caller-supplied range, only with "today" as computed server-side.
+ * `force=1` is honored here too (same FORCE_COOLDOWN_SECONDS floor as the
+ * main mode) so a manual refresh can bypass this summary's cache as well.
+ */
+async function handleAfterTodayOnly(requestUrl: URL): Promise<Response> {
+  const credentials = await getAcuityCredentials();
+  if (!credentials) {
+    return NextResponse.json({ configured: false, afterToday: null });
+  }
+
+  const force = requestUrl.searchParams.get("force") === "1";
+  const cacheSeconds = force ? FORCE_COOLDOWN_SECONDS : env.acuityPollCacheSeconds();
+
+  const { afterToday, afterTodayError } = await resolveAfterToday(credentials, todayInChicago(), cacheSeconds);
+  return NextResponse.json({ configured: true, afterToday, afterTodayError });
+}
+
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
 
   const requestUrl = new URL(request.url);
+
+  if (requestUrl.searchParams.get("afterTodayOnly") === "1") {
+    return handleAfterTodayOnly(requestUrl);
+  }
+
   const startParam = requestUrl.searchParams.get("start");
   const endParam = requestUrl.searchParams.get("end");
 
@@ -225,10 +277,6 @@ export async function GET(request: Request) {
   // A forced request still respects FORCE_COOLDOWN_SECONDS instead of the
   // normal (longer) cache TTL — see that constant's comment.
   const effectiveCacheSeconds = force ? FORCE_COOLDOWN_SECONDS : cacheSeconds;
-  // ROUND 4: opt-in only (see this route's doc comment above) — the
-  // desktop Scheduling tab never sets this, so its request stays exactly
-  // as cheap as before this round.
-  const includeAfterToday = requestUrl.searchParams.get("afterToday") === "1";
 
   const credentials = await getAcuityCredentials();
   if (!credentials) {
@@ -249,9 +297,6 @@ export async function GET(request: Request) {
 
   const cached = await getCachedCounts(start, end, effectiveCacheSeconds);
   if (cached) {
-    const afterTodayFields = includeAfterToday
-      ? await resolveAfterToday(credentials, todayInChicago(), cacheSeconds)
-      : {};
     return NextResponse.json({
       configured: true,
       range: { start, end },
@@ -260,7 +305,6 @@ export async function GET(request: Request) {
       possiblyTruncated: cached.possiblyTruncated,
       cacheHit: true,
       asOf: cached.computedAt,
-      ...afterTodayFields,
     });
   }
 
@@ -277,10 +321,6 @@ export async function GET(request: Request) {
 
     await setCachedCounts(start, end, counts, possiblyTruncated);
 
-    const afterTodayFields = includeAfterToday
-      ? await resolveAfterToday(credentials, todayInChicago(), cacheSeconds)
-      : {};
-
     return NextResponse.json({
       configured: true,
       range: { start, end },
@@ -289,7 +329,6 @@ export async function GET(request: Request) {
       possiblyTruncated,
       cacheHit: false,
       asOf,
-      ...afterTodayFields,
     });
   } catch (err) {
     const message = err instanceof AcuityApiError ? err.message : "Failed to poll Acuity for appointments.";

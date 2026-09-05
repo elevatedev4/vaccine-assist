@@ -29,9 +29,18 @@ type PollResponse = {
   possiblyTruncated: boolean;
   cacheHit: boolean;
   asOf: string | null;
-  // ROUND 4 (V-T9), only present because loadCounts requests ?afterToday=1
-  // — see app/api/acuity/poll/route.ts's RESPONSE CONTRACT doc comment.
-  afterToday?: AfterTodaySummary | null;
+};
+
+// Reliability fix (2026-09-05): the "After today" summary comes from a
+// SEPARATE `?afterTodayOnly=1` request (see app/api/acuity/poll/route.ts's
+// doc comment) fired only after the main table's own request has already
+// resolved — never bundled into the main PollResponse above. The 13-window
+// fetch behind it is heavier and more failure-prone than the main range
+// fetch; decoupling it means the main table renders (and stays usable) even
+// if this one is slow or fails outright.
+type AfterTodayResponse = {
+  configured: boolean;
+  afterToday: AfterTodaySummary | null;
   afterTodayError?: string;
 };
 
@@ -337,6 +346,16 @@ export default function AppointmentsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // "After today" state is entirely separate from `poll` (reliability fix,
+  // 2026-09-05) — its own request, its own loading flag, its own error,
+  // so a slow or failed after-today fetch never blocks or clears the main
+  // table. `afterToday` stays `null` until the first successful fetch
+  // lands; the render below shows a loading placeholder ("…") rather than
+  // a misleading zero while that's true.
+  const [afterToday, setAfterToday] = useState<AfterTodaySummary | null>(null);
+  const [afterTodayLoading, setAfterTodayLoading] = useState(false);
+  const [afterTodayError, setAfterTodayError] = useState<string | undefined>(undefined);
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     try {
@@ -359,10 +378,7 @@ export default function AppointmentsPage() {
     try {
       const { start, end } = nextSevenDayRange();
       const forceParam = options?.force ? "&force=1" : "";
-      // ROUND 4 (V-T9): this page is the one caller that needs the
-      // "After today" summary row, so it's the one caller that opts into
-      // the heavier 13-window fetch — see the poll route's doc comment.
-      const response = await fetch(`/api/acuity/poll?start=${start}&end=${end}${forceParam}&afterToday=1`, {
+      const response = await fetch(`/api/acuity/poll?start=${start}&end=${end}${forceParam}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json();
@@ -378,9 +394,48 @@ export default function AppointmentsPage() {
     }
   }, []);
 
+  // Reliability fix (2026-09-05): a SEPARATE, later request — never part
+  // of loadCounts above — so the (heavier, more failure-prone) 13-window
+  // after-today fetch can never make the main table wait on it. See
+  // app/api/acuity/poll/route.ts's `?afterTodayOnly=1` doc comment.
+  const loadAfterToday = useCallback(async (token: string, options?: { force?: boolean }) => {
+    setAfterTodayLoading(true);
+    setAfterTodayError(undefined);
+    try {
+      const forceParam = options?.force ? "&force=1" : "";
+      const response = await fetch(`/api/acuity/poll?afterTodayOnly=1${forceParam}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = (await response.json()) as AfterTodayResponse | { error: string };
+      if (!response.ok) {
+        setAfterTodayError("error" in data ? data.error : "Could not load the after-today summary.");
+        return;
+      }
+      if ("error" in data) return; // unreachable in practice, satisfies the union
+      setAfterToday(data.afterToday);
+      setAfterTodayError(data.afterTodayError);
+    } catch (err) {
+      setAfterTodayError(err instanceof Error ? err.message : "Could not load the after-today summary.");
+    } finally {
+      setAfterTodayLoading(false);
+    }
+  }, []);
+
+  // Kicks off the main table fetch and, once it settles, the separate
+  // after-today fetch — "renders the main table first, then issues a
+  // second fetch" (reliability fix): loadCounts's own setPoll call already
+  // triggers a render before loadAfterToday's request even starts.
+  const loadAll = useCallback(
+    async (token: string, options?: { force?: boolean }) => {
+      await loadCounts(token, options);
+      void loadAfterToday(token, options);
+    },
+    [loadCounts, loadAfterToday]
+  );
+
   useEffect(() => {
-    if (session) void loadCounts(session.accessToken);
-  }, [session, loadCounts]);
+    if (session) void loadAll(session.accessToken);
+  }, [session, loadAll]);
 
   // Auto-refresh every AUTO_REFRESH_INTERVAL_MS while signed in — cleared
   // on sign-out (session becomes null, effect re-runs and tears down the
@@ -389,10 +444,10 @@ export default function AppointmentsPage() {
     if (!session) return;
     const token = session.accessToken;
     const intervalId = setInterval(() => {
-      void loadCounts(token);
+      void loadAll(token);
     }, AUTO_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [session, loadCounts]);
+  }, [session, loadAll]);
 
   async function handleSignIn(event: FormEvent) {
     event.preventDefault();
@@ -426,6 +481,8 @@ export default function AppointmentsPage() {
       setSession(null);
       setPoll(null);
       setLoadError(null);
+      setAfterToday(null);
+      setAfterTodayError(undefined);
     }
   }
 
@@ -483,14 +540,13 @@ export default function AppointmentsPage() {
   const table = buildAppointmentTable(poll?.counts ?? [], days);
   const headerRows = buildHeaderRows(table.columns);
   // Three summary rows (V-T9 answer) — "Today" and "Next 7 days" are pure
-  // slices of this same 8-day table (see computeTodayAndNext7Summaries's
-  // doc comment for the today..+6-vs-+7 judgment call); "After today"
-  // comes from the separate, further-out chunked fetch the poll route
-  // only runs when asked via ?afterToday=1 (see loadCounts above) — it's
-  // `null` while loading/unconfigured and stays all-zero in that case
-  // rather than blocking the rest of the table from rendering.
+  // slices of this same 8-day table, cleanly partitioning it (see
+  // computeTodayAndNext7Summaries's doc comment for the partition
+  // semantics); "After today" comes from the separate `afterToday` state
+  // (loadAfterToday above), populated by its own later, independent
+  // request — see that state's doc comment for why it's never part of
+  // `poll`.
   const { today: todaySummary, next7: next7Summary } = computeTodayAndNext7Summaries(table);
-  const afterTodaySummary = poll?.afterToday ?? null;
   // Equal-width data columns (V-T-schedule-table ROUND 2: "make it look
   // like a chart") via table-layout: fixed + an explicit <colgroup> — the
   // Date and Total columns get their own (narrower/wider) share, every
@@ -515,7 +571,7 @@ export default function AppointmentsPage() {
         <button
           style={styles.button}
           type="button"
-          onClick={() => void loadCounts(session.accessToken, { force: true })}
+          onClick={() => void loadAll(session.accessToken, { force: true })}
           disabled={loading}
         >
           {loading ? "Refreshing…" : "Refresh"}
@@ -544,15 +600,15 @@ export default function AppointmentsPage() {
         </p>
       )}
 
-      {poll?.configured && poll.afterToday && poll.afterToday.truncatedWindows.length > 0 && (
+      {afterToday && afterToday.truncatedWindows.length > 0 && (
         <p style={styles.warning}>
-          100+ appointments in one or more future weeks ({poll.afterToday.truncatedWindows.join(", ")}) — &quot;After
+          100+ appointments in one or more future weeks ({afterToday.truncatedWindows.join(", ")}) — &quot;After
           today&quot; may be incomplete for those weeks.
         </p>
       )}
 
-      {poll?.configured && poll.afterTodayError && (
-        <p style={styles.warning}>Could not compute &quot;After today&quot;: {poll.afterTodayError}</p>
+      {afterTodayError && (
+        <p style={styles.warning}>Could not compute &quot;After today&quot;: {afterTodayError}</p>
       )}
 
       {poll && poll.configured && (
@@ -571,8 +627,11 @@ export default function AppointmentsPage() {
         // (Today / Next 7 days / After today) sit above the day-by-day
         // breakdown (today + the following 7 days, 8 rows) — see
         // computeTodayAndNext7Summaries in lib/appointment-table.ts for
-        // "Today"/"Next 7 days", and poll.afterToday (populated via
-        // ?afterToday=1, lib/acuity-future-summary.ts) for "After today".
+        // "Today"/"Next 7 days", and the separate `afterToday` state
+        // (loadAfterToday above, lib/acuity-future-summary.ts) for "After
+        // today" — it shows a "…"/"—" placeholder instead of 0 until its
+        // own independent fetch actually lands, so a slow or failed
+        // after-today fetch never LOOKS like "zero appointments."
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <colgroup>
@@ -638,10 +697,12 @@ export default function AppointmentsPage() {
               </tr>
               <tr>
                 <td style={styles.sumRowLabelLast}>After today</td>
-                <td style={styles.sumRowCellLast}>{afterTodaySummary?.total ?? 0}</td>
+                <td style={styles.sumRowCellLast}>
+                  {afterToday ? afterToday.total : afterTodayLoading ? "…" : "—"}
+                </td>
                 {table.columns.map((column) => (
                   <td key={column.vaccineName} style={summaryCellStyle(column.group, true)}>
-                    {afterTodaySummary?.byColumnId[column.vaccineName] ?? 0}
+                    {afterToday ? (afterToday.byColumnId[column.vaccineName] ?? 0) : afterTodayLoading ? "…" : "—"}
                   </td>
                 ))}
               </tr>
