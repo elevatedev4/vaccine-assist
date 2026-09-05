@@ -9,7 +9,6 @@ import {
   computeHeatmapMaxes,
   computeTodayAndNext7Summaries,
   heatmapCellBackground,
-  heatmapTextColor,
   type AppointmentTableColumn,
   type ColumnTotals,
   type VaccineCount,
@@ -198,9 +197,9 @@ const styles = {
  * of the table (leave the headings colored). Instead, color the background
  * a gradient based on the # of vaccines scheduled." So `data` tints are
  * GONE — every data cell's background now comes from
- * heatmapCellBackground/heatmapTextColor (lib/appointment-table.ts)
- * instead, and only the group/sub-group/leaf HEADER cells still use this
- * map (see groupHeaderStyle/subHeaderStyle/leafHeaderStyle below).
+ * heatmapCellBackground (lib/appointment-table.ts) instead, and only the
+ * group/sub-group/leaf HEADER cells still use this map (see
+ * groupHeaderStyle/subHeaderStyle/leafHeaderStyle below).
  */
 const GROUP_COLORS: Record<AppointmentTableColumn["group"], { header: string }> = {
   COVID: { header: "#dbe7f9" },
@@ -229,27 +228,23 @@ function leafHeaderStyle(group: AppointmentTableColumn["group"]) {
   return { ...styles.thLeaf, ...COLUMN_DIVIDER, background: GROUP_COLORS[group].header };
 }
 
-// ROUND 6: `background`/`textColor` come from the heatmap functions in
-// lib/appointment-table.ts, computed by the caller against whichever of
+// ROUND 6: `background` comes from heatmapCellBackground
+// (lib/appointment-table.ts), computed by the caller against whichever of
 // the two independent scales the row belongs to (see dailyScaleMax /
 // weeklyScaleMax in AppointmentsPage) — no more per-GROUP tint on data
 // cells, only on headers (groupHeaderStyle/subHeaderStyle/leafHeaderStyle).
-function dataCellStyle(isZero: boolean, background: string, textColor?: string) {
-  return {
-    ...(isZero ? styles.tdZero : styles.td),
-    ...COLUMN_DIVIDER,
-    background,
-    ...(textColor ? { color: textColor } : {}),
-  };
+// Cell text is always the style's own default (black-ish for a nonzero
+// cell, dimmed grey for a zero one, per styles.td/tdZero) — no text-color
+// override (review fix, 2026-09-05: HEATMAP_MAX_INTENSITY in
+// lib/appointment-table.ts is tuned so black text stays WCAG-AA-legible
+// at every ratio, so no switch is needed; see that constant's doc
+// comment).
+function dataCellStyle(isZero: boolean, background: string) {
+  return { ...(isZero ? styles.tdZero : styles.td), ...COLUMN_DIVIDER, background };
 }
 
-function summaryCellStyle(isLastSummaryRow: boolean, background: string, textColor?: string) {
-  return {
-    ...(isLastSummaryRow ? styles.sumRowCellLast : styles.sumRowCell),
-    ...COLUMN_DIVIDER,
-    background,
-    ...(textColor ? { color: textColor } : {}),
-  };
+function summaryCellStyle(isLastSummaryRow: boolean, background: string) {
+  return { ...(isLastSummaryRow ? styles.sumRowCellLast : styles.sumRowCell), ...COLUMN_DIVIDER, background };
 }
 
 // One <th> to render, with its col/row span — see buildHeaderRows.
@@ -354,7 +349,7 @@ function buildHeaderRows(columns: AppointmentTableColumn[]): {
 // breakdown row uses this same max, never the Next-7/After-today one.
 function renderCount(column: AppointmentTableColumn, n: number, dailyScaleMax: number) {
   return (
-    <td key={column.vaccineName} style={dataCellStyle(n === 0, heatmapCellBackground(n, dailyScaleMax), heatmapTextColor(n, dailyScaleMax))}>
+    <td key={column.vaccineName} style={dataCellStyle(n === 0, heatmapCellBackground(n, dailyScaleMax))}>
       {n}
     </td>
   );
@@ -696,8 +691,8 @@ export default function AppointmentsPage() {
         //
         // ROUND 6 heatmap (V-T12): every DATA cell's background is now a
         // white -> blue gradient by count instead of a per-group tint
-        // (heatmapCellBackground/heatmapTextColor, lib/appointment-table.ts),
-        // on TWO INDEPENDENT SCALES — dailyScaleMax for Today + the daily
+        // (heatmapCellBackground, lib/appointment-table.ts), on TWO
+        // INDEPENDENT SCALES — dailyScaleMax for Today + the daily
         // breakdown, weeklyScaleMax for Next 7 days + After today (see
         // computeHeatmapMaxes above). The Total column and the
         // "Scheduled date" column are deliberately EXCLUDED from both
@@ -760,10 +755,7 @@ export default function AppointmentsPage() {
                 {table.columns.map((column) => {
                   const count = todaySummary.byColumnId[column.vaccineName] ?? 0;
                   return (
-                    <td
-                      key={column.vaccineName}
-                      style={summaryCellStyle(false, heatmapCellBackground(count, dailyScaleMax), heatmapTextColor(count, dailyScaleMax))}
-                    >
+                    <td key={column.vaccineName} style={summaryCellStyle(false, heatmapCellBackground(count, dailyScaleMax))}>
                       {count}
                     </td>
                   );
@@ -775,10 +767,7 @@ export default function AppointmentsPage() {
                 {table.columns.map((column) => {
                   const count = next7Summary.byColumnId[column.vaccineName] ?? 0;
                   return (
-                    <td
-                      key={column.vaccineName}
-                      style={summaryCellStyle(false, heatmapCellBackground(count, weeklyScaleMax), heatmapTextColor(count, weeklyScaleMax))}
-                    >
+                    <td key={column.vaccineName} style={summaryCellStyle(false, heatmapCellBackground(count, weeklyScaleMax))}>
                       {count}
                     </td>
                   );
@@ -795,9 +784,8 @@ export default function AppointmentsPage() {
                   // rather than guessing a background off a placeholder.
                   const count = afterToday ? (afterToday.byColumnId[column.vaccineName] ?? 0) : null;
                   const background = count !== null ? heatmapCellBackground(count, weeklyScaleMax) : "#ffffff";
-                  const textColor = count !== null ? heatmapTextColor(count, weeklyScaleMax) : undefined;
                   return (
-                    <td key={column.vaccineName} style={summaryCellStyle(true, background, textColor)}>
+                    <td key={column.vaccineName} style={summaryCellStyle(true, background)}>
                       {count !== null ? count : afterTodayLoading ? "…" : "—"}
                     </td>
                   );

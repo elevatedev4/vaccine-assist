@@ -6,7 +6,6 @@ import {
   computeTodayAndNext7Summaries,
   compositeNameToMatchableBase,
   heatmapCellBackground,
-  heatmapTextColor,
   type AppointmentTableColumn,
 } from "@/lib/appointment-table";
 
@@ -781,19 +780,54 @@ describe("heatmapCellBackground", () => {
   });
 });
 
-describe("heatmapTextColor", () => {
-  it("leaves the default text color alone (undefined) for a zero count or an all-zero (max === 0) scale", () => {
-    expect(heatmapTextColor(0, 10)).toBeUndefined();
-    expect(heatmapTextColor(0, 0)).toBeUndefined();
-    expect(heatmapTextColor(5, 0)).toBeUndefined();
+// Review fix (2026-09-05, reviewer's numerically-verified finding): an
+// earlier revision switched cell text to white once the RAW count/max
+// ratio crossed 0.62, but the background itself renders at
+// ratio*HEATMAP_MAX_INTENSITY (a fraction of that ratio) — so a band of
+// cells (roughly raw ratio 0.62-0.88) flipped to white text sitting on a
+// background still light enough that WHITE text only hit ~2.4-3.4:1
+// contrast there, worse than black text's own ~5:1 in that same band. The
+// fix removed the switch entirely — cell text is always the surrounding
+// style's own default (black-ish/dimmed-grey) — and HEATMAP_MAX_INTENSITY
+// was tuned down so black text clears WCAG AA's 4.5:1 floor at EVERY
+// ratio from 0 to 1, not just most of them. This regression test computes
+// WCAG relative luminance directly from heatmapCellBackground's own
+// output (not the intensity constant) so it fails again if the peak color
+// or intensity cap is ever tuned darker without re-checking contrast.
+describe("heatmap contrast (WCAG AA, black text)", () => {
+  function relativeLuminance(r: number, g: number, b: number): number {
+    const channel = (c: number) => {
+      const srgb = c / 255;
+      return srgb <= 0.03928 ? srgb / 12.92 : Math.pow((srgb + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  }
+
+  function contrastRatioVsBlack(background: string): number {
+    const match = /rgb\((\d+), (\d+), (\d+)\)/.exec(background);
+    if (!match) return Infinity; // "#ffffff" (a zero cell) — max possible contrast
+    const [, r, g, b] = match.map(Number) as unknown as [string, number, number, number];
+    const backgroundLuminance = relativeLuminance(r, g, b);
+    // Black text has relative luminance 0 — WCAG contrast ratio formula:
+    // (L_lighter + 0.05) / (L_darker + 0.05).
+    return (backgroundLuminance + 0.05) / (0 + 0.05);
+  }
+
+  it("stays at or above the 4.5:1 WCAG AA floor for black text, across a full sweep of count/max ratios", () => {
+    const max = 100;
+    for (let ratio = 0.1; ratio <= 1.0001; ratio += 0.1) {
+      const count = Math.round(ratio * max);
+      const background = heatmapCellBackground(count, max);
+      expect(contrastRatioVsBlack(background)).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
-  it("leaves the default text color alone for a low/mid count that isn't dark enough to need white text", () => {
-    expect(heatmapTextColor(1, 10)).toBeUndefined();
-  });
-
-  it("switches to white text once the count is close enough to max that the background is dark", () => {
-    expect(heatmapTextColor(10, 10)).toBe("#ffffff");
+  it("has its worst (lowest) contrast exactly at count === max, confirming the sweep above covers the true worst case", () => {
+    const max = 100;
+    const contrasts = [0.25, 0.5, 0.75, 1.0].map((ratio) => contrastRatioVsBlack(heatmapCellBackground(ratio * max, max)));
+    for (let i = 1; i < contrasts.length; i++) {
+      expect(contrasts[i]).toBeLessThanOrEqual(contrasts[i - 1]);
+    }
   });
 });
 

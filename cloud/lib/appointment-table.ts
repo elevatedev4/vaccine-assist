@@ -712,30 +712,42 @@ export function computeTodayAndNext7Summaries(table: AppointmentTable): {
  * per-cell `count`/`max` and turns the returned color into a cell style:
  *
  *   - heatmapCellBackground(count, max): the actual white -> blue ramp.
- *   - heatmapTextColor(count, max): "#ffffff" once the background gets
- *     dark enough that default (black-ish) cell text would lose contrast,
- *     else undefined (let the cell's normal text color show through).
  *   - computeHeatmapMaxes(...): the "two independent scales" split Will
  *     asked for — see its own doc comment.
  *
  * A single hue ramp (white -> a medium blue) is used for BOTH scales —
  * only the max each scale normalizes against differs, never the hue —
  * per Will's own phrasing ("Use a single hue ramp").
+ *
+ * Cell text is ALWAYS plain black/default (review fix, 2026-09-05 —
+ * reviewer's numerically-verified finding): an earlier revision switched
+ * text to white once a cell's raw count/max ratio crossed 0.62, but that
+ * compared the RAW ratio while the background itself renders at
+ * ratio*HEATMAP_MAX_INTENSITY — so cells in roughly the 0.62-0.88 raw-ratio
+ * band flipped to white text sitting on a still-light blue background
+ * (WCAG contrast ~2.4-3.4:1, an actual regression vs. black text's own
+ * ~5.1:1 there). HEATMAP_MAX_INTENSITY is tuned below so black text stays
+ * ≥4.5:1 (WCAG AA) against the background at EVERY ratio from 0 to 1 —
+ * see the "heatmap contrast" test sweep in tests/appointment-table.test.ts,
+ * which recomputes WCAG relative luminance directly so it keeps failing if
+ * this constant (or the peak color) is ever tuned darker again — so no
+ * text-color switch is needed at all; there's deliberately no
+ * heatmapTextColor function.
  */
 
 const HEATMAP_BASE_RGB = { r: 255, g: 255, b: 255 } as const;
 // Full-saturation target the ramp interpolates toward — never actually
 // reached at count===max because HEATMAP_MAX_INTENSITY below caps how far
 // toward it a cell is allowed to go, so the darkest cell in any scale
-// still leaves plain black cell text legible without switching color.
+// still leaves plain black cell text legible.
 const HEATMAP_PEAK_RGB = { r: 30, g: 64, b: 175 } as const;
 // Cap on how far a cell's color is allowed to travel from white toward
 // HEATMAP_PEAK_RGB, even at count===max (V-T12: "cap the darkest step").
-const HEATMAP_MAX_INTENSITY = 0.78;
-// Belt-and-suspenders on top of that cap (V-T12: "... or switch text
-// color") — once a cell's ratio-to-max crosses this line, its background
-// is dark enough that white text reads more reliably than black.
-const HEATMAP_TEXT_SWITCH_RATIO = 0.62;
+// 0.70 keeps black-text contrast at the darkest possible cell around
+// 5.08:1 — comfortably above the 4.5:1 WCAG AA floor, with margin for
+// integer rgb() rounding — see the doc comment above and the contrast
+// regression test.
+const HEATMAP_MAX_INTENSITY = 0.7;
 
 /**
  * count<=0 or max<=0 (an all-zero scale — no division by zero) always
@@ -749,18 +761,6 @@ export function heatmapCellBackground(count: number, max: number): string {
   const g = Math.round(HEATMAP_BASE_RGB.g + (HEATMAP_PEAK_RGB.g - HEATMAP_BASE_RGB.g) * ratio);
   const b = Math.round(HEATMAP_BASE_RGB.b + (HEATMAP_PEAK_RGB.b - HEATMAP_BASE_RGB.b) * ratio);
   return `rgb(${r}, ${g}, ${b})`;
-}
-
-/**
- * Companion to heatmapCellBackground — same inputs, same zero/no-max
- * guard, but returns a text-color override instead of a background.
- * `undefined` means "leave the cell's own text color alone" (a zero cell
- * keeps its dimmed grey from tdZero; a light/mid cell keeps default black).
- */
-export function heatmapTextColor(count: number, max: number): string | undefined {
-  if (count <= 0 || max <= 0) return undefined;
-  const ratio = Math.min(count / max, 1);
-  return ratio >= HEATMAP_TEXT_SWITCH_RATIO ? "#ffffff" : undefined;
 }
 
 /**
@@ -790,8 +790,8 @@ export function heatmapTextColor(count: number, max: number): string | undefined
  *
  * An all-zero input (no data loaded yet, or a genuinely empty schedule)
  * returns {0, 0} rather than throwing or dividing by zero — callers pass
- * that straight into heatmapCellBackground/heatmapTextColor, whose own
- * `max <= 0` guard already renders plain white for exactly this case.
+ * that straight into heatmapCellBackground, whose own `max <= 0` guard
+ * already renders plain white for exactly this case.
  */
 export function computeHeatmapMaxes(
   table: AppointmentTable,
