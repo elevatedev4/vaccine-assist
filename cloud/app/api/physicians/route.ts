@@ -62,6 +62,17 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
+      // Postgres unique_violation (physician_alternate_id_key, see
+      // supabase/migrations/0007_physicians.sql) — surfaced as a clear
+      // 409 instead of a generic 500, same reasoning as any other
+      // "this already exists" conflict.
+      if (error.code === "23505") {
+        return NextResponse.json(
+          { error: `A physician with alternate ID "${alternate_id.trim()}" already exists.` },
+          { status: 409 }
+        );
+      }
+
       console.error("POST /api/physicians: Supabase error", error);
       return NextResponse.json({ error: "Failed to create physician." }, { status: 500 });
     }

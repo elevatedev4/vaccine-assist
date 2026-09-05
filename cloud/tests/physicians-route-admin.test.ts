@@ -88,6 +88,33 @@ describe("POST /api/physicians", () => {
     expect(insert).toHaveBeenCalledWith({ display_name: "Doe, Jane", alternate_id: "ALT2" });
   });
 
+  it("returns 409 with a clear message on a duplicate alternate_id (unique_violation)", async () => {
+    const single = vi.fn(async () => ({
+      data: null,
+      error: { code: "23505", message: "duplicate key value violates unique constraint \"physician_alternate_id_key\"" },
+    }));
+    const select = vi.fn(() => ({ single }));
+    const insert = vi.fn(() => ({ select }));
+    const from = vi.fn((table: string) => {
+      if (table !== "physician") throw new Error(`unexpected table ${table}`);
+      return { insert };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(
+      authedRequest("/api/physicians", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name: "Doe, Jane", alternate_id: "ALT2" }),
+      })
+    );
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toContain("ALT2");
+    expect(body.error).toContain("already exists");
+  });
+
   it("rejects a missing display_name", async () => {
     const response = await POST(
       authedRequest("/api/physicians", {
