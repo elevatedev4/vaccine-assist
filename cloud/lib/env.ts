@@ -41,6 +41,14 @@ export const env = {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
   },
   sesWebhookSecret: () => readOptional("SES_WEBHOOK_SECRET"),
+  // SNS topic ARN the SES-receipt SubscriptionConfirmation/Notification
+  // posts must carry (app/api/webhooks/ses/route.ts). Left unset is
+  // accepted (with a logged warning) as a bootstrapping allowance — Will
+  // creates the SNS topic/subscription AFTER this route is deployed
+  // (chicken-and-egg: he can't paste an ARN that doesn't exist yet when
+  // setting env vars for the first deploy), so day-one traffic is
+  // trusted on the URL secret alone until he sets this.
+  sesSnsTopicArn: () => readOptional("SES_SNS_TOPIC_ARN"),
   // --- Outbound email (SES) — see lib/email.ts. Same pattern as
   // ~/claude/elevate and ~/claude/clarify's lib/email.ts (Will, V-T3 item
   // 5: "Use amazon SES for email like we use in other apps"), but reading
