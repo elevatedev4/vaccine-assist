@@ -1,0 +1,136 @@
+<UserControl x:Class="VaccineAssist.Desktop.Views.PhysiciansView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Loaded="PhysiciansView_OnLoaded">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="12"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="16"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="Physicians — protocol physicians and vaccine/age assignment rules" FontSize="18" FontWeight="Bold"/>
+
+            <StackPanel Grid.Row="2" Orientation="Horizontal">
+                <Button Content="Refresh" Command="{Binding LoadCommand}" Padding="8,2"/>
+                <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="12,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Add a physician -->
+            <Border Grid.Row="4" BorderBrush="Gray" BorderThickness="1" Padding="8">
+                <StackPanel>
+                    <TextBlock Text="Add a physician" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="6"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBox Grid.Column="0" Text="{Binding NewPhysicianDisplayName, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Physician display name, e.g. &quot;Kim, David&quot;"/>
+                        <TextBox Grid.Column="2" Text="{Binding NewPhysicianAlternateId, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Pioneer alternate ID (no spaces)"/>
+                        <!-- Info icon / tooltip (Will's explicit ask): how to set an
+                             alternate ID up on the Pioneer side in the first place. -->
+                        <TextBlock Grid.Column="4" Text="ⓘ" FontWeight="Bold" VerticalAlignment="Center" Cursor="Help"
+                                   ToolTip="Add an alternate ID in Pioneer first: Prescriber profile &gt; Alternate ID &gt; enter an ID of your choice (no spaces). Enter that same ID here."/>
+                        <Button Grid.Column="6" Content="Add physician" Command="{Binding AddPhysicianCommand}" Padding="8,2"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <DataGrid Grid.Row="6" ItemsSource="{Binding Physicians}" AutoGenerateColumns="False" IsReadOnly="True" MaxHeight="180">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Display name" Binding="{Binding DisplayName}" Width="2*"/>
+                    <DataGridTextColumn Header="Alternate ID" Binding="{Binding AlternateId}" Width="*"/>
+                    <DataGridTemplateColumn Header="" Width="Auto">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Button Content="Delete" Padding="6,0"
+                                        Command="{Binding DataContext.DeletePhysicianCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                        CommandParameter="{Binding}"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <!-- Add a rule -->
+            <Border Grid.Row="8" BorderBrush="Gray" BorderThickness="1" Padding="8">
+                <StackPanel>
+                    <TextBlock Text="Assign a vaccine/age range to a physician" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Physician:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <ComboBox Width="180" ItemsSource="{Binding Physicians}" DisplayMemberPath="DisplayName"
+                                  SelectedItem="{Binding NewRulePhysician}"/>
+                        <CheckBox Content="Any vaccine (fallback rule)" Margin="16,0,0,0" VerticalAlignment="Center"
+                                  IsChecked="{Binding NewRuleIsAnyVaccine}"/>
+                        <TextBlock Text="Vaccine:" VerticalAlignment="Center" Margin="16,0,6,0"/>
+                        <!-- Selection here is ignored by AddRuleCommand whenever
+                             "Any vaccine" is checked (see PhysiciansViewModel.AddRuleAsync) —
+                             not auto-disabled to avoid needing a new IValueConverter
+                             for one field. -->
+                        <ComboBox Width="180" ItemsSource="{Binding Vaccines}" DisplayMemberPath="Name"
+                                  SelectedItem="{Binding NewRuleVaccine}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Min age:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBox Width="60" Text="{Binding NewRuleMinAgeText, UpdateSourceTrigger=PropertyChanged}" ToolTip="Blank = no floor"/>
+                        <TextBlock Text="Max age:" VerticalAlignment="Center" Margin="16,0,6,0"/>
+                        <TextBox Width="60" Text="{Binding NewRuleMaxAgeText, UpdateSourceTrigger=PropertyChanged}" ToolTip="Blank = no ceiling"/>
+                        <TextBlock Text="Priority:" VerticalAlignment="Center" Margin="16,0,6,0"/>
+                        <TextBox Width="60" Text="{Binding NewRulePriorityText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Lower number wins a tie between two rules covering the same vaccine (or both wildcard)"/>
+                        <Button Content="Add rule" Command="{Binding AddRuleCommand}" Padding="8,2" Margin="16,0,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Grid.Row="10" Text="A specific-vaccine rule always outranks a fallback (&quot;any vaccine&quot;) rule for the same age, regardless of priority." FontStyle="Italic"/>
+
+            <!-- Physician/Vaccine columns show the raw id, not a resolved
+                 name: PhysicianRule only carries physician_id/vaccine_id
+                 (see Models/PhysicianRule.cs) and a DataGrid cell binds
+                 against the ROW item, not this view's DataContext, so
+                 resolving to PhysiciansViewModel.PhysicianDisplayNameFor/
+                 VaccineDisplayNameFor per row would need a converter this
+                 pass didn't add. Known rough edge — the row is still
+                 fully identifiable/deletable, just not as readable as it
+                 could be. -->
+            <DataGrid Grid.Row="12" ItemsSource="{Binding PhysicianRules}" AutoGenerateColumns="False" IsReadOnly="True" MaxHeight="220">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Physician (id)" Binding="{Binding PhysicianId}" Width="1.5*"/>
+                    <DataGridTextColumn Header="Vaccine (id, blank = any)" Binding="{Binding VaccineId}" Width="1.5*"/>
+                    <DataGridTextColumn Header="Min age" Binding="{Binding MinAge}" Width="*"/>
+                    <DataGridTextColumn Header="Max age" Binding="{Binding MaxAge}" Width="*"/>
+                    <DataGridTextColumn Header="Priority" Binding="{Binding Priority}" Width="*"/>
+                    <DataGridTemplateColumn Header="" Width="Auto">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Button Content="Delete" Padding="6,0"
+                                        Command="{Binding DataContext.DeleteRuleCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                        CommandParameter="{Binding}"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

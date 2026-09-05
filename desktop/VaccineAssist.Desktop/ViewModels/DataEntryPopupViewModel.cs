@@ -665,8 +665,8 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         StepLog.Clear();
         try
         {
-            var payload = await BuildPayloadAsync();
-            if (payload is null) return; // BuildPayloadAsync already set ErrorMessage
+            var payload = await BuildLivePayloadAsync();
+            if (payload is null) return; // BuildLivePayloadAsync already set ErrorMessage
 
             var context = new PioneerEntryStepContext(payload, IsDryRun, message =>
             {
@@ -743,8 +743,11 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// full tree walk is real, if brief, UIA/COM work — see UiaTreeDumper's
     /// own doc comment) and surfaces the result the same way every other
     /// command here does (StatusMessage on success, ErrorMessage on
-    /// failure), plus copies the saved file's path to the clipboard so Will
-    /// doesn't have to navigate to %AppData% by hand to find it.</summary>
+    /// failure), plus copies the DUMP TEXT ITSELF to the clipboard (Will,
+    /// 2026-09-05: "copy the log it generates to the clipboard so I don't
+    /// have to go find it in the file. That's a waste of time.") — the
+    /// file is still written to %AppData% too, this just saves the extra
+    /// trip to go find it.</summary>
     private async Task DumpUiaTreeAsync()
     {
         IsBusy = true;
@@ -752,9 +755,9 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         try
         {
             var outcome = await Task.Run(UiaTreeDumper.DumpAttachedPioneerWindow);
-            if (outcome.Success && outcome.FilePath is not null)
+            if (outcome.Success && outcome.Content is not null)
             {
-                _clipboardService.SetText(outcome.FilePath);
+                _clipboardService.SetText(outcome.Content);
                 StatusMessage = outcome.Message;
             }
             else
@@ -796,6 +799,14 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// for "no unexpired lot exists right now", which is a fresh check
     /// against the API here, not a trust of the (possibly stale)
     /// IsLotExpiredOrMissing/SkipLotAndExpiration view-model state.
+    ///
+    /// Deliberately does NOT resolve a physician — this is also the
+    /// clipboard-fallback path (CopyToClipboardAsync), whose
+    /// ToClipboardPayload() output never included physician info even in
+    /// the old macro era, and staff without a Physicians rule set up yet
+    /// must still be able to fall back to copy/paste. See
+    /// BuildLivePayloadAsync for the physician-resolving payload
+    /// EnterIntoPioneerAsync actually uses.
     /// </summary>
     private async Task<VaccineEntryPayload?> BuildPayloadAsync()
     {
@@ -805,20 +816,64 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             return null;
         }
 
+        var ndc = SelectedVaccine.Ndc ?? "";
         var activeLots = await _apiService.GetLotsAsync(SelectedVaccine.Id, status: "active");
         var lot = activeLots.Where(l => !l.IsExpired).OrderBy(l => l.Expiration).FirstOrDefault();
 
         if (lot is not null)
         {
-            return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText());
+            return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText(), Ndc: ndc);
         }
 
         if (SkipLotAndExpiration)
         {
-            return new VaccineEntryPayload(SelectedVaccine.ShortCode, "", "", AdminSite.ToDisplayText(), SkipLotAndExpiration: true);
+            return new VaccineEntryPayload(SelectedVaccine.ShortCode, "", "", AdminSite.ToDisplayText(), Ndc: ndc, SkipLotAndExpiration: true);
         }
 
         ErrorMessage = $"No unexpired lot on file for {SelectedVaccine.Name} — add one below, or choose \"Leave lot/expiration blank\" to continue without one.";
         return null;
+    }
+
+    /// <summary>
+    /// PHYSICIAN RESOLUTION (Will, 2026-09-05): the payload actually used
+    /// for a live/dry-run PioneerRx entry sequence — BuildPayloadAsync
+    /// (vaccine + lot only) PLUS a resolved protocol physician, fresh
+    /// every time from the CURRENT vaccine + age via ResolvePhysicianAsync
+    /// (never cached on the view-model). No matching rule BLOCKS entry
+    /// entirely (returns null, same "never build an unsafe payload"
+    /// posture BuildPayloadAsync already uses for a missing lot) with a
+    /// message pointing staff at the Physicians settings tab, rather than
+    /// typing an empty/wrong alternate ID into a real patient's PioneerRx
+    /// record. Physician is resolved BEFORE the lot lookup so a missing
+    /// rule is reported first — it's the more likely one-time setup gap,
+    /// while a missing lot already has its own dedicated gate/add-lot flow
+    /// the popup surfaces separately.
+    /// </summary>
+    private async Task<VaccineEntryPayload?> BuildLivePayloadAsync()
+    {
+        if (SelectedVaccine is null)
+        {
+            ErrorMessage = "Select a vaccine first.";
+            return null;
+        }
+
+        if (PatientAgeYears is not int age)
+        {
+            ErrorMessage = "Enter the patient's age first.";
+            return null;
+        }
+
+        var physician = await _apiService.ResolvePhysicianAsync(SelectedVaccine.Id, age);
+        if (physician is null)
+        {
+            ErrorMessage = $"No protocol physician configured for {SelectedVaccine.Name} at age {age} — " +
+                "add one (or a matching rule) in the Physicians settings tab, then try again.";
+            return null;
+        }
+
+        var payload = await BuildPayloadAsync();
+        if (payload is null) return null; // BuildPayloadAsync already set ErrorMessage (lot issue)
+
+        return payload with { PhysicianAlternateId = physician.AlternateId };
     }
 }

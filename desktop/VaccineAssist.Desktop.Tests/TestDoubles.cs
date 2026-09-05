@@ -108,6 +108,17 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     public int EvaluateEligibilityCallCount { get; private set; }
     public List<(Guid VaccineId, string LotNumber, DateOnly Expiration, string? Note)> CreatedLots { get; } = new();
 
+    /// <summary>
+    /// Defaults to a resolved physician so every EXISTING test that
+    /// exercises BuildPayloadAsync/EnterIntoPioneerAsync (written before
+    /// the physician-resolution gate existed) keeps passing unchanged —
+    /// only tests specifically covering the "no physician configured"
+    /// block need to set this to null. See
+    /// PhysicianResolutionGateTests.cs.
+    /// </summary>
+    public Physician? ResolvePhysicianResult { get; set; } = new() { Id = Guid.NewGuid(), DisplayName = "Rivera, Ana", AlternateId = "ALTTEST" };
+    public int ResolvePhysicianCallCount { get; private set; }
+
     public Task<IReadOnlyList<Vaccine>> GetVaccinesAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Vaccine>>(Vaccines);
 
@@ -153,6 +164,61 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
 
     public Task<OrderingRecommendationResult> GetOrderingRecommendationAsync(CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
+
+    // In-memory-backed (not throw-only like the untouched members above) —
+    // PhysiciansViewModelTests exercises the Physicians settings tab's
+    // full load/add/delete round trip against these, same reasoning as
+    // LotsByVaccineId/CreatedLots above.
+    public List<Physician> PhysicianRows { get; } = new();
+    public List<PhysicianRule> PhysicianRuleRows { get; } = new();
+
+    public Task<IReadOnlyList<Physician>> GetPhysiciansAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Physician>>(PhysicianRows);
+
+    public Task<Physician> CreatePhysicianAsync(string displayName, string alternateId, CancellationToken cancellationToken = default)
+    {
+        var physician = new Physician { Id = Guid.NewGuid(), DisplayName = displayName, AlternateId = alternateId };
+        PhysicianRows.Add(physician);
+        return Task.FromResult(physician);
+    }
+
+    public Task DeletePhysicianAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        PhysicianRows.RemoveAll(p => p.Id == id);
+        PhysicianRuleRows.RemoveAll(r => r.PhysicianId == id); // mirrors the real FK cascade-delete
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PhysicianRule>>(PhysicianRuleRows);
+
+    public Task<PhysicianRule> CreatePhysicianRuleAsync(
+        Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, CancellationToken cancellationToken = default)
+    {
+        var rule = new PhysicianRule
+        {
+            Id = Guid.NewGuid(),
+            PhysicianId = physicianId,
+            VaccineId = vaccineId,
+            MinAge = minAge,
+            MaxAge = maxAge,
+            Priority = priority,
+        };
+        PhysicianRuleRows.Add(rule);
+        return Task.FromResult(rule);
+    }
+
+    public Task DeletePhysicianRuleAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        PhysicianRuleRows.RemoveAll(r => r.Id == id);
+        return Task.CompletedTask;
+    }
+
+    public Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default)
+    {
+        ResolvePhysicianCallCount++;
+        return Task.FromResult(ResolvePhysicianResult);
+    }
 }
 
 internal sealed class NoOpClipboardService : IClipboardService

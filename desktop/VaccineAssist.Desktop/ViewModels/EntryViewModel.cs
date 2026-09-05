@@ -87,9 +87,13 @@ public sealed class EntryViewModel : ObservableObject
         try
         {
             var outcome = await Task.Run(UiaTreeDumper.DumpAttachedPioneerWindow);
-            if (outcome.Success && outcome.FilePath is not null)
+            if (outcome.Success && outcome.Content is not null)
             {
-                _clipboardService.SetText(outcome.FilePath);
+                // Will, 2026-09-05: "copy the log it generates to the
+                // clipboard so I don't have to go find it in the file" —
+                // copies the DUMP TEXT itself, not just the saved path
+                // (the file is still written too, see UiaTreeDumper).
+                _clipboardService.SetText(outcome.Content);
                 StatusMessage = outcome.Message;
             }
             else

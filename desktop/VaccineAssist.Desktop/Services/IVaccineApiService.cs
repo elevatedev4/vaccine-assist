@@ -86,4 +86,45 @@ public interface IVaccineApiService
     /// result is a normal response, not an error.
     /// </summary>
     Task<OrderingRecommendationResult> GetOrderingRecommendationAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Calls GET /api/physicians — every protocol physician on
+    /// file, for the Physicians settings tab.</summary>
+    Task<IReadOnlyList<Physician>> GetPhysiciansAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Calls POST /api/physicians. displayName/alternateId must
+    /// be non-empty; alternateId must not contain spaces (Pioneer's own
+    /// Alternate ID rule, see the Physicians tab's info tooltip).</summary>
+    Task<Physician> CreatePhysicianAsync(string displayName, string alternateId, CancellationToken cancellationToken = default);
+
+    /// <summary>Calls DELETE /api/physicians/{id}.</summary>
+    Task DeletePhysicianAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>Calls GET /api/physician-rules — every vaccine/age-range
+    /// -> physician assignment rule, for the Physicians settings tab.</summary>
+    Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Calls POST /api/physician-rules. vaccineId null means
+    /// "any vaccine" (the wildcard/"everything else" fallback rule) — see
+    /// cloud/lib/physician-resolution.ts.</summary>
+    Task<PhysicianRule> CreatePhysicianRuleAsync(
+        Guid physicianId,
+        Guid? vaccineId,
+        int? minAge,
+        int? maxAge,
+        int priority = 0,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Calls DELETE /api/physician-rules/{id}.</summary>
+    Task DeletePhysicianRuleAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Calls GET /api/physicians/resolve?vaccineId=&amp;ageYears= — the
+    /// single protocol physician whose rule covers this vaccine + age, or
+    /// null when no rule matches. Called from
+    /// DataEntryPopupViewModel.BuildLivePayloadAsync before every live
+    /// PioneerRx entry; a null result blocks the entry with a message
+    /// pointing at the Physicians settings tab rather than typing an
+    /// unconfirmed alternate ID into a real patient's chart.
+    /// </summary>
+    Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default);
 }

@@ -108,6 +108,63 @@ public sealed class VaccineApiService : IVaccineApiService
         return await SendAsync<OrderingRecommendationResult>(request, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<Physician>> GetPhysiciansAsync(CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, "/api/physicians");
+        var result = await SendAsync<PhysiciansResponse>(request, cancellationToken);
+        return result.Physicians;
+    }
+
+    public async Task<Physician> CreatePhysicianAsync(string displayName, string alternateId, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Post, "/api/physicians");
+        request.Content = JsonContent.Create(new CreatePhysicianRequest(displayName, alternateId));
+
+        var result = await SendAsync<PhysicianResponse>(request, cancellationToken);
+        return result.Physician;
+    }
+
+    public async Task DeletePhysicianAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Delete, $"/api/physicians/{id}");
+        await SendAsync<OkResponse>(request, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, "/api/physician-rules");
+        var result = await SendAsync<PhysicianRulesResponse>(request, cancellationToken);
+        return result.PhysicianRules;
+    }
+
+    public async Task<PhysicianRule> CreatePhysicianRuleAsync(
+        Guid physicianId,
+        Guid? vaccineId,
+        int? minAge,
+        int? maxAge,
+        int priority = 0,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Post, "/api/physician-rules");
+        request.Content = JsonContent.Create(new CreatePhysicianRuleRequest(physicianId, vaccineId, minAge, maxAge, priority));
+
+        var result = await SendAsync<PhysicianRuleResponse>(request, cancellationToken);
+        return result.PhysicianRule;
+    }
+
+    public async Task DeletePhysicianRuleAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Delete, $"/api/physician-rules/{id}");
+        await SendAsync<OkResponse>(request, cancellationToken);
+    }
+
+    public async Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, $"/api/physicians/resolve?vaccineId={vaccineId}&ageYears={ageYears}");
+        var result = await SendAsync<ResolvePhysicianResponse>(request, cancellationToken);
+        return result.Physician;
+    }
+
     private HttpRequestMessage CreateRequest(HttpMethod method, string relativePath)
     {
         var request = new HttpRequestMessage(method, relativePath);
@@ -178,6 +235,53 @@ public sealed class VaccineApiService : IVaccineApiService
         [JsonPropertyName("error")]
         public string? Error { get; set; }
     }
+
+    private sealed class OkResponse
+    {
+        [JsonPropertyName("ok")]
+        public bool Ok { get; set; }
+    }
+
+    private sealed class PhysiciansResponse
+    {
+        [JsonPropertyName("physicians")]
+        public List<Physician> Physicians { get; set; } = new();
+    }
+
+    private sealed class PhysicianResponse
+    {
+        [JsonPropertyName("physician")]
+        public Physician Physician { get; set; } = new();
+    }
+
+    private sealed class ResolvePhysicianResponse
+    {
+        [JsonPropertyName("physician")]
+        public Physician? Physician { get; set; }
+    }
+
+    private sealed class PhysicianRulesResponse
+    {
+        [JsonPropertyName("physicianRules")]
+        public List<PhysicianRule> PhysicianRules { get; set; } = new();
+    }
+
+    private sealed class PhysicianRuleResponse
+    {
+        [JsonPropertyName("physicianRule")]
+        public PhysicianRule PhysicianRule { get; set; } = new();
+    }
+
+    private sealed record CreatePhysicianRequest(
+        [property: JsonPropertyName("display_name")] string DisplayName,
+        [property: JsonPropertyName("alternate_id")] string AlternateId);
+
+    private sealed record CreatePhysicianRuleRequest(
+        [property: JsonPropertyName("physician_id")] Guid PhysicianId,
+        [property: JsonPropertyName("vaccine_id")] Guid? VaccineId,
+        [property: JsonPropertyName("min_age")] int? MinAge,
+        [property: JsonPropertyName("max_age")] int? MaxAge,
+        [property: JsonPropertyName("priority")] int Priority);
 
     private sealed record CreateLotRequest(
         [property: JsonPropertyName("vaccine_id")] Guid VaccineId,
