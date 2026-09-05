@@ -761,39 +761,45 @@ describe("heatmapCellBackground", () => {
     expect(low).not.toBe(mid);
     expect(mid).not.toBe(peak);
 
-    // Extract the blue channel (the ramp's "toward" color is a medium
-    // blue with G > B, so the blue channel decreases monotonically from
-    // white as intensity rises — a simple, readable ordering check
-    // without hardcoding the exact rgb() string).
-    const blueChannel = (rgb: string) => Number(rgb.match(/rgb\((\d+), (\d+), (\d+)\)/)![3]);
-    expect(blueChannel(low)).toBeGreaterThan(blueChannel(mid));
-    expect(blueChannel(mid)).toBeGreaterThan(blueChannel(peak));
+    // Extract the red channel (the ramp's "toward" color — Tailwind
+    // green-600 — has its red component drop the most from white, 255 ->
+    // 22, so it decreases monotonically from white as intensity rises —
+    // a simple, readable ordering check without hardcoding the exact
+    // rgb() string).
+    const redChannel = (rgb: string) => Number(rgb.match(/rgb\((\d+), (\d+), (\d+)\)/)![1]);
+    expect(redChannel(low)).toBeGreaterThan(redChannel(mid));
+    expect(redChannel(mid)).toBeGreaterThan(redChannel(peak));
   });
 
   it("clamps a count above max to the same color as count === max, never overshooting the ramp", () => {
     expect(heatmapCellBackground(999, 10)).toBe(heatmapCellBackground(10, 10));
   });
 
+  // V-T14 (Will, verbatim): "make the heatmap be green instead."
+  it("renders a green (not blue) peak color at count === max", () => {
+    expect(heatmapCellBackground(10, 10)).toBe("rgb(57, 177, 101)");
+  });
+
   it("never fully reaches the uncapped peak color, so black cell text stays legible even at count === max", () => {
     const peak = heatmapCellBackground(10, 10);
-    expect(peak).not.toBe("rgb(30, 64, 175)");
+    expect(peak).not.toBe("rgb(22, 163, 74)"); // Tailwind green-600, HEATMAP_PEAK_RGB
   });
 });
 
 // Review fix (2026-09-05, reviewer's numerically-verified finding): an
-// earlier revision switched cell text to white once the RAW count/max
-// ratio crossed 0.62, but the background itself renders at
-// ratio*HEATMAP_MAX_INTENSITY (a fraction of that ratio) — so a band of
-// cells (roughly raw ratio 0.62-0.88) flipped to white text sitting on a
-// background still light enough that WHITE text only hit ~2.4-3.4:1
-// contrast there, worse than black text's own ~5:1 in that same band. The
-// fix removed the switch entirely — cell text is always the surrounding
-// style's own default (black-ish/dimmed-grey) — and HEATMAP_MAX_INTENSITY
-// was tuned down so black text clears WCAG AA's 4.5:1 floor at EVERY
-// ratio from 0 to 1, not just most of them. This regression test computes
-// WCAG relative luminance directly from heatmapCellBackground's own
-// output (not the intensity constant) so it fails again if the peak color
-// or intensity cap is ever tuned darker without re-checking contrast.
+// earlier revision (on the original blue ramp) switched cell text to white
+// once the RAW count/max ratio crossed 0.62, but the background itself
+// renders at ratio*HEATMAP_MAX_INTENSITY (a fraction of that ratio) — so a
+// band of cells flipped to white text sitting on a background still light
+// enough that white text lost contrast there. The fix removed the switch
+// entirely — cell text is always the surrounding style's own default
+// (black-ish/dimmed-grey) — and HEATMAP_MAX_INTENSITY is tuned (RE-tuned
+// again for V-T14's green peak) so black text clears WCAG AA's 4.5:1 floor
+// at EVERY ratio from 0 to 1, not just most of them. This regression test
+// computes WCAG relative luminance directly from heatmapCellBackground's
+// own output — not from the HEATMAP_PEAK_RGB/HEATMAP_MAX_INTENSITY
+// constants themselves — so it fails again if either is ever tuned darker
+// (including a future hue swap) without re-checking contrast.
 describe("heatmap contrast (WCAG AA, black text)", () => {
   function relativeLuminance(r: number, g: number, b: number): number {
     const channel = (c: number) => {
