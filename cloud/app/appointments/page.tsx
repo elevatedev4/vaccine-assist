@@ -6,7 +6,9 @@ import { subscribeToSessionState, toSessionState, type SessionState } from "@/li
 import { chicagoDayRange } from "@/lib/chicago-date";
 import {
   buildAppointmentTable,
+  computeHeatmapMaxes,
   computeTodayAndNext7Summaries,
+  heatmapCellBackground,
   type AppointmentTableColumn,
   type ColumnTotals,
   type VaccineCount,
@@ -52,11 +54,20 @@ type AfterTodayResponse = {
 // <tr>s.
 const HEADER_ROW_COUNT = 3;
 
-// Column widths (percent of table width) for the two non-vaccine columns
-// — every vaccine column below splits the remainder evenly. See
-// dataColumnWidthPct in AppointmentsPage.
-const DATE_COL_WIDTH_PCT = 9;
-const TOTAL_COL_WIDTH_PCT = 5;
+// Column widths (ROUND 6, V-T12 answer, Will 2026-09-05, verbatim: "on my
+// 24" monitor, it spreads out the table to make it fill space. Just make
+// it take up the amount of space it should take up. Don't add extra
+// inside the cells to fill the extra space.") — every vaccine (data)
+// column gets the SAME small fixed pixel width regardless of viewport, so
+// the table stays chart-like and compact instead of table-layout: fixed
+// stretching equal-width columns out to fill a wide monitor. The date
+// column is intentionally left with no explicit width (see the <colgroup>
+// in AppointmentsPage) so it sizes to its own content ("Mon 9/5").
+const DATA_COL_WIDTH_PX = 56;
+// Total is a data-shaped column too (needs a fixed width, not "auto" like
+// the date labels) but slightly wider than a vaccine column since a
+// 7-day total can run to 3 digits.
+const TOTAL_COL_WIDTH_PX = 60;
 
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 640 },
@@ -90,11 +101,15 @@ const styles = {
     borderRadius: 4,
   },
   // Compact "read as a chart, not a document" table (V-T-schedule-table
-  // ROUND 2, Will 2026-09-05: "make it look like a chart" — equal-width
-  // columns via table-layout: fixed + a <colgroup>, minimal font/padding;
-  // V-T11: padding tightened further and header rows shortened — "There is
-  // no need to have so much dead space").
-  table: { width: "100%", tableLayout: "fixed", borderCollapse: "collapse", fontSize: "0.72rem" },
+  // ROUND 2, Will 2026-09-05: "make it look like a chart" — minimal
+  // font/padding; V-T11: padding tightened further and header rows
+  // shortened — "There is no need to have so much dead space"). ROUND 6
+  // (V-T12): deliberately NO width: 100%/tableLayout: "fixed" here anymore
+  // — those stretched every column to fill a wide monitor. The table now
+  // sizes to its own content (natural width); each data <col>'s explicit
+  // pixel width (see the <colgroup> below) is what keeps the columns
+  // compact and equal-ish, not a percentage of the viewport.
+  table: { borderCollapse: "collapse", fontSize: "0.72rem" },
   thType: {
     textAlign: "left",
     padding: "0.1rem 0.25rem",
@@ -171,21 +186,26 @@ const styles = {
 } as const;
 
 /**
- * Per-group background tints (V-T9 answer, Will 2026-09-05: "I need
- * vertical borders for the columns, and color differentiation between
- * covid, flu, and everything else"). Subtle, professional (this is a
- * data tool, not a poster) — light hues, dark default text stays fully
- * readable on top of them, one family per group: COVID blue, Flu amber,
- * Common green, Other violet. `header` is the slightly more saturated
- * tint for the group/sub-group/leaf header cells; `data` is the lighter
- * tint carried down into every data cell in that column so a skim down
- * the table still reads which group a column belongs to.
+ * Per-group header tints (V-T9 answer, Will 2026-09-05: "I need vertical
+ * borders for the columns, and color differentiation between covid, flu,
+ * and everything else"). Subtle, professional (this is a data tool, not a
+ * poster) — light hues, dark default text stays fully readable on top of
+ * them, one family per group: COVID blue, Flu amber, Common green, Other
+ * violet.
+ *
+ * ROUND 6 (V-T12 answer, verbatim): "Remove the color of the data portions
+ * of the table (leave the headings colored). Instead, color the background
+ * a gradient based on the # of vaccines scheduled." So `data` tints are
+ * GONE — every data cell's background now comes from
+ * heatmapCellBackground (lib/appointment-table.ts) instead, and only the
+ * group/sub-group/leaf HEADER cells still use this map (see
+ * groupHeaderStyle/subHeaderStyle/leafHeaderStyle below).
  */
-const GROUP_COLORS: Record<AppointmentTableColumn["group"], { header: string; data: string }> = {
-  COVID: { header: "#dbe7f9", data: "#eef4fc" },
-  Flu: { header: "#f9e2cc", data: "#fdf1e7" },
-  Common: { header: "#d7eede", data: "#eaf6ee" },
-  Other: { header: "#e3daf3", data: "#f2eefb" },
+const GROUP_COLORS: Record<AppointmentTableColumn["group"], { header: string }> = {
+  COVID: { header: "#dbe7f9" },
+  Flu: { header: "#f9e2cc" },
+  Common: { header: "#d7eede" },
+  Other: { header: "#e3daf3" },
 };
 
 // V-T9: "I need vertical borders for the columns" — a 1px divider on the
@@ -208,16 +228,23 @@ function leafHeaderStyle(group: AppointmentTableColumn["group"]) {
   return { ...styles.thLeaf, ...COLUMN_DIVIDER, background: GROUP_COLORS[group].header };
 }
 
-function dataCellStyle(group: AppointmentTableColumn["group"], isZero: boolean) {
-  return { ...(isZero ? styles.tdZero : styles.td), ...COLUMN_DIVIDER, background: GROUP_COLORS[group].data };
+// ROUND 6: `background` comes from heatmapCellBackground
+// (lib/appointment-table.ts), computed by the caller against whichever of
+// the two independent scales the row belongs to (see dailyScaleMax /
+// weeklyScaleMax in AppointmentsPage) — no more per-GROUP tint on data
+// cells, only on headers (groupHeaderStyle/subHeaderStyle/leafHeaderStyle).
+// Cell text is always the style's own default (black-ish for a nonzero
+// cell, dimmed grey for a zero one, per styles.td/tdZero) — no text-color
+// override (review fix, 2026-09-05: HEATMAP_MAX_INTENSITY in
+// lib/appointment-table.ts is tuned so black text stays WCAG-AA-legible
+// at every ratio, so no switch is needed; see that constant's doc
+// comment).
+function dataCellStyle(isZero: boolean, background: string) {
+  return { ...(isZero ? styles.tdZero : styles.td), ...COLUMN_DIVIDER, background };
 }
 
-function summaryCellStyle(group: AppointmentTableColumn["group"], isLastSummaryRow: boolean) {
-  return {
-    ...(isLastSummaryRow ? styles.sumRowCellLast : styles.sumRowCell),
-    ...COLUMN_DIVIDER,
-    background: GROUP_COLORS[group].data,
-  };
+function summaryCellStyle(isLastSummaryRow: boolean, background: string) {
+  return { ...(isLastSummaryRow ? styles.sumRowCellLast : styles.sumRowCell), ...COLUMN_DIVIDER, background };
 }
 
 // One <th> to render, with its col/row span — see buildHeaderRows.
@@ -315,11 +342,14 @@ function buildHeaderRows(columns: AppointmentTableColumn[]): {
 // Dim, deterministic zero-cell rendering (V-T-schedule-table ROUND 2,
 // Will: "Zero cells may render as a dim '0' ... your call") — keeps the
 // literal digit (unambiguous vs. a placeholder glyph like "·") but greys
-// it out so a skim lands on the nonzero cells first. `column` (ROUND 4)
-// supplies the group tint + vertical divider — see dataCellStyle.
-function renderCount(column: AppointmentTableColumn, n: number) {
+// it out so a skim lands on the nonzero cells first; that dim styling
+// stays even under ROUND 6's heatmap (a zero cell's heatmap background is
+// always plain white anyway — see heatmapCellBackground). `dailyScaleMax`
+// is the day-by-day breakdown's own independent scale (V-T12) — every
+// breakdown row uses this same max, never the Next-7/After-today one.
+function renderCount(column: AppointmentTableColumn, n: number, dailyScaleMax: number) {
   return (
-    <td key={column.vaccineName} style={dataCellStyle(column.group, n === 0)}>
+    <td key={column.vaccineName} style={dataCellStyle(n === 0, heatmapCellBackground(n, dailyScaleMax))}>
       {n}
     </td>
   );
@@ -560,12 +590,23 @@ export default function AppointmentsPage() {
   // request — see that state's doc comment for why it's never part of
   // `poll`.
   const { today: todaySummary, next7: next7Summary } = computeTodayAndNext7Summaries(table);
-  // Equal-width data columns (V-T-schedule-table ROUND 2: "make it look
-  // like a chart") via table-layout: fixed + an explicit <colgroup> — the
-  // Date and Total columns get their own (narrower/wider) share, every
-  // vaccine column splits the rest evenly regardless of label length.
-  const dataColumnWidthPct =
-    table.columns.length > 0 ? (100 - DATE_COL_WIDTH_PCT - TOTAL_COL_WIDTH_PCT) / table.columns.length : 0;
+  // ROUND 6 heatmap (V-T12 answer): TWO INDEPENDENT SCALES, never one
+  // combined scale — "Today and the daily breakdown would be its own
+  // scale, separate from the weekly and remaining ... wouldn't make sense
+  // to have weekly numbers compared to daily numbers." `dailyScaleMax`
+  // normalizes the "Today" summary row AND every day-by-day breakdown row;
+  // `weeklyScaleMax` normalizes "Next 7 days" and "After today" only.
+  // Neither scale ever includes the Total column or the date-label column
+  // — see computeHeatmapMaxes's doc comment for why totals would crush the
+  // gradient. `afterToday?.byColumnId` is passed as `null` while it hasn't
+  // loaded yet (or failed) so the scale doesn't silently miss real data
+  // once it lands — see the afterToday state's own doc comment above.
+  const { dailyScaleMax, weeklyScaleMax } = computeHeatmapMaxes(
+    table,
+    todaySummary.byColumnId,
+    next7Summary.byColumnId,
+    afterToday?.byColumnId ?? null
+  );
 
   return (
     <main style={styles.mainWide}>
@@ -634,24 +675,42 @@ export default function AppointmentsPage() {
         // to one of 4 groups (ROUND 4, V-T9): COVID (brand -> age),
         // Flu (age), Common (Shingles/Pneumonia/Tdap/RSV/HPV), or Other
         // (everything else) — buildHeaderRows renders COVID as a 3-level
-        // nested header and the other 3 groups as 2-level, each group
-        // tinted its own color with a vertical divider between every
-        // column (dataCellStyle/leafHeaderStyle/etc.). Three summary rows
-        // (Today / Next 7 days / After today) sit above the day-by-day
-        // breakdown (today + the following 7 days, 8 rows) — see
-        // computeTodayAndNext7Summaries in lib/appointment-table.ts for
-        // "Today"/"Next 7 days", and the separate `afterToday` state
+        // nested header and the other 3 groups as 2-level, each group's
+        // HEADER cells tinted its own color with a vertical divider
+        // between every column (leafHeaderStyle/etc. — ROUND 6 removed
+        // that tint from DATA cells, see dataCellStyle). Three summary
+        // rows (Today / Next 7 days / After today) sit above the
+        // day-by-day breakdown (today + the following 7 days, 8 rows) —
+        // see computeTodayAndNext7Summaries in lib/appointment-table.ts
+        // for "Today"/"Next 7 days", and the separate `afterToday` state
         // (loadAfterToday above, lib/acuity-future-summary.ts) for "After
         // today" — it shows a "…"/"—" placeholder instead of 0 until its
         // own independent fetch actually lands, so a slow or failed
-        // after-today fetch never LOOKS like "zero appointments."
+        // after-today fetch never LOOKS like "zero appointments," and
+        // never gets a heatmap tint while in that state either.
+        //
+        // ROUND 6 heatmap (V-T12): every DATA cell's background is now a
+        // white -> blue gradient by count instead of a per-group tint
+        // (heatmapCellBackground, lib/appointment-table.ts), on TWO
+        // INDEPENDENT SCALES — dailyScaleMax for Today + the daily
+        // breakdown, weeklyScaleMax for Next 7 days + After today (see
+        // computeHeatmapMaxes above). The Total column and the
+        // "Scheduled date" column are deliberately EXCLUDED from both
+        // scales and never get a heatmap background at all: a 7-day total
+        // is a sum across many vaccine columns and would be an order of
+        // magnitude larger than any single cell, which would crush the
+        // whole gradient down to "everything looks like zero except
+        // Total" — and a date label isn't a count at all.
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <colgroup>
-              <col style={{ width: `${DATE_COL_WIDTH_PCT}%` }} />
-              <col style={{ width: `${TOTAL_COL_WIDTH_PCT}%` }} />
+              {/* Date column: no explicit width — ROUND 6 (V-T12) sizes it
+                  to its own content ("Mon 9/5") rather than stretching it
+                  to a fixed viewport percentage. */}
+              <col />
+              <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
               {table.columns.map((column) => (
-                <col key={column.vaccineName} style={{ width: `${dataColumnWidthPct}%` }} />
+                <col key={column.vaccineName} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
               ))}
             </colgroup>
             <thead>
@@ -693,37 +752,50 @@ export default function AppointmentsPage() {
               <tr>
                 <td style={styles.sumRowLabel}>Today</td>
                 <td style={styles.sumRowCell}>{todaySummary.total}</td>
-                {table.columns.map((column) => (
-                  <td key={column.vaccineName} style={summaryCellStyle(column.group, false)}>
-                    {todaySummary.byColumnId[column.vaccineName] ?? 0}
-                  </td>
-                ))}
+                {table.columns.map((column) => {
+                  const count = todaySummary.byColumnId[column.vaccineName] ?? 0;
+                  return (
+                    <td key={column.vaccineName} style={summaryCellStyle(false, heatmapCellBackground(count, dailyScaleMax))}>
+                      {count}
+                    </td>
+                  );
+                })}
               </tr>
               <tr>
                 <td style={styles.sumRowLabel}>Next 7 days</td>
                 <td style={styles.sumRowCell}>{next7Summary.total}</td>
-                {table.columns.map((column) => (
-                  <td key={column.vaccineName} style={summaryCellStyle(column.group, false)}>
-                    {next7Summary.byColumnId[column.vaccineName] ?? 0}
-                  </td>
-                ))}
+                {table.columns.map((column) => {
+                  const count = next7Summary.byColumnId[column.vaccineName] ?? 0;
+                  return (
+                    <td key={column.vaccineName} style={summaryCellStyle(false, heatmapCellBackground(count, weeklyScaleMax))}>
+                      {count}
+                    </td>
+                  );
+                })}
               </tr>
               <tr>
                 <td style={styles.sumRowLabelLast}>After today</td>
                 <td style={styles.sumRowCellLast}>
                   {afterToday ? afterToday.total : afterTodayLoading ? "…" : "—"}
                 </td>
-                {table.columns.map((column) => (
-                  <td key={column.vaccineName} style={summaryCellStyle(column.group, true)}>
-                    {afterToday ? (afterToday.byColumnId[column.vaccineName] ?? 0) : afterTodayLoading ? "…" : "—"}
-                  </td>
-                ))}
+                {table.columns.map((column) => {
+                  // Loading/error state ("…"/"—") is unaffected by the
+                  // heatmap — no count yet, so no tint (plain white)
+                  // rather than guessing a background off a placeholder.
+                  const count = afterToday ? (afterToday.byColumnId[column.vaccineName] ?? 0) : null;
+                  const background = count !== null ? heatmapCellBackground(count, weeklyScaleMax) : "#ffffff";
+                  return (
+                    <td key={column.vaccineName} style={summaryCellStyle(true, background)}>
+                      {count !== null ? count : afterTodayLoading ? "…" : "—"}
+                    </td>
+                  );
+                })}
               </tr>
               {table.days.map((day) => (
                 <tr key={day}>
                   <td style={styles.tdType}>{formatDayLabel(day)}</td>
                   <td style={styles.totalCell}>{table.dailyTotals[day]}</td>
-                  {table.columns.map((column, index) => renderCount(column, table.rows[index].countsByDay[day]))}
+                  {table.columns.map((column, index) => renderCount(column, table.rows[index].countsByDay[day], dailyScaleMax))}
                 </tr>
               ))}
             </tbody>

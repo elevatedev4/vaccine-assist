@@ -702,3 +702,122 @@ export function computeTodayAndNext7Summaries(table: AppointmentTable): {
     next7: { label: "Next 7 days", byColumnId: next7ByColumnId, total: next7Total },
   };
 }
+
+/**
+ * ROUND 6 heatmap (V-T12 answer, Will 2026-09-05, verbatim): "color the
+ * background a gradient based on the # of vaccines scheduled, so it's easy
+ * to see when a large number vs small number are scheduled." Two pure,
+ * deterministic pieces live here (client-safe, testable in isolation from
+ * any React/inline-style concern) — app/appointments/page.tsx supplies the
+ * per-cell `count`/`max` and turns the returned color into a cell style:
+ *
+ *   - heatmapCellBackground(count, max): the actual white -> blue ramp.
+ *   - computeHeatmapMaxes(...): the "two independent scales" split Will
+ *     asked for — see its own doc comment.
+ *
+ * A single hue ramp (white -> a medium blue) is used for BOTH scales —
+ * only the max each scale normalizes against differs, never the hue —
+ * per Will's own phrasing ("Use a single hue ramp").
+ *
+ * Cell text is ALWAYS plain black/default (review fix, 2026-09-05 —
+ * reviewer's numerically-verified finding): an earlier revision switched
+ * text to white once a cell's raw count/max ratio crossed 0.62, but that
+ * compared the RAW ratio while the background itself renders at
+ * ratio*HEATMAP_MAX_INTENSITY — so cells in roughly the 0.62-0.88 raw-ratio
+ * band flipped to white text sitting on a still-light blue background
+ * (WCAG contrast ~2.4-3.4:1, an actual regression vs. black text's own
+ * ~5.1:1 there). HEATMAP_MAX_INTENSITY is tuned below so black text stays
+ * ≥4.5:1 (WCAG AA) against the background at EVERY ratio from 0 to 1 —
+ * see the "heatmap contrast" test sweep in tests/appointment-table.test.ts,
+ * which recomputes WCAG relative luminance directly so it keeps failing if
+ * this constant (or the peak color) is ever tuned darker again — so no
+ * text-color switch is needed at all; there's deliberately no
+ * heatmapTextColor function.
+ */
+
+const HEATMAP_BASE_RGB = { r: 255, g: 255, b: 255 } as const;
+// Full-saturation target the ramp interpolates toward — never actually
+// reached at count===max because HEATMAP_MAX_INTENSITY below caps how far
+// toward it a cell is allowed to go, so the darkest cell in any scale
+// still leaves plain black cell text legible.
+const HEATMAP_PEAK_RGB = { r: 30, g: 64, b: 175 } as const;
+// Cap on how far a cell's color is allowed to travel from white toward
+// HEATMAP_PEAK_RGB, even at count===max (V-T12: "cap the darkest step").
+// 0.70 keeps black-text contrast at the darkest possible cell around
+// 5.08:1 — comfortably above the 4.5:1 WCAG AA floor, with margin for
+// integer rgb() rounding — see the doc comment above and the contrast
+// regression test.
+const HEATMAP_MAX_INTENSITY = 0.7;
+
+/**
+ * count<=0 or max<=0 (an all-zero scale — no division by zero) always
+ * renders plain white, i.e. no tint (V-T12: "Zero = plain white"). A count
+ * above max is clamped rather than overshooting the ramp.
+ */
+export function heatmapCellBackground(count: number, max: number): string {
+  if (count <= 0 || max <= 0) return "#ffffff";
+  const ratio = Math.min(count / max, 1) * HEATMAP_MAX_INTENSITY;
+  const r = Math.round(HEATMAP_BASE_RGB.r + (HEATMAP_PEAK_RGB.r - HEATMAP_BASE_RGB.r) * ratio);
+  const g = Math.round(HEATMAP_BASE_RGB.g + (HEATMAP_PEAK_RGB.g - HEATMAP_BASE_RGB.g) * ratio);
+  const b = Math.round(HEATMAP_BASE_RGB.b + (HEATMAP_PEAK_RGB.b - HEATMAP_BASE_RGB.b) * ratio);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/**
+ * The "TWO INDEPENDENT SCALES" split (V-T12 answer, verbatim): "Today and
+ * the daily breakdown would be its own scale, separate from the weekly and
+ * remaining. Those would have their own scale. It wouldn't make sense to
+ * have weekly numbers compared to daily numbers." So:
+ *
+ *   - `dailyScaleMax`: the max single-cell count across the "Today"
+ *     summary row AND every day-by-day breakdown row (table.rows'
+ *     countsByDay, every column, every day) — note this already fully
+ *     covers "Today" on its own even without `todayByColumnId` supplied
+ *     separately, since table.days[0] IS today and its own breakdown row
+ *     carries the identical numbers; `todayByColumnId` is taken as an
+ *     explicit input anyway so this function stays correct (and testable
+ *     in isolation) even against a table that doesn't happen to include
+ *     today's day.
+ *   - `weeklyScaleMax`: the max single-cell count across the "Next 7 days"
+ *     summary row and the (separately fetched, possibly not-yet-loaded)
+ *     "After today" summary row.
+ *
+ * The Total column and the leftmost date-label column are deliberately
+ * NEVER part of either scale (see app/appointments/page.tsx's render) —
+ * totals are sums across many vaccine columns and would dwarf any single
+ * vaccine's count, crushing the whole gradient into "everything near
+ * zero except the Total column."
+ *
+ * An all-zero input (no data loaded yet, or a genuinely empty schedule)
+ * returns {0, 0} rather than throwing or dividing by zero — callers pass
+ * that straight into heatmapCellBackground, whose own `max <= 0` guard
+ * already renders plain white for exactly this case.
+ */
+export function computeHeatmapMaxes(
+  table: AppointmentTable,
+  todayByColumnId: Record<string, number>,
+  next7ByColumnId: Record<string, number>,
+  afterTodayByColumnId: Record<string, number> | null
+): { dailyScaleMax: number; weeklyScaleMax: number } {
+  let dailyScaleMax = 0;
+  for (const value of Object.values(todayByColumnId)) {
+    dailyScaleMax = Math.max(dailyScaleMax, value);
+  }
+  for (const row of table.rows) {
+    for (const day of table.days) {
+      dailyScaleMax = Math.max(dailyScaleMax, row.countsByDay[day] ?? 0);
+    }
+  }
+
+  let weeklyScaleMax = 0;
+  for (const value of Object.values(next7ByColumnId)) {
+    weeklyScaleMax = Math.max(weeklyScaleMax, value);
+  }
+  if (afterTodayByColumnId) {
+    for (const value of Object.values(afterTodayByColumnId)) {
+      weeklyScaleMax = Math.max(weeklyScaleMax, value);
+    }
+  }
+
+  return { dailyScaleMax, weeklyScaleMax };
+}
