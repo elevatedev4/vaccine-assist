@@ -193,6 +193,31 @@ public class DataEntryPopupViewModelAutoValidateTests
 
         public Task<OrderingRecommendationResult> GetOrderingRecommendationAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        // Not exercised by this file's tests (none of them call
+        // EnterIntoPioneerCommand/BuildPayloadAsync — see the class doc
+        // comment) — throwing matches every other unused member above.
+        public Task<IReadOnlyList<Physician>> GetPhysiciansAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Physician> CreatePhysicianAsync(string displayName, string alternateId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeletePhysicianAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<PhysicianRule> CreatePhysicianRuleAsync(
+            Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeletePhysicianRuleAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class NoOpClipboardService : IClipboardService

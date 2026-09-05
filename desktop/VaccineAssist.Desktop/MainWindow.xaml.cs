@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly OrderingViewModel _orderingViewModel;
     private readonly EntryViewModel _entryViewModel;
     private readonly VaccinesViewModel _vaccinesViewModel;
+    private readonly PhysiciansViewModel _physiciansViewModel;
     private readonly IAuthService _authService;
     private readonly IVaccineApiService _vaccineApiService;
     private readonly IClipboardService _clipboardService;
@@ -73,6 +74,7 @@ public partial class MainWindow : Window
         _schedulingViewModel = new SchedulingViewModel(_vaccineApiService);
         _orderingViewModel = new OrderingViewModel(_vaccineApiService);
         _entryViewModel = new EntryViewModel(ShowDataEntryPopup, _clipboardService);
+        _physiciansViewModel = new PhysiciansViewModel(_vaccineApiService);
 
         SchedulingContent.Content = new SchedulingView(_schedulingViewModel);
         DataEntryTabContent.Content = new EntryView(_entryViewModel);
@@ -87,6 +89,9 @@ public partial class MainWindow : Window
         // the static placeholder that used to live directly in
         // MainWindow.xaml.
         OrderingContent.Content = new OrderingView(_orderingViewModel);
+        // Physicians — protocol physicians + vaccine/age assignment rules
+        // (Will, 2026-09-05: see PhysiciansViewModel's doc comment).
+        PhysiciansContent.Content = new PhysiciansView(_physiciansViewModel);
 
         SourceInitialized += MainWindow_OnSourceInitialized;
         Closed += MainWindow_OnClosed;

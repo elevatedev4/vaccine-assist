@@ -108,3 +108,62 @@ than inventing a new one:
    signature field) has no equivalent UI in this app yet. Decide then
    whether it's a dialog on the Entry screen or handled some other way —
    not designed here since there's no live target to validate against.
+
+## V-... update — wired for real against the SIX live UIA dumps (2026-09-05)
+
+Will collected six live dumps of PioneerRx's Rx Profile + progressively-
+filled-in "Add New Rx" screens using the tree-dump collector above (the
+thing every section above was blocked on). Everything except item 3
+(Medicare home visit — still no live target) is now wired:
+
+- `Uia/PioneerRxTitles.cs`: added `"Rx Profile"` as a confirmed window
+  title prefix (the vaccine-entry precondition turned out to be "the
+  patient's Rx Profile is open" through "an Add New Rx is in progress" —
+  `"New Rx"` already matched `"Add New Rx"` via the existing Contains
+  widening).
+- `Sequencing/Steps/NavigateToVaccineFieldsStep.cs` was RENAMED to
+  `SelectPrescriberStep.cs` — the real "Add New Rx" screen needs no
+  separate navigation step (every field is already visible), so its real
+  job is typing the resolved physician's alternate ID into
+  `uxPrescriberQuickSearch` and pressing ENTER twice (Will's own
+  described workflow). AutomationId cross-confirmed against rx-verify's
+  independent `FieldMap.EnteredPrescriberQuickSearchId`.
+- `InputVaccineCodeStep.cs` types the vaccine's NDC (not the old macro
+  short code) into `uxPrescribedItemQuickSearch`, ENTER twice. Quantity/
+  days-supply/refills are deliberately NOT wired — the dumps show they
+  auto-populate from the drug record once it's selected.
+- `InputLotAndExpirationStep.cs` types lot + expiration (plain text, no
+  ENTER) into `uxLotNumber` / `uxLotExpirationDate`, reformatting
+  `ExpirationMacroFormat` (MMDDYYYY) to PioneerRx's own `M/d/yyyy` shape
+  first (`ToPioneerDateFormat`, confirmed against the live value
+  "9/5/2027").
+- `ConfirmEntryStep.cs`: the dumps DO show an explicit, unambiguous
+  control — `uxSave` ("Save & Continue - F12") — but clicking it submits
+  the entire new Rx into PioneerRx's real fill/pre-check pipeline, a
+  bigger action than "confirm this vaccine's data" alone. Per the
+  explicit safety brief ("never auto-confirm a final save... this writes
+  to his real pharmacy system"), this step locates the button and
+  confirms it's there but does NOT click it — flagged as a judgment call
+  worth Will's explicit confirmation either way.
+- New: `Steps/QuickSearchFieldEntry.cs` (shared find-by-AutomationId +
+  SetValue + FocusNative + N×ENTER helper), `Models/Physician.cs` /
+  `Models/PhysicianRule.cs` + a Physicians settings tab (protocol
+  physicians + vaccine/age-range assignment rules, backed by
+  `supabase/migrations/0007_physicians.sql` + `cloud/lib/physician-resolution.ts`)
+  that `DataEntryPopupViewModel.BuildLivePayloadAsync` resolves against
+  before every live entry — no matching rule blocks entry with a message
+  pointing back at that tab.
+- `Uia/UiaTreeDumper.cs`'s dump button now copies the DUMP TEXT itself to
+  the clipboard (Will: "so I don't have to go find it in the file"), not
+  just the saved file path — the file is still written too.
+
+STILL UNVERIFIABLE from here (no Windows/PioneerRx in this dev
+environment): whether `FindFirstDescendant(cf => cf.ByAutomationId(...))`
+actually resolves each of these controls live, whether `SetValue` +
+`Keyboard.Type(VirtualKeyShort.RETURN)` really selects the intended
+prescriber/drug the way plain human typing does (PioneerRx's quick-search
+match/selection behavior on a partial or ambiguous alternate ID/NDC isn't
+something a static UIA dump can prove), and whether `FocusNative()`
+reliably focuses these specific WinForms controls. First live run should
+be watched closely — see PlaceholderVaccineEntrySequence.cs's own doc
+comment for the exact step order.

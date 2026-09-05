@@ -27,6 +27,9 @@
             <TabItem Header="Ordering">
                 <ContentControl x:Name="OrderingContent"/>
             </TabItem>
+            <TabItem Header="Physicians">
+                <ContentControl x:Name="PhysiciansContent"/>
+            </TabItem>
         </TabControl>
     </DockPanel>
 </Window>

@@ -60,7 +60,16 @@ public static class UiaTreeDumper
     private const int MaxDepth = 60;
     private const int MaxNodes = 25_000;
 
-    public readonly record struct DumpOutcome(bool Success, string? FilePath, string Message);
+    /// <summary>
+    /// Content is the full dump TEXT (same bytes written to FilePath) —
+    /// added so callers can copy the dump itself to the clipboard (Will,
+    /// 2026-09-05, from the live dump-collection session: "make it copy
+    /// the log it generates to the clipboard so I don't have to go find
+    /// it in the file. That's a waste of time.") instead of only the file
+    /// path. Null whenever Success is false (nothing was captured to
+    /// copy).
+    /// </summary>
+    public readonly record struct DumpOutcome(bool Success, string? FilePath, string? Content, string Message);
 
     /// <summary>
     /// Attaches to the current PioneerRx window (PioneerRxAttachment —
@@ -81,12 +90,12 @@ public static class UiaTreeDumper
         catch (Exception ex)
         {
             AppFileLog.LogException("UiaTreeDumper.DumpAttachedPioneerWindow.Attach", ex);
-            return new DumpOutcome(false, null, $"Couldn't attach to PioneerRx: {ex.Message}");
+            return new DumpOutcome(false, null, null, $"Couldn't attach to PioneerRx: {ex.Message}");
         }
 
         if (window is null)
         {
-            return new DumpOutcome(false, null,
+            return new DumpOutcome(false, null, null,
                 "No PioneerRx window found to dump — bring the screen you want to capture to the " +
                 "foreground first (see PioneerEntryAutomation/TODO.md's dump-collection instructions), then try again.");
         }
@@ -116,16 +125,19 @@ public static class UiaTreeDumper
             sb.AppendLine($"*** DUMP TRUNCATED -- hit the {MaxNodes}-node or {MaxDepth}-deep safety limit. Everything past that point in the tree was not captured. ***");
         }
 
+        var content = sb.ToString();
+
         try
         {
-            var path = WriteDumpFile(sb.ToString());
+            var path = WriteDumpFile(content);
             AppFileLog.Log($"[UiaTreeDumper] Wrote dump ({nodeCount} nodes{(truncated ? ", truncated" : "")}) to {path}");
-            return new DumpOutcome(true, path, $"Saved UIA dump ({nodeCount} elements) to:\n{path}\n\nPath copied to clipboard.");
+            return new DumpOutcome(true, path, content,
+                $"Saved UIA dump ({nodeCount} elements) to:\n{path}\n\nDump copied to clipboard — paste it wherever you're sending it.");
         }
         catch (Exception ex)
         {
             AppFileLog.LogException("UiaTreeDumper.DumpWindowToFile.Write", ex);
-            return new DumpOutcome(false, null, $"Captured the tree but couldn't save it to disk: {ex.Message}");
+            return new DumpOutcome(false, null, null, $"Captured the tree but couldn't save it to disk: {ex.Message}");
         }
     }
 
