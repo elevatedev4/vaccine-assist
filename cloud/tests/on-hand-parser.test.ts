@@ -106,6 +106,43 @@ describe("parseOnHandContent", () => {
     ]);
   });
 
+  // Regression test (review fix, V-T-schedule-table ROUND 2 follow-up,
+  // 2026-09-05): a "covid"/"covid pfizer"/"covid moderna" alias set was
+  // briefly added to the SHARED NAME_ALIASES table (lib/vaccine-matching.ts)
+  // to help app/api/ordering/recommendation/route.ts resolve an aggregated
+  // COVID appointment composite — but that table is also consulted here,
+  // for a real free-text on-hand-count email Will typed himself. A bare
+  // "COVID: 40" line has no brand info at all — Will could mean Comirnaty
+  // OR mNEXSPIKE — so it must keep surfacing matched:false for his manual
+  // review, never silently attribute stock to whichever product an alias
+  // happened to point at. The composite -> catalog resolution now lives
+  // ONLY in that route's own local COMPOSITE_BASE_TO_CATALOG_NAME map.
+  it("does NOT match a bare 'COVID' on-hand line — stays matched:false for manual review", () => {
+    const rows = parseOnHandContent("COVID: 40", CATALOG);
+    expect(rows).toEqual([
+      {
+        rawLine: "COVID: 40",
+        vaccineNameRaw: "COVID: 40",
+        quantity: null,
+        vaccineId: null,
+        matched: false,
+      },
+    ]);
+  });
+
+  it("does NOT match a bare 'COVID' on-hand line even with the comma delimiter (isolating the name-matching step)", () => {
+    const rows = parseOnHandContent("COVID, 40", CATALOG);
+    expect(rows).toEqual([
+      {
+        rawLine: "COVID, 40",
+        vaccineNameRaw: "COVID",
+        quantity: 40,
+        vaccineId: null,
+        matched: false,
+      },
+    ]);
+  });
+
   it("accepts a quantity of 0", () => {
     const rows = parseOnHandContent("Flu Quad 2025-26, 0", CATALOG);
     expect(rows[0]).toMatchObject({ quantity: 0, matched: true, vaccineId: "v-flu" });

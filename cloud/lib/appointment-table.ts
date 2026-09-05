@@ -235,11 +235,11 @@ const FLU_COMBO_IDS: Record<string, string> = {
  * catalog (CatalogVaccine[]) and this one matches against a fixed,
  * hardcoded column list. `test` runs against an already-lowercased name.
  *
- * Tetanus (displayed as "Tdap") is deliberately careful about "td": Tdap
- * and "tetanus" are matched as ordinary substrings, but the bare "Td"
- * answer some intake forms use is dangerously short to substring-match
- * (it would false-positive inside unrelated text) — \btd\b requires it to
- * appear as its own whole word.
+ * Tetanus (displayed as "Tdap") is deliberately careful about "td": Tdap,
+ * "tetanus", and its brand names (Boostrix, Adacel, Tenivac) are matched
+ * as ordinary substrings, but the bare "Td" answer some intake forms use
+ * is dangerously short to substring-match (it would false-positive inside
+ * unrelated text) — \btd\b requires it to appear as its own whole word.
  */
 const CANONICAL_VACCINE_MATCHERS: Array<{ id: string; test: (lower: string) => boolean }> = [
   {
@@ -253,7 +253,11 @@ const CANONICAL_VACCINE_MATCHERS: Array<{ id: string; test: (lower: string) => b
     id: "pneumonia",
     test: (n) => ["pneumonia", "prevnar", "pneumovax", "pcv"].some((s) => n.includes(s)),
   },
-  { id: "tetanus", test: (n) => n.includes("tetanus") || n.includes("tdap") || /\btd\b/.test(n) },
+  {
+    id: "tetanus",
+    test: (n) =>
+      ["tetanus", "tdap", "boostrix", "adacel", "tenivac"].some((s) => n.includes(s)) || /\btd\b/.test(n),
+  },
   { id: "rsv", test: (n) => ["rsv", "abrysvo", "arexvy"].some((s) => n.includes(s)) },
   { id: "hpv", test: (n) => ["hpv", "gardasil"].some((s) => n.includes(s)) },
   {
@@ -379,9 +383,18 @@ function resolveVaccineName(entry: VaccineCount | Record<string, unknown>): stri
  * `counts` is empty (a fresh poll with nothing scheduled, or Acuity
  * returning zero appointments). Each count entry is then resolved
  * (resolveColumn) onto either one of those fixed columns or a new "extra"
- * column appended after them; extra columns are ordered alphabetically by
- * label for a deterministic (if arbitrary) tie-break — Will, V-T-schedule-
- * table: "your call, but deterministic."
+ * column; extra columns are ordered alphabetically by label within their
+ * own group for a deterministic (if arbitrary) tie-break — Will,
+ * V-T-schedule-table: "your call, but deterministic." — but a grouped
+ * extra (an unusual COVID or Flu combo) is placed immediately adjacent to
+ * its own group's fixed run rather than at the very end of the table
+ * (review fix, 2026-09-05): an ungrouped alphabetical sort scattered
+ * COVID extras away from the main COVID columns whenever another extra's
+ * label happened to sort between them, which made buildHeaderRows
+ * (app/appointments/page.tsx) render multiple disconnected "COVID"
+ * spanning header cells instead of one contiguous one. Only genuinely
+ * ungrouped extras (group: null — an unrecognized vaccine name) sort to
+ * the very end, after every fixed column.
  */
 export function buildAppointmentTable(counts: VaccineCount[], days: string[]): AppointmentTable {
   const zeroedByDay = (): Record<string, number> => Object.fromEntries(days.map((day) => [day, 0]));
@@ -425,13 +438,44 @@ export function buildAppointmentTable(counts: VaccineCount[], days: string[]): A
     grandTotal += entry.count;
   }
 
-  const fixedIds = FIXED_COLUMNS.map((c) => c.id);
-  const fixedIdSet = new Set(fixedIds);
-  const extraIds = Array.from(rowsById.keys())
-    .filter((id) => !fixedIdSet.has(id))
-    .sort((a, b) => columnsById.get(a)!.label.localeCompare(columnsById.get(b)!.label));
+  const fixedIdSet = new Set(FIXED_COLUMNS.map((c) => c.id));
+  const byLabel = (a: string, b: string) => columnsById.get(a)!.label.localeCompare(columnsById.get(b)!.label);
 
-  const orderedIds = [...fixedIds, ...extraIds];
+  // Bucket extras by group so each bucket can be inserted adjacent to its
+  // own group's fixed run below, instead of one flat alphabetical sort
+  // that would scatter e.g. a COVID extra away from the main COVID
+  // columns whenever another extra's label happened to sort between them.
+  const covidExtraIds: string[] = [];
+  const fluExtraIds: string[] = [];
+  const otherExtraIds: string[] = [];
+  for (const id of rowsById.keys()) {
+    if (fixedIdSet.has(id)) continue;
+    const group = columnsById.get(id)!.group;
+    if (group === "COVID") covidExtraIds.push(id);
+    else if (group === "Flu") fluExtraIds.push(id);
+    else otherExtraIds.push(id);
+  }
+  covidExtraIds.sort(byLabel);
+  fluExtraIds.sort(byLabel);
+  otherExtraIds.sort(byLabel);
+
+  // Walk FIXED_COLUMNS in order, flushing each group's extras the moment
+  // its contiguous fixed run ends — e.g. covidExtraIds lands right after
+  // "any_65+" (the last fixed COVID column) and right before "flu_3-64"
+  // (the first fixed Flu column), so COVID stays one contiguous header
+  // run for buildHeaderRows (app/appointments/page.tsx) to group.
+  const orderedIds: string[] = [];
+  let lastGroup: "COVID" | "Flu" | null = null;
+  for (const fixed of FIXED_COLUMNS) {
+    if (lastGroup === "COVID" && fixed.group !== "COVID") orderedIds.push(...covidExtraIds);
+    if (lastGroup === "Flu" && fixed.group !== "Flu") orderedIds.push(...fluExtraIds);
+    orderedIds.push(fixed.id);
+    lastGroup = fixed.group;
+  }
+  if (lastGroup === "COVID") orderedIds.push(...covidExtraIds);
+  if (lastGroup === "Flu") orderedIds.push(...fluExtraIds);
+  orderedIds.push(...otherExtraIds);
+
   const rows = orderedIds.map((id) => rowsById.get(id)!);
   const columns = orderedIds.map((id) => columnsById.get(id)!);
 

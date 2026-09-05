@@ -120,6 +120,9 @@ describe("buildAppointmentTable", () => {
       ["PCV15", "pneumonia"],
       ["Tetanus Booster", "tetanus"],
       ["Tdap", "tetanus"],
+      ["Boostrix", "tetanus"],
+      ["Adacel", "tetanus"],
+      ["Tenivac", "tetanus"],
       ["RSV Vaccine", "rsv"],
       ["Abrysvo", "rsv"],
       ["Arexvy", "rsv"],
@@ -225,17 +228,23 @@ describe("buildAppointmentTable", () => {
     // count, which IS the "render only when nonzero" behavior (requirement
     // 1b) — one mechanism serves both.
     describe("unusual COVID combos render only when nonzero (extra-column mechanism)", () => {
-      it("a brand's Unknown-age composite becomes its own extra column, not a fixed one", () => {
+      it("a brand's Unknown-age composite becomes its own extra column, not a fixed one, positioned adjacent to the COVID group (not appended at the very end)", () => {
         const table = buildAppointmentTable(
           [{ date: "2026-08-17", vaccineName: "COVID · Pfizer · Unknown", count: 1 }],
           DAYS
         );
 
         expect(table.columns).toHaveLength(FIXED_COLUMN_IDS.length + 1);
-        const extra = table.columns[table.columns.length - 1];
+        const extra = table.columns.find((c) => c.vaccineName === "COVID · Pfizer · Unknown")!;
         expect(extra.group).toBe("COVID");
         expect(extra.subgroup).toBe("Pfizer");
         expect(extra.label).toBe("Unknown");
+        // Review fix (2026-09-05): sits immediately after the last fixed
+        // COVID column ("any_65+", index 7) — NOT at the very end of the
+        // table — so it stays part of one contiguous COVID header run.
+        // See the "extras sort adjacent to their own group's run" describe
+        // block below for the full regression test.
+        expect(table.columns[8].vaccineName).toBe("COVID · Pfizer · Unknown");
         // The fixed Pfizer columns stay at zero.
         expect(table.rows.find((r) => r.vaccineName === "pfizer_12-64")!.countsByDay["2026-08-17"]).toBe(0);
         expect(table.rows.find((r) => r.vaccineName === "pfizer_65+")!.countsByDay["2026-08-17"]).toBe(0);
@@ -276,6 +285,108 @@ describe("buildAppointmentTable", () => {
 
       const extraLabels = table.columns.slice(FIXED_COLUMN_IDS.length).map((c) => c.label);
       expect(extraLabels).toEqual(["Alpha Vaccine", "Zebra Vaccine"]);
+    });
+
+    // Review fix (2026-09-05): a flat alphabetical sort over ALL extras
+    // could scatter a COVID (or Flu) extra away from its own group's
+    // fixed run whenever some unrelated extra's label happened to sort
+    // between them — e.g. "COVID · Pfizer · 3-11" and an ungrouped
+    // "Zzz Vaccine" both sorting after the fixed set, with the ungrouped
+    // one landing BETWEEN two COVID columns. That splits the COVID group
+    // into non-adjacent runs, which makes buildHeaderRows
+    // (app/appointments/page.tsx) render more than one spanning "COVID"
+    // header cell instead of a single contiguous one. Extras are now
+    // bucketed by group first, then inserted immediately adjacent to
+    // their own group's fixed run — only genuinely ungrouped extras sort
+    // to the very end.
+    describe("extras sort adjacent to their own group's run, not scattered by a flat alphabetical sort", () => {
+      it("keeps COVID · Pfizer · 3-11 and COVID · Moderna · Unknown in ONE contiguous COVID run, with an unrelated extra pushed to the very end", () => {
+        const counts = [
+          { date: "2026-08-17", vaccineName: "COVID · Pfizer · 3-11", count: 1 },
+          { date: "2026-08-17", vaccineName: "COVID · Moderna · Unknown", count: 1 },
+          { date: "2026-08-17", vaccineName: "Some Brand New Vaccine", count: 1 },
+        ];
+
+        const table = buildAppointmentTable(counts, DAYS);
+
+        // 21 fixed + 2 COVID extras + 1 ungrouped extra.
+        expect(table.columns).toHaveLength(FIXED_COLUMN_IDS.length + 3);
+
+        // Every COVID-group column (fixed AND extra) forms ONE contiguous
+        // run — no other group's column sits between any two of them.
+        // This is exactly what lets buildHeaderRows render a single
+        // spanning "COVID" header cell.
+        const covidIndices = table.columns.reduce<number[]>((indices, column, index) => {
+          if (column.group === "COVID") indices.push(index);
+          return indices;
+        }, []);
+        expect(covidIndices).toHaveLength(10); // 8 fixed + 2 extras
+        for (let i = 1; i < covidIndices.length; i++) {
+          expect(covidIndices[i]).toBe(covidIndices[i - 1] + 1);
+        }
+
+        // The two extras sort alphabetically by label ("3-11" < "Unknown")
+        // WITHIN the COVID run — immediately after the 8 fixed COVID
+        // columns (index 7 = "any_65+") and before the first fixed Flu
+        // column.
+        expect(table.columns[8].vaccineName).toBe("COVID · Pfizer · 3-11");
+        expect(table.columns[9].vaccineName).toBe("COVID · Moderna · Unknown");
+        expect(table.columns[10].vaccineName).toBe("flu_3-64");
+
+        // The unrelated (ungrouped) extra sits at the very end, after the
+        // full fixed set AND the grouped extras.
+        expect(table.columns[table.columns.length - 1].vaccineName).toBe("Some Brand New Vaccine");
+      });
+
+      it("keeps a Flu extra adjacent to the fixed Flu columns too", () => {
+        // Not a realistic composite in practice (Flu's 3 buckets are all
+        // fixed columns already) but exercises the same adjacency
+        // mechanism generically for the Flu group, not just COVID.
+        const counts = [
+          { date: "2026-08-17", vaccineName: "Flu · 3-64", count: 1 }, // fixed
+          { date: "2026-08-17", vaccineName: "Zzz Unrelated Vaccine", count: 1 }, // ungrouped extra
+        ];
+
+        const table = buildAppointmentTable(counts, DAYS);
+        const fluIndices = table.columns.reduce<number[]>((indices, column, index) => {
+          if (column.group === "Flu") indices.push(index);
+          return indices;
+        }, []);
+        expect(fluIndices).toHaveLength(3); // all 3 fixed Flu columns, none scattered
+        for (let i = 1; i < fluIndices.length; i++) {
+          expect(fluIndices[i]).toBe(fluIndices[i - 1] + 1);
+        }
+        // Ungrouped extra still lands at the very end, after Flu AND the
+        // 10 plain fixed columns.
+        expect(table.columns[table.columns.length - 1].vaccineName).toBe("Zzz Unrelated Vaccine");
+      });
+    });
+
+    // Legacy cache self-heal (review fix, 2026-09-05): "12+" was the
+    // COVID age-bucket label BEFORE the 65+ split shipped (ROUND 2's
+    // same-day amendment). A row still sitting in acuity_poll_cache with
+    // the old label doesn't match COVID_COMPOSITE_PATTERN (which only
+    // recognizes today's 3-11/12-64/65+/Unknown buckets) — it must
+    // degrade gracefully to a plain extra column instead of crashing or
+    // silently vanishing, and self-heals within one poll TTL (~5 min)
+    // once Acuity is re-fetched and re-aggregated in the current shape.
+    it("renders a legacy cached 'COVID · Pfizer · 12+' (pre-65+-split bucket label) as a plain extra column without crashing", () => {
+      const table = buildAppointmentTable(
+        [{ date: "2026-08-17", vaccineName: "COVID · Pfizer · 12+", count: 6 }],
+        DAYS
+      );
+
+      expect(table.columns).toHaveLength(FIXED_COLUMN_IDS.length + 1);
+      const extra = table.columns.find((c) => c.vaccineName === "COVID · Pfizer · 12+");
+      expect(extra).toEqual({
+        vaccineName: "COVID · Pfizer · 12+",
+        group: null,
+        subgroup: null,
+        label: "COVID · Pfizer · 12+",
+      });
+      const row = table.rows.find((r) => r.vaccineName === "COVID · Pfizer · 12+")!;
+      expect(row.countsByDay["2026-08-17"]).toBe(6);
+      expect(row.total).toBe(6);
     });
   });
 

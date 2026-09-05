@@ -32,19 +32,19 @@ describe("matchVaccineName", () => {
     expect(matchVaccineName("Moderna 12+ NEXSPIKE", CATALOG)?.id).toBe("v-mnexspike");
   });
 
-  // V-T-schedule-table ROUND 2 follow-up (Will 2026-09-05): brand-only,
-  // age-stripped forms produced by compositeNameToMatchableBase
-  // (lib/appointment-table.ts) for an aggregated COVID appointment count.
-  it("matches via the alias table (COVID Pfizer -> Comirnaty 2025-26 12+)", () => {
-    expect(matchVaccineName("COVID Pfizer", CATALOG)?.id).toBe("v-comirnaty");
-  });
-
-  it("matches via the alias table (COVID Moderna -> mNEXSPIKE)", () => {
-    expect(matchVaccineName("COVID Moderna", CATALOG)?.id).toBe("v-mnexspike");
-  });
-
-  it("matches the brandless 'COVID' composite base via the alias table (documented ambiguous default)", () => {
-    expect(matchVaccineName("COVID", CATALOG)?.id).toBe("v-comirnaty");
+  // Review fix (2026-09-05): a "covid"/"covid pfizer"/"covid moderna" ->
+  // catalog-product alias set briefly lived in this SHARED table so
+  // app/api/ordering/recommendation/route.ts could resolve an aggregated
+  // COVID appointment composite. That was wrong — this table is also
+  // consulted by lib/on-hand-parser.ts for real free-text on-hand-count
+  // emails, and a manually-typed "COVID: 40" line has no way to know
+  // whether Will means Comirnaty or mNEXSPIKE. That resolution now lives
+  // ONLY in the ordering route's own COMPOSITE_BASE_TO_CATALOG_NAME —
+  // these brand-only composite-base strings must NOT resolve here.
+  it("does NOT match the brand-only composite-base strings the ordering route strips COVID composites down to (that resolution is route-local, not shared)", () => {
+    expect(matchVaccineName("COVID Pfizer", CATALOG)).toBeNull();
+    expect(matchVaccineName("COVID Moderna", CATALOG)).toBeNull();
+    expect(matchVaccineName("COVID", CATALOG)).toBeNull();
   });
 
   it("matches via the alias table (FluMist -> FluMist (age 2-49))", () => {
