@@ -136,9 +136,27 @@ describe("GET /api/ordering/recommendation", () => {
     vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
     vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
       appointments: [
-        { date: "2026-08-19", appointmentTypeId: 1, vaccineNames: ["Flu Quad 2025-26"] },
-        { date: "2026-08-20", appointmentTypeId: 1, vaccineNames: ["Flu Quad 2025-26"] },
-        { date: "2026-08-20", appointmentTypeId: 1, vaccineNames: ["Some Unmatched Vaccine"] },
+        {
+          date: "2026-08-19",
+          appointmentTypeId: 1,
+          vaccineNames: ["Flu Quad 2025-26"],
+          covidBrand: "any",
+          covidAgeBucket: "unknown",
+        },
+        {
+          date: "2026-08-20",
+          appointmentTypeId: 1,
+          vaccineNames: ["Flu Quad 2025-26"],
+          covidBrand: "any",
+          covidAgeBucket: "unknown",
+        },
+        {
+          date: "2026-08-20",
+          appointmentTypeId: 1,
+          vaccineNames: ["Some Unmatched Vaccine"],
+          covidBrand: "any",
+          covidAgeBucket: "unknown",
+        },
       ],
       possiblyTruncated: false,
     });

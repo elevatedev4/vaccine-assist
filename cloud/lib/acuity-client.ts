@@ -350,9 +350,32 @@ function deriveCovidBrand(forms: unknown): CovidBrand {
 }
 
 /** Whole years between `dob` and `asOf`, or null if `dob` doesn't parse. */
+/**
+ * A bare "YYYY-MM-DD" is parsed by `new Date()` as UTC MIDNIGHT (per the
+ * ES spec's date-time string format) — reading it back with local getters
+ * (as computeAgeFromDob does, to compare against `asOf`) then lands on the
+ * PREVIOUS calendar day in any timezone behind UTC, e.g. America/Chicago.
+ * That's a silent off-by-one that can land a patient on the wrong side of
+ * the 12th-birthday Pfizer-eligibility boundary right when it matters
+ * most (caught by the exact-boundary test in tests/acuity-client.test.ts
+ * — a plain numeric-age answer far from a boundary hid this bug for a
+ * while). Parsed manually as local-time components instead; every other
+ * format (e.g. "MM/DD/YYYY") is already parsed as local time natively.
+ */
+function parseDobAsLocalDate(dob: string): Date | null {
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dob.trim());
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const local = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(local.getTime()) ? null : local;
+  }
+  const native = new Date(dob);
+  return Number.isNaN(native.getTime()) ? null : native;
+}
+
 function computeAgeFromDob(dob: string, asOf: Date): number | null {
-  const parsed = new Date(dob);
-  if (Number.isNaN(parsed.getTime())) return null;
+  const parsed = parseDobAsLocalDate(dob);
+  if (!parsed) return null;
 
   let age = asOf.getFullYear() - parsed.getFullYear();
   const monthDiff = asOf.getMonth() - parsed.getMonth();

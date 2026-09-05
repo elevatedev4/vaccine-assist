@@ -304,6 +304,28 @@ describe("fetchAppointmentsForRange", () => {
       expect(adultResult.appointments[0].covidAgeBucket).toBe("12+");
     });
 
+    // Exact boundary coverage for bucketAge: 2 (just below 3-11), 3 and 11
+    // (the 3-11 edges), 12 (the highest-risk boundary — the 12th
+    // birthday, where a patient becomes 12+-eligible for Pfizer per
+    // pharmacy stocking), 110 (the top of 12+), and 111 (just over the
+    // >110 -> unknown cutoff).
+    it("buckets the exact age boundaries correctly: 2->unknown, 3 and 11->3-11, 12 and 110->12+, 111->unknown", async () => {
+      const boundaryAges = [2, 3, 11, 12, 110, 111];
+      const fixture = boundaryAges.map((age) => fixtureWithForms([{ name: "Age", value: String(age) }]));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments.map((a) => a.covidAgeBucket)).toEqual([
+        "unknown", // 2
+        "3-11", // 3
+        "3-11", // 11
+        "12+", // 12
+        "12+", // 110
+        "unknown", // 111
+      ]);
+    });
+
     it("computes age from a parseable date of birth", async () => {
       const now = new Date();
       // Exactly 8 years old today (or turning 8 today) -> "3-11".
@@ -314,6 +336,32 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments[0].covidAgeBucket).toBe("3-11");
+    });
+
+    // The 12th-birthday boundary specifically, computed from a DOB rather
+    // than a plain numeric age — this is the highest-risk spot in
+    // computeAgeFromDob's month/day off-by-one adjustment (a patient
+    // whose birthday is today has already turned 12; one whose birthday
+    // is tomorrow has not).
+    it("computes the 12th-birthday DOB boundary correctly: birthday today -> 12+, birthday tomorrow -> still 3-11", async () => {
+      const isoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const now = new Date();
+      const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+      // Birthday is exactly today, 12 years ago -> already 12.
+      const dobBirthdayToday = isoDate(new Date(now.getFullYear() - 12, now.getMonth(), now.getDate()));
+      const fixtureToday = [fixtureWithForms([{ name: "Date of birth", value: dobBirthdayToday }])];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixtureToday), { status: 200 })));
+      const resultToday = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+      expect(resultToday.appointments[0].covidAgeBucket).toBe("12+");
+      vi.unstubAllGlobals();
+
+      // Birthday is tomorrow, 12 years ago from tomorrow -> still 11 today.
+      const dobBirthdayTomorrow = isoDate(new Date(tomorrow.getFullYear() - 12, tomorrow.getMonth(), tomorrow.getDate()));
+      const fixtureTomorrow = [fixtureWithForms([{ name: "Date of birth", value: dobBirthdayTomorrow }])];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixtureTomorrow), { status: 200 })));
+      const resultTomorrow = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+      expect(resultTomorrow.appointments[0].covidAgeBucket).toBe("3-11");
     });
 
     it("buckets age >110 as unknown, per Will's spec, rather than a bogus 12+", async () => {
