@@ -157,7 +157,34 @@ export type CountableAppointment = {
    * appointment type's name in that case (see aggregateAppointmentCounts).
    */
   vaccineNames: string[];
+  /**
+   * PHI boundary, further extension (V-T-schedule-table, Will 2026-09-04:
+   * split the COVID column by brand preference and age band). This is a
+   * BUCKETED value only — "pfizer" | "moderna" | "any" — derived from the
+   * intake-form field matched by isCovidBrandFormFieldName (see
+   * deriveCovidBrand). The raw form answer string is read only inside
+   * deriveCovidBrand and is discarded the instant it's bucketed; it never
+   * becomes part of this type or anything returned from this module.
+   */
+  covidBrand: CovidBrand;
+  /**
+   * PHI boundary, same rationale as covidBrand above — a BUCKETED value
+   * only: "3-11" | "12+" | "unknown". Derived from the intake-form field
+   * matched by isAgeFormFieldName (see deriveCovidAgeBucket), which reads
+   * either a plain numeric age or a date of birth. CRITICAL: the raw age
+   * number and the raw DOB string are both read ONLY inside
+   * deriveCovidAgeBucket/computeAgeFromDob and are discarded the instant
+   * they're bucketed — neither the exact age nor the DOB ever becomes
+   * part of this type, an API response, a cache row, or a log line.
+   */
+  covidAgeBucket: CovidAgeBucket;
 };
+
+/** Brand-preference bucket for a COVID appointment — see covidBrand above. */
+export type CovidBrand = "pfizer" | "moderna" | "any";
+
+/** Age bucket for a COVID appointment — see covidAgeBucket above. */
+export type CovidAgeBucket = "3-11" | "12+" | "unknown";
 
 export type AppointmentRangeResult = {
   appointments: CountableAppointment[];
@@ -202,6 +229,37 @@ export function isVaccineFormFieldName(name: string): boolean {
 }
 
 /**
+ * Matches an Acuity intake-form field's `name` against a "does this look
+ * like the COVID brand-preference question" heuristic (V-T-schedule-table,
+ * Will 2026-09-04): case-insensitive substring match on "brand", or a
+ * field that mentions both "pfizer" and "moderna" (e.g. "Pfizer or
+ * Moderna?"). Same rationale as isVaccineFormFieldName above — Will's real
+ * form label hasn't been confirmed yet, so this is a small, separately-
+ * exported, separately-tested heuristic that can be fixed in one place if
+ * it turns out wrong.
+ */
+export function isCovidBrandFormFieldName(name: string): boolean {
+  if (typeof name !== "string") return false;
+  const lower = name.toLowerCase();
+  return lower.includes("brand") || (lower.includes("pfizer") && lower.includes("moderna"));
+}
+
+/**
+ * Matches an Acuity intake-form field's `name` against a "does this look
+ * like the patient-age question" heuristic (V-T-schedule-table). Matches
+ * "date of birth"/"dob"/"birth", or "age" as a whole word (\bage\b) —
+ * deliberately NOT a bare substring match, since "age" is a substring of
+ * common unrelated words like "average" or "package" that would otherwise
+ * false-positive.
+ */
+export function isAgeFormFieldName(name: string): boolean {
+  if (typeof name !== "string") return false;
+  const lower = name.toLowerCase();
+  if (lower.includes("date of birth") || lower.includes("dob") || lower.includes("birth")) return true;
+  return /\bage\b/.test(lower);
+}
+
+/**
  * PHI boundary: this function must only ever be called with
  * `entry.forms` — never the full raw appointment entry — so it has no
  * way to read name/email/phone/notes even by accident; those never
@@ -240,6 +298,118 @@ function extractVaccineNamesFromForms(forms: unknown): string[] {
   }
 
   return [];
+}
+
+/**
+ * PHI boundary, same rule as extractVaccineNamesFromForms: must only ever
+ * be called with `entry.forms`. Finds the first form field whose name
+ * matches `matcher` and returns its raw trimmed answer string, or null if
+ * no matching field is found or its value is blank. Deliberately generic
+ * (unlike extractVaccineNamesFromForms, it doesn't split multi-value
+ * answers) — brand/age are single-answer questions. Callers
+ * (deriveCovidBrand, deriveCovidAgeBucket) MUST bucket this raw string
+ * immediately and never let it escape further — see CountableAppointment's
+ * covidBrand/covidAgeBucket doc comments.
+ */
+function extractFormFieldAnswer(forms: unknown, matcher: (name: string) => boolean): string | null {
+  if (!Array.isArray(forms)) return null;
+
+  for (const form of forms) {
+    if (typeof form !== "object" || form === null) continue;
+    const values = (form as Record<string, unknown>).values;
+    if (!Array.isArray(values)) continue;
+
+    for (const field of values) {
+      if (typeof field !== "object" || field === null) continue;
+      const fieldName = (field as Record<string, unknown>).name;
+      const fieldValue = (field as Record<string, unknown>).value;
+      if (typeof fieldName !== "string" || !matcher(fieldName)) continue;
+      if (typeof fieldValue !== "string" || fieldValue.trim().length === 0) continue;
+      return fieldValue.trim();
+    }
+  }
+
+  return null;
+}
+
+/**
+ * PHI boundary: reads the raw brand-preference answer (via
+ * extractFormFieldAnswer/isCovidBrandFormFieldName) and immediately
+ * buckets it — the raw string never leaves this function. "contains
+ * pfizer" wins over "contains moderna" if somehow both appear; anything
+ * else, including a missing/unmatched field, defaults to "any" per Will's
+ * spec (no brand preference stated = no restriction).
+ */
+function deriveCovidBrand(forms: unknown): CovidBrand {
+  const answer = extractFormFieldAnswer(forms, isCovidBrandFormFieldName);
+  if (!answer) return "any";
+  const lower = answer.toLowerCase();
+  if (lower.includes("pfizer")) return "pfizer";
+  if (lower.includes("moderna")) return "moderna";
+  return "any";
+}
+
+/** Whole years between `dob` and `asOf`, or null if `dob` doesn't parse. */
+function computeAgeFromDob(dob: string, asOf: Date): number | null {
+  const parsed = new Date(dob);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  let age = asOf.getFullYear() - parsed.getFullYear();
+  const monthDiff = asOf.getMonth() - parsed.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && asOf.getDate() < parsed.getDate())) {
+    age -= 1;
+  }
+  return age;
+}
+
+/** 3-11 / 12+ / unknown — anything outside [3, 110] (including <3) buckets to unknown, per Will's spec. */
+function bucketAge(age: number): CovidAgeBucket {
+  if (!Number.isFinite(age)) return "unknown";
+  if (age >= 3 && age <= 11) return "3-11";
+  if (age >= 12 && age <= 110) return "12+";
+  return "unknown";
+}
+
+/**
+ * PHI boundary: reads the raw age-question answer (via
+ * extractFormFieldAnswer/isAgeFormFieldName) and immediately buckets it —
+ * neither the raw age number nor a raw DOB string ever leaves this
+ * function. The answer is either a plain numeric age ("12") or a
+ * parseable date of birth ("2014-05-03", "05/03/2014", ...); anything
+ * else — missing field, unparseable text, or an age outside [3, 110] —
+ * buckets to "unknown" rather than guessing.
+ */
+function deriveCovidAgeBucket(forms: unknown): CovidAgeBucket {
+  const answer = extractFormFieldAnswer(forms, isAgeFormFieldName);
+  if (!answer) return "unknown";
+
+  const age = /^\d+(\.\d+)?$/.test(answer) ? Math.floor(Number(answer)) : computeAgeFromDob(answer, new Date());
+
+  if (age === null) return "unknown";
+  return bucketAge(age);
+}
+
+/**
+ * "Does this vaccine name look like COVID" — case-insensitive substring
+ * match on "covid", used by aggregateAppointmentCounts to decide whether
+ * to replace a name with the brand/age composite (see covidCompositeName).
+ */
+function isCovidVaccineName(name: string): boolean {
+  return typeof name === "string" && name.toLowerCase().includes("covid");
+}
+
+const COVID_BRAND_LABELS: Record<CovidBrand, string> = { pfizer: "Pfizer", moderna: "Moderna", any: "Any" };
+const COVID_AGE_BUCKET_LABELS: Record<CovidAgeBucket, string> = { "3-11": "3-11", "12+": "12+", unknown: "Unknown" };
+
+/**
+ * Builds the composite COVID column name — "COVID · Pfizer · 12+" — that
+ * replaces any COVID-ish vaccineName in aggregateAppointmentCounts.
+ * lib/appointment-table.ts parses this exact "COVID · {Brand} · {Age}"
+ * shape (with " · " separators) to build the grouped table header — keep
+ * the two in sync if this format ever changes.
+ */
+function covidCompositeName(brand: CovidBrand, ageBucket: CovidAgeBucket): string {
+  return `COVID · ${COVID_BRAND_LABELS[brand]} · ${COVID_AGE_BUCKET_LABELS[ageBucket]}`;
 }
 
 /**
@@ -299,15 +469,19 @@ export async function fetchAppointmentsForRange(
   // PHI-stripping projection — see CountableAppointment doc comment.
   // Every other field on `entry` (name/email/phone/notes/...) is dropped
   // right here and never touched again. `forms` is read ONLY through
-  // extractVaccineNamesFromForms, which itself only ever extracts the
-  // vaccine-question answer string(s) — nothing else off `forms` survives
-  // this projection either.
+  // extractVaccineNamesFromForms/deriveCovidBrand/deriveCovidAgeBucket,
+  // each of which extracts (and, for brand/age, immediately buckets) only
+  // its own specific question's answer — nothing else off `forms`
+  // survives this projection, and the raw age/DOB string in particular
+  // never exists outside deriveCovidAgeBucket's call stack.
   const appointments = data
     .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
     .map((entry) => ({
       date: acuityDatetimeToChicagoDate(entry.datetime),
       appointmentTypeId: Number(entry.appointmentTypeID),
       vaccineNames: extractVaccineNamesFromForms(entry.forms),
+      covidBrand: deriveCovidBrand(entry.forms),
+      covidAgeBucket: deriveCovidAgeBucket(entry.forms),
     }))
     .filter((entry) => entry.date && Number.isFinite(entry.appointmentTypeId));
 
@@ -329,8 +503,16 @@ export type VaccineCount = {
  * didn't have a field isVaccineFormFieldName matched, or Acuity returned
  * no forms at all), this falls back to the appointment type's name, same
  * behavior as before the vaccine-name pivot existed. Only ever reads
- * `.date`, `.appointmentTypeId`, and `.vaccineNames` off each input — see
- * CountableAppointment.
+ * `.date`, `.appointmentTypeId`, `.vaccineNames`, `.covidBrand`, and
+ * `.covidAgeBucket` off each input — see CountableAppointment.
+ *
+ * COVID brand/age split (V-T-schedule-table, Will 2026-09-04): any name
+ * that looks like COVID (isCovidVaccineName) is replaced with the
+ * appointment's own composite "COVID · {Brand} · {Age}" name
+ * (covidCompositeName) before grouping, so the COVID column splits into
+ * one column per (brand, age bucket) actually seen — e.g. an appointment
+ * whose form answer is "COVID-Pfizer" with covidAgeBucket "12+" groups
+ * under "COVID · Pfizer · 12+", not the raw form answer.
  */
 export function aggregateAppointmentCounts(
   appointments: CountableAppointment[],
@@ -338,13 +520,16 @@ export function aggregateAppointmentCounts(
 ): VaccineCount[] {
   const groups = new Map<string, VaccineCount>();
 
-  for (const { date, appointmentTypeId, vaccineNames } of appointments) {
+  for (const { date, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket } of appointments) {
     const names =
       vaccineNames.length > 0
         ? vaccineNames
         : [appointmentTypeNames.get(appointmentTypeId) ?? `Type ${appointmentTypeId}`];
 
-    for (const vaccineName of names) {
+    for (const rawName of names) {
+      const vaccineName = isCovidVaccineName(rawName)
+        ? covidCompositeName(covidBrand ?? "any", covidAgeBucket ?? "unknown")
+        : rawName;
       const key = `${date}::${vaccineName}`;
       const existing = groups.get(key);
       if (existing) {

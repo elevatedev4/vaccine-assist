@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { chicagoDayRange } from "@/lib/chicago-date";
-import { buildAppointmentTable, type VaccineCount } from "@/lib/appointment-table";
+import { buildAppointmentTable, type AppointmentTableColumn, type VaccineCount } from "@/lib/appointment-table";
 
 // Re-poll cadence while the page is open and signed in (Will, 2026-08-16:
 // "a reasonable refresh rate, maybe every 15 minutes"). Comfortably above
@@ -25,7 +25,11 @@ type PollResponse = {
 
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 640 },
-  mainWide: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 960 },
+  // No maxWidth here on purpose (V-T-schedule-table, Will 2026-09-04:
+  // "everything visible at once, NOT scrollable") — the table page uses
+  // the full viewport width instead of being squeezed into a 960px column
+  // and forced to scroll horizontally to show the rest of the columns.
+  mainWide: { fontFamily: "system-ui, sans-serif", padding: "1.5rem 2rem" },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
   button: { padding: "0.5rem 1rem", marginRight: "0.5rem" },
@@ -41,28 +45,71 @@ const styles = {
     background: "#f0f4f8",
     borderRadius: 4,
   },
-  table: { width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" },
-  th: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "2px solid #ccc", whiteSpace: "nowrap" },
-  thType: { textAlign: "left", padding: "0.4rem 0.6rem", borderBottom: "2px solid #ccc", whiteSpace: "nowrap" },
-  td: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee" },
-  tdType: { textAlign: "left", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee", fontWeight: 500 },
-  totalCell: { textAlign: "right", padding: "0.4rem 0.6rem", borderBottom: "1px solid #eee", fontWeight: 600 },
+  // Compact table: small font + tight cell padding so a full week x every
+  // vaccine/brand/age column fits on one desktop screen without scrolling
+  // (the acceptance bar per V-T-schedule-table) — down from 0.875rem /
+  // 0.4rem 0.6rem.
+  table: { width: "100%", borderCollapse: "collapse", fontSize: "0.78rem" },
+  th: { textAlign: "right", padding: "0.25rem 0.4rem", borderBottom: "2px solid #ccc", whiteSpace: "nowrap" },
+  thType: { textAlign: "left", padding: "0.25rem 0.4rem", borderBottom: "2px solid #ccc", whiteSpace: "nowrap" },
+  // COVID group header (row 1): one cell spanning its brand/age
+  // sub-columns — see thSub below for row 2.
+  thGroup: {
+    textAlign: "center",
+    padding: "0.2rem 0.4rem",
+    borderBottom: "1px solid #ccc",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+  },
+  thSub: {
+    textAlign: "right",
+    padding: "0.2rem 0.4rem",
+    borderBottom: "2px solid #ccc",
+    fontWeight: 500,
+    whiteSpace: "nowrap",
+  },
+  td: { textAlign: "right", padding: "0.25rem 0.4rem", borderBottom: "1px solid #eee" },
+  tdType: { textAlign: "left", padding: "0.25rem 0.4rem", borderBottom: "1px solid #eee", fontWeight: 500 },
+  totalCell: { textAlign: "right", padding: "0.25rem 0.4rem", borderBottom: "1px solid #eee", fontWeight: 600 },
   // 7-day-sum row: bold, sits directly under the header, separated from
   // the daily-breakdown rows below it by a heavier bottom border.
   sumRowLabel: {
     textAlign: "left",
-    padding: "0.4rem 0.6rem",
+    padding: "0.25rem 0.4rem",
     fontWeight: 700,
     borderBottom: "2px solid #ccc",
   },
   sumRowCell: {
     textAlign: "right",
-    padding: "0.4rem 0.6rem",
+    padding: "0.25rem 0.4rem",
     fontWeight: 700,
     borderBottom: "2px solid #ccc",
   },
+  // Bare fallback only — does nothing when the (now compact, full-width)
+  // table already fits, only kicks in a scrollbar if a viewport is truly
+  // narrower than the table (e.g. a small laptop screen).
   tableWrap: { overflowX: "auto", marginTop: "0.75rem" },
 } as const;
+
+// Groups AppointmentTable.columns into contiguous runs sharing the same
+// `group` (null runs stay single columns) so the header can render one
+// spanning "COVID" cell over its Pfizer/Moderna/Any x age sub-columns,
+// while every other vaccine keeps its plain single-row header — see
+// AppointmentTableColumn's doc comment in lib/appointment-table.ts.
+function groupColumnsForHeader(
+  columns: AppointmentTableColumn[]
+): Array<{ group: "COVID" | null; columns: AppointmentTableColumn[] }> {
+  const groups: Array<{ group: "COVID" | null; columns: AppointmentTableColumn[] }> = [];
+  for (const column of columns) {
+    const last = groups[groups.length - 1];
+    if (last && last.group === column.group && column.group !== null) {
+      last.columns.push(column);
+    } else {
+      groups.push({ group: column.group, columns: [column] });
+    }
+  }
+  return groups;
+}
 
 /**
  * Every "day" this page shows is a fixed America/Chicago calendar day
@@ -77,9 +124,12 @@ function nextSevenDayRange(): { start: string; end: string; days: string[] } {
 
 function formatDayLabel(dateStr: string): string {
   // Parse as local, not UTC, so the weekday shown matches the date shown.
+  // Abbreviated ("Mon 8/17" not "Mon, Aug 17") — part of the compact-table
+  // pass (V-T-schedule-table, Will 2026-09-04).
   const [year, month, day] = dateStr.split("-").map(Number);
   const date = new Date(year, month - 1, day);
-  return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const weekday = date.toLocaleDateString(undefined, { weekday: "short" });
+  return `${weekday} ${month}/${day}`;
 }
 
 export default function AppointmentsPage() {
@@ -236,6 +286,7 @@ export default function AppointmentsPage() {
 
   const { days } = nextSevenDayRange();
   const table = buildAppointmentTable(poll?.counts ?? [], days);
+  const headerGroups = groupColumnsForHeader(table.columns);
 
   return (
     <main style={styles.mainWide}>
@@ -287,24 +338,51 @@ export default function AppointmentsPage() {
         // Vaccine types run across the top (columns); dates run down the
         // left (rows) — Will, V-T7: "type go across the top ... dates go
         // down". First data row under the header is the 7-day sum per
-        // type, before the day-by-day breakdown starts.
+        // type, before the day-by-day breakdown starts. COVID's brand/age
+        // composite columns (V-T-schedule-table, Will 2026-09-04) render
+        // as a grouped two-row header: a spanning "COVID" cell over
+        // "Pfizer 12+"/"Moderna 3-11"/etc sub-headers; every other vaccine
+        // keeps a plain single-row (rowSpan=2) header.
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.thType}>Date</th>
-                {table.rows.map((row) => (
-                  <th key={row.vaccineName} style={styles.th}>
-                    {row.vaccineName}
-                  </th>
-                ))}
-                <th style={styles.th}>Total</th>
+                <th style={styles.thType} rowSpan={2}>
+                  Date
+                </th>
+                {headerGroups.map((group, index) =>
+                  group.group ? (
+                    <th key={`group-${index}`} style={styles.thGroup} colSpan={group.columns.length}>
+                      {group.group}
+                    </th>
+                  ) : (
+                    group.columns.map((column) => (
+                      <th key={column.vaccineName} style={styles.th} rowSpan={2}>
+                        {column.label}
+                      </th>
+                    ))
+                  )
+                )}
+                <th style={styles.th} rowSpan={2}>
+                  Total
+                </th>
+              </tr>
+              <tr>
+                {headerGroups.flatMap((group) =>
+                  group.group
+                    ? group.columns.map((column) => (
+                        <th key={column.vaccineName} style={styles.thSub}>
+                          {column.label}
+                        </th>
+                      ))
+                    : []
+                )}
               </tr>
             </thead>
             <tbody>
               {table.rows.length === 0 ? (
                 <tr>
-                  <td style={styles.tdType} colSpan={2}>
+                  <td style={styles.tdType} colSpan={table.columns.length + 2}>
                     No appointments in this range.
                   </td>
                 </tr>

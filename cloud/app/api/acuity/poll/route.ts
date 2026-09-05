@@ -56,6 +56,7 @@ import { buildAppointmentTable, type AppointmentTable } from "@/lib/appointment-
  *     table: {
  *       days: string[],             // "YYYY-MM-DD", ascending, inclusive of range
  *       rows: Array<{ vaccineName: string, countsByDay: Record<string, number>, total: number }>,
+ *       columns: Array<{ vaccineName: string, group: "COVID" | null, label: string }>,
  *       dailyTotals: Record<string, number>,
  *       grandTotal: number
  *     },
@@ -70,9 +71,18 @@ import { buildAppointmentTable, type AppointmentTable } from "@/lib/appointment-
  * vaccine (e.g. "COVID-Pfizer", "Flu"), not the generic Acuity
  * appointment-type name; see lib/acuity-client.ts's
  * extractVaccineNamesFromForms / isVaccineFormFieldName for how that's
- * derived. When `configured` is false (no Acuity credentials set yet),
- * the body has no `table` field — same as `counts: []`, there is nothing
- * to pivot yet.
+ * derived. `table.rows` and `table.columns` are index-aligned (same
+ * vaccineName in the same order) — `columns` is additive header metadata
+ * for a grouped two-row COVID header (V-T-schedule-table, Will
+ * 2026-09-04): COVID appointments are split by brand preference
+ * (Pfizer/Moderna/Any) and age bucket (3-11/12+/Unknown) into composite
+ * "COVID · {Brand} · {Age}" vaccine names — see
+ * lib/acuity-client.ts's covidCompositeName/deriveCovidBrand/
+ * deriveCovidAgeBucket. `counts` (the flat list) uses this same composite
+ * name; `columns` is provided purely so a renderer doesn't have to
+ * re-parse it. When `configured` is false (no Acuity credentials set
+ * yet), the body has no `table` field — same as `counts: []`, there is
+ * nothing to pivot yet.
  */
 
 const MAX_RANGE_DAYS = 31;

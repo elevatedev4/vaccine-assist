@@ -116,4 +116,69 @@ describe("buildAppointmentTable", () => {
       },
     ]);
   });
+
+  // Grouped two-row COVID header (V-T-schedule-table, Will 2026-09-04):
+  // `columns` is index-aligned with `rows` and marks which columns belong
+  // to the COVID group vs. render as a plain single-header column.
+  describe("columns (grouped COVID header)", () => {
+    it("marks non-COVID vaccines with group: null and label === vaccineName", () => {
+      const counts = [
+        { date: "2026-08-17", vaccineName: "Flu", count: 1 },
+        { date: "2026-08-17", vaccineName: "RSV", count: 1 },
+      ];
+
+      const table = buildAppointmentTable(counts, DAYS);
+
+      expect(table.columns).toEqual([
+        { vaccineName: "Flu", group: null, label: "Flu" },
+        { vaccineName: "RSV", group: null, label: "RSV" },
+      ]);
+    });
+
+    it("marks COVID composite names with group: 'COVID' and a '{Brand} {Age}' sub-label", () => {
+      const counts = [{ date: "2026-08-17", vaccineName: "COVID · Pfizer · 12+", count: 1 }];
+
+      const table = buildAppointmentTable(counts, DAYS);
+
+      expect(table.columns).toEqual([{ vaccineName: "COVID · Pfizer · 12+", group: "COVID", label: "Pfizer 12+" }]);
+    });
+
+    it("sorts non-COVID columns alphabetically, then the COVID group by brand (Pfizer -> Moderna -> Any), age ascending with Unknown last", () => {
+      const counts = [
+        { date: "2026-08-17", vaccineName: "COVID · Any · Unknown", count: 1 },
+        { date: "2026-08-17", vaccineName: "COVID · Moderna · 12+", count: 1 },
+        { date: "2026-08-17", vaccineName: "COVID · Moderna · 3-11", count: 1 },
+        { date: "2026-08-17", vaccineName: "COVID · Pfizer · 12+", count: 1 },
+        { date: "2026-08-17", vaccineName: "RSV", count: 1 },
+        { date: "2026-08-17", vaccineName: "Flu", count: 1 },
+      ];
+
+      const table = buildAppointmentTable(counts, DAYS);
+
+      expect(table.columns.map((c) => c.vaccineName)).toEqual([
+        "Flu",
+        "RSV",
+        "COVID · Pfizer · 12+",
+        "COVID · Moderna · 3-11",
+        "COVID · Moderna · 12+",
+        "COVID · Any · Unknown",
+      ]);
+      // rows stay index-aligned with columns.
+      expect(table.rows.map((r) => r.vaccineName)).toEqual(table.columns.map((c) => c.vaccineName));
+    });
+
+    it("gives a Pfizer 3-11 composite (not stocked, but must not be hidden) its own column in brand/age order", () => {
+      const counts = [
+        { date: "2026-08-17", vaccineName: "COVID · Pfizer · 3-11", count: 1 },
+        { date: "2026-08-17", vaccineName: "COVID · Pfizer · 12+", count: 1 },
+      ];
+
+      const table = buildAppointmentTable(counts, DAYS);
+
+      expect(table.columns).toEqual([
+        { vaccineName: "COVID · Pfizer · 3-11", group: "COVID", label: "Pfizer 3-11" },
+        { vaccineName: "COVID · Pfizer · 12+", group: "COVID", label: "Pfizer 12+" },
+      ]);
+    });
+  });
 });
