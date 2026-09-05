@@ -247,6 +247,21 @@ function summaryCellStyle(isLastSummaryRow: boolean, background: string) {
   return { ...(isLastSummaryRow ? styles.sumRowCellLast : styles.sumRowCell), ...COLUMN_DIVIDER, background };
 }
 
+// Third heatmap scale (Will's follow-up, verbatim: "Add heatmap to the
+// daily totals for the upcoming forecast too") — paints the Total column
+// for the Today summary row and every daily-breakdown row against
+// `totalsScaleMax` (see computeHeatmapMaxes). Deliberately NO
+// COLUMN_DIVIDER here (the Total column has never had a left border,
+// unlike the per-vaccine columns) and no zero-dimmed variant (a day with
+// 0 total is still a real "nothing scheduled" total; heatmapCellBackground
+// already renders 0 as plain white on its own, same as everywhere else).
+// `base` is whichever row's own Total-cell style (styles.totalCell for a
+// daily-breakdown row, styles.sumRowCell for the Today summary row) so
+// this only ever changes the background, nothing else about that row.
+function totalCellStyle(base: typeof styles.totalCell | typeof styles.sumRowCell, background: string) {
+  return { ...base, background };
+}
+
 // One <th> to render, with its col/row span — see buildHeaderRows.
 // `group` drives GROUP_COLORS above; every header cell belongs to
 // exactly one of the 4 groups (ROUND 4 — AppointmentTableColumn.group is
@@ -590,18 +605,21 @@ export default function AppointmentsPage() {
   // request — see that state's doc comment for why it's never part of
   // `poll`.
   const { today: todaySummary, next7: next7Summary } = computeTodayAndNext7Summaries(table);
-  // ROUND 6 heatmap (V-T12 answer): TWO INDEPENDENT SCALES, never one
-  // combined scale — "Today and the daily breakdown would be its own
-  // scale, separate from the weekly and remaining ... wouldn't make sense
-  // to have weekly numbers compared to daily numbers." `dailyScaleMax`
-  // normalizes the "Today" summary row AND every day-by-day breakdown row;
-  // `weeklyScaleMax` normalizes "Next 7 days" and "After today" only.
-  // Neither scale ever includes the Total column or the date-label column
-  // — see computeHeatmapMaxes's doc comment for why totals would crush the
-  // gradient. `afterToday?.byColumnId` is passed as `null` while it hasn't
-  // loaded yet (or failed) so the scale doesn't silently miss real data
-  // once it lands — see the afterToday state's own doc comment above.
-  const { dailyScaleMax, weeklyScaleMax } = computeHeatmapMaxes(
+  // ROUND 6 heatmap (V-T12 answer): INDEPENDENT SCALES, never one combined
+  // scale — "Today and the daily breakdown would be its own scale,
+  // separate from the weekly and remaining ... wouldn't make sense to
+  // have weekly numbers compared to daily numbers." `dailyScaleMax`
+  // normalizes the "Today" summary row AND every day-by-day breakdown
+  // row's PER-VACCINE cells; `weeklyScaleMax` normalizes "Next 7 days" and
+  // "After today"'s per-vaccine cells only. `totalsScaleMax` (Will's
+  // follow-up: "Add heatmap to the daily totals for the upcoming forecast
+  // too") is a THIRD, separate scale over the 8-day daily breakdown's
+  // Total-column values only — see computeHeatmapMaxes's doc comment for
+  // why a day's total needs its own scale instead of sharing
+  // `dailyScaleMax`. `afterToday?.byColumnId` is passed as `null` while it
+  // hasn't loaded yet (or failed) so the scale doesn't silently miss real
+  // data once it lands — see the afterToday state's own doc comment above.
+  const { dailyScaleMax, weeklyScaleMax, totalsScaleMax } = computeHeatmapMaxes(
     table,
     todaySummary.byColumnId,
     next7Summary.byColumnId,
@@ -692,16 +710,30 @@ export default function AppointmentsPage() {
         // ROUND 6 heatmap (V-T12, green ramp per V-T14): every DATA cell's
         // background is now a white -> green gradient by count instead of
         // a per-group tint (heatmapCellBackground, lib/appointment-table.ts),
-        // on TWO
-        // INDEPENDENT SCALES — dailyScaleMax for Today + the daily
-        // breakdown, weeklyScaleMax for Next 7 days + After today (see
-        // computeHeatmapMaxes above). The Total column and the
-        // "Scheduled date" column are deliberately EXCLUDED from both
-        // scales and never get a heatmap background at all: a 7-day total
-        // is a sum across many vaccine columns and would be an order of
-        // magnitude larger than any single cell, which would crush the
-        // whole gradient down to "everything looks like zero except
-        // Total" — and a date label isn't a count at all.
+        // on INDEPENDENT SCALES — dailyScaleMax for Today + the daily
+        // breakdown's PER-VACCINE cells, weeklyScaleMax for Next 7 days +
+        // After today's per-vaccine cells (see computeHeatmapMaxes above).
+        // The "Scheduled date" column is never part of any scale (it isn't
+        // a count at all).
+        //
+        // Follow-up (Will, verbatim: "Add heatmap to the daily totals for
+        // the upcoming forecast too"): the Total column ALSO gets the same
+        // green ramp now, but on its OWN third scale (totalsScaleMax) — see
+        // computeHeatmapMaxes's doc comment for why a day's total can't
+        // share dailyScaleMax with the per-vaccine cells (it's roughly an
+        // order of magnitude bigger and would crush one gradient or the
+        // other). This paints the Total cell for the "Today" summary row
+        // AND every daily-breakdown row (today + the following 7 days) —
+        // JUDGMENT CALL (doc-commented per the brief): "Today"'s Total is
+        // literally the same number as the first daily-breakdown row's
+        // Total (both are table.dailyTotals[table.days[0]]), so heatmapping
+        // one but not the other would show the identical value two
+        // different ways a few pixels apart, which reads as a bug rather
+        // than a design choice. "Next 7 days" and "After today"'s totals
+        // stay deliberately PLAIN (no heatmap) — those are yet another,
+        // larger magnitude class (up to ~13 weeks of appointments summed),
+        // so folding them into totalsScaleMax would crush the daily-totals
+        // gradient the same way mixing per-vaccine and total counts would.
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <colgroup>
@@ -752,7 +784,9 @@ export default function AppointmentsPage() {
             <tbody>
               <tr>
                 <td style={styles.sumRowLabel}>Today</td>
-                <td style={styles.sumRowCell}>{todaySummary.total}</td>
+                <td style={totalCellStyle(styles.sumRowCell, heatmapCellBackground(todaySummary.total, totalsScaleMax))}>
+                  {todaySummary.total}
+                </td>
                 {table.columns.map((column) => {
                   const count = todaySummary.byColumnId[column.vaccineName] ?? 0;
                   return (
@@ -795,7 +829,9 @@ export default function AppointmentsPage() {
               {table.days.map((day) => (
                 <tr key={day}>
                   <td style={styles.tdType}>{formatDayLabel(day)}</td>
-                  <td style={styles.totalCell}>{table.dailyTotals[day]}</td>
+                  <td style={totalCellStyle(styles.totalCell, heatmapCellBackground(table.dailyTotals[day], totalsScaleMax))}>
+                    {table.dailyTotals[day]}
+                  </td>
                   {table.columns.map((column, index) => renderCount(column, table.rows[index].countsByDay[day], dailyScaleMax))}
                 </tr>
               ))}

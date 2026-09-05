@@ -778,13 +778,13 @@ export function heatmapCellBackground(count: number, max: number): string {
 }
 
 /**
- * The "TWO INDEPENDENT SCALES" split (V-T12 answer, verbatim): "Today and
- * the daily breakdown would be its own scale, separate from the weekly and
+ * The independent-scales split (V-T12 answer, verbatim): "Today and the
+ * daily breakdown would be its own scale, separate from the weekly and
  * remaining. Those would have their own scale. It wouldn't make sense to
  * have weekly numbers compared to daily numbers." So:
  *
- *   - `dailyScaleMax`: the max single-cell count across the "Today"
- *     summary row AND every day-by-day breakdown row (table.rows'
+ *   - `dailyScaleMax`: the max single-cell PER-VACCINE count across the
+ *     "Today" summary row AND every day-by-day breakdown row (table.rows'
  *     countsByDay, every column, every day) — note this already fully
  *     covers "Today" on its own even without `todayByColumnId` supplied
  *     separately, since table.days[0] IS today and its own breakdown row
@@ -792,27 +792,40 @@ export function heatmapCellBackground(count: number, max: number): string {
  *     explicit input anyway so this function stays correct (and testable
  *     in isolation) even against a table that doesn't happen to include
  *     today's day.
- *   - `weeklyScaleMax`: the max single-cell count across the "Next 7 days"
- *     summary row and the (separately fetched, possibly not-yet-loaded)
- *     "After today" summary row.
+ *   - `weeklyScaleMax`: the max single-cell PER-VACCINE count across the
+ *     "Next 7 days" summary row and the (separately fetched, possibly
+ *     not-yet-loaded) "After today" summary row.
+ *   - `totalsScaleMax` (added for Will's follow-up, verbatim: "Add heatmap
+ *     to the daily totals for the upcoming forecast too"): the max DAILY
+ *     TOTAL (table.dailyTotals — the sum across every vaccine column for
+ *     one day) across the 8-day daily breakdown. A day's total is a sum
+ *     across many vaccine columns, roughly an order of magnitude bigger
+ *     than any single vaccine's count, so it gets its OWN third scale
+ *     rather than sharing `dailyScaleMax` — sharing would either crush
+ *     every per-vaccine cell to near-white (if the scale stretched to fit
+ *     the totals) or crush the totals themselves to near-white (if it
+ *     didn't). This scale intentionally does NOT include "Next 7 days" or
+ *     "After today"'s totals — those are yet another, larger magnitude
+ *     class (up to ~13 weeks of appointments) and app/appointments/
+ *     page.tsx deliberately leaves those two totals unheatmapped rather
+ *     than stretching this scale (or adding a fourth) to cover them; see
+ *     that file's own doc comment on the render for the "your call, your
+ *     rationale" write-up on which rows this scale actually paints.
  *
- * The Total column and the leftmost date-label column are deliberately
- * NEVER part of either scale (see app/appointments/page.tsx's render) —
- * totals are sums across many vaccine columns and would dwarf any single
- * vaccine's count, crushing the whole gradient into "everything near
- * zero except the Total column."
+ * The leftmost date-label column is never part of any scale (it isn't a
+ * count at all).
  *
  * An all-zero input (no data loaded yet, or a genuinely empty schedule)
- * returns {0, 0} rather than throwing or dividing by zero — callers pass
- * that straight into heatmapCellBackground, whose own `max <= 0` guard
- * already renders plain white for exactly this case.
+ * returns {0, 0, 0} rather than throwing or dividing by zero — callers
+ * pass that straight into heatmapCellBackground, whose own `max <= 0`
+ * guard already renders plain white for exactly this case.
  */
 export function computeHeatmapMaxes(
   table: AppointmentTable,
   todayByColumnId: Record<string, number>,
   next7ByColumnId: Record<string, number>,
   afterTodayByColumnId: Record<string, number> | null
-): { dailyScaleMax: number; weeklyScaleMax: number } {
+): { dailyScaleMax: number; weeklyScaleMax: number; totalsScaleMax: number } {
   let dailyScaleMax = 0;
   for (const value of Object.values(todayByColumnId)) {
     dailyScaleMax = Math.max(dailyScaleMax, value);
@@ -833,5 +846,10 @@ export function computeHeatmapMaxes(
     }
   }
 
-  return { dailyScaleMax, weeklyScaleMax };
+  let totalsScaleMax = 0;
+  for (const day of table.days) {
+    totalsScaleMax = Math.max(totalsScaleMax, table.dailyTotals[day] ?? 0);
+  }
+
+  return { dailyScaleMax, weeklyScaleMax, totalsScaleMax };
 }
