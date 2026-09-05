@@ -711,25 +711,33 @@ export function computeTodayAndNext7Summaries(table: AppointmentTable): {
  * any React/inline-style concern) — app/appointments/page.tsx supplies the
  * per-cell `count`/`max` and turns the returned color into a cell style:
  *
- *   - heatmapCellBackground(count, max): the actual white -> blue ramp.
+ *   - heatmapCellBackground(count, max): the actual white -> green ramp.
  *   - computeHeatmapMaxes(...): the "two independent scales" split Will
  *     asked for — see its own doc comment.
  *
- * A single hue ramp (white -> a medium blue) is used for BOTH scales —
+ * A single hue ramp (white -> a medium green) is used for BOTH scales —
  * only the max each scale normalizes against differs, never the hue —
  * per Will's own phrasing ("Use a single hue ramp").
  *
+ * ROUND 6 follow-up (V-T14, Will 2026-09-05, verbatim): "Its decent. Let's
+ * make the heatmap be green instead. And make sure it doesn't get so dark
+ * that the black text contrast is bad." Swapped HEATMAP_PEAK_RGB from a
+ * blue (rgb(30, 64, 175)) to Tailwind's green-600 (#16a34a — squarely in
+ * the "medium green, 500-600 range" Will's ask suggested), and re-picked
+ * HEATMAP_MAX_INTENSITY from scratch against the NEW peak rather than
+ * reusing the old blue-tuned cap — a peak color swap changes the darkest
+ * reachable color, so the contrast floor has to be re-verified, not
+ * assumed.
+ *
  * Cell text is ALWAYS plain black/default (review fix, 2026-09-05 —
- * reviewer's numerically-verified finding): an earlier revision switched
- * text to white once a cell's raw count/max ratio crossed 0.62, but that
- * compared the RAW ratio while the background itself renders at
- * ratio*HEATMAP_MAX_INTENSITY — so cells in roughly the 0.62-0.88 raw-ratio
- * band flipped to white text sitting on a still-light blue background
- * (WCAG contrast ~2.4-3.4:1, an actual regression vs. black text's own
- * ~5.1:1 there). HEATMAP_MAX_INTENSITY is tuned below so black text stays
- * ≥4.5:1 (WCAG AA) against the background at EVERY ratio from 0 to 1 —
- * see the "heatmap contrast" test sweep in tests/appointment-table.test.ts,
- * which recomputes WCAG relative luminance directly so it keeps failing if
+ * reviewer's numerically-verified finding on the earlier blue ramp): a
+ * white-text switch at a raw count/max ratio was net harmful there because
+ * it didn't account for HEATMAP_MAX_INTENSITY scaling the ratio down before
+ * it ever reaches the background. HEATMAP_MAX_INTENSITY is tuned below so
+ * black text stays ≥4.5:1 (WCAG AA) against the background at EVERY ratio
+ * from 0 to 1 — see the "heatmap contrast" test sweep in
+ * tests/appointment-table.test.ts, which recomputes WCAG relative luminance
+ * directly from heatmapCellBackground's own output so it keeps failing if
  * this constant (or the peak color) is ever tuned darker again — so no
  * text-color switch is needed at all; there's deliberately no
  * heatmapTextColor function.
@@ -739,15 +747,21 @@ const HEATMAP_BASE_RGB = { r: 255, g: 255, b: 255 } as const;
 // Full-saturation target the ramp interpolates toward — never actually
 // reached at count===max because HEATMAP_MAX_INTENSITY below caps how far
 // toward it a cell is allowed to go, so the darkest cell in any scale
-// still leaves plain black cell text legible.
-const HEATMAP_PEAK_RGB = { r: 30, g: 64, b: 175 } as const;
+// still leaves plain black cell text legible. Tailwind green-600 (#16a34a)
+// — V-T14 (Will): "make the heatmap be green instead," "a medium green
+// like the 500-600 range."
+const HEATMAP_PEAK_RGB = { r: 22, g: 163, b: 74 } as const;
 // Cap on how far a cell's color is allowed to travel from white toward
-// HEATMAP_PEAK_RGB, even at count===max (V-T12: "cap the darkest step").
-// 0.70 keeps black-text contrast at the darkest possible cell around
-// 5.08:1 — comfortably above the 4.5:1 WCAG AA floor, with margin for
-// integer rgb() rounding — see the doc comment above and the contrast
-// regression test.
-const HEATMAP_MAX_INTENSITY = 0.7;
+// HEATMAP_PEAK_RGB, even at count===max (V-T12: "cap the darkest step";
+// V-T14: "make sure it doesn't get so dark that the black text contrast is
+// bad"). At this green peak, 0.85 renders the darkest possible cell as
+// rgb(57, 177, 101) — black-text contrast there is ~7.65:1, comfortably
+// above the 4.5:1 WCAG AA floor (recomputed by hand for this exact peak —
+// see the doc comment above on why the old blue-tuned cap couldn't just be
+// reused) and still dark enough to read as a clear "high count" color, not
+// a barely-tinted white. See the contrast regression test for the sweep
+// that keeps this honest against future tweaks.
+const HEATMAP_MAX_INTENSITY = 0.85;
 
 /**
  * count<=0 or max<=0 (an all-zero scale — no division by zero) always

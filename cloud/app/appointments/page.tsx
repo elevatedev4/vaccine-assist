@@ -689,9 +689,10 @@ export default function AppointmentsPage() {
         // after-today fetch never LOOKS like "zero appointments," and
         // never gets a heatmap tint while in that state either.
         //
-        // ROUND 6 heatmap (V-T12): every DATA cell's background is now a
-        // white -> blue gradient by count instead of a per-group tint
-        // (heatmapCellBackground, lib/appointment-table.ts), on TWO
+        // ROUND 6 heatmap (V-T12, green ramp per V-T14): every DATA cell's
+        // background is now a white -> green gradient by count instead of
+        // a per-group tint (heatmapCellBackground, lib/appointment-table.ts),
+        // on TWO
         // INDEPENDENT SCALES — dailyScaleMax for Today + the daily
         // breakdown, weeklyScaleMax for Next 7 days + After today (see
         // computeHeatmapMaxes above). The Total column and the
