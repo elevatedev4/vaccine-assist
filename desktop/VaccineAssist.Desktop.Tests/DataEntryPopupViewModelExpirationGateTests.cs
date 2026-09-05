@@ -146,6 +146,79 @@ public class DataEntryPopupViewModelExpirationGateTests
     }
 
     [Fact]
+    public async Task AddingARealLotAfterChoosingSkipClearsTheSkipFlagAndUsesTheRealLot()
+    {
+        // BLOCKER 1 regression (reviewer request-changes round): repro was
+        // "leave blank and proceed" -> flag=true -> staff adds a real lot
+        // anyway -> flag never reset -> BuildPayloadAsync still emitted a
+        // blank-lot payload even though a valid lot now existed. Covers
+        // AddLotAsync's own reset of SkipLotAndExpiration.
+        var apiService = new FakeVaccineApiService();
+        var sequence = new PayloadCapturingPioneerEntrySequence();
+        var viewModel = CreateViewModel(apiService, sequence);
+        viewModel.PatientAgeYears = 30;
+        viewModel.SelectedVaccine = SampleVaccine;
+        await Settle(viewModel);
+        viewModel.SkipLotAndExpirationCommand.Execute(null);
+        Assert.True(viewModel.SkipLotAndExpiration);
+
+        viewModel.NewLotNumber = "REALLOT2";
+        viewModel.NewLotExpiration = DateTime.Today.AddYears(1);
+        viewModel.AddLotCommand.Execute(null);
+        await Settle(viewModel);
+
+        Assert.False(viewModel.SkipLotAndExpiration); // must not stay stuck true after a real lot is added
+        Assert.False(viewModel.IsLotExpiredOrMissing);
+
+        viewModel.EnterIntoPioneerCommand.Execute(null);
+        await Settle(viewModel);
+
+        Assert.NotNull(sequence.CapturedPayload);
+        Assert.False(sequence.CapturedPayload!.SkipLotAndExpiration);
+        Assert.Equal("REALLOT2", sequence.CapturedPayload.LotNumber);
+    }
+
+    [Fact]
+    public async Task BuildPayloadPrefersARealLotEvenIfSkipFlagIsStaleTrue()
+    {
+        // BLOCKER 1 regression, second half (defense in depth): even if
+        // SkipLotAndExpiration were somehow still true through some path
+        // OTHER than AddLotAsync (the one already covered above), building
+        // the actual PioneerRx payload must never emit a blank lot once a
+        // real, unexpired one exists. Simulated by adding a lot directly
+        // to the fake's backing store (bypassing AddLotCommand entirely,
+        // so this doesn't rely on AddLotAsync's own reset) WITHOUT ever
+        // refreshing the popup's cached SelectedVaccineActiveLot/
+        // IsLotExpiredOrMissing — BuildPayloadAsync's own fresh
+        // GetLotsAsync call at the moment of entry is what has to catch
+        // this, not the (deliberately left stale here) VM state.
+        var apiService = new FakeVaccineApiService();
+        var sequence = new PayloadCapturingPioneerEntrySequence();
+        var viewModel = CreateViewModel(apiService, sequence);
+        viewModel.PatientAgeYears = 30;
+        viewModel.SelectedVaccine = SampleVaccine;
+        await Settle(viewModel);
+        viewModel.SkipLotAndExpirationCommand.Execute(null);
+        Assert.True(viewModel.SkipLotAndExpiration);
+
+        // A lot appears in the backing store through some path other than
+        // AddLotCommand (e.g. another workstation) — the popup's own
+        // cached lot state is left stale on purpose here.
+        apiService.LotsByVaccineId[SampleVaccine.Id] = new()
+        {
+            new Lot { Id = Guid.NewGuid(), VaccineId = SampleVaccine.Id, LotNumber = "REALLOT", Expiration = DateOnly.FromDateTime(DateTime.Today.AddYears(1)), Status = "active" },
+        };
+
+        Assert.True(viewModel.EnterIntoPioneerCommand.CanExecute(null)); // stale skip flag still unblocks the gate itself
+        viewModel.EnterIntoPioneerCommand.Execute(null);
+        await Settle(viewModel);
+
+        Assert.NotNull(sequence.CapturedPayload);
+        Assert.False(sequence.CapturedPayload!.SkipLotAndExpiration); // must NOT be the blank/skip payload
+        Assert.Equal("REALLOT", sequence.CapturedPayload.LotNumber);
+    }
+
+    [Fact]
     public async Task SkippedLotProducesABlankLotPayloadThatReachesTheSequence()
     {
         var apiService = new FakeVaccineApiService();

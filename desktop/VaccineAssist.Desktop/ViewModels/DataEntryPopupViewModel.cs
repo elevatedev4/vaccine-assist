@@ -380,13 +380,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         {
             var eligible = await _apiService.GetEligibleVaccinesForAgeAsync(age);
             _eligibleVaccinesForAge = eligible.ToArray();
-
-            var groupsPresent = _eligibleVaccinesForAge.Select(VaccineGroupCatalog.GetGroup).ToHashSet();
-            AvailableGroups.Clear();
-            foreach (var group in VaccineGroupCatalog.DisplayOrder.Where(groupsPresent.Contains))
-            {
-                AvailableGroups.Add(group);
-            }
+            BuildAvailableGroups();
 
             if (AvailableGroups.Count == 0)
             {
@@ -414,15 +408,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     public void SelectGroup(string group)
     {
         SelectedGroup = group;
-
-        ProductOptions.Clear();
-        var inGroup = _eligibleVaccinesForAge.Where(v => VaccineGroupCatalog.GetGroup(v) == group);
-        foreach (var name in inGroup.Select(v => v.Name).Distinct())
-        {
-            var doseRows = OrderByDose(inGroup.Where(v => v.Name == name));
-            ProductOptions.Add(new VaccineProductOption(name, doseRows));
-        }
-
+        BuildProductOptions(group);
         CurrentStage = Stage.Product;
     }
 
@@ -432,11 +418,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
 
         if (product.IsMultiDose)
         {
-            DoseOptions.Clear();
-            foreach (var doseRow in product.DoseRows)
-            {
-                DoseOptions.Add(doseRow);
-            }
+            BuildDoseOptions(product);
             CurrentStage = Stage.Dose;
         }
         else
@@ -465,22 +447,123 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             .Select(x => x.Vaccine)
             .ToList();
 
+    /// <summary>(Re)builds AvailableGroups from _eligibleVaccinesForAge —
+    /// used both by ContinueFromAgeAsync (first entry into the Group stage)
+    /// and by GoBack (re-entry from Product). ALWAYS Clear()s before
+    /// re-Add()ing, even when the resulting list is identical to what was
+    /// already there — see the reviewer note on GoBack below for why that
+    /// Clear+Add (not a no-op skip) is the actual fix, not an optimization
+    /// detail.</summary>
+    private void BuildAvailableGroups()
+    {
+        var groupsPresent = _eligibleVaccinesForAge.Select(VaccineGroupCatalog.GetGroup).ToHashSet();
+        AvailableGroups.Clear();
+        foreach (var group in VaccineGroupCatalog.DisplayOrder.Where(groupsPresent.Contains))
+        {
+            AvailableGroups.Add(group);
+        }
+    }
+
+    /// <summary>(Re)builds ProductOptions for one group from
+    /// _eligibleVaccinesForAge — used both by SelectGroup (first entry into
+    /// the Product stage) and by GoBack (re-entry from Dose, or from
+    /// Review for a single-dose product). See BuildAvailableGroups' doc on
+    /// why this always rebuilds rather than reusing an existing list.</summary>
+    private void BuildProductOptions(string group)
+    {
+        ProductOptions.Clear();
+        var inGroup = _eligibleVaccinesForAge.Where(v => VaccineGroupCatalog.GetGroup(v) == group);
+        foreach (var name in inGroup.Select(v => v.Name).Distinct())
+        {
+            var doseRows = OrderByDose(inGroup.Where(v => v.Name == name));
+            ProductOptions.Add(new VaccineProductOption(name, doseRows));
+        }
+    }
+
+    /// <summary>(Re)builds DoseOptions for one product — used both by
+    /// SelectProduct (first entry into the Dose stage) and by GoBack
+    /// (re-entry from Review). See BuildAvailableGroups' doc on why this
+    /// always rebuilds rather than reusing an existing list.</summary>
+    private void BuildDoseOptions(VaccineProductOption product)
+    {
+        DoseOptions.Clear();
+        foreach (var doseRow in product.DoseRows)
+        {
+            DoseOptions.Add(doseRow);
+        }
+    }
+
+    /// <summary>
+    /// REVIEWER FIX (BLOCKER 2, request-changes round): every back-step
+    /// that RE-ENTERS a stage with a RadioButton ItemsControl must rebuild
+    /// that stage's collection (Clear() then re-Add(), even when the
+    /// resulting items are identical to before) rather than merely
+    /// clearing the SELECTION state. Reason: DataEntryPopupWindow.xaml's
+    /// RadioButtons are generated per-item by an ItemsControl DataTemplate,
+    /// and WPF does NOT raise RadioButton.Checked when a user clicks a
+    /// RadioButton that is ALREADY IsChecked=true — clearing only
+    /// SelectedGroup/SelectedProduct/SelectedVaccine leaves the OLD,
+    /// already-checked RadioButton controls sitting in the visual tree
+    /// untouched, so re-picking the exact same (or, for a single-option
+    /// stage like HPV -> Gardasil or Shingles -> Shingrix, the ONLY
+    /// possible) option after Back never fires the Checked handler again —
+    /// a dead end. A Clear() on an ObservableCollection raises
+    /// NotifyCollectionChangedAction.Reset, which makes the bound
+    /// ItemsControl discard every existing item container; the following
+    /// Add() calls then generate BRAND NEW RadioButtons that start
+    /// unchecked, so a re-pick is a genuine unchecked->checked transition
+    /// again. (Considered instead binding each RadioButton's IsChecked via
+    /// a MultiBinding/converter comparing the item to the VM's current
+    /// selection — rejected here: WPF's own GroupName-based mutual-
+    /// exclusion logic also writes IsChecked directly on sibling
+    /// RadioButtons, and reconciling that against a bound OneWay value
+    /// without a live PioneerRx-free WPF environment to actually click
+    /// through wasn't a risk worth taking over this smaller, already-
+    /// proven-safe Clear+rebuild approach — SelectGroup/SelectProduct
+    /// already relied on exactly this Clear+Add mechanism for their own
+    /// forward transitions before this fix, just not on the BACKWARD ones.)
+    ///
+    /// WHAT ONLY A LIVE RUN CAN PROVE: VM-level tests (see
+    /// DataEntryPopupViewModelGuidedFlowTests.cs's "Back...Rebuilds..."
+    /// tests) confirm the Reset+Add collection-change sequence fires and
+    /// that SelectGroup/SelectProduct/SelectDose still transition stages
+    /// correctly afterward — that's the mechanism this fix relies on. What
+    /// they CANNOT observe (no live WPF renderer in this environment) is
+    /// that a real RadioButton's on-screen checked state visually clears
+    /// and that an actual mouse click on the newly generated control fires
+    /// Checked end-to-end. Will should click through a Back step on a
+    /// single-option group (e.g. Shingles) on a real run to confirm.
+    /// </summary>
     private void GoBack()
     {
         switch (CurrentStage)
         {
             case Stage.Review:
+            {
+                var previousProduct = SelectedProduct;
                 SelectedVaccine = null;
-                CurrentStage = SelectedProduct?.IsMultiDose == true ? Stage.Dose : Stage.Product;
+                if (previousProduct?.IsMultiDose == true)
+                {
+                    BuildDoseOptions(previousProduct);
+                    CurrentStage = Stage.Dose;
+                }
+                else
+                {
+                    if (SelectedGroup is not null) BuildProductOptions(SelectedGroup);
+                    CurrentStage = Stage.Product;
+                }
                 break;
+            }
             case Stage.Dose:
                 SelectedProduct = null;
                 DoseOptions.Clear();
+                if (SelectedGroup is not null) BuildProductOptions(SelectedGroup);
                 CurrentStage = Stage.Product;
                 break;
             case Stage.Product:
                 SelectedGroup = null;
                 ProductOptions.Clear();
+                BuildAvailableGroups();
                 CurrentStage = Stage.Group;
                 break;
             case Stage.Group:
@@ -549,6 +632,14 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         {
             var expiration = DateOnly.FromDateTime(NewLotExpiration);
             var created = await _apiService.CreateLotAsync(SelectedVaccine.Id, NewLotNumber.Trim(), expiration, note: NewLotNote);
+            // REVIEWER FIX (BLOCKER 1, request-changes round): a lot just
+            // got added for real — any earlier "leave lot/expiration
+            // blank and proceed" choice for THIS vaccine is now stale and
+            // must not silently win over the real lot BuildPayloadAsync
+            // would otherwise use. Reset before refreshing the lot status
+            // below, not after, so there's no window where both are true
+            // at once.
+            SkipLotAndExpiration = false;
             await RefreshSelectedVaccineActiveLotAsync();
             NewLotNumber = "";
             NewLotNote = null;
@@ -689,8 +780,22 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// expiration gate (IsLotExpiredOrMissing) is supposed to stop an
     /// expired lot from ever reaching here at all, but this is the same
     /// belt-and-suspenders double-check BuildPayloadAsync already did for
-    /// "no lot at all" before this change. Returns null (with ErrorMessage
-    /// set) if none is on file and SkipLotAndExpiration wasn't chosen.
+    /// "no lot at all" before this change.
+    ///
+    /// REVIEWER FIX (BLOCKER 1, request-changes round): this method used to
+    /// check SkipLotAndExpiration FIRST and return a blank-lot payload
+    /// without ever looking at the lots table at all — so if staff chose
+    /// "leave blank and proceed" and THEN added a real lot (AddLotAsync now
+    /// resets the flag itself — see that method — but this is the
+    /// independent belt-and-suspenders half of the same fix, in case the
+    /// flag is ever left stale-true by some other path), the blank payload
+    /// still won, silently producing a wrong PioneerRx administration
+    /// record (no lot/expiration entered even though a valid one existed).
+    /// Now the ACTUAL lot lookup always runs FIRST and wins whenever it
+    /// finds one — SkipLotAndExpiration is consulted only as the fallback
+    /// for "no unexpired lot exists right now", which is a fresh check
+    /// against the API here, not a trust of the (possibly stale)
+    /// IsLotExpiredOrMissing/SkipLotAndExpiration view-model state.
     /// </summary>
     private async Task<VaccineEntryPayload?> BuildPayloadAsync()
     {
@@ -700,19 +805,20 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             return null;
         }
 
+        var activeLots = await _apiService.GetLotsAsync(SelectedVaccine.Id, status: "active");
+        var lot = activeLots.Where(l => !l.IsExpired).OrderBy(l => l.Expiration).FirstOrDefault();
+
+        if (lot is not null)
+        {
+            return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText());
+        }
+
         if (SkipLotAndExpiration)
         {
             return new VaccineEntryPayload(SelectedVaccine.ShortCode, "", "", AdminSite.ToDisplayText(), SkipLotAndExpiration: true);
         }
 
-        var activeLots = await _apiService.GetLotsAsync(SelectedVaccine.Id, status: "active");
-        var lot = activeLots.Where(l => !l.IsExpired).OrderBy(l => l.Expiration).FirstOrDefault();
-        if (lot is null)
-        {
-            ErrorMessage = $"No unexpired lot on file for {SelectedVaccine.Name} — add one below, or choose \"Leave lot/expiration blank\" to continue without one.";
-            return null;
-        }
-
-        return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText());
+        ErrorMessage = $"No unexpired lot on file for {SelectedVaccine.Name} — add one below, or choose \"Leave lot/expiration blank\" to continue without one.";
+        return null;
     }
 }

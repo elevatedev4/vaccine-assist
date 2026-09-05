@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Specialized;
 using System.Linq;
 using System.Threading.Tasks;
 using VaccineAssist.Desktop.Models;
@@ -160,5 +161,124 @@ public class DataEntryPopupViewModelGuidedFlowTests
         viewModel.BackCommand.Execute(null);
 
         Assert.Equal(DataEntryPopupViewModel.Stage.Product, viewModel.CurrentStage);
+    }
+
+    // ------------------------------------------------------------------
+    // BLOCKER 2 regressions (reviewer request-changes round): every
+    // back-step that re-enters a RadioButton stage must rebuild that
+    // stage's ObservableCollection (Reset then Add), not merely clear the
+    // VM's selection field — otherwise WPF's existing RadioButton
+    // containers stay IsChecked=true and never raise Checked again on a
+    // re-click (single-option stages like HPV -> Gardasil become
+    // unpassable after Back). These tests confirm the Reset+Add sequence
+    // actually fires and that re-selecting afterward still transitions
+    // stages correctly — see GoBack's doc comment for what this CANNOT
+    // prove (an actual RadioButton's on-screen checked state and a real
+    // mouse click firing Checked need a live WPF run to confirm).
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task BackFromProductRebuildsAvailableGroupsSoTheSameGroupCanBeReselected()
+    {
+        var viewModel = CreateViewModelWithEligibleVaccinesForAge12();
+        await ContinueFromAge(viewModel, 12);
+        viewModel.SelectGroup("HPV");
+        Assert.Equal(DataEntryPopupViewModel.Stage.Product, viewModel.CurrentStage);
+
+        var events = new System.Collections.Generic.List<NotifyCollectionChangedAction>();
+        viewModel.AvailableGroups.CollectionChanged += (_, e) => events.Add(e.Action);
+
+        viewModel.BackCommand.Execute(null); // Product -> Group
+
+        Assert.Contains(NotifyCollectionChangedAction.Reset, events);
+        Assert.Contains(NotifyCollectionChangedAction.Add, events);
+        Assert.Equal(new[] { "COVID", "Tetanus/whooping cough", "HPV" }, viewModel.AvailableGroups.ToArray());
+
+        // Re-picking the exact same group that was selected before Back
+        // must still work like a first-time pick.
+        viewModel.SelectGroup("HPV");
+        Assert.Equal(DataEntryPopupViewModel.Stage.Product, viewModel.CurrentStage);
+        Assert.Equal("Gardasil", Assert.Single(viewModel.ProductOptions).Name);
+    }
+
+    [Fact]
+    public async Task BackFromDoseRebuildsProductOptionsSoTheSameProductCanBeReselected()
+    {
+        var viewModel = CreateViewModelWithEligibleVaccinesForAge12();
+        await ContinueFromAge(viewModel, 12);
+        viewModel.SelectGroup("HPV");
+        var product = Assert.Single(viewModel.ProductOptions);
+        viewModel.SelectProduct(product); // multi-dose -> Dose stage
+        Assert.Equal(DataEntryPopupViewModel.Stage.Dose, viewModel.CurrentStage);
+
+        var events = new System.Collections.Generic.List<NotifyCollectionChangedAction>();
+        viewModel.ProductOptions.CollectionChanged += (_, e) => events.Add(e.Action);
+
+        viewModel.BackCommand.Execute(null); // Dose -> Product
+
+        Assert.Contains(NotifyCollectionChangedAction.Reset, events);
+        Assert.Contains(NotifyCollectionChangedAction.Add, events);
+        var rebuiltProduct = Assert.Single(viewModel.ProductOptions);
+        Assert.Equal("Gardasil", rebuiltProduct.Name);
+
+        // Re-picking the SAME (only) product after Back must re-enter the
+        // Dose stage again, not silently no-op.
+        viewModel.SelectProduct(rebuiltProduct);
+        Assert.Equal(DataEntryPopupViewModel.Stage.Dose, viewModel.CurrentStage);
+    }
+
+    [Fact]
+    public async Task BackFromReviewForAMultiDoseProductRebuildsDoseOptions()
+    {
+        var viewModel = CreateViewModelWithEligibleVaccinesForAge12();
+        await ContinueFromAge(viewModel, 12);
+        viewModel.SelectGroup("HPV");
+        var product = Assert.Single(viewModel.ProductOptions);
+        viewModel.SelectProduct(product);
+        viewModel.SelectDose(viewModel.DoseOptions[1]); // dose "2" -> Review
+        Assert.Equal(DataEntryPopupViewModel.Stage.Review, viewModel.CurrentStage);
+
+        var events = new System.Collections.Generic.List<NotifyCollectionChangedAction>();
+        viewModel.DoseOptions.CollectionChanged += (_, e) => events.Add(e.Action);
+
+        viewModel.BackCommand.Execute(null); // Review -> Dose
+
+        Assert.Contains(NotifyCollectionChangedAction.Reset, events);
+        Assert.Contains(NotifyCollectionChangedAction.Add, events);
+        Assert.Equal(new[] { "1", "2", "3" }, viewModel.DoseOptions.Select(v => v.Dose).ToArray());
+
+        // Re-picking the SAME dose ("2") that was chosen before Back must
+        // still re-select it, not silently no-op.
+        viewModel.SelectDose(viewModel.DoseOptions[1]);
+        Assert.Equal(DataEntryPopupViewModel.Stage.Review, viewModel.CurrentStage);
+        Assert.Equal(GardasilDose2, viewModel.SelectedVaccine);
+    }
+
+    [Fact]
+    public async Task BackFromReviewForASingleDoseProductRebuildsProductOptions()
+    {
+        var viewModel = CreateViewModelWithEligibleVaccinesForAge12();
+        await ContinueFromAge(viewModel, 12);
+        viewModel.SelectGroup("Tetanus/whooping cough");
+        var product = Assert.Single(viewModel.ProductOptions);
+        viewModel.SelectProduct(product); // single dose -> straight to Review
+        Assert.Equal(DataEntryPopupViewModel.Stage.Review, viewModel.CurrentStage);
+
+        var events = new System.Collections.Generic.List<NotifyCollectionChangedAction>();
+        viewModel.ProductOptions.CollectionChanged += (_, e) => events.Add(e.Action);
+
+        viewModel.BackCommand.Execute(null); // Review -> Product
+
+        Assert.Contains(NotifyCollectionChangedAction.Reset, events);
+        Assert.Contains(NotifyCollectionChangedAction.Add, events);
+        var rebuiltProduct = Assert.Single(viewModel.ProductOptions);
+        Assert.Equal("Boostrix", rebuiltProduct.Name);
+
+        // Re-picking the SAME single option after Back — the exact
+        // "HPV -> Gardasil"/"Shingles -> Shingrix dead end" shape the
+        // reviewer flagged — must reselect it, not silently no-op.
+        viewModel.SelectProduct(rebuiltProduct);
+        Assert.Equal(DataEntryPopupViewModel.Stage.Review, viewModel.CurrentStage);
+        Assert.Equal(Boostrix, viewModel.SelectedVaccine);
     }
 }
