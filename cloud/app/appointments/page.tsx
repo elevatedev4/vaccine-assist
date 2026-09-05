@@ -45,7 +45,7 @@ type AfterTodayResponse = {
 };
 
 // Total header-row depth: COVID needs 3 (group "COVID" -> brand "Pfizer"/
-// "Mod" -> age "3-11"/"12-64"/"65+" — ROUND 4 merges "Any" into "Pfizer",
+// "Moderna" -> age "3-11"/"12-64"/"65+" — ROUND 4 merges "Any" into "Pfizer",
 // see lib/appointment-table.ts's resolveColumn); every other column
 // (Flu/Common/Other) collapses into fewer rows via rowSpan (see
 // buildHeaderRows below) but the <thead> itself always has this many
@@ -64,29 +64,40 @@ const styles = {
   // "everything visible at once, NOT scrollable") — the table page uses
   // the full viewport width instead of being squeezed into a 960px column
   // and forced to scroll horizontally to show the rest of the columns.
-  mainWide: { fontFamily: "system-ui, sans-serif", padding: "1.5rem 2rem" },
+  // V-T11 (Will, verbatim): "Make the spacing even tighter. There is no
+  // need to have so much dead space." Tightened page padding on top of the
+  // ROUND 2 full-width layout.
+  mainWide: { fontFamily: "system-ui, sans-serif", padding: "1rem 1.5rem" },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
   button: { padding: "0.5rem 1rem", marginRight: "0.5rem" },
   error: { color: "#b00020" },
   warning: { color: "#8a5300", background: "#fff4e0", padding: "0.5rem 0.75rem", borderRadius: 4 },
   muted: { color: "#555", fontSize: "0.875rem" },
+  // V-T11: page heading and action rows above the table get their default
+  // browser margins collapsed down to a tight, deliberate amount instead —
+  // that dead air was most of the gap between sign-in bar and the table.
+  heading: { margin: "0.5rem 0 0.5rem" },
+  actionsRow: { margin: "0 0 0.35rem" },
+  autoRefreshNote: { color: "#555", fontSize: "0.875rem", margin: "0 0 0.5rem" },
   sessionBar: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "0.5rem 0.75rem",
-    marginBottom: "1rem",
+    padding: "0.35rem 0.75rem",
+    marginBottom: "0.5rem",
     background: "#f0f4f8",
     borderRadius: 4,
   },
   // Compact "read as a chart, not a document" table (V-T-schedule-table
   // ROUND 2, Will 2026-09-05: "make it look like a chart" — equal-width
-  // columns via table-layout: fixed + a <colgroup>, minimal font/padding).
+  // columns via table-layout: fixed + a <colgroup>, minimal font/padding;
+  // V-T11: padding tightened further and header rows shortened — "There is
+  // no need to have so much dead space").
   table: { width: "100%", tableLayout: "fixed", borderCollapse: "collapse", fontSize: "0.72rem" },
   thType: {
     textAlign: "left",
-    padding: "0.15rem 0.3rem",
+    padding: "0.1rem 0.25rem",
     borderBottom: "2px solid #ccc",
     whiteSpace: "nowrap",
   },
@@ -94,15 +105,17 @@ const styles = {
   // sub-column run — see thSub (row 2) and thLeaf (final row).
   thGroup: {
     textAlign: "center",
-    padding: "0.15rem 0.3rem",
+    padding: "0.1rem 0.25rem",
     borderBottom: "1px solid #ddd",
     fontWeight: 700,
     whiteSpace: "nowrap",
   },
-  // Brand sub-header (row 2, COVID only) — "Pfizer" / "Mod" / "Any".
+  // Brand sub-header (row 2, COVID only) — "Pfizer" / "Moderna" / "Any".
+  // Kept even shorter than the other header rows (V-T11: "trim header row
+  // heights") since it's the middle row of COVID's 3-level nested header.
   thSub: {
     textAlign: "center",
-    padding: "0.1rem 0.3rem",
+    padding: "0.05rem 0.25rem",
     borderBottom: "1px solid #ddd",
     fontWeight: 600,
     whiteSpace: "nowrap",
@@ -111,17 +124,17 @@ const styles = {
   // for a plain/non-grouped column via rowSpan).
   thLeaf: {
     textAlign: "right",
-    padding: "0.15rem 0.3rem",
+    padding: "0.1rem 0.25rem",
     borderBottom: "2px solid #ccc",
     fontWeight: 500,
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
-  td: { textAlign: "right", padding: "0.15rem 0.3rem", borderBottom: "1px solid #eee" },
-  tdZero: { textAlign: "right", padding: "0.15rem 0.3rem", borderBottom: "1px solid #eee", color: "#bbb" },
-  tdType: { textAlign: "left", padding: "0.15rem 0.3rem", borderBottom: "1px solid #eee", fontWeight: 500 },
-  totalCell: { textAlign: "right", padding: "0.15rem 0.3rem", borderBottom: "1px solid #eee", fontWeight: 600 },
+  td: { textAlign: "right", padding: "0.1rem 0.25rem", borderBottom: "1px solid #eee" },
+  tdZero: { textAlign: "right", padding: "0.1rem 0.25rem", borderBottom: "1px solid #eee", color: "#bbb" },
+  tdType: { textAlign: "left", padding: "0.1rem 0.25rem", borderBottom: "1px solid #eee", fontWeight: 500 },
+  totalCell: { textAlign: "right", padding: "0.1rem 0.25rem", borderBottom: "1px solid #eee", fontWeight: 600 },
   // Summary rows (Today / Next 7 days / After today — V-T9 answer, Will
   // 2026-09-05): bold, sit directly under the header. Only the LAST of
   // the three gets the heavier bottom border that separates the summary
@@ -129,32 +142,32 @@ const styles = {
   // in AppointmentsPage.
   sumRowLabel: {
     textAlign: "left",
-    padding: "0.15rem 0.3rem",
+    padding: "0.1rem 0.25rem",
     fontWeight: 700,
     borderBottom: "1px solid #ddd",
   },
   sumRowCell: {
     textAlign: "right",
-    padding: "0.15rem 0.3rem",
+    padding: "0.1rem 0.25rem",
     fontWeight: 700,
     borderBottom: "1px solid #ddd",
   },
   sumRowLabelLast: {
     textAlign: "left",
-    padding: "0.15rem 0.3rem",
+    padding: "0.1rem 0.25rem",
     fontWeight: 700,
     borderBottom: "2px solid #ccc",
   },
   sumRowCellLast: {
     textAlign: "right",
-    padding: "0.15rem 0.3rem",
+    padding: "0.1rem 0.25rem",
     fontWeight: 700,
     borderBottom: "2px solid #ccc",
   },
   // Bare fallback only — does nothing when the (now compact, full-width)
   // table already fits, only kicks in a scrollbar if a viewport is truly
   // narrower than the table (e.g. a small laptop screen).
-  tableWrap: { overflowX: "auto", marginTop: "0.75rem" },
+  tableWrap: { overflowX: "auto", marginTop: "0.4rem" },
 } as const;
 
 /**
@@ -228,7 +241,7 @@ type HeaderCell = {
  * now belongs to one of 4 groups instead of 2 groups + ungrouped):
  *   - row1: one spanning cell per contiguous group run (COVID, Flu,
  *     Common, or Other), colSpan = the run's width, rowSpan 1.
- *   - row2: COVID's brand cells ("Pfizer"/"Mod", each spanning its own
+  *   - row2: COVID's brand cells ("Pfizer"/"Moderna", each spanning its own
  *     age sub-run); every OTHER group's (Flu/Common/Other) leaf cells,
  *     each with rowSpan=HEADER_ROW_COUNT-1=2 since only COVID has a
  *     brand level, so a non-COVID leaf cell must fill both remaining
@@ -565,9 +578,9 @@ export default function AppointmentsPage() {
         </button>
       </div>
 
-      <h1>Upcoming appointments</h1>
+      <h1 style={styles.heading}>Upcoming appointments</h1>
 
-      <p>
+      <p style={styles.actionsRow}>
         <button
           style={styles.button}
           type="button"
@@ -583,7 +596,7 @@ export default function AppointmentsPage() {
           </span>
         )}
       </p>
-      <p style={styles.muted}>Auto-refreshes every 15 minutes while this page is open.</p>
+      <p style={styles.autoRefreshNote}>Auto-refreshes every 15 minutes while this page is open.</p>
 
       {loadError && <p style={styles.error}>{loadError}</p>}
 
