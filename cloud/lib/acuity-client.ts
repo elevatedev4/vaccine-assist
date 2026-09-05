@@ -170,21 +170,50 @@ export type CountableAppointment = {
   /**
    * PHI boundary, same rationale as covidBrand above — a BUCKETED value
    * only: "3-11" | "12+" | "unknown". Derived from the intake-form field
-   * matched by isAgeFormFieldName (see deriveCovidAgeBucket), which reads
-   * either a plain numeric age or a date of birth. CRITICAL: the raw age
-   * number and the raw DOB string are both read ONLY inside
-   * deriveCovidAgeBucket/computeAgeFromDob and are discarded the instant
+   * matched by isAgeFormFieldName (see deriveAgeInYears + bucketCovidAge),
+   * which reads either a plain numeric age or a date of birth. CRITICAL:
+   * the raw age number and the raw DOB string are both read ONLY inside
+   * deriveAgeInYears/computeAgeFromDob and are discarded the instant
    * they're bucketed — neither the exact age nor the DOB ever becomes
    * part of this type, an API response, a cache row, or a log line.
    */
   covidAgeBucket: CovidAgeBucket;
+  /**
+   * PHI boundary, extension of covidAgeBucket above (V-T-schedule-table
+   * ROUND 2, Will 2026-09-04/05: split the Flu column by age too — "3-64"
+   * | "65+" | "unknown"). Derived from the SAME age-question
+   * infrastructure as covidAgeBucket — extractFormFieldAnswer/
+   * isAgeFormFieldName, then computeAgeFromDob for a DOB answer — via
+   * deriveAgeInYears, not a second/duplicate age-field matcher. The raw
+   * age/DOB is discarded the instant it's bucketed, same rule as
+   * covidAgeBucket: it never becomes part of this type, an API response,
+   * a cache row, or a log line.
+   */
+  fluAgeBucket: FluAgeBucket;
 };
 
 /** Brand-preference bucket for a COVID appointment — see covidBrand above. */
 export type CovidBrand = "pfizer" | "moderna" | "any";
 
-/** Age bucket for a COVID appointment — see covidAgeBucket above. */
-export type CovidAgeBucket = "3-11" | "12+" | "unknown";
+/**
+ * Age bucket for a COVID appointment — see covidAgeBucket above. Revised
+ * (V-T-schedule-table ROUND 2, Will 2026-09-05, superseding the original
+ * 3-11/12+ split same-day): brands now split at 65 too, matching the
+ * fixed columns his mockup lists (Pfizer 12-64/65+; Moderna and Any
+ * 3-11/12-64/65+) — see FIXED_COVID_COMBO_IDS in lib/appointment-table.ts
+ * for which (brand, bucket) pairs are actually fixed columns vs. render
+ * only when nonzero.
+ */
+export type CovidAgeBucket = "3-11" | "12-64" | "65+" | "unknown";
+
+/**
+ * Age bucket for a Flu appointment — see fluAgeBucket above. Revised
+ * (V-T-schedule-table ROUND 2, Will 2026-09-05): "3-64" replaces the
+ * original "<65" label — both COVID and Flu now share the same young-end
+ * cutoff (age 3), so ages 0-2 bucket to "unknown" for Flu too, same as
+ * COVID's existing <3 -> unknown rule (see bucketCovidAge/bucketFluAge).
+ */
+export type FluAgeBucket = "3-64" | "65+" | "unknown";
 
 export type AppointmentRangeResult = {
   appointments: CountableAppointment[];
@@ -307,9 +336,9 @@ function extractVaccineNamesFromForms(forms: unknown): string[] {
  * no matching field is found or its value is blank. Deliberately generic
  * (unlike extractVaccineNamesFromForms, it doesn't split multi-value
  * answers) — brand/age are single-answer questions. Callers
- * (deriveCovidBrand, deriveCovidAgeBucket) MUST bucket this raw string
+ * (deriveCovidBrand, deriveAgeInYears) MUST bucket this raw string
  * immediately and never let it escape further — see CountableAppointment's
- * covidBrand/covidAgeBucket doc comments.
+ * covidBrand/covidAgeBucket/fluAgeBucket doc comments.
  */
 function extractFormFieldAnswer(forms: unknown, matcher: (name: string) => boolean): string | null {
   if (!Array.isArray(forms)) return null;
@@ -385,31 +414,49 @@ function computeAgeFromDob(dob: string, asOf: Date): number | null {
   return age;
 }
 
-/** 3-11 / 12+ / unknown — anything outside [3, 110] (including <3) buckets to unknown, per Will's spec. */
-function bucketAge(age: number): CovidAgeBucket {
-  if (!Number.isFinite(age)) return "unknown";
-  if (age >= 3 && age <= 11) return "3-11";
-  if (age >= 12 && age <= 110) return "12+";
-  return "unknown";
+/**
+ * 3-11 / 12-64 / 65+ / unknown — anything outside [3, 110] (including <3)
+ * buckets to unknown, per Will's spec. Revised ROUND 2 (Will 2026-09-05):
+ * the old "12+" bucket now splits at 65 (12-64 / 65+) so every COVID
+ * brand column has a senior-age split, matching bucketFluAge's own 65
+ * cutoff below.
+ */
+function bucketCovidAge(age: number | null): CovidAgeBucket {
+  if (age === null || !Number.isFinite(age) || age < 3 || age > 110) return "unknown";
+  if (age <= 11) return "3-11";
+  if (age <= 64) return "12-64";
+  return "65+";
 }
 
 /**
- * PHI boundary: reads the raw age-question answer (via
- * extractFormFieldAnswer/isAgeFormFieldName) and immediately buckets it —
- * neither the raw age number nor a raw DOB string ever leaves this
- * function. The answer is either a plain numeric age ("12") or a
- * parseable date of birth ("2014-05-03", "05/03/2014", ...); anything
- * else — missing field, unparseable text, or an age outside [3, 110] —
- * buckets to "unknown" rather than guessing.
+ * 3-64 / 65+ / unknown (V-T-schedule-table ROUND 2, Will 2026-09-05).
+ * Same [3, 110] valid-range rule as bucketCovidAge — ages 0-2, negative,
+ * unparseable, or over 110 all bucket to "unknown" rather than a bogus
+ * "3-64"/"65+".
  */
-function deriveCovidAgeBucket(forms: unknown): CovidAgeBucket {
+function bucketFluAge(age: number | null): FluAgeBucket {
+  if (age === null || !Number.isFinite(age) || age < 3 || age > 110) return "unknown";
+  return age <= 64 ? "3-64" : "65+";
+}
+
+/**
+ * PHI boundary: reads the raw age-question answer ONCE (via
+ * extractFormFieldAnswer/isAgeFormFieldName) and immediately converts it
+ * to a plain number of years — neither the raw age number nor a raw DOB
+ * string ever leaves this function's caller's call stack unbucketed. The
+ * answer is either a plain numeric age ("12") or a parseable date of
+ * birth ("2014-05-03", "05/03/2014", ...); anything else — missing field
+ * or unparseable text — returns null. Shared by bucketCovidAge and
+ * bucketFluAge (V-T-schedule-table ROUND 2: "same form-derived age
+ * bucketing infrastructure as COVID") so a single form answer buckets
+ * into both the COVID and Flu age columns without a second field lookup.
+ */
+function deriveAgeInYears(forms: unknown): number | null {
   const answer = extractFormFieldAnswer(forms, isAgeFormFieldName);
-  if (!answer) return "unknown";
+  if (!answer) return null;
 
   const age = /^\d+(\.\d+)?$/.test(answer) ? Math.floor(Number(answer)) : computeAgeFromDob(answer, new Date());
-
-  if (age === null) return "unknown";
-  return bucketAge(age);
+  return age === null || !Number.isFinite(age) ? null : age;
 }
 
 /**
@@ -421,8 +468,29 @@ function isCovidVaccineName(name: string): boolean {
   return typeof name === "string" && name.toLowerCase().includes("covid");
 }
 
+/**
+ * "Does this vaccine name look like Flu" (V-T-schedule-table ROUND 2,
+ * same mechanism as isCovidVaccineName above) — used by
+ * aggregateAppointmentCounts to decide whether to replace a name with the
+ * age composite (see fluCompositeName). "flu" alone already matches
+ * "influenza" and "flumist" as substrings, but both are listed explicitly
+ * per Will's spec so the match stays obviously correct if "flu" is ever
+ * narrowed.
+ */
+function isFluVaccineName(name: string): boolean {
+  if (typeof name !== "string") return false;
+  const lower = name.toLowerCase();
+  return lower.includes("flu") || lower.includes("influenza") || lower.includes("flumist");
+}
+
 const COVID_BRAND_LABELS: Record<CovidBrand, string> = { pfizer: "Pfizer", moderna: "Moderna", any: "Any" };
-const COVID_AGE_BUCKET_LABELS: Record<CovidAgeBucket, string> = { "3-11": "3-11", "12+": "12+", unknown: "Unknown" };
+const COVID_AGE_BUCKET_LABELS: Record<CovidAgeBucket, string> = {
+  "3-11": "3-11",
+  "12-64": "12-64",
+  "65+": "65+",
+  unknown: "Unknown",
+};
+const FLU_AGE_BUCKET_LABELS: Record<FluAgeBucket, string> = { "3-64": "3-64", "65+": "65+", unknown: "Unknown" };
 
 /**
  * Builds the composite COVID column name — "COVID · Pfizer · 12+" — that
@@ -433,6 +501,19 @@ const COVID_AGE_BUCKET_LABELS: Record<CovidAgeBucket, string> = { "3-11": "3-11"
  */
 function covidCompositeName(brand: CovidBrand, ageBucket: CovidAgeBucket): string {
   return `COVID · ${COVID_BRAND_LABELS[brand]} · ${COVID_AGE_BUCKET_LABELS[ageBucket]}`;
+}
+
+/**
+ * Builds the composite Flu column name — "Flu · <65" — that replaces any
+ * Flu-ish vaccineName in aggregateAppointmentCounts (V-T-schedule-table
+ * ROUND 2: "extend, don't fork, the existing composite mechanism" so the
+ * age bucket rides through the VaccineCount cache/API shape unchanged,
+ * same trick as covidCompositeName). lib/appointment-table.ts parses this
+ * exact "Flu · {Age}" shape to map onto the fixed Flu <65/65+/(unk)
+ * columns — keep the two in sync if this format ever changes.
+ */
+function fluCompositeName(ageBucket: FluAgeBucket): string {
+  return `Flu · ${FLU_AGE_BUCKET_LABELS[ageBucket]}`;
 }
 
 /**
@@ -492,20 +573,27 @@ export async function fetchAppointmentsForRange(
   // PHI-stripping projection — see CountableAppointment doc comment.
   // Every other field on `entry` (name/email/phone/notes/...) is dropped
   // right here and never touched again. `forms` is read ONLY through
-  // extractVaccineNamesFromForms/deriveCovidBrand/deriveCovidAgeBucket,
-  // each of which extracts (and, for brand/age, immediately buckets) only
-  // its own specific question's answer — nothing else off `forms`
-  // survives this projection, and the raw age/DOB string in particular
-  // never exists outside deriveCovidAgeBucket's call stack.
+  // extractVaccineNamesFromForms/deriveCovidBrand/deriveAgeInYears, each
+  // of which extracts (and, for age, immediately buckets via
+  // bucketCovidAge/bucketFluAge) only its own specific question's answer
+  // — nothing else off `forms` survives this projection, and the raw
+  // age/DOB string in particular never exists outside deriveAgeInYears's
+  // call stack. covidAgeBucket and fluAgeBucket (V-T-schedule-table
+  // ROUND 2) are two independent bucketings of the SAME extracted age —
+  // one age-question lookup per appointment, not two.
   const appointments = data
     .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
-    .map((entry) => ({
-      date: acuityDatetimeToChicagoDate(entry.datetime),
-      appointmentTypeId: Number(entry.appointmentTypeID),
-      vaccineNames: extractVaccineNamesFromForms(entry.forms),
-      covidBrand: deriveCovidBrand(entry.forms),
-      covidAgeBucket: deriveCovidAgeBucket(entry.forms),
-    }))
+    .map((entry) => {
+      const ageInYears = deriveAgeInYears(entry.forms);
+      return {
+        date: acuityDatetimeToChicagoDate(entry.datetime),
+        appointmentTypeId: Number(entry.appointmentTypeID),
+        vaccineNames: extractVaccineNamesFromForms(entry.forms),
+        covidBrand: deriveCovidBrand(entry.forms),
+        covidAgeBucket: bucketCovidAge(ageInYears),
+        fluAgeBucket: bucketFluAge(ageInYears),
+      };
+    })
     .filter((entry) => entry.date && Number.isFinite(entry.appointmentTypeId));
 
   return { appointments, possiblyTruncated };
@@ -526,8 +614,9 @@ export type VaccineCount = {
  * didn't have a field isVaccineFormFieldName matched, or Acuity returned
  * no forms at all), this falls back to the appointment type's name, same
  * behavior as before the vaccine-name pivot existed. Only ever reads
- * `.date`, `.appointmentTypeId`, `.vaccineNames`, `.covidBrand`, and
- * `.covidAgeBucket` off each input — see CountableAppointment.
+ * `.date`, `.appointmentTypeId`, `.vaccineNames`, `.covidBrand`,
+ * `.covidAgeBucket`, and `.fluAgeBucket` off each input — see
+ * CountableAppointment.
  *
  * COVID brand/age split (V-T-schedule-table, Will 2026-09-04): any name
  * that looks like COVID (isCovidVaccineName) is replaced with the
@@ -536,6 +625,15 @@ export type VaccineCount = {
  * one column per (brand, age bucket) actually seen — e.g. an appointment
  * whose form answer is "COVID-Pfizer" with covidAgeBucket "12+" groups
  * under "COVID · Pfizer · 12+", not the raw form answer.
+ *
+ * Flu age split (V-T-schedule-table ROUND 2, Will 2026-09-05): same
+ * mechanism — any name that looks like Flu (isFluVaccineName) is replaced
+ * with the appointment's own composite "Flu · {Age}" name
+ * (fluCompositeName) so the VaccineCount cache/API shape stays
+ * {date, vaccineName, count} unchanged while the age bucket still rides
+ * through it. lib/appointment-table.ts (client-safe, no PHI ever reaches
+ * it) parses this composite back into the fixed Flu <65/65+/(unk)
+ * columns.
  */
 export function aggregateAppointmentCounts(
   appointments: CountableAppointment[],
@@ -543,7 +641,7 @@ export function aggregateAppointmentCounts(
 ): VaccineCount[] {
   const groups = new Map<string, VaccineCount>();
 
-  for (const { date, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket } of appointments) {
+  for (const { date, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket, fluAgeBucket } of appointments) {
     const names =
       vaccineNames.length > 0
         ? vaccineNames
@@ -552,7 +650,9 @@ export function aggregateAppointmentCounts(
     for (const rawName of names) {
       const vaccineName = isCovidVaccineName(rawName)
         ? covidCompositeName(covidBrand ?? "any", covidAgeBucket ?? "unknown")
-        : rawName;
+        : isFluVaccineName(rawName)
+          ? fluCompositeName(fluAgeBucket ?? "unknown")
+          : rawName;
       const key = `${date}::${vaccineName}`;
       const existing = groups.get(key);
       if (existing) {

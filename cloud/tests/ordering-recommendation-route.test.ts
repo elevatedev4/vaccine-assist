@@ -142,6 +142,7 @@ describe("GET /api/ordering/recommendation", () => {
           vaccineNames: ["Flu Quad 2025-26"],
           covidBrand: "any",
           covidAgeBucket: "unknown",
+          fluAgeBucket: "unknown",
         },
         {
           date: "2026-08-20",
@@ -149,6 +150,7 @@ describe("GET /api/ordering/recommendation", () => {
           vaccineNames: ["Flu Quad 2025-26"],
           covidBrand: "any",
           covidAgeBucket: "unknown",
+          fluAgeBucket: "unknown",
         },
         {
           date: "2026-08-20",
@@ -156,6 +158,7 @@ describe("GET /api/ordering/recommendation", () => {
           vaccineNames: ["Some Unmatched Vaccine"],
           covidBrand: "any",
           covidAgeBucket: "unknown",
+          fluAgeBucket: "unknown",
         },
       ],
       possiblyTruncated: false,
