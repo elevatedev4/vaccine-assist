@@ -77,7 +77,7 @@ describe("buildAppointmentTable", () => {
       expect(byId.get("moderna_3-11")).toEqual({
         vaccineName: "moderna_3-11",
         group: "COVID",
-        subgroup: "Mod",
+        subgroup: "Moderna",
         label: "3-11",
       });
       expect(byId.get("flu_3-64")).toEqual({ vaccineName: "flu_3-64", group: "Flu", subgroup: null, label: "3-64" });
@@ -103,7 +103,7 @@ describe("buildAppointmentTable", () => {
         vaccineName: "meningitis",
         group: "Other",
         subgroup: null,
-        label: "Meningitis",
+        label: "Mening",
       });
       expect(byId.get("hepA")).toEqual({ vaccineName: "hepA", group: "Other", subgroup: null, label: "Hep A" });
     });
@@ -113,8 +113,8 @@ describe("buildAppointmentTable", () => {
       const commonLabels = table.columns.filter((c) => c.group === "Common").map((c) => c.label);
       const otherLabels = table.columns.filter((c) => c.group === "Other").map((c) => c.label);
 
-      expect(commonLabels).toEqual(["Shingles", "Pneumonia", "Tdap", "RSV", "HPV"]);
-      expect(otherLabels).toEqual(["Meningitis", "Typhoid", "MMR", "Hep A", "Hep B"]);
+      expect(commonLabels).toEqual(["Shingles", "Pneumo", "Tdap", "RSV", "HPV"]);
+      expect(otherLabels).toEqual(["Mening", "Typhoid", "MMR", "Hep A", "Hep B"]);
     });
 
     it("Total is not one of the fixed columns — page.tsx renders it separately as the 2nd column", () => {
@@ -196,7 +196,7 @@ describe("buildAppointmentTable", () => {
       );
 
       expect(table.columns).toHaveLength(FIXED_COLUMN_IDS.length + 2);
-      const modernaExtra = table.columns.find((c) => c.subgroup === "Mod")!;
+      const modernaExtra = table.columns.find((c) => c.subgroup === "Moderna")!;
       const pfizerExtra = table.columns.find((c) => c.subgroup === "Pfizer" && !FIXED_COLUMN_IDS.includes(c.vaccineName))!;
       expect(modernaExtra).toBeDefined();
       expect(pfizerExtra).toBeDefined();
@@ -356,11 +356,11 @@ describe("buildAppointmentTable", () => {
           DAYS
         );
 
-        const extra = table.columns.find((c) => c.subgroup === "Mod" && !FIXED_COLUMN_IDS.includes(c.vaccineName));
+        const extra = table.columns.find((c) => c.subgroup === "Moderna" && !FIXED_COLUMN_IDS.includes(c.vaccineName));
         expect(extra).toEqual({
           vaccineName: "covid_moderna_unknown",
           group: "COVID",
-          subgroup: "Mod",
+          subgroup: "Moderna",
           label: "Unknown",
         });
       });

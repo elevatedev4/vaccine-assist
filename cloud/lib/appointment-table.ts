@@ -102,7 +102,7 @@ export type AppointmentTableRow = {
  * see app/appointments/page.tsx's buildHeaderRows. Every column belongs
  * to exactly one of 4 groups (ROUND 4 — no more null/ungrouped columns):
  *   - COVID column: group "COVID", subgroup the short brand label
- *     ("Pfizer"/"Mod" — "Any" no longer exists as a brand, see
+ *     ("Pfizer"/"Moderna" — "Any" no longer exists as a brand, see
  *     resolveColumn's ROUND 4 merge comment), label the age bucket
  *     ("3-11"/"12-64"/"65+"). Renders as a 3-row header: spanning "COVID"
  *     -> spanning brand -> leaf age.
@@ -159,16 +159,20 @@ const FIXED_COLUMNS: FixedColumn[] = [
   { id: "pfizer_3-11", label: "3-11", group: "COVID", subgroup: "Pfizer" },
   { id: "pfizer_12-64", label: "12-64", group: "COVID", subgroup: "Pfizer" },
   { id: "pfizer_65+", label: "65+", group: "COVID", subgroup: "Pfizer" },
-  { id: "moderna_3-11", label: "3-11", group: "COVID", subgroup: "Mod" },
-  { id: "moderna_12-64", label: "12-64", group: "COVID", subgroup: "Mod" },
-  { id: "moderna_65+", label: "65+", group: "COVID", subgroup: "Mod" },
+  { id: "moderna_3-11", label: "3-11", group: "COVID", subgroup: "Moderna" },
+  { id: "moderna_12-64", label: "12-64", group: "COVID", subgroup: "Moderna" },
+  { id: "moderna_65+", label: "65+", group: "COVID", subgroup: "Moderna" },
   { id: "flu_3-64", label: "3-64", group: "Flu", subgroup: null },
   { id: "flu_65+", label: "65+", group: "Flu", subgroup: null },
   { id: "flu_unknown", label: "Unk", group: "Flu", subgroup: null },
   // "Common" (Will, V-T9): "Common includes: Shingles Pneumonia Tdap RSV
   // HPV" — this exact order.
   { id: "shingles", label: "Shingles", group: "Common", subgroup: null },
-  { id: "pneumonia", label: "Pneumonia", group: "Common", subgroup: null },
+  // Abbreviated (Will, V-T11): "If a name is long (ex: Pneumonia), you can
+  // abbreviate it" — "Pneumo" so it never truncates with an ellipsis at
+  // equal chart-column widths. Canonical match id ("pneumonia" below, and
+  // the "pneumonia" entry in CANONICAL_VACCINE_MATCHERS) is unchanged.
+  { id: "pneumonia", label: "Pneumo", group: "Common", subgroup: null },
   // Short label per Will (V-T-schedule-table ROUND 2): "Don't write
   // Tetanus/whooping cough, just write Tdap" — the canonical match
   // (matchCanonicalVaccineId's "tetanus" entry below) is unchanged, only
@@ -179,7 +183,10 @@ const FIXED_COLUMNS: FixedColumn[] = [
   // "Other" (Will, V-T9): "Other is everything else" — the remaining
   // fixed non-COVID/Flu/Common columns, plus any genuinely-unmatched
   // extra column (see buildAppointmentTable's extras-adjacency logic).
-  { id: "meningitis", label: "Meningitis", group: "Other", subgroup: null },
+  // Abbreviated (Will, V-T11 — same "abbreviate long names" ask as
+  // Pneumonia above): "Mening" so it never truncates with an ellipsis at
+  // equal chart-column widths. Canonical match id/matcher unchanged.
+  { id: "meningitis", label: "Mening", group: "Other", subgroup: null },
   { id: "typhoid", label: "Typhoid", group: "Other", subgroup: null },
   { id: "mmr", label: "MMR", group: "Other", subgroup: null },
   { id: "hepA", label: "Hep A", group: "Other", subgroup: null },
@@ -247,15 +254,16 @@ export function compositeNameToMatchableBase(rawName: string): string {
   return rawName;
 }
 
-// Short header label per brand (Will, V-T-schedule-table ROUND 2: "Use
-// short brand label 'Mod' for Moderna if space-tight"). Keyed by the
-// brand text covidCompositeName actually writes (COVID_BRAND_LABELS in
-// lib/acuity-client.ts), not the lowercase CovidBrand union. "Any" is
-// still here (ROUND 4) only as a defensive fallback — resolveColumn
-// always remaps an "Any" brand to "Pfizer" before this map is consulted
-// (see MERGE_ANY_INTO_BRAND below), so in normal operation this key is
-// never actually looked up.
-const COVID_BRAND_DISPLAY: Record<string, string> = { Pfizer: "Pfizer", Moderna: "Mod", Any: "Any" };
+// Header label per brand. ROUND 2 originally shortened Moderna to "Mod";
+// Will's V-T11 answer reversed that ("change Mod to Moderna since we have
+// room") now that the tightened spacing/abbreviation pass elsewhere frees
+// up the width. Keyed by the brand text covidCompositeName actually writes
+// (COVID_BRAND_LABELS in lib/acuity-client.ts), not the lowercase
+// CovidBrand union. "Any" is still here (ROUND 4) only as a defensive
+// fallback — resolveColumn always remaps an "Any" brand to "Pfizer" before
+// this map is consulted (see MERGE_ANY_INTO_BRAND below), so in normal
+// operation this key is never actually looked up.
+const COVID_BRAND_DISPLAY: Record<string, string> = { Pfizer: "Pfizer", Moderna: "Moderna", Any: "Any" };
 
 /**
  * ROUND 4 merge (Will, V-T9 answer): "combine the 'any' into the Pfizer
