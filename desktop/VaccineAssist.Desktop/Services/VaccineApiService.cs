@@ -89,6 +89,13 @@ public sealed class VaccineApiService : IVaccineApiService
         return await SendAsync<EligibilityResult>(request, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<Vaccine>> GetEligibleVaccinesForAgeAsync(int ageYears, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, $"/api/eligibility/for-age?age={ageYears}");
+        var result = await SendAsync<VaccinesResponse>(request, cancellationToken);
+        return result.Vaccines;
+    }
+
     public async Task<AppointmentScheduleResult> GetAppointmentScheduleAsync(CancellationToken cancellationToken = default)
     {
         using var request = CreateRequest(HttpMethod.Get, "/api/acuity/poll");

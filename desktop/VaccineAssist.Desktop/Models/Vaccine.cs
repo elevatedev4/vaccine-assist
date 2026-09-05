@@ -41,6 +41,16 @@ public sealed class Vaccine
     [JsonPropertyName("hasActiveLot")]
     public bool HasActiveLot { get; set; }
 
+    /// <summary>Only populated by GET /api/eligibility/for-age?age=N (the
+    /// data-entry popup's guided-flow age step — see
+    /// DataEntryPopupViewModel.ContinueFromAgeAsync) — that vaccine's own
+    /// eligibility result for the age that was queried. Null everywhere
+    /// else (GetVaccinesAsync, GetAllVaccinesAsync), same "populated only
+    /// by the one endpoint that computes it" convention as HasActiveLot
+    /// above.</summary>
+    [JsonPropertyName("eligibility")]
+    public EligibilityResult? Eligibility { get; set; }
+
     /// <summary>Formatted for display, e.g. "$147.99" or "—" when unknown.</summary>
     public string CashPriceDisplay => CashPriceCents is int cents ? (cents / 100.0).ToString("C") : "—";
 

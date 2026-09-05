@@ -14,13 +14,24 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation;
 /// <param name="IsMedicareHomeVisit">Mirrors the macro's "medicarehomevisit" special case — skips the
 /// normal product-code entry and instead prompts for a home-visit reason (see TODO.md).</param>
 /// <param name="HomeVisitReason">Only set when IsMedicareHomeVisit is true.</param>
+/// <param name="SkipLotAndExpiration">
+/// True when staff explicitly chose "Leave lot/expiration blank and
+/// proceed" on the data-entry popup's expiration gate (no unexpired lot
+/// was on file for the selected vaccine — see
+/// DataEntryPopupViewModel.IsLotExpiredOrMissing/SkipLotAndExpirationCommand).
+/// LotNumber/ExpirationMacroFormat are meaningless ("") when this is true;
+/// InputLotAndExpirationStep checks this FIRST and skips its own PioneerRx
+/// work entirely rather than trying to type blank values into the admin
+/// form.
+/// </param>
 public sealed record VaccineEntryPayload(
     string ShortCode,
     string LotNumber,
     string ExpirationMacroFormat,
     string AdminSiteDisplayText,
     bool IsMedicareHomeVisit = false,
-    string? HomeVisitReason = null)
+    string? HomeVisitReason = null,
+    bool SkipLotAndExpiration = false)
 {
     /// <summary>The exact "code,lot,exp" clipboard format the old macro read from
     /// %vaccinedata% (vaccine-add-new.mxe line 32-36) — kept for the Entry

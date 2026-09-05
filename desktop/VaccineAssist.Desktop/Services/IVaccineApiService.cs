@@ -52,6 +52,21 @@ public interface IVaccineApiService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Calls GET /api/eligibility/for-age?age=N — every ACTIVE vaccine
+    /// whose eligibility rules don't block that age (status "allowed" or
+    /// "warning"; same "warning is staff judgment, not a hard stop"
+    /// convention DataEntryGate documents), each with Vaccine.Eligibility
+    /// populated. Backs the data-entry popup's guided flow (age -> group ->
+    /// product -> dose — see DataEntryPopupViewModel.ContinueFromAgeAsync):
+    /// computing "every vaccine eligible for age N" via GetVaccinesAsync
+    /// plus one EvaluateEligibilityAsync call per vaccine would be N round
+    /// trips for a ~30-vaccine formulary; this is one.
+    /// </summary>
+    Task<IReadOnlyList<Vaccine>> GetEligibleVaccinesForAgeAsync(
+        int ageYears,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Calls GET /api/acuity/poll (default range: today .. today+7) for
     /// the Scheduling tab — see cloud/app/api/acuity/poll/route.ts's
     /// RESPONSE CONTRACT doc comment for the JSON shape this maps to.
