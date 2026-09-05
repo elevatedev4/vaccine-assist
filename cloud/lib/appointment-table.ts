@@ -8,6 +8,34 @@
  * name), one column per day in the requested range, a per-vaccine 7-day
  * total column, and a daily-total row.
  *
+ * ROUND 4 (V-T9 answer, Will 2026-09-05, verbatim feedback on ROUND 2/3):
+ * "For COVID, combine the 'any' into the Pfizer since that is our
+ * preferred option. I also need to be able to distinguish between the
+ * vaccine columns easier ... color differentiation between covid, flu,
+ * and everything else. For the everything else section, group them into
+ * 'Common' and 'Other'. Common includes: Shingles Pneumonia Tdap RSV HPV,
+ * then Other is everything else." Two structural changes from ROUND 2/3:
+ *
+ *   (a) The 3 "Any"-brand COVID columns are GONE — an Any-brand count now
+ *   resolves onto the matching Pfizer column instead (Pfizer being the
+ *   pharmacy's preferred default when no brand is specified). This merge
+ *   happens HERE, in resolveColumn, at the column-resolution layer only —
+ *   the raw composite name a count arrives with (built by
+ *   covidCompositeName in lib/acuity-client.ts) still says
+ *   "COVID · Any · {age}" in the cache/API `counts` list untouched, so a
+ *   future round can un-merge (show "Any" as its own column again) with
+ *   no data migration, just a code change here. See resolveColumn's own
+ *   comment for the "Pfizer gains a 3-11 column" nuance this merge
+ *   creates.
+ *
+ *   (b) The 10 non-COVID, non-Flu fixed columns split into two named
+ *   groups instead of being ungrouped: "Common" (Shingles, Pneumonia,
+ *   Tdap, RSV, HPV, in that order) and "Other" (Meningitis, Typhoid, MMR,
+ *   Hep A, Hep B, plus any genuinely-unmatched extra column appended after
+ *   them). Every column now belongs to exactly one of 4 groups — COVID,
+ *   Flu, Common, or Other — so AppointmentTableColumn.group is no longer
+ *   nullable; see that type's doc comment below.
+ *
  * ROUND 2 (V-T-schedule-table, Will 2026-09-05, his mockup header row —
  * "Scheduled date | Total | Pfizer 12+ | Moderna 3-11 | Moderna 12+ | Any
  * brand | Flu <65 | Flu 65+ | Flu (unk) | Meningitis | Typhoid | MMR |
@@ -71,22 +99,27 @@ export type AppointmentTableRow = {
  * resolve to the same unmatched name still land in one column.
  *
  * `group`/`subgroup`/`label` describe the (up to 3-level) nested header —
- * see app/appointments/page.tsx's buildHeaderRows:
+ * see app/appointments/page.tsx's buildHeaderRows. Every column belongs
+ * to exactly one of 4 groups (ROUND 4 — no more null/ungrouped columns):
  *   - COVID column: group "COVID", subgroup the short brand label
- *     ("Pfizer"/"Mod"/"Any"), label the age bucket ("3-11"/"12-64"/"65+").
- *     Renders as a 3-row header: spanning "COVID" -> spanning brand ->
- *     leaf age.
+ *     ("Pfizer"/"Mod" — "Any" no longer exists as a brand, see
+ *     resolveColumn's ROUND 4 merge comment), label the age bucket
+ *     ("3-11"/"12-64"/"65+"). Renders as a 3-row header: spanning "COVID"
+ *     -> spanning brand -> leaf age.
  *   - Flu column: group "Flu", subgroup null, label the age bucket
  *     ("3-64"/"65+"/"Unk"). Renders as a 2-row header: spanning "Flu" ->
  *     leaf age (with the leaf cell's rowSpan covering the 3rd header row
  *     too, since Flu has no brand level).
- *   - Every other column: group null, subgroup null, label the short
- *     vaccine name ("MMR", "Tdap", ...). Renders as a single cell
- *     spanning all 3 header rows.
+ *   - Common column: group "Common", subgroup null, label the short
+ *     vaccine name (Shingles, Pneumonia, Tdap, RSV, HPV). Same 2-row
+ *     shape as Flu — a spanning "Common" cell over a leaf-label run.
+ *   - Other column: group "Other", subgroup null, label the short vaccine
+ *     name (Meningitis, Typhoid, MMR, Hep A, Hep B, plus any
+ *     genuinely-unmatched extra column). Same 2-row shape as Common/Flu.
  */
 export type AppointmentTableColumn = {
   vaccineName: string;
-  group: "COVID" | "Flu" | null;
+  group: "COVID" | "Flu" | "Common" | "Other";
   subgroup: string | null;
   label: string;
 };
@@ -101,40 +134,56 @@ export type AppointmentTable = {
 
 /**
  * The fixed column set, in Will's exact mockup order (V-T-schedule-table
- * ROUND 2), always rendered — see buildAppointmentTable. `id` is the
- * stable column key; `label` is the leaf header text; `subgroup` is the
- * short brand label for a COVID column (null for everything else) — see
- * AppointmentTableColumn's doc comment for how these render as a nested
- * header.
+ * ROUND 2, regrouped ROUND 4 per his V-T9 answer), always rendered — see
+ * buildAppointmentTable. `id` is the stable column key; `label` is the
+ * leaf header text; `subgroup` is the short brand label for a COVID
+ * column (null for every other group) — see AppointmentTableColumn's doc
+ * comment for how these render as a nested header.
+ *
+ * ROUND 4 changes from ROUND 2/3: the 3 "Any"-brand COVID columns are
+ * gone (merged into Pfizer, see resolveColumn) and Pfizer gains a 3-11
+ * column it didn't have before (that merge's side effect — see
+ * resolveColumn's comment); the 10 non-COVID/Flu columns are split into
+ * "Common" (Shingles, Pneumonia, Tdap, RSV, HPV — Will's exact order) and
+ * "Other" (Meningitis, Typhoid, MMR, Hep A, Hep B) instead of being
+ * ungrouped.
  */
-type FixedColumn = { id: string; label: string; group: "COVID" | "Flu" | null; subgroup: string | null };
+type FixedColumn = {
+  id: string;
+  label: string;
+  group: "COVID" | "Flu" | "Common" | "Other";
+  subgroup: string | null;
+};
 
 const FIXED_COLUMNS: FixedColumn[] = [
+  { id: "pfizer_3-11", label: "3-11", group: "COVID", subgroup: "Pfizer" },
   { id: "pfizer_12-64", label: "12-64", group: "COVID", subgroup: "Pfizer" },
   { id: "pfizer_65+", label: "65+", group: "COVID", subgroup: "Pfizer" },
   { id: "moderna_3-11", label: "3-11", group: "COVID", subgroup: "Mod" },
   { id: "moderna_12-64", label: "12-64", group: "COVID", subgroup: "Mod" },
   { id: "moderna_65+", label: "65+", group: "COVID", subgroup: "Mod" },
-  { id: "any_3-11", label: "3-11", group: "COVID", subgroup: "Any" },
-  { id: "any_12-64", label: "12-64", group: "COVID", subgroup: "Any" },
-  { id: "any_65+", label: "65+", group: "COVID", subgroup: "Any" },
   { id: "flu_3-64", label: "3-64", group: "Flu", subgroup: null },
   { id: "flu_65+", label: "65+", group: "Flu", subgroup: null },
   { id: "flu_unknown", label: "Unk", group: "Flu", subgroup: null },
-  { id: "meningitis", label: "Meningitis", group: null, subgroup: null },
-  { id: "typhoid", label: "Typhoid", group: null, subgroup: null },
-  { id: "mmr", label: "MMR", group: null, subgroup: null },
-  { id: "shingles", label: "Shingles", group: null, subgroup: null },
-  { id: "pneumonia", label: "Pneumonia", group: null, subgroup: null },
+  // "Common" (Will, V-T9): "Common includes: Shingles Pneumonia Tdap RSV
+  // HPV" — this exact order.
+  { id: "shingles", label: "Shingles", group: "Common", subgroup: null },
+  { id: "pneumonia", label: "Pneumonia", group: "Common", subgroup: null },
   // Short label per Will (V-T-schedule-table ROUND 2): "Don't write
   // Tetanus/whooping cough, just write Tdap" — the canonical match
   // (matchCanonicalVaccineId's "tetanus" entry below) is unchanged, only
   // the displayed header text is shorter.
-  { id: "tetanus", label: "Tdap", group: null, subgroup: null },
-  { id: "rsv", label: "RSV", group: null, subgroup: null },
-  { id: "hpv", label: "HPV", group: null, subgroup: null },
-  { id: "hepA", label: "Hep A", group: null, subgroup: null },
-  { id: "hepB", label: "Hep B", group: null, subgroup: null },
+  { id: "tetanus", label: "Tdap", group: "Common", subgroup: null },
+  { id: "rsv", label: "RSV", group: "Common", subgroup: null },
+  { id: "hpv", label: "HPV", group: "Common", subgroup: null },
+  // "Other" (Will, V-T9): "Other is everything else" — the remaining
+  // fixed non-COVID/Flu/Common columns, plus any genuinely-unmatched
+  // extra column (see buildAppointmentTable's extras-adjacency logic).
+  { id: "meningitis", label: "Meningitis", group: "Other", subgroup: null },
+  { id: "typhoid", label: "Typhoid", group: "Other", subgroup: null },
+  { id: "mmr", label: "MMR", group: "Other", subgroup: null },
+  { id: "hepA", label: "Hep A", group: "Other", subgroup: null },
+  { id: "hepB", label: "Hep B", group: "Other", subgroup: null },
 ];
 
 const FIXED_COLUMN_BY_ID = new Map(FIXED_COLUMNS.map((c) => [c.id, c]));
@@ -201,24 +250,42 @@ export function compositeNameToMatchableBase(rawName: string): string {
 // Short header label per brand (Will, V-T-schedule-table ROUND 2: "Use
 // short brand label 'Mod' for Moderna if space-tight"). Keyed by the
 // brand text covidCompositeName actually writes (COVID_BRAND_LABELS in
-// lib/acuity-client.ts), not the lowercase CovidBrand union.
+// lib/acuity-client.ts), not the lowercase CovidBrand union. "Any" is
+// still here (ROUND 4) only as a defensive fallback — resolveColumn
+// always remaps an "Any" brand to "Pfizer" before this map is consulted
+// (see MERGE_ANY_INTO_BRAND below), so in normal operation this key is
+// never actually looked up.
 const COVID_BRAND_DISPLAY: Record<string, string> = { Pfizer: "Pfizer", Moderna: "Mod", Any: "Any" };
 
-// The 8 (brand, age) combos Will's mockup lists as fixed columns —
-// Pfizer only ever splits at 65 (no 3-11 column: "still no <12"); Moderna
-// and Any also get a 3-11 column. Every other combo a real COVID
-// composite could carry (e.g. a Pfizer with age bucket "3-11", or any
-// brand's Unknown age) is NOT in this map and falls through to the
-// "extra column, appended, nonzero-only" path below.
+/**
+ * ROUND 4 merge (Will, V-T9 answer): "combine the 'any' into the Pfizer
+ * since that is our preferred option." Applied at the very top of
+ * resolveColumn's COVID branch, BEFORE any fixed-combo/extra-column
+ * lookup, so every downstream decision (which fixed column, what
+ * subgroup label, what synthetic extra-column id) already sees "Pfizer"
+ * and never sees "Any" again. The raw composite name in the cache/count
+ * entry is untouched by this — see this module's ROUND 4 doc comment.
+ */
+function mergeAnyIntoPfizer(brand: string): string {
+  return brand === "Any" ? "Pfizer" : brand;
+}
+
+// The 6 (brand, age) combos Will's mockup lists as fixed columns, POST
+// ROUND-4 Any->Pfizer merge. Pfizer now gets all 3 age buckets (3-11,
+// 12-64, 65+) instead of just 2 — the 3-11 column is new, and exists
+// SOLELY because an Any-brand 3-11 count merges here (see
+// resolveColumn's comment on the "no real Pfizer-brand 3-11 patient"
+// nuance); Moderna is unchanged. Every other combo a real COVID
+// composite could carry (e.g. either brand's Unknown age) is NOT in this
+// map and falls through to the "extra column, appended, nonzero-only"
+// path below.
 const FIXED_COVID_COMBO_IDS: Record<string, string> = {
+  "Pfizer|3-11": "pfizer_3-11",
   "Pfizer|12-64": "pfizer_12-64",
   "Pfizer|65+": "pfizer_65+",
   "Moderna|3-11": "moderna_3-11",
   "Moderna|12-64": "moderna_12-64",
   "Moderna|65+": "moderna_65+",
-  "Any|3-11": "any_3-11",
-  "Any|12-64": "any_12-64",
-  "Any|65+": "any_65+",
 };
 
 const FLU_COMBO_IDS: Record<string, string> = {
@@ -296,7 +363,7 @@ function looksFluLike(rawName: string): boolean {
 type ResolvedColumn = {
   id: string;
   label: string;
-  group: "COVID" | "Flu" | null;
+  group: "COVID" | "Flu" | "Common" | "Other";
   subgroup: string | null;
   fixed: boolean;
 };
@@ -312,16 +379,42 @@ type ResolvedColumn = {
 function resolveColumn(rawName: string): ResolvedColumn {
   const covidMatch = COVID_COMPOSITE_PATTERN.exec(rawName);
   if (covidMatch) {
-    const [, brand, age] = covidMatch;
+    const [, rawBrand, age] = covidMatch;
+    // ROUND 4 (Will, V-T9): merge "Any" into "Pfizer" before anything
+    // else below ever sees the brand — see mergeAnyIntoPfizer's comment.
+    //
+    // NUANCE this merge creates (doc-commented per the brief): Pfizer now
+    // has a 3-11 column even though Pfizer itself is never actually given
+    // to a 3-11 patient ("still no <12" — the original ROUND 2 spec).
+    // That column exists ONLY because an Any-brand (no preference stated)
+    // appointment for a 3-11 patient lands here: the pharmacy fulfills
+    // that visit with whatever brand is age-appropriate (in practice,
+    // Moderna, since Pfizer's own product line starts at 12), but the
+    // COLUMN is keyed by brand PREFERENCE, not brand FULFILLMENT — and
+    // "no preference stated" defaults to the Pfizer bucket. So
+    // "pfizer_3-11" reads as "no-brand-preference patients age 3-11," not
+    // literally "Pfizer doses given to 3-11 patients."
+    const brand = mergeAnyIntoPfizer(rawBrand);
     const comboId = FIXED_COVID_COMBO_IDS[`${brand}|${age}`];
     if (comboId) {
       const fixed = FIXED_COLUMN_BY_ID.get(comboId)!;
       return { id: fixed.id, label: fixed.label, group: fixed.group, subgroup: fixed.subgroup, fixed: true };
     }
-    // Unusual combo (e.g. a Pfizer recorded with age bucket "3-11", or
-    // any brand's Unknown age) — never hide it, but it isn't one of the
-    // fixed columns Will's mockup names.
-    return { id: rawName, label: age, group: "COVID", subgroup: COVID_BRAND_DISPLAY[brand] ?? brand, fixed: false };
+    // Unusual combo (currently: either brand's Unknown age) — never hide
+    // it, but it isn't one of the fixed columns Will's mockup names. The
+    // synthetic id is keyed by the (already-merged) brand + age, NOT the
+    // raw composite string, so e.g. an "Any"-brand Unknown-age count and
+    // a native Pfizer Unknown-age count land in the SAME extra column
+    // (Will, V-T9: "Per-brand Unknown still nonzero-only (Any-unknown →
+    // Pfizer-unknown)") instead of two side-by-side "Unk" columns both
+    // labeled "Pfizer".
+    return {
+      id: `covid_${brand.toLowerCase()}_${age.toLowerCase()}`,
+      label: age,
+      group: "COVID",
+      subgroup: COVID_BRAND_DISPLAY[brand] ?? brand,
+      fixed: false,
+    };
   }
 
   const fluMatch = FLU_COMPOSITE_PATTERN.exec(rawName);
@@ -344,8 +437,13 @@ function resolveColumn(rawName: string): ResolvedColumn {
 
   // Genuinely unmatched — e.g. a brand-new vaccine type, or a stale
   // pre-composite raw COVID name ("COVID-Pfizer") that self-heals within
-  // one poll TTL. NEVER hide it — give it its own column.
-  return { id: rawName, label: rawName, group: null, subgroup: null, fixed: false };
+  // one poll TTL. NEVER hide it — give it its own column. ROUND 4: group
+  // is "Other" (Will: "Other is everything else") rather than null, so it
+  // still renders under a group header and sorts to the very end of the
+  // table, after Other's own fixed columns — see buildAppointmentTable's
+  // extras-adjacency logic, where "Other" being the LAST fixed group is
+  // exactly what makes this land at the very end.
+  return { id: rawName, label: rawName, group: "Other", subgroup: null, fixed: false };
 }
 
 /**
@@ -386,15 +484,18 @@ function resolveVaccineName(entry: VaccineCount | Record<string, unknown>): stri
  * column; extra columns are ordered alphabetically by label within their
  * own group for a deterministic (if arbitrary) tie-break — Will,
  * V-T-schedule-table: "your call, but deterministic." — but a grouped
- * extra (an unusual COVID or Flu combo) is placed immediately adjacent to
- * its own group's fixed run rather than at the very end of the table
- * (review fix, 2026-09-05): an ungrouped alphabetical sort scattered
- * COVID extras away from the main COVID columns whenever another extra's
- * label happened to sort between them, which made buildHeaderRows
- * (app/appointments/page.tsx) render multiple disconnected "COVID"
- * spanning header cells instead of one contiguous one. Only genuinely
- * ungrouped extras (group: null — an unrecognized vaccine name) sort to
- * the very end, after every fixed column.
+ * extra (an unusual COVID combo, currently the only kind that occurs) is
+ * placed immediately adjacent to its own group's fixed run rather than at
+ * the very end of the table (review fix, 2026-09-05): an ungrouped
+ * alphabetical sort scattered COVID extras away from the main COVID
+ * columns whenever another extra's label happened to sort between them,
+ * which made buildHeaderRows (app/appointments/page.tsx) render multiple
+ * disconnected "COVID" spanning header cells instead of one contiguous
+ * one. ROUND 4: this is now generalized over all 4 groups (COVID, Flu,
+ * Common, Other) instead of hardcoding just COVID/Flu — a genuinely
+ * unmatched extra (group "Other", per resolveColumn's ROUND 4 fallback)
+ * still lands at the very end, simply because "Other" is the LAST group
+ * in FIXED_COLUMNS' order, not because of any special-cased branch.
  */
 export function buildAppointmentTable(counts: VaccineCount[], days: string[]): AppointmentTable {
   const zeroedByDay = (): Record<string, number> => Object.fromEntries(days.map((day) => [day, 0]));
@@ -441,43 +542,151 @@ export function buildAppointmentTable(counts: VaccineCount[], days: string[]): A
   const fixedIdSet = new Set(FIXED_COLUMNS.map((c) => c.id));
   const byLabel = (a: string, b: string) => columnsById.get(a)!.label.localeCompare(columnsById.get(b)!.label);
 
-  // Bucket extras by group so each bucket can be inserted adjacent to its
-  // own group's fixed run below, instead of one flat alphabetical sort
-  // that would scatter e.g. a COVID extra away from the main COVID
-  // columns whenever another extra's label happened to sort between them.
-  const covidExtraIds: string[] = [];
-  const fluExtraIds: string[] = [];
-  const otherExtraIds: string[] = [];
+  // Bucket extras by group (generalized ROUND 4 over all 4 groups, not
+  // just COVID/Flu) so each bucket can be inserted adjacent to its own
+  // group's fixed run below, instead of one flat alphabetical sort that
+  // would scatter e.g. a COVID extra away from the main COVID columns
+  // whenever another extra's label happened to sort between them.
+  const extraIdsByGroup: Record<AppointmentTableColumn["group"], string[]> = {
+    COVID: [],
+    Flu: [],
+    Common: [],
+    Other: [],
+  };
   for (const id of rowsById.keys()) {
     if (fixedIdSet.has(id)) continue;
-    const group = columnsById.get(id)!.group;
-    if (group === "COVID") covidExtraIds.push(id);
-    else if (group === "Flu") fluExtraIds.push(id);
-    else otherExtraIds.push(id);
+    extraIdsByGroup[columnsById.get(id)!.group].push(id);
   }
-  covidExtraIds.sort(byLabel);
-  fluExtraIds.sort(byLabel);
-  otherExtraIds.sort(byLabel);
+  for (const group of Object.keys(extraIdsByGroup) as Array<AppointmentTableColumn["group"]>) {
+    extraIdsByGroup[group].sort(byLabel);
+  }
 
   // Walk FIXED_COLUMNS in order, flushing each group's extras the moment
-  // its contiguous fixed run ends — e.g. covidExtraIds lands right after
-  // "any_65+" (the last fixed COVID column) and right before "flu_3-64"
-  // (the first fixed Flu column), so COVID stays one contiguous header
-  // run for buildHeaderRows (app/appointments/page.tsx) to group.
+  // its contiguous fixed run ends — e.g. a COVID extra lands right after
+  // "moderna_65+" (the last fixed COVID column) and right before
+  // "flu_3-64" (the first fixed Flu column), so COVID stays one
+  // contiguous header run for buildHeaderRows (app/appointments/page.tsx)
+  // to group. "Other" is the LAST group in FIXED_COLUMNS, so a genuinely
+  // unmatched extra (group "Other") always ends up at the very end of the
+  // table without needing a separate special case.
   const orderedIds: string[] = [];
-  let lastGroup: "COVID" | "Flu" | null = null;
+  let lastGroup: AppointmentTableColumn["group"] | null = null;
   for (const fixed of FIXED_COLUMNS) {
-    if (lastGroup === "COVID" && fixed.group !== "COVID") orderedIds.push(...covidExtraIds);
-    if (lastGroup === "Flu" && fixed.group !== "Flu") orderedIds.push(...fluExtraIds);
+    if (lastGroup !== null && lastGroup !== fixed.group) orderedIds.push(...extraIdsByGroup[lastGroup]);
     orderedIds.push(fixed.id);
     lastGroup = fixed.group;
   }
-  if (lastGroup === "COVID") orderedIds.push(...covidExtraIds);
-  if (lastGroup === "Flu") orderedIds.push(...fluExtraIds);
-  orderedIds.push(...otherExtraIds);
+  if (lastGroup !== null) orderedIds.push(...extraIdsByGroup[lastGroup]);
 
   const rows = orderedIds.map((id) => rowsById.get(id)!);
   const columns = orderedIds.map((id) => columnsById.get(id)!);
 
   return { days, rows, columns, dailyTotals, grandTotal };
+}
+
+/**
+ * Per-column totals across an arbitrary VaccineCount[] list, with no `days`
+ * dimension at all — used for the "After today" summary row (V-T9 answer,
+ * Will 2026-09-05: "add a 'total vaccines remaining after today' row that
+ * sums up all the future appointments too"), whose data comes from a
+ * separate, further-out chunked fetch (see
+ * lib/acuity-future-summary.ts's fetchAfterTodaySummary) rather than the
+ * same `days`-bounded range buildAppointmentTable's caller uses for the
+ * daily-breakdown table. Resolves each entry through the SAME
+ * resolveColumn as buildAppointmentTable (so the ROUND 4 Any->Pfizer
+ * merge and every fixed-column mapping apply identically here), but never
+ * seeds zeroed fixed columns and never creates its own column list — a
+ * caller looks values up by column id (e.g. against an existing
+ * AppointmentTable's `columns`) via `byColumnId`.
+ *
+ * JUDGMENT CALL: if a count resolves to a column id that the caller's own
+ * table doesn't have (e.g. a vaccine type that only appears in the
+ * further-out future window and never in the near-term one), that count
+ * still contributes to `total` but has nowhere to render as its own cell
+ * — the caller's row simply won't have an entry for that id in
+ * `byColumnId`. This mirrors the existing "extra columns only appear when
+ * they actually have a count in the visible range" philosophy rather than
+ * introducing a second column-discovery pass across two disjoint fetches;
+ * documented tradeoff, not a bug, for what's still a single-pharmacy
+ * prototype tool.
+ */
+export type ColumnTotals = {
+  byColumnId: Record<string, number>;
+  total: number;
+};
+
+export function buildColumnTotals(counts: VaccineCount[]): ColumnTotals {
+  const byColumnId: Record<string, number> = {};
+  let total = 0;
+
+  for (const entry of counts) {
+    const rawName = resolveVaccineName(entry);
+    const resolved = resolveColumn(rawName);
+    byColumnId[resolved.id] = (byColumnId[resolved.id] ?? 0) + entry.count;
+    total += entry.count;
+  }
+
+  return { byColumnId, total };
+}
+
+/**
+ * One labeled summary row for the table — "Today" and "Next 7 days" (see
+ * computeTodayAndNext7Summaries below); app/appointments/page.tsx builds
+ * an analogous shape for "After today" from a ColumnTotals (see that
+ * type's doc comment) since that summary's data doesn't come from this
+ * table's own `days` at all.
+ */
+export type TableSummaryRow = {
+  label: string;
+  byColumnId: Record<string, number>;
+  total: number;
+};
+
+/**
+ * Computes the "Today" and "Next 7 days" summary rows (V-T9 answer, Will
+ * 2026-09-05: "So the rows should be 'Today' 'Next 7 days' 'After today'
+ * then the breakdown for the next today and the following 7 days") purely
+ * by slicing/summing an already-built AppointmentTable's own `days` — no
+ * new Acuity data needed, since both summaries live entirely within the
+ * 8-day range (today..today+7) app/api/acuity/poll/route.ts and
+ * app/appointments/page.tsx already request for the daily breakdown.
+ * ASSUMES `table.days[0]` is today (true for every caller today — both
+ * request start=today) — degrades to an all-zero "Today" row rather than
+ * throwing if `table.days` is ever empty.
+ *
+ * "Next 7 days" = `days[0..6]` (today through today+6 inclusive, 7
+ * calendar days), NOT `days[0..7]` (8 days) — a JUDGMENT CALL (Will's
+ * wording: "the breakdown for the next today and the following 7 days"
+ * is genuinely ambiguous between the two). Picked today-through-+6
+ * because "today" is already its own separate row here — folding an 8th
+ * day into a row literally named "Next 7 days" would make the name wrong
+ * by one day. `days[7]` (today+7) is never hidden either way: it's still
+ * fully visible in the plain daily-breakdown rows below both summaries.
+ *
+ * "After today" is deliberately NOT computed here — see
+ * lib/acuity-future-summary.ts's fetchAfterTodaySummary and this module's
+ * ColumnTotals doc comment for why that summary needs its own,
+ * further-out fetch this table's `days` never covers.
+ */
+export function computeTodayAndNext7Summaries(table: AppointmentTable): {
+  today: TableSummaryRow;
+  next7: TableSummaryRow;
+} {
+  const todayDay: string | undefined = table.days[0];
+  const next7Days = table.days.slice(0, 7);
+
+  const todayByColumnId: Record<string, number> = {};
+  const next7ByColumnId: Record<string, number> = {};
+  for (const row of table.rows) {
+    todayByColumnId[row.vaccineName] = todayDay ? (row.countsByDay[todayDay] ?? 0) : 0;
+    next7ByColumnId[row.vaccineName] = next7Days.reduce((sum, day) => sum + (row.countsByDay[day] ?? 0), 0);
+  }
+
+  const todayTotal = todayDay ? (table.dailyTotals[todayDay] ?? 0) : 0;
+  const next7Total = next7Days.reduce((sum, day) => sum + (table.dailyTotals[day] ?? 0), 0);
+
+  return {
+    today: { label: "Today", byColumnId: todayByColumnId, total: todayTotal },
+    next7: { label: "Next 7 days", byColumnId: next7ByColumnId, total: next7Total },
+  };
 }
