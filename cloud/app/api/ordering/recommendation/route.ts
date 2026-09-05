@@ -10,6 +10,7 @@ import {
 } from "@/lib/acuity-client";
 import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
+import { compositeNameToMatchableBase } from "@/lib/appointment-table";
 import { env } from "@/lib/env";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { buildRecommendationRow } from "@/lib/ordering-recommendation";
@@ -97,7 +98,16 @@ export async function GET(request: Request) {
           })());
 
         for (const { vaccineName, count } of counts) {
-          const match = matchVaccineName(vaccineName, catalog);
+          // COVID/Flu counts arrive as an aggregation composite ("COVID ·
+          // Pfizer · 65+", "Flu · 3-64" — see covidCompositeName/
+          // fluCompositeName in lib/acuity-client.ts) that doesn't
+          // resemble any catalog name on its own. Strip it down to a
+          // matchable brand/product string (age is never relevant to an
+          // order quantity) before handing it to the catalog matcher —
+          // see compositeNameToMatchableBase's doc comment for exactly
+          // what this fixes and its documented brand-ambiguity tradeoffs.
+          // A non-composite name passes through unchanged.
+          const match = matchVaccineName(compositeNameToMatchableBase(vaccineName), catalog);
           // An appointment vaccine name with no catalog match simply
           // doesn't contribute to any row's upcoming7d — there's no
           // catalog vaccine to attach the count to. Same tolerant,

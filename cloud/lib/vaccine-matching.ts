@@ -41,6 +41,26 @@ const NAME_ALIASES: Record<string, string> = {
   "moderna 12+ nexspike": "mnexspike",
   flumist: "flumist (age 2-49)",
   mmr: "mmr-ii",
+  // Brand-only, age-stripped forms produced by
+  // compositeNameToMatchableBase (lib/appointment-table.ts,
+  // V-T-schedule-table ROUND 2 follow-up, Will 2026-09-05) for an
+  // aggregated Acuity appointment count — "COVID · Pfizer · <age>" /
+  // "COVID · Moderna · <age>" / "COVID · Any · <age>" become "COVID
+  // Pfizer" / "COVID Moderna" / "COVID" before reaching matchVaccineName,
+  // since Ordering aggregates demand per PRODUCT, not per age bucket.
+  // "covid moderna" is a documented judgment call: Moderna currently has
+  // TWO catalog products by age (Spikevax for 3-11, mNEXSPIKE for 12+ —
+  // see 0005_seed_lots.sql's step 2 comment), and the age-stripped
+  // composite can't tell them apart. Pointed at mNEXSPIKE (Moderna's
+  // primary 12+ product) as the more common case; a real Moderna 3-11
+  // appointment's order count will land on the wrong SKU until this
+  // alias is split by age again. "covid" (brandless — the patient
+  // expressed no preference) has the same kind of ambiguity and is
+  // pointed at Comirnaty (Pfizer) as a single, deterministic choice
+  // rather than splitting the count across products.
+  "covid pfizer": "comirnaty 2025-26 12+",
+  "covid moderna": "mnexspike",
+  covid: "comirnaty 2025-26 12+",
 };
 
 function normalize(value: string): string {

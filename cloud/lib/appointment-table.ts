@@ -145,6 +145,59 @@ const FIXED_COLUMN_BY_ID = new Map(FIXED_COLUMNS.map((c) => [c.id, c]));
 const COVID_COMPOSITE_PATTERN = /^COVID · (Pfizer|Moderna|Any) · (3-11|12-64|65\+|Unknown)$/;
 const FLU_COMPOSITE_PATTERN = /^Flu · (3-64|65\+|Unknown)$/;
 
+/**
+ * Converts a composite vaccine name (COVID's "COVID · {Brand} · {Age}" or
+ * Flu's "Flu · {Age}" — built by covidCompositeName/fluCompositeName in
+ * lib/acuity-client.ts) into a plain string lib/vaccine-matching.ts's
+ * contains/alias matcher can actually match against a catalog name.
+ *
+ * Follow-up fix (V-T-schedule-table ROUND 2, Will 2026-09-05): the
+ * composite format made every COVID and Flu appointment invisible to
+ * app/api/ordering/recommendation/route.ts's upcoming7d count — it called
+ * matchVaccineName directly on the aggregated vaccineName, and a string
+ * like "COVID · Pfizer · 65+" doesn't resemble any catalog name/alias.
+ * That was a REGRESSION for Flu (a real name like "Flu Quad 2025-26" used
+ * to match fine before ROUND 2 introduced Flu compositing) and a LATENT
+ * gap for COVID going all the way back to ROUND 1 (nothing ever exercised
+ * it with a test). This is the fix: strip the age segment always —
+ * Ordering aggregates demand across ages per product, it doesn't stock
+ * separately by age bucket — and keep the brand for COVID, since brand
+ * genuinely determines which catalog product to order more of:
+ *   - "COVID · Pfizer · <age>" -> "COVID Pfizer" (see the "covid pfizer"
+ *     alias in lib/vaccine-matching.ts, added alongside this function).
+ *   - "COVID · Moderna · <age>" -> "COVID Moderna" (see "covid moderna").
+ *   - "COVID · Any · <age>" -> "COVID" (brandless — the patient expressed
+ *     no brand preference, so there IS no single right catalog product;
+ *     left to the alias table's "covid" entry, which resolves to ONE
+ *     specific product. Documented prototype tradeoff, not a bug to chase
+ *     further: a brandless COVID appointment nudges the recommended order
+ *     for whichever COVID product the alias happens to point at, rather
+ *     than being split proportionally across products.)
+ *   - "Flu · <age>" -> "Flu" (Flu was never brand-split by this feature —
+ *     unlike COVID, there's no brand-preference form field for Flu — so
+ *     this already ties for the SAME kind of ambiguity as brandless
+ *     COVID: matchVaccineName's plain "contains" fallback resolves "Flu"
+ *     to whichever Flu-ish catalog product it hits first, e.g. "Flu Quad
+ *     2025-26" or "Afluria MDV". Same documented tradeoff, no alias
+ *     needed since "flu" already substring-matches those names directly.)
+ * A non-composite name (anything COVID_COMPOSITE_PATTERN/
+ * FLU_COMPOSITE_PATTERN don't recognize) passes through completely
+ * untouched — this only ever rewrites the two composite shapes this
+ * module itself parses elsewhere (see resolveColumn above).
+ */
+export function compositeNameToMatchableBase(rawName: string): string {
+  const covidMatch = COVID_COMPOSITE_PATTERN.exec(rawName);
+  if (covidMatch) {
+    const brand = covidMatch[1];
+    return brand === "Any" ? "COVID" : `COVID ${brand}`;
+  }
+
+  const fluMatch = FLU_COMPOSITE_PATTERN.exec(rawName);
+  if (fluMatch) return "Flu";
+
+  return rawName;
+}
+
 // Short header label per brand (Will, V-T-schedule-table ROUND 2: "Use
 // short brand label 'Mod' for Moderna if space-tight"). Keyed by the
 // brand text covidCompositeName actually writes (COVID_BRAND_LABELS in

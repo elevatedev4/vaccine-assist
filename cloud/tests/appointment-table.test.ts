@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildAppointmentTable, type AppointmentTableColumn } from "@/lib/appointment-table";
+import {
+  buildAppointmentTable,
+  compositeNameToMatchableBase,
+  type AppointmentTableColumn,
+} from "@/lib/appointment-table";
 
 const DAYS = ["2026-08-17", "2026-08-18", "2026-08-19"];
 
@@ -370,5 +374,35 @@ describe("buildAppointmentTable", () => {
     const table = buildAppointmentTable(counts, DAYS);
 
     expect(table.rows.map((r) => r.vaccineName)).toEqual(table.columns.map((c: AppointmentTableColumn) => c.vaccineName));
+  });
+});
+
+// V-T-schedule-table ROUND 2 follow-up (Will 2026-09-05): the ordering
+// route needs a matchable (non-composite) string to look a COVID/Flu
+// count up in the vaccine catalog — see this function's doc comment in
+// lib/appointment-table.ts for the full "why" and the documented
+// brand-ambiguity tradeoffs.
+describe("compositeNameToMatchableBase", () => {
+  it("strips the age segment from a COVID composite, keeping the brand", () => {
+    expect(compositeNameToMatchableBase("COVID · Pfizer · 65+")).toBe("COVID Pfizer");
+    expect(compositeNameToMatchableBase("COVID · Moderna · 3-11")).toBe("COVID Moderna");
+    expect(compositeNameToMatchableBase("COVID · Moderna · 12-64")).toBe("COVID Moderna");
+  });
+
+  it("drops the brand entirely for the brandless 'Any' composite", () => {
+    expect(compositeNameToMatchableBase("COVID · Any · Unknown")).toBe("COVID");
+    expect(compositeNameToMatchableBase("COVID · Any · 12-64")).toBe("COVID");
+  });
+
+  it("strips the age segment from a Flu composite — Flu has no brand to keep", () => {
+    expect(compositeNameToMatchableBase("Flu · 3-64")).toBe("Flu");
+    expect(compositeNameToMatchableBase("Flu · 65+")).toBe("Flu");
+    expect(compositeNameToMatchableBase("Flu · Unknown")).toBe("Flu");
+  });
+
+  it("passes a non-composite (already plain) name through untouched", () => {
+    expect(compositeNameToMatchableBase("MMR-II")).toBe("MMR-II");
+    expect(compositeNameToMatchableBase("Shingrix")).toBe("Shingrix");
+    expect(compositeNameToMatchableBase("Some Unmatched Vaccine")).toBe("Some Unmatched Vaccine");
   });
 });

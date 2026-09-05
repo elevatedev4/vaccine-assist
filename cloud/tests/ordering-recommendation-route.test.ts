@@ -41,14 +41,14 @@ function authedRequest() {
   });
 }
 
-function fakeSupabase(onHandRows: unknown[] = []) {
+function fakeSupabase(onHandRows: unknown[] = [], catalog: unknown[] = CATALOG) {
   return {
     from: (table: string) => {
       if (table === "vaccine") {
         return {
           select: () => ({
             eq: () => ({
-              order: async () => ({ data: CATALOG, error: null }),
+              order: async () => ({ data: catalog, error: null }),
             }),
           }),
         };
@@ -168,6 +168,13 @@ describe("GET /api/ordering/recommendation", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
 
+    // "Flu Quad 2025-26" contains "flu" (V-T-schedule-table ROUND 2), so
+    // aggregateAppointmentCounts rewrites it to the "Flu · Unknown"
+    // composite before this route ever sees it. This test IS the
+    // regression the follow-up fix addresses: without
+    // compositeNameToMatchableBase stripping that composite back down to
+    // "Flu" before matchVaccineName runs, upcoming7d silently drops to 0
+    // (the "Flu · Unknown" string doesn't resemble any catalog name).
     const fluRow = body.rows.find((r: { vaccineId: string }) => r.vaccineId === "v-flu");
     expect(fluRow.upcoming7d).toBe(2);
     // recommendedOrder for upcoming7d=2: buffer = max(1, ceil(2*0.25)) = 1 -> 2+1-0 = 3
@@ -175,6 +182,62 @@ describe("GET /api/ordering/recommendation", () => {
 
     const mmrRow = body.rows.find((r: { vaccineId: string }) => r.vaccineId === "v-mmr");
     expect(mmrRow.upcoming7d).toBe(0);
+  });
+
+  // Regression test for the LATENT gap this same fix closes for COVID —
+  // present since ROUND 1's brand/age composite shipped, but never
+  // exercised by a test until now (Will, V-T-schedule-table ROUND 2
+  // follow-up, 2026-09-05): a COVID appointment's aggregated vaccineName
+  // is always a "COVID · {Brand} · {Age}" composite (see
+  // covidCompositeName in lib/acuity-client.ts), which never resembled
+  // any catalog name either — so upcoming7d silently stayed 0 for every
+  // COVID appointment, brand notwithstanding, until this fix.
+  it("sums COVID composite appointment counts into upcoming7d, keeping Pfizer and Moderna on separate catalog rows", async () => {
+    const covidCatalog = [
+      { id: "v-comirnaty", name: "Comirnaty 2025-26 12+", short_code: "comirnaty12" },
+      { id: "v-mnexspike", name: "mNEXSPIKE", short_code: "mnexspike" },
+    ];
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], covidCatalog) as never);
+    vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+    vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+    vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+      appointments: [
+        {
+          date: "2026-08-19",
+          appointmentTypeId: 1,
+          vaccineNames: ["COVID-Pfizer"],
+          covidBrand: "pfizer",
+          covidAgeBucket: "65+",
+          fluAgeBucket: "unknown",
+        },
+        {
+          date: "2026-08-20",
+          appointmentTypeId: 1,
+          vaccineNames: ["COVID-Pfizer"],
+          covidBrand: "pfizer",
+          covidAgeBucket: "12-64",
+          fluAgeBucket: "unknown",
+        },
+        {
+          date: "2026-08-20",
+          appointmentTypeId: 1,
+          vaccineNames: ["COVID-Moderna"],
+          covidBrand: "moderna",
+          covidAgeBucket: "12-64",
+          fluAgeBucket: "unknown",
+        },
+      ],
+      possiblyTruncated: false,
+    });
+
+    const response = await GET(authedRequest());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    const pfizerRow = body.rows.find((r: { vaccineId: string }) => r.vaccineId === "v-comirnaty");
+    expect(pfizerRow.upcoming7d).toBe(2);
+    const modernaRow = body.rows.find((r: { vaccineId: string }) => r.vaccineId === "v-mnexspike");
+    expect(modernaRow.upcoming7d).toBe(1);
   });
 
   it("returns 502 when the Acuity fetch fails", async () => {

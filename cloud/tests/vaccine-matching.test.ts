@@ -32,6 +32,21 @@ describe("matchVaccineName", () => {
     expect(matchVaccineName("Moderna 12+ NEXSPIKE", CATALOG)?.id).toBe("v-mnexspike");
   });
 
+  // V-T-schedule-table ROUND 2 follow-up (Will 2026-09-05): brand-only,
+  // age-stripped forms produced by compositeNameToMatchableBase
+  // (lib/appointment-table.ts) for an aggregated COVID appointment count.
+  it("matches via the alias table (COVID Pfizer -> Comirnaty 2025-26 12+)", () => {
+    expect(matchVaccineName("COVID Pfizer", CATALOG)?.id).toBe("v-comirnaty");
+  });
+
+  it("matches via the alias table (COVID Moderna -> mNEXSPIKE)", () => {
+    expect(matchVaccineName("COVID Moderna", CATALOG)?.id).toBe("v-mnexspike");
+  });
+
+  it("matches the brandless 'COVID' composite base via the alias table (documented ambiguous default)", () => {
+    expect(matchVaccineName("COVID", CATALOG)?.id).toBe("v-comirnaty");
+  });
+
   it("matches via the alias table (FluMist -> FluMist (age 2-49))", () => {
     expect(matchVaccineName("FluMist", CATALOG)?.id).toBe("v-flumist");
   });
