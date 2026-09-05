@@ -53,7 +53,14 @@
                 <DataGridTextColumn Header="Lot number" Binding="{Binding LotNumber}" Width="*"/>
                 <DataGridTextColumn Header="Expiration" Binding="{Binding Expiration}" Width="*"/>
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"/>
-                <DataGridCheckBoxColumn Header="Expired" Binding="{Binding IsExpired}" Width="0.5*"/>
+                <!-- Mode=OneWay is required here: DataGridCheckBoxColumn always
+                     renders its cell with a live CheckBox, and CheckBox.IsChecked
+                     defaults to a TwoWay binding mode regardless of the grid's
+                     IsReadOnly="True" above. Since IsExpired (Models/Lot.cs) is
+                     a get-only computed property, WPF throws
+                     InvalidOperationException while generating the cell unless
+                     the mode is pinned to OneWay. -->
+                <DataGridCheckBoxColumn Header="Expired" Binding="{Binding IsExpired, Mode=OneWay}" Width="0.5*"/>
                 <DataGridTextColumn Header="Note" Binding="{Binding Note}" Width="2*"/>
             </DataGrid.Columns>
         </DataGrid>

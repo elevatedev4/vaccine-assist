@@ -32,7 +32,14 @@
                 <DataGridTextColumn Header="Dose" Binding="{Binding Dose}" Width="0.5*" IsReadOnly="True"/>
                 <DataGridTextColumn Header="NDC" Binding="{Binding Ndc}" Width="*" IsReadOnly="True"/>
                 <DataGridTextColumn Header="Cash price" Binding="{Binding CashPriceDisplay}" Width="*" IsReadOnly="True"/>
-                <DataGridCheckBoxColumn Header="Current lot" Binding="{Binding HasActiveLot}" Width="0.6*" IsReadOnly="True"/>
+                <!-- Mode=OneWay is required here: DataGridCheckBoxColumn always
+                     renders its cell with a live CheckBox (unlike text columns,
+                     which fall back to a plain TextBlock when read-only), and
+                     CheckBox.IsChecked defaults to a TwoWay binding mode
+                     regardless of the column's own IsReadOnly="True". Since
+                     HasActiveLot is get-only, WPF throws InvalidOperationException
+                     while generating the cell unless the mode is pinned to OneWay. -->
+                <DataGridCheckBoxColumn Header="Current lot" Binding="{Binding HasActiveLot, Mode=OneWay}" Width="0.6*" IsReadOnly="True"/>
                 <DataGridCheckBoxColumn Header="Active" Binding="{Binding Active, Mode=TwoWay}" Width="0.5*" IsReadOnly="False"/>
             </DataGrid.Columns>
         </DataGrid>
