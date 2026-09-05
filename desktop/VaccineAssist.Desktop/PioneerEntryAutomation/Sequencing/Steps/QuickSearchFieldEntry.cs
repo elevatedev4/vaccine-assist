@@ -1,6 +1,7 @@
 using System;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
+using FlaUI.Core.WindowsAPI;
 
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 
