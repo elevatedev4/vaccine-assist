@@ -43,6 +43,22 @@ const NAME_ALIASES: Record<string, string> = {
   mmr: "mmr-ii",
 };
 
+// NOTE (review fix, 2026-09-05): a "covid"/"covid pfizer"/"covid moderna"
+// -> catalog-product alias set used to live in NAME_ALIASES above, added
+// alongside compositeNameToMatchableBase (lib/appointment-table.ts) so
+// app/api/ordering/recommendation/route.ts could resolve an aggregated
+// COVID appointment count to a catalog product. That was wrong: this
+// table is SHARED with lib/on-hand-parser.ts, which also calls
+// matchVaccineName — for a manually-typed on-hand email line like
+// "COVID: 40", Will genuinely doesn't know (and this app can't guess)
+// whether he means Comirnaty or mNEXSPIKE, so it must keep surfacing
+// matched:false for his manual review, not silently attribute stock to
+// whichever product the alias happened to point at. That composite ->
+// catalog resolution now lives ONLY in
+// app/api/ordering/recommendation/route.ts, scoped to appointment counts
+// that have already been through compositeNameToMatchableBase — see that
+// route's COMPOSITE_BASE_TO_CATALOG_NAME.
+
 function normalize(value: string): string {
   return value.trim().toLowerCase();
 }

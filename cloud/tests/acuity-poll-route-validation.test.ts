@@ -116,20 +116,28 @@ describe("GET /api/acuity/poll — validation", () => {
       const body = await response.json();
 
       expect(body.configured).toBe(true);
-      expect(body.counts).toEqual([{ date: "2026-08-17", vaccineName: "Flu", count: 1 }]);
-      expect(body.table).toEqual({
-        days: ["2026-08-17", "2026-08-18"],
-        rows: [
-          {
-            vaccineName: "Flu",
-            countsByDay: { "2026-08-17": 1, "2026-08-18": 0 },
-            total: 1,
-          },
-        ],
-        columns: [{ vaccineName: "Flu", group: null, label: "Flu" }],
-        dailyTotals: { "2026-08-17": 1, "2026-08-18": 0 },
-        grandTotal: 1,
+      // "Flu" has no age-question form field in this fixture, so
+      // aggregateAppointmentCounts rewrites it to the "Flu · Unknown"
+      // composite (V-T-schedule-table ROUND 2) — same trick as COVID's
+      // brand/age composite, riding the (here, unknown) age bucket
+      // through the cache/API shape unchanged.
+      expect(body.counts).toEqual([{ date: "2026-08-17", vaccineName: "Flu · Unknown", count: 1 }]);
+      // `table` now always renders the full fixed 21-column set
+      // (V-T-schedule-table ROUND 2) — the composite above resolves onto
+      // the fixed "flu_unknown" column rather than creating a new one.
+      expect(body.table.days).toEqual(["2026-08-17", "2026-08-18"]);
+      expect(body.table.columns).toHaveLength(21);
+      expect(body.table.rows).toHaveLength(21);
+      const fluRow = body.table.rows.find((r: { vaccineName: string }) => r.vaccineName === "flu_unknown");
+      expect(fluRow).toEqual({
+        vaccineName: "flu_unknown",
+        countsByDay: { "2026-08-17": 1, "2026-08-18": 0 },
+        total: 1,
       });
+      const fluColumn = body.table.columns.find((c: { vaccineName: string }) => c.vaccineName === "flu_unknown");
+      expect(fluColumn).toEqual({ vaccineName: "flu_unknown", group: "Flu", subgroup: null, label: "Unk" });
+      expect(body.table.dailyTotals).toEqual({ "2026-08-17": 1, "2026-08-18": 0 });
+      expect(body.table.grandTotal).toBe(1);
     });
   });
 });

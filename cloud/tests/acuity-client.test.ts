@@ -88,12 +88,17 @@ function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Every appointment lacking an explicit age/brand form field buckets to
+// this default — used throughout to avoid repeating the same 3 fields on
+// every fixture expectation below.
+const DEFAULT_BUCKETS = { covidBrand: "any", covidAgeBucket: "unknown", fluAgeBucket: "unknown" } as const;
+
 describe("fetchAppointmentsForRange", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("strips every field down to {date, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket} — no PHI keys survive", async () => {
+  it("strips every field down to {date, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket, fluAgeBucket} — no PHI keys survive", async () => {
     const fixture = [
       acuityAppointmentFixture(),
       acuityAppointmentFixture({
@@ -110,21 +115,21 @@ describe("fetchAppointmentsForRange", () => {
 
     expect(result.possiblyTruncated).toBe(false);
     expect(result.appointments).toEqual([
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" },
-      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" },
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
 
     // No raw age/DOB field name survives either — the PHI keys list here
     // plus the exact-key assertion below cover both the general PHI
     // fields and the age/DOB boundary specifically (see
-    // CountableAppointment's covidAgeBucket doc comment).
+    // CountableAppointment's covidAgeBucket/fluAgeBucket doc comments).
     const phiKeys = ["firstName", "lastName", "phone", "email", "notes", "forms", "id", "time", "dob", "age"];
     for (const entry of result.appointments) {
       for (const key of phiKeys) {
         expect(Object.prototype.hasOwnProperty.call(entry, key)).toBe(false);
       }
       expect(Object.keys(entry).sort()).toEqual(
-        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "vaccineNames"].sort()
+        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "vaccineNames"].sort()
       );
     }
   });
@@ -152,7 +157,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments).toEqual([
-        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu"], covidBrand: "any", covidAgeBucket: "unknown" },
+        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu"], ...DEFAULT_BUCKETS },
       ]);
     });
 
@@ -177,8 +182,7 @@ describe("fetchAppointmentsForRange", () => {
           date: "2026-08-17",
           appointmentTypeId: 111,
           vaccineNames: ["COVID-Pfizer", "Flu", "RSV"],
-          covidBrand: "any",
-          covidAgeBucket: "unknown",
+          ...DEFAULT_BUCKETS,
         },
       ]);
     });
@@ -205,15 +209,13 @@ describe("fetchAppointmentsForRange", () => {
           date: "2026-08-17",
           appointmentTypeId: 111,
           vaccineNames: ["Flu", "COVID-Moderna"],
-          covidBrand: "any",
-          covidAgeBucket: "unknown",
+          ...DEFAULT_BUCKETS,
         },
         {
           date: "2026-08-18",
           appointmentTypeId: 111,
           vaccineNames: ["Flu", "RSV"],
-          covidBrand: "any",
-          covidAgeBucket: "unknown",
+          ...DEFAULT_BUCKETS,
         },
       ]);
     });
@@ -231,7 +233,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments).toEqual([
-        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" },
+        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
       ]);
     });
 
@@ -242,18 +244,19 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments).toEqual([
-        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" },
+        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
       ]);
     });
   });
 
-  // V-T-schedule-table (Will, 2026-09-04): covidBrand/covidAgeBucket are
-  // BUCKETED-only derived fields — see CountableAppointment's doc comment.
-  // These tests go through the full fetchAppointmentsForRange projection
-  // (rather than testing a private helper directly) specifically to prove
-  // the raw age/DOB/brand answer text never survives onto the returned
-  // appointment, same rationale as the "no PHI keys survive" test above.
-  describe("covidBrand / covidAgeBucket derivation", () => {
+  // V-T-schedule-table (Will, 2026-09-04/05): covidBrand/covidAgeBucket/
+  // fluAgeBucket are BUCKETED-only derived fields — see
+  // CountableAppointment's doc comment. These tests go through the full
+  // fetchAppointmentsForRange projection (rather than testing a private
+  // helper directly) specifically to prove the raw age/DOB/brand answer
+  // text never survives onto the returned appointment, same rationale as
+  // the "no PHI keys survive" test above.
+  describe("covidBrand / covidAgeBucket / fluAgeBucket derivation", () => {
     function fixtureWithForms(fields: Array<{ name: string; value: string }>) {
       return acuityAppointmentFixture({
         forms: [{ id: 1, name: "Intake", values: fields.map((f, i) => ({ fieldID: i, ...f })) }],
@@ -291,7 +294,7 @@ describe("fetchAppointmentsForRange", () => {
       expect(result2.appointments[0].covidBrand).toBe("any");
     });
 
-    it("buckets a plain numeric age into 3-11 or 12+", async () => {
+    it("buckets a plain numeric age into 3-11 or 12-64", async () => {
       const childFixture = [fixtureWithForms([{ name: "Patient age", value: "7" }])];
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(childFixture), { status: 200 })));
       const childResult = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
@@ -301,16 +304,17 @@ describe("fetchAppointmentsForRange", () => {
       const adultFixture = [fixtureWithForms([{ name: "Patient age", value: "45" }])];
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(adultFixture), { status: 200 })));
       const adultResult = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
-      expect(adultResult.appointments[0].covidAgeBucket).toBe("12+");
+      expect(adultResult.appointments[0].covidAgeBucket).toBe("12-64");
     });
 
-    // Exact boundary coverage for bucketAge: 2 (just below 3-11), 3 and 11
-    // (the 3-11 edges), 12 (the highest-risk boundary — the 12th
-    // birthday, where a patient becomes 12+-eligible for Pfizer per
-    // pharmacy stocking), 110 (the top of 12+), and 111 (just over the
-    // >110 -> unknown cutoff).
-    it("buckets the exact age boundaries correctly: 2->unknown, 3 and 11->3-11, 12 and 110->12+, 111->unknown", async () => {
-      const boundaryAges = [2, 3, 11, 12, 110, 111];
+    // Exact boundary coverage for bucketCovidAge (V-T-schedule-table
+    // ROUND 2, Will 2026-09-05 — a 65+ split was added to every COVID
+    // brand, superseding the original 3-11/12+ split from the same day):
+    // 2 (just below 3-11, now the shared young-end cutoff with Flu), 3
+    // and 11 (the 3-11 edges), 12 and 64 (the 12-64 edges), 65 and 110
+    // (the 65+ edges), and 111 (just over the >110 -> unknown cutoff).
+    it("buckets the exact COVID age boundaries correctly: 2->unknown, 3&11->3-11, 12&64->12-64, 65&110->65+, 111->unknown", async () => {
+      const boundaryAges = [2, 3, 11, 12, 64, 65, 110, 111];
       const fixture = boundaryAges.map((age) => fixtureWithForms([{ name: "Age", value: String(age) }]));
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
 
@@ -320,15 +324,37 @@ describe("fetchAppointmentsForRange", () => {
         "unknown", // 2
         "3-11", // 3
         "3-11", // 11
-        "12+", // 12
-        "12+", // 110
+        "12-64", // 12
+        "12-64", // 64
+        "65+", // 65
+        "65+", // 110
         "unknown", // 111
       ]);
     });
 
-    it("computes age from a parseable date of birth", async () => {
+    // Same boundary set for bucketFluAge — Flu has no 3-11/12-64 split,
+    // just 3-64/65+/unknown, but shares the same [3, 110] valid range.
+    it("buckets the exact Flu age boundaries correctly: 2->unknown, 3&64->3-64, 65&110->65+, 111->unknown", async () => {
+      const boundaryAges = [2, 3, 64, 65, 110, 111];
+      const fixture = boundaryAges.map((age) => fixtureWithForms([{ name: "Age", value: String(age) }]));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments.map((a) => a.fluAgeBucket)).toEqual([
+        "unknown", // 2
+        "3-64", // 3
+        "3-64", // 64
+        "65+", // 65
+        "65+", // 110
+        "unknown", // 111
+      ]);
+    });
+
+    it("computes age from a parseable date of birth, bucketing both covidAgeBucket and fluAgeBucket off the same answer", async () => {
       const now = new Date();
-      // Exactly 8 years old today (or turning 8 today) -> "3-11".
+      // Exactly 8 years old today (or turning 8 today) -> COVID "3-11",
+      // Flu "3-64" — same underlying age, two independent bucketings.
       const dob = `${now.getFullYear() - 8}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
       const fixture = [fixtureWithForms([{ name: "Date of birth", value: dob }])];
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
@@ -336,41 +362,46 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments[0].covidAgeBucket).toBe("3-11");
+      expect(result.appointments[0].fluAgeBucket).toBe("3-64");
     });
 
-    // The 12th-birthday boundary specifically, computed from a DOB rather
+    // The 65th-birthday boundary specifically, computed from a DOB rather
     // than a plain numeric age — this is the highest-risk spot in
     // computeAgeFromDob's month/day off-by-one adjustment (a patient
-    // whose birthday is today has already turned 12; one whose birthday
-    // is tomorrow has not).
-    it("computes the 12th-birthday DOB boundary correctly: birthday today -> 12+, birthday tomorrow -> still 3-11", async () => {
+    // whose birthday is today has already turned 65; one whose birthday
+    // is tomorrow has not). Covers both bucketCovidAge and bucketFluAge
+    // since they share the same 65 cutoff.
+    it("computes the 65th-birthday DOB boundary correctly: birthday today -> 65+, birthday tomorrow -> still under 65", async () => {
       const isoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       const now = new Date();
       const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
 
-      // Birthday is exactly today, 12 years ago -> already 12.
-      const dobBirthdayToday = isoDate(new Date(now.getFullYear() - 12, now.getMonth(), now.getDate()));
+      // Birthday is exactly today, 65 years ago -> already 65.
+      const dobBirthdayToday = isoDate(new Date(now.getFullYear() - 65, now.getMonth(), now.getDate()));
       const fixtureToday = [fixtureWithForms([{ name: "Date of birth", value: dobBirthdayToday }])];
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixtureToday), { status: 200 })));
       const resultToday = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
-      expect(resultToday.appointments[0].covidAgeBucket).toBe("12+");
+      expect(resultToday.appointments[0].covidAgeBucket).toBe("65+");
+      expect(resultToday.appointments[0].fluAgeBucket).toBe("65+");
       vi.unstubAllGlobals();
 
-      // Birthday is tomorrow, 12 years ago from tomorrow -> still 11 today.
-      const dobBirthdayTomorrow = isoDate(new Date(tomorrow.getFullYear() - 12, tomorrow.getMonth(), tomorrow.getDate()));
+      // Birthday is tomorrow, 65 years ago from tomorrow -> still 64 today.
+      const dobBirthdayTomorrow = isoDate(new Date(tomorrow.getFullYear() - 65, tomorrow.getMonth(), tomorrow.getDate()));
       const fixtureTomorrow = [fixtureWithForms([{ name: "Date of birth", value: dobBirthdayTomorrow }])];
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixtureTomorrow), { status: 200 })));
       const resultTomorrow = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
-      expect(resultTomorrow.appointments[0].covidAgeBucket).toBe("3-11");
+      expect(resultTomorrow.appointments[0].covidAgeBucket).toBe("12-64");
+      expect(resultTomorrow.appointments[0].fluAgeBucket).toBe("3-64");
     });
 
-    it("buckets age >110 as unknown, per Will's spec, rather than a bogus 12+", async () => {
+    it("buckets age >110 as unknown, per Will's spec, rather than a bogus 65+", async () => {
       const fixture = [fixtureWithForms([{ name: "Age", value: "150" }])];
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
 
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments[0].covidAgeBucket).toBe("unknown");
+      expect(result.appointments[0].fluAgeBucket).toBe("unknown");
     });
 
     it("buckets an unparseable age answer as unknown", async () => {
@@ -380,6 +411,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments[0].covidAgeBucket).toBe("unknown");
+      expect(result.appointments[0].fluAgeBucket).toBe("unknown");
     });
 
     it("buckets a missing age field as unknown", async () => {
@@ -389,6 +421,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments[0].covidAgeBucket).toBe("unknown");
+      expect(result.appointments[0].fluAgeBucket).toBe("unknown");
     });
 
     it("never lets the raw age/DOB/brand answer text survive onto the returned appointment", async () => {
@@ -403,7 +436,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(Object.keys(result.appointments[0]).sort()).toEqual(
-        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "vaccineNames"].sort()
+        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "vaccineNames"].sort()
       );
       expect(JSON.stringify(result.appointments[0])).not.toContain("1990-01-01");
     });
@@ -486,7 +519,7 @@ describe("fetchAppointmentsForRange", () => {
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
 
     expect(result.appointments).toEqual([
-      { date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" },
+      { date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
   });
 
@@ -498,7 +531,7 @@ describe("fetchAppointmentsForRange", () => {
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
 
     expect(result.appointments).toEqual([
-      { date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" },
+      { date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
   });
 
@@ -541,7 +574,7 @@ describe("fetchAppointmentsForRange", () => {
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
     expect(result.appointments).toEqual([
-      { date: "2026-08-19", appointmentTypeId: 222, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" },
+      { date: "2026-08-19", appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
   });
 });
@@ -570,10 +603,10 @@ describe("fetchAppointmentTypes", () => {
 describe("aggregateAppointmentCounts", () => {
   it("falls back to the appointment type's name, grouped by date + name, when vaccineNames is empty", () => {
     const appointments = [
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any" as const, covidAgeBucket: "unknown" as const },
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any" as const, covidAgeBucket: "unknown" as const },
-      { date: "2026-08-17", appointmentTypeId: 222, vaccineNames: [], covidBrand: "any" as const, covidAgeBucket: "unknown" as const },
-      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [], covidBrand: "any" as const, covidAgeBucket: "unknown" as const },
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-17", appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ];
     const names = new Map([
       [111, "Flu Shot"],
@@ -583,20 +616,21 @@ describe("aggregateAppointmentCounts", () => {
     const result = aggregateAppointmentCounts(appointments, names);
 
     // Sorted by date, then vaccineName (alphabetical) — "COVID · Any ·
-    // Unknown" sorts before "Flu Shot" within the same day. The fallback
-    // appointment-type name "COVID Booster" is itself COVID-ish (contains
-    // "covid"), so it's rewritten to the brand/age composite too — same
-    // rule as a vaccine-name-form-derived COVID name (V-T-schedule-table).
+    // Unknown" sorts before "Flu · Unknown" within the same day. Both
+    // fallback appointment-type names ("COVID Booster", "Flu Shot") are
+    // themselves COVID-/Flu-ish (contain "covid"/"flu"), so they're
+    // rewritten to their brand/age (or age) composite too — same rule as
+    // a vaccine-name-form-derived name (V-T-schedule-table).
     expect(result).toEqual([
       { date: "2026-08-17", vaccineName: "COVID · Any · Unknown", count: 1 },
-      { date: "2026-08-17", vaccineName: "Flu Shot", count: 2 },
-      { date: "2026-08-18", vaccineName: "Flu Shot", count: 1 },
+      { date: "2026-08-17", vaccineName: "Flu · Unknown", count: 2 },
+      { date: "2026-08-18", vaccineName: "Flu · Unknown", count: 1 },
     ]);
   });
 
   it("falls back to a generic label when the type id has no matching name", () => {
     const result = aggregateAppointmentCounts(
-      [{ date: "2026-08-17", appointmentTypeId: 999, vaccineNames: [], covidBrand: "any", covidAgeBucket: "unknown" }],
+      [{ date: "2026-08-17", appointmentTypeId: 999, vaccineNames: [], ...DEFAULT_BUCKETS }],
       new Map()
     );
 
@@ -608,31 +642,41 @@ describe("aggregateAppointmentCounts", () => {
     // once toward EACH vaccine's column, per Will: "a patient getting
     // both Flu and COVID-Pfizer" in one visit. The COVID entry is
     // rewritten to its brand/age composite using THIS appointment's own
-    // covidBrand/covidAgeBucket (V-T-schedule-table, Will 2026-09-04).
+    // covidBrand/covidAgeBucket (V-T-schedule-table, Will 2026-09-04);
+    // the Flu entry rides its own fluAgeBucket the same way (ROUND 2).
     const appointments = [
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
         vaccineNames: ["Flu", "COVID-Pfizer"],
         covidBrand: "pfizer" as const,
-        covidAgeBucket: "12+" as const,
+        covidAgeBucket: "12-64" as const,
+        fluAgeBucket: "3-64" as const,
       },
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu"], covidBrand: "any" as const, covidAgeBucket: "unknown" as const },
+      {
+        date: "2026-08-17",
+        appointmentTypeId: 111,
+        vaccineNames: ["Flu"],
+        covidBrand: "any" as const,
+        covidAgeBucket: "unknown" as const,
+        fluAgeBucket: "65+" as const,
+      },
     ];
 
     const result = aggregateAppointmentCounts(appointments, new Map());
 
     expect(result).toEqual([
-      { date: "2026-08-17", vaccineName: "COVID · Pfizer · 12+", count: 1 },
-      { date: "2026-08-17", vaccineName: "Flu", count: 2 },
+      { date: "2026-08-17", vaccineName: "COVID · Pfizer · 12-64", count: 1 },
+      { date: "2026-08-17", vaccineName: "Flu · 3-64", count: 1 },
+      { date: "2026-08-17", vaccineName: "Flu · 65+", count: 1 },
     ]);
   });
 
   it("never emits PHI keys even if a caller (incorrectly) passed extra fields through", () => {
     // aggregateAppointmentCounts only ever destructures {date,
-    // appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket} off
-    // each input — extra fields on the input object must not leak into
-    // output.
+    // appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket,
+    // fluAgeBucket} off each input — extra fields on the input object
+    // must not leak into output.
     const appointments = [
       {
         date: "2026-08-17",
@@ -640,10 +684,18 @@ describe("aggregateAppointmentCounts", () => {
         vaccineNames: [],
         covidBrand: "any",
         covidAgeBucket: "unknown",
+        fluAgeBucket: "unknown",
         firstName: "Jane",
         email: "jane@example.com",
       },
-    ] as unknown as { date: string; appointmentTypeId: number; vaccineNames: string[]; covidBrand: "any"; covidAgeBucket: "unknown" }[];
+    ] as unknown as {
+      date: string;
+      appointmentTypeId: number;
+      vaccineNames: string[];
+      covidBrand: "any";
+      covidAgeBucket: "unknown";
+      fluAgeBucket: "unknown";
+    }[];
 
     const result = aggregateAppointmentCounts(appointments, new Map());
 
@@ -652,10 +704,38 @@ describe("aggregateAppointmentCounts", () => {
 
   it("splits COVID appointments into separate composite columns per (brand, age bucket), including brand match case-insensitively", () => {
     const appointments = [
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["covid"], covidBrand: "pfizer" as const, covidAgeBucket: "12+" as const },
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["COVID"], covidBrand: "moderna" as const, covidAgeBucket: "3-11" as const },
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["COVID"], covidBrand: "moderna" as const, covidAgeBucket: "3-11" as const },
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["COVID"], covidBrand: "any" as const, covidAgeBucket: "unknown" as const },
+      {
+        date: "2026-08-17",
+        appointmentTypeId: 111,
+        vaccineNames: ["covid"],
+        covidBrand: "pfizer" as const,
+        covidAgeBucket: "65+" as const,
+        fluAgeBucket: "unknown" as const,
+      },
+      {
+        date: "2026-08-17",
+        appointmentTypeId: 111,
+        vaccineNames: ["COVID"],
+        covidBrand: "moderna" as const,
+        covidAgeBucket: "3-11" as const,
+        fluAgeBucket: "unknown" as const,
+      },
+      {
+        date: "2026-08-17",
+        appointmentTypeId: 111,
+        vaccineNames: ["COVID"],
+        covidBrand: "moderna" as const,
+        covidAgeBucket: "3-11" as const,
+        fluAgeBucket: "unknown" as const,
+      },
+      {
+        date: "2026-08-17",
+        appointmentTypeId: 111,
+        vaccineNames: ["COVID"],
+        covidBrand: "any" as const,
+        covidAgeBucket: "unknown" as const,
+        fluAgeBucket: "unknown" as const,
+      },
     ];
 
     const result = aggregateAppointmentCounts(appointments, new Map());
@@ -663,19 +743,92 @@ describe("aggregateAppointmentCounts", () => {
     expect(result).toEqual([
       { date: "2026-08-17", vaccineName: "COVID · Any · Unknown", count: 1 },
       { date: "2026-08-17", vaccineName: "COVID · Moderna · 3-11", count: 2 },
-      { date: "2026-08-17", vaccineName: "COVID · Pfizer · 12+", count: 1 },
+      { date: "2026-08-17", vaccineName: "COVID · Pfizer · 65+", count: 1 },
     ]);
   });
 
-  it("does not hide a Pfizer 3-11 appointment even though the pharmacy doesn't stock it — renders its own composite column", () => {
-    // Will, V-T-schedule-table: "Pfizer with age 3-11 shouldn't happen ...
-    // do NOT hide it — render it as its own column if it ever appears."
+  it("does not hide a Pfizer 3-11 appointment even though the pharmacy doesn't offer it — renders its own composite column", () => {
+    // Will, V-T-schedule-table: "do NOT hide it — render it as its own
+    // column if it ever appears" (originally said of Pfizer 3-11 under
+    // the 3-11/12+ split; still applies under the revised 12-64/65+
+    // split — Pfizer only has fixed 12-64/65+ columns, so age bucket
+    // "3-11" on a Pfizer appointment is exactly this case).
     const appointments = [
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["COVID-Pfizer"], covidBrand: "pfizer" as const, covidAgeBucket: "3-11" as const },
+      {
+        date: "2026-08-17",
+        appointmentTypeId: 111,
+        vaccineNames: ["COVID-Pfizer"],
+        covidBrand: "pfizer" as const,
+        covidAgeBucket: "3-11" as const,
+        fluAgeBucket: "unknown" as const,
+      },
     ];
 
     const result = aggregateAppointmentCounts(appointments, new Map());
 
     expect(result).toEqual([{ date: "2026-08-17", vaccineName: "COVID · Pfizer · 3-11", count: 1 }]);
+  });
+
+  // Flu age split (V-T-schedule-table ROUND 2, Will 2026-09-05): same
+  // composite mechanism as COVID, riding the age bucket through the
+  // VaccineCount cache/API shape as "Flu · {Age}".
+  describe("Flu age composite", () => {
+    it("splits Flu appointments into separate composite columns per age bucket", () => {
+      const appointments = [
+        {
+          date: "2026-08-17",
+          appointmentTypeId: 111,
+          vaccineNames: ["Flu"],
+          covidBrand: "any" as const,
+          covidAgeBucket: "unknown" as const,
+          fluAgeBucket: "3-64" as const,
+        },
+        {
+          date: "2026-08-17",
+          appointmentTypeId: 111,
+          vaccineNames: ["FluMist"],
+          covidBrand: "any" as const,
+          covidAgeBucket: "unknown" as const,
+          fluAgeBucket: "65+" as const,
+        },
+        {
+          date: "2026-08-17",
+          appointmentTypeId: 111,
+          vaccineNames: ["Influenza Quadrivalent"],
+          covidBrand: "any" as const,
+          covidAgeBucket: "unknown" as const,
+          fluAgeBucket: "unknown" as const,
+        },
+      ];
+
+      const result = aggregateAppointmentCounts(appointments, new Map());
+
+      expect(result).toEqual([
+        { date: "2026-08-17", vaccineName: "Flu · 3-64", count: 1 },
+        { date: "2026-08-17", vaccineName: "Flu · 65+", count: 1 },
+        { date: "2026-08-17", vaccineName: "Flu · Unknown", count: 1 },
+      ]);
+    });
+
+    it("does not composite a non-Flu, non-COVID vaccine name even when its fluAgeBucket happens to be set", () => {
+      // fluAgeBucket is derived per-appointment regardless of what
+      // vaccine the appointment is actually for — isFluVaccineName gates
+      // whether it's ever consulted, same as isCovidVaccineName for
+      // covidBrand/covidAgeBucket.
+      const appointments = [
+        {
+          date: "2026-08-17",
+          appointmentTypeId: 111,
+          vaccineNames: ["RSV"],
+          covidBrand: "any" as const,
+          covidAgeBucket: "unknown" as const,
+          fluAgeBucket: "65+" as const,
+        },
+      ];
+
+      const result = aggregateAppointmentCounts(appointments, new Map());
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "RSV", count: 1 }]);
+    });
   });
 });

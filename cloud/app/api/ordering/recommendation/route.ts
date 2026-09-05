@@ -10,6 +10,7 @@ import {
 } from "@/lib/acuity-client";
 import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
+import { compositeNameToMatchableBase } from "@/lib/appointment-table";
 import { env } from "@/lib/env";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { buildRecommendationRow } from "@/lib/ordering-recommendation";
@@ -51,6 +52,53 @@ import { buildRecommendationRow } from "@/lib/ordering-recommendation";
  *     ]
  *   }
  */
+
+/**
+ * Composite-base -> catalog-name resolution for COVID appointment counts,
+ * scoped to THIS route only (review fix, 2026-09-05 — see
+ * lib/vaccine-matching.ts's NAME_ALIASES comment for the full story). It
+ * must NOT live in the shared NAME_ALIASES table: lib/on-hand-parser.ts
+ * also calls matchVaccineName, for real free-text on-hand-count emails —
+ * a manually-typed "COVID: 40" line has no age/brand composite to strip,
+ * it's just ambiguous, and Will needs that line to keep surfacing
+ * matched:false for his manual review rather than silently landing on
+ * whichever product this table happens to point at.
+ *
+ * Keys are the exact (lowercased) strings compositeNameToMatchableBase
+ * (lib/appointment-table.ts) produces. "covid moderna" is a documented
+ * judgment call: Moderna currently has TWO catalog products by age
+ * (Spikevax for 3-11, mNEXSPIKE for 12+ — see 0005_seed_lots.sql's step 2
+ * comment), and the age-stripped composite can't tell them apart —
+ * pointed at mNEXSPIKE (Moderna's 12+ product) as the more common case; a
+ * real Moderna 3-11 appointment's order count lands on the wrong SKU
+ * until this is split by age again. "covid" (brandless — the patient
+ * expressed no brand preference) has the same kind of ambiguity and is
+ * pointed at Comirnaty (Pfizer) as a single, deterministic default rather
+ * than splitting the count across products.
+ */
+const COMPOSITE_BASE_TO_CATALOG_NAME: Record<string, string> = {
+  "covid pfizer": "comirnaty 2025-26 12+",
+  "covid moderna": "mnexspike",
+  covid: "comirnaty 2025-26 12+",
+};
+
+/**
+ * Resolves an already-composite-stripped vaccineName (see
+ * compositeNameToMatchableBase) against the catalog: a COVID brand/
+ * brandless base first checks COMPOSITE_BASE_TO_CATALOG_NAME above by
+ * exact catalog name, then falls back to the normal shared
+ * matchVaccineName (which is all a non-composite name — Flu, or any other
+ * canonical vaccine — ever needs).
+ */
+function matchOrderingVaccineName(base: string, catalog: CatalogVaccine[]): CatalogVaccine | null {
+  const targetName = COMPOSITE_BASE_TO_CATALOG_NAME[base.trim().toLowerCase()];
+  if (targetName) {
+    const direct = catalog.find((vaccine) => vaccine.name.trim().toLowerCase() === targetName);
+    if (direct) return direct;
+  }
+  return matchVaccineName(base, catalog);
+}
+
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
@@ -97,7 +145,20 @@ export async function GET(request: Request) {
           })());
 
         for (const { vaccineName, count } of counts) {
-          const match = matchVaccineName(vaccineName, catalog);
+          // COVID/Flu counts arrive as an aggregation composite ("COVID ·
+          // Pfizer · 65+", "Flu · 3-64" — see covidCompositeName/
+          // fluCompositeName in lib/acuity-client.ts) that doesn't
+          // resemble any catalog name on its own. Strip it down to a
+          // matchable brand/product string (age is never relevant to an
+          // order quantity) — see compositeNameToMatchableBase's doc
+          // comment — then resolve it against the catalog via THIS
+          // route's own matchOrderingVaccineName, not the shared
+          // matchVaccineName directly (see COMPOSITE_BASE_TO_CATALOG_NAME
+          // above for why that resolution must stay out of
+          // lib/vaccine-matching.ts's NAME_ALIASES). A non-composite name
+          // passes through compositeNameToMatchableBase unchanged and
+          // matches exactly as it always has.
+          const match = matchOrderingVaccineName(compositeNameToMatchableBase(vaccineName), catalog);
           // An appointment vaccine name with no catalog match simply
           // doesn't contribute to any row's upcoming7d — there's no
           // catalog vaccine to attach the count to. Same tolerant,
