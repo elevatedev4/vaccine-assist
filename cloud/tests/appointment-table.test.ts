@@ -837,16 +837,21 @@ describe("heatmap contrast (WCAG AA, black text)", () => {
   });
 });
 
-// "Any helper computing the two maxes" (brief) — the TWO INDEPENDENT
-// SCALES split itself (V-T12 answer, verbatim): "Today and the daily
-// breakdown would be its own scale, separate from the weekly and
-// remaining ... wouldn't make sense to have weekly numbers compared to
-// daily numbers."
+// "Any helper computing the two maxes" (brief) — the INDEPENDENT SCALES
+// split itself (V-T12 answer, verbatim): "Today and the daily breakdown
+// would be its own scale, separate from the weekly and remaining ...
+// wouldn't make sense to have weekly numbers compared to daily numbers."
+// Extended for Will's follow-up ask (verbatim): "Add heatmap to the daily
+// totals for the upcoming forecast too" — a THIRD scale, `totalsScaleMax`,
+// over the daily breakdown's own Total-column values (table.dailyTotals),
+// kept independent of both `dailyScaleMax` (per-vaccine cells) and
+// `weeklyScaleMax` since a day's total is roughly an order of magnitude
+// bigger than any single vaccine's count.
 describe("computeHeatmapMaxes", () => {
-  it("returns {0, 0} for a fully empty/zero table — no division by zero downstream", () => {
+  it("returns {0, 0, 0} for a fully empty/zero table — no division by zero downstream", () => {
     const table = buildAppointmentTable([], DAYS);
     const maxes = computeHeatmapMaxes(table, {}, {}, null);
-    expect(maxes).toEqual({ dailyScaleMax: 0, weeklyScaleMax: 0 });
+    expect(maxes).toEqual({ dailyScaleMax: 0, weeklyScaleMax: 0, totalsScaleMax: 0 });
   });
 
   it("dailyScaleMax is the max across the daily breakdown rows, ignoring next7/afterToday values entirely", () => {
@@ -885,5 +890,45 @@ describe("computeHeatmapMaxes", () => {
     const table = buildAppointmentTable([], DAYS);
     const maxes = computeHeatmapMaxes(table, { mmr: 42 }, {}, null);
     expect(maxes.dailyScaleMax).toBe(42);
+  });
+
+  describe("totalsScaleMax (Will's follow-up: heatmap on the daily totals)", () => {
+    it("is 0 for an all-zero/empty table — no division by zero downstream", () => {
+      const table = buildAppointmentTable([], DAYS);
+      const maxes = computeHeatmapMaxes(table, {}, {}, null);
+      expect(maxes.totalsScaleMax).toBe(0);
+    });
+
+    it("is the max single-day total across the daily breakdown", () => {
+      const table = buildAppointmentTable(
+        [
+          { date: "2026-08-17", vaccineName: "MMR-II", count: 2 },
+          { date: "2026-08-17", vaccineName: "Shingrix", count: 3 }, // same day, total 5
+          { date: "2026-08-18", vaccineName: "RSV", count: 4 },
+        ],
+        DAYS
+      );
+      const maxes = computeHeatmapMaxes(table, {}, {}, null);
+      expect(maxes.totalsScaleMax).toBe(5); // 2026-08-17's total (2+3), not 2026-08-18's (4)
+    });
+
+    it("is independent of dailyScaleMax and weeklyScaleMax — a huge per-vaccine or weekly value never leaks in", () => {
+      const table = buildAppointmentTable([{ date: "2026-08-17", vaccineName: "MMR-II", count: 7 }], DAYS);
+      const maxes = computeHeatmapMaxes(
+        table,
+        { mmr: 7 },
+        { mmr: 900 }, // must NOT leak into totalsScaleMax
+        { mmr: 900 } // must NOT leak into totalsScaleMax
+      );
+      expect(maxes.totalsScaleMax).toBe(7); // the one real daily total, not the weekly values
+      expect(maxes.weeklyScaleMax).toBe(900);
+    });
+
+    it("is independent in the other direction too — a huge daily total never leaks into weeklyScaleMax", () => {
+      const table = buildAppointmentTable([{ date: "2026-08-17", vaccineName: "MMR-II", count: 500 }], DAYS);
+      const maxes = computeHeatmapMaxes(table, {}, { mmr: 3 }, { mmr: 4 });
+      expect(maxes.totalsScaleMax).toBe(500);
+      expect(maxes.weeklyScaleMax).toBe(4);
+    });
   });
 });
