@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildAppointmentTable,
   buildColumnTotals,
+  computeHeatmapMaxes,
   computeTodayAndNext7Summaries,
   compositeNameToMatchableBase,
+  heatmapCellBackground,
+  heatmapTextColor,
   type AppointmentTableColumn,
 } from "@/lib/appointment-table";
 
@@ -731,5 +734,116 @@ describe("computeTodayAndNext7Summaries", () => {
       expect(today.byColumnId[column.vaccineName]).toBe(0);
       expect(next7.byColumnId[column.vaccineName]).toBe(0);
     }
+  });
+});
+
+// ROUND 6 (V-T12 answer, Will 2026-09-05, verbatim): "color the background
+// a gradient based on the # of vaccines scheduled ... Zero cells" implicitly
+// stay untinted, "so it's easy to see when a large number vs small number
+// are scheduled."
+describe("heatmapCellBackground", () => {
+  it("renders plain white for a zero count, regardless of max", () => {
+    expect(heatmapCellBackground(0, 1)).toBe("#ffffff");
+    expect(heatmapCellBackground(0, 500)).toBe("#ffffff");
+  });
+
+  it("renders plain white when max is 0 (an all-zero scale) — no division by zero, even if count is somehow nonzero", () => {
+    expect(heatmapCellBackground(0, 0)).toBe("#ffffff");
+    expect(heatmapCellBackground(7, 0)).toBe("#ffffff");
+  });
+
+  it("renders a darker color at count === max than at a mid-range count, and darker still than a low count", () => {
+    const low = heatmapCellBackground(1, 10);
+    const mid = heatmapCellBackground(5, 10);
+    const peak = heatmapCellBackground(10, 10);
+
+    expect(low).not.toBe("#ffffff");
+    expect(mid).not.toBe("#ffffff");
+    expect(low).not.toBe(mid);
+    expect(mid).not.toBe(peak);
+
+    // Extract the blue channel (the ramp's "toward" color is a medium
+    // blue with G > B, so the blue channel decreases monotonically from
+    // white as intensity rises — a simple, readable ordering check
+    // without hardcoding the exact rgb() string).
+    const blueChannel = (rgb: string) => Number(rgb.match(/rgb\((\d+), (\d+), (\d+)\)/)![3]);
+    expect(blueChannel(low)).toBeGreaterThan(blueChannel(mid));
+    expect(blueChannel(mid)).toBeGreaterThan(blueChannel(peak));
+  });
+
+  it("clamps a count above max to the same color as count === max, never overshooting the ramp", () => {
+    expect(heatmapCellBackground(999, 10)).toBe(heatmapCellBackground(10, 10));
+  });
+
+  it("never fully reaches the uncapped peak color, so black cell text stays legible even at count === max", () => {
+    const peak = heatmapCellBackground(10, 10);
+    expect(peak).not.toBe("rgb(30, 64, 175)");
+  });
+});
+
+describe("heatmapTextColor", () => {
+  it("leaves the default text color alone (undefined) for a zero count or an all-zero (max === 0) scale", () => {
+    expect(heatmapTextColor(0, 10)).toBeUndefined();
+    expect(heatmapTextColor(0, 0)).toBeUndefined();
+    expect(heatmapTextColor(5, 0)).toBeUndefined();
+  });
+
+  it("leaves the default text color alone for a low/mid count that isn't dark enough to need white text", () => {
+    expect(heatmapTextColor(1, 10)).toBeUndefined();
+  });
+
+  it("switches to white text once the count is close enough to max that the background is dark", () => {
+    expect(heatmapTextColor(10, 10)).toBe("#ffffff");
+  });
+});
+
+// "Any helper computing the two maxes" (brief) — the TWO INDEPENDENT
+// SCALES split itself (V-T12 answer, verbatim): "Today and the daily
+// breakdown would be its own scale, separate from the weekly and
+// remaining ... wouldn't make sense to have weekly numbers compared to
+// daily numbers."
+describe("computeHeatmapMaxes", () => {
+  it("returns {0, 0} for a fully empty/zero table — no division by zero downstream", () => {
+    const table = buildAppointmentTable([], DAYS);
+    const maxes = computeHeatmapMaxes(table, {}, {}, null);
+    expect(maxes).toEqual({ dailyScaleMax: 0, weeklyScaleMax: 0 });
+  });
+
+  it("dailyScaleMax is the max across the daily breakdown rows, ignoring next7/afterToday values entirely", () => {
+    const table = buildAppointmentTable(
+      [
+        { date: "2026-08-17", vaccineName: "MMR-II", count: 3 },
+        { date: "2026-08-18", vaccineName: "Shingrix", count: 9 },
+      ],
+      DAYS
+    );
+    const maxes = computeHeatmapMaxes(
+      table,
+      { mmr: 3 },
+      { mmr: 500 }, // a much larger "weekly" value must NOT leak into dailyScaleMax
+      { mmr: 500 }
+    );
+    expect(maxes.dailyScaleMax).toBe(9);
+  });
+
+  it("weeklyScaleMax is the max across next7 and afterToday only, ignoring the (much larger, if present) daily breakdown", () => {
+    const table = buildAppointmentTable([{ date: "2026-08-17", vaccineName: "MMR-II", count: 999 }], DAYS);
+    const maxes = computeHeatmapMaxes(table, {}, { mmr: 4 }, { mmr: 12 });
+    expect(maxes.weeklyScaleMax).toBe(12);
+    // Confirms the huge daily-breakdown value really did stay in its own
+    // scale and didn't get pulled into weeklyScaleMax.
+    expect(maxes.dailyScaleMax).toBe(999);
+  });
+
+  it("weeklyScaleMax degrades to next7's own max when afterToday is null (not yet loaded / errored)", () => {
+    const table = buildAppointmentTable([], DAYS);
+    const maxes = computeHeatmapMaxes(table, {}, { mmr: 6, rsv: 2 }, null);
+    expect(maxes.weeklyScaleMax).toBe(6);
+  });
+
+  it("todayByColumnId can independently push dailyScaleMax higher than any breakdown-row cell", () => {
+    const table = buildAppointmentTable([], DAYS);
+    const maxes = computeHeatmapMaxes(table, { mmr: 42 }, {}, null);
+    expect(maxes.dailyScaleMax).toBe(42);
   });
 });
