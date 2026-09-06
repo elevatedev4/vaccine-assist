@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
@@ -96,6 +96,14 @@ export default function DataEntryPage() {
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [selectedProductName, setSelectedProductName] = useState<string | null>(null);
   const [selectedVaccine, setSelectedVaccine] = useState<EligibleVaccine | null>(null);
+  // Mirrors DataEntryPopupViewModel.RefreshSelectedVaccineActiveLotAsync's
+  // `SelectedVaccine?.Id != vaccineId` staleness guard: a ref (not state)
+  // so refreshActiveLot's in-flight fetch can synchronously check, on
+  // BOTH its success and error paths, whether the selection has already
+  // moved on to a different vaccine by the time the response lands —
+  // otherwise a slow response for vaccine A landing after the user
+  // switched to vaccine B would silently apply A's lot to B's payload.
+  const selectedVaccineIdRef = useRef<string | null>(null);
 
   // Expiration gate state — mirrors DataEntryPopupViewModel's
   // SelectedVaccineActiveLot / IsLotExpiredOrMissing / SkipLotAndExpiration.
@@ -157,6 +165,7 @@ export default function DataEntryPage() {
     setSelectedGroup(null);
     setSelectedProductName(null);
     setSelectedVaccine(null);
+    selectedVaccineIdRef.current = null;
     setActiveLot(undefined);
     setLotCheckError(null);
     setSkipLotAndExpiration(false);
@@ -232,6 +241,7 @@ export default function DataEntryPage() {
     setSelectedGroup(group);
     setSelectedProductName(null);
     setSelectedVaccine(null);
+    selectedVaccineIdRef.current = null;
     setStage("product");
   }
 
@@ -246,6 +256,7 @@ export default function DataEntryPage() {
 
   function selectVaccine(vaccine: EligibleVaccine) {
     setSelectedVaccine(vaccine);
+    selectedVaccineIdRef.current = vaccine.id;
     setActiveLot(undefined);
     setLotCheckError(null);
     setSkipLotAndExpiration(false);
@@ -267,6 +278,11 @@ export default function DataEntryPage() {
           headers: { Authorization: `Bearer ${session.accessToken}` },
         });
         const data = await response.json();
+        // Selection moved on to a different vaccine while this request
+        // was in flight — drop the (now stale) result rather than
+        // pairing the currently-selected vaccine's short_code with a
+        // different vaccine's lot. Same guard on the error path below.
+        if (selectedVaccineIdRef.current !== vaccineId) return;
         if (!response.ok) {
           setLotCheckError(data.error ?? "Couldn't check lot status.");
           setActiveLot(null);
@@ -275,6 +291,7 @@ export default function DataEntryPage() {
         const lot = pickActiveUnexpiredLot<LotLike>(data.lots ?? [], todayInChicago());
         setActiveLot(lot);
       } catch (err) {
+        if (selectedVaccineIdRef.current !== vaccineId) return;
         setLotCheckError(err instanceof Error ? err.message : "Couldn't check lot status.");
         setActiveLot(null);
       }
@@ -331,6 +348,7 @@ export default function DataEntryPage() {
         const doseRows = selectedGroup ? productsInGroup(selectedGroup) : [];
         const product = doseRows.find((p) => p.name === selectedProductName);
         setSelectedVaccine(null);
+        selectedVaccineIdRef.current = null;
         setActiveLot(undefined);
         if (product?.isMultiDose) {
           setStage("dose");

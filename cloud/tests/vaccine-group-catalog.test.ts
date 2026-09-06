@@ -29,6 +29,16 @@ describe("getVaccineGroup", () => {
     expect(getVaccineGroup(undefined)).toBe(OTHER_GROUP);
     expect(getVaccineGroup("")).toBe(OTHER_GROUP);
   });
+
+  it("resolves a prefix collision by first-mapping-wins, not by position in the name", () => {
+    // Synthetic name — no real formulary row matches two prefixes today —
+    // but this locks in the "first mapping in the list wins" rule (mirrors
+    // the desktop's foreach-return-on-first-match) rather than, say, the
+    // LONGEST match or whichever prefix appears earliest IN THE STRING.
+    // "Shingrix" (Shingles, listed after COVID in MAPPINGS) appears before
+    // "Comirnaty" (COVID, listed first) in the string, yet COVID still wins.
+    expect(getVaccineGroup("Shingrix Comirnaty Combo (synthetic collision test)")).toBe("COVID");
+  });
 });
 
 describe("availableGroupsFor", () => {

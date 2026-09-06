@@ -46,6 +46,19 @@ describe("pickActiveUnexpiredLot", () => {
   it("returns null for an empty list", () => {
     expect(pickActiveUnexpiredLot([], today)).toBeNull();
   });
+
+  it("picks the first-listed lot on an exact expiration tie (stable sort)", () => {
+    const lots: LotLike[] = [
+      { vaccine_id: "v1", lot_number: "FIRST", expiration: "2026-10-01", status: "active" },
+      { vaccine_id: "v1", lot_number: "SECOND", expiration: "2026-10-01", status: "active" },
+    ];
+    expect(pickActiveUnexpiredLot(lots, today)?.lot_number).toBe("FIRST");
+    // Reversed input order still wins by POSITION, not by any other
+    // tiebreak — locks in "stable sort, first-listed wins" rather than
+    // some other implicit tiebreak (e.g. lot_number) creeping in later.
+    const reversed = [...lots].reverse();
+    expect(pickActiveUnexpiredLot(reversed, today)?.lot_number).toBe("SECOND");
+  });
 });
 
 describe("formatExpirationMacro", () => {
