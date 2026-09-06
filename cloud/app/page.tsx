@@ -11,7 +11,22 @@ export default function HomePage() {
         routes for the desktop app&apos;s REST endpoints.
       </p>
       <p>
-        <a href="/appointments">Upcoming appointments</a>
+        <a href="/appointments">Scheduling — upcoming appointments</a>
+      </p>
+      <p>
+        <a href="/data-entry">Data entry</a>
+      </p>
+      <p>
+        <a href="/lots">Lots</a>
+      </p>
+      <p>
+        <a href="/vaccines">Active vaccines</a>
+      </p>
+      <p>
+        <a href="/ordering">Ordering</a>
+      </p>
+      <p>
+        <a href="/physicians">Physicians</a>
       </p>
       <p>
         <a href="/settings">Acuity Scheduling settings</a>
