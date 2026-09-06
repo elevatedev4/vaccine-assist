@@ -91,6 +91,7 @@ describe("GET /api/acuity/poll — validation", () => {
       possiblyTruncated: false,
       cacheHit: false,
       asOf: null,
+      hourlyCounts: [],
     });
     // No `table` field yet — nothing to pivot without credentials, same
     // as the empty `counts` array (see route.ts's RESPONSE CONTRACT doc).
@@ -164,6 +165,11 @@ describe("GET /api/acuity/poll — validation", () => {
       // heavier 13-window fetch.
       expect(body.afterToday).toBeUndefined();
       expect(body.afterTodayError).toBeUndefined();
+      // ADDITIVE (V-T-hourly-table, 2026-09-05): the fixture's one
+      // appointment is at "2026-08-17T10:00:00-0500" — 10am Central.
+      expect(body.hourlyCounts).toEqual([
+        { date: "2026-08-17", hour: 10, appointmentCount: 1, vaccineCount: 1 },
+      ]);
     });
   });
 

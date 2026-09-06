@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDaysToChicagoDate, chicagoDateString, chicagoDayRange } from "@/lib/chicago-date";
+import { addDaysToChicagoDate, chicagoDateString, chicagoDayRange, chicagoHour } from "@/lib/chicago-date";
 
 describe("chicagoDateString", () => {
   it("renders a UTC instant as its America/Chicago calendar day", () => {
@@ -30,6 +30,44 @@ describe("addDaysToChicagoDate", () => {
   it("is stable across the US DST fall-back boundary (Nov 1, 2026)", () => {
     // Regression guard: date-only arithmetic must not be perturbed by DST.
     expect(addDaysToChicagoDate("2026-10-30", 3)).toBe("2026-11-02");
+  });
+});
+
+describe("chicagoHour", () => {
+  it("renders a UTC instant as its America/Chicago wall-clock hour (CDT)", () => {
+    // 2026-08-17T15:00:00Z == 2026-08-17T10:00:00-05:00 Central (CDT).
+    expect(chicagoHour(new Date("2026-08-17T15:00:00Z"))).toBe(10);
+  });
+
+  it("handles Central midnight without an hourCycle 'h23' wraparound to 24", () => {
+    // 2026-08-17T05:00:00Z == 2026-08-17T00:00:00-05:00 Central — exact
+    // midnight. Some Intl configurations render 12am as "24" under
+    // hour12:false; hourCycle "h23" is what guards against that here.
+    expect(chicagoHour(new Date("2026-08-17T05:00:00Z"))).toBe(0);
+  });
+
+  it("is correct across the US DST fall-back boundary (Nov 1, 2026)", () => {
+    // Central switches from CDT (UTC-5) to CST (UTC-6) at 2026-11-01
+    // 02:00 CDT local, which is 2026-11-01T07:00:00Z — any UTC instant
+    // strictly before that is still CDT, anything at/after it is CST.
+    expect(chicagoHour(new Date("2026-11-01T06:00:00Z"))).toBe(1); // 01:00 CDT (UTC-5), just before the fall-back
+    expect(chicagoHour(new Date("2026-11-01T14:00:00Z"))).toBe(8); // 08:00 CST (UTC-6), after the fall-back
+  });
+
+  it("is correct across the US DST spring-forward boundary (Mar 8, 2026)", () => {
+    // Central switches from CST (UTC-6) to CDT (UTC-5) at 2026-03-08
+    // 02:00 local (springs forward to 3am).
+    expect(chicagoHour(new Date("2026-03-08T07:00:00Z"))).toBe(1); // 01:00 CST (UTC-6), before spring-forward
+    expect(chicagoHour(new Date("2026-03-08T13:00:00Z"))).toBe(8); // 08:00 CDT (UTC-5), after spring-forward
+  });
+
+  it("covers every hour 0-23 with no out-of-range value across a full day", () => {
+    for (let h = 0; h < 24; h++) {
+      const instant = new Date(Date.UTC(2026, 5, 15, h));
+      const hour = chicagoHour(instant);
+      expect(hour).toBeGreaterThanOrEqual(0);
+      expect(hour).toBeLessThanOrEqual(23);
+    }
   });
 });
 

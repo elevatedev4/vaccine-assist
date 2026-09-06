@@ -6,11 +6,14 @@ import { subscribeToSessionState, toSessionState, type SessionState } from "@/li
 import { chicagoDayRange } from "@/lib/chicago-date";
 import {
   buildAppointmentTable,
+  buildHourlyBreakdownTable,
   computeHeatmapMaxes,
   computeTodayAndNext7Summaries,
   heatmapCellBackground,
   type AppointmentTableColumn,
   type ColumnTotals,
+  type HourlyCount,
+  type HourlyMetric,
   type VaccineCount,
 } from "@/lib/appointment-table";
 
@@ -31,6 +34,11 @@ type PollResponse = {
   possiblyTruncated: boolean;
   cacheHit: boolean;
   asOf: string | null;
+  // ADDITIVE (V-T-hourly-table, 2026-09-05) — see route.ts's doc comment.
+  // Optional here (rather than required) purely as a defensive client-side
+  // self-heal: `poll?.hourlyCounts ?? []` below covers both "field genuinely
+  // absent" and "present but empty" the same way.
+  hourlyCounts?: HourlyCount[];
 };
 
 // Reliability fix (2026-09-05): the "After today" summary comes from a
@@ -183,6 +191,36 @@ const styles = {
   // table already fits, only kicks in a scrollbar if a viewport is truly
   // narrower than the table (e.g. a small laptop screen).
   tableWrap: { overflowX: "auto", marginTop: "0.4rem" },
+  // Hourly table (V-T-hourly-table, Will 2026-09-05) — "match the main
+  // table exactly" for cells/borders/width, but a PLAIN header (no
+  // per-group color) since every column is just an hour, not a vaccine
+  // group. Reuses styles.thLeaf/td/tdZero/totalCell for the actual cell
+  // look; only the section heading/toggle/note styles below are new.
+  hourlyHeading: { margin: "1.25rem 0 0.35rem" },
+  toggleRow: { display: "flex", alignItems: "center", gap: "0.4rem", margin: "0 0 0.4rem" },
+  toggleButton: {
+    padding: "0.3rem 0.7rem",
+    fontSize: "0.8rem",
+    border: "1px solid #999",
+    background: "#fff",
+    cursor: "pointer",
+    borderRadius: 4,
+  },
+  toggleButtonActive: {
+    padding: "0.3rem 0.7rem",
+    fontSize: "0.8rem",
+    border: "1px solid #1e6b3a",
+    background: "#16a34a",
+    color: "#fff",
+    cursor: "pointer",
+    borderRadius: 4,
+    fontWeight: 600,
+  },
+  // Small "+N outside 8-6" annotation under a day's Total cell (JUDGMENT
+  // CALL — see HourlyBreakdownRow.outsideTotal's doc comment in
+  // lib/appointment-table.ts): deliberately muted/small so it reads as a
+  // footnote on the Total, not a second number competing with it.
+  outsideNote: { display: "block", fontSize: "0.62rem", fontWeight: 400, color: "#777", whiteSpace: "nowrap" },
 } as const;
 
 /**
@@ -391,6 +429,19 @@ function formatDayLabel(dateStr: string): string {
   return `${weekday} ${month}/${day}`;
 }
 
+/**
+ * "8:00" for hour 8, ..., "12:00" for hour 12, "1:00" for hour 13, ...,
+ * "5:00" for hour 17. JUDGMENT CALL (Will's spec only gave one example,
+ * "8am-9am would show '8:00' as the heading," which reads identically in
+ * 12- and 24-hour clocks): 12-hour without AM/PM, matching how a pharmacy
+ * schedule is normally read out loud during business hours, rather than
+ * literal 24-hour labels like "13:00" for 1pm.
+ */
+function formatHourLabel(hour: number): string {
+  const twelveHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${twelveHour}:00`;
+}
+
 export default function AppointmentsPage() {
   // Same shared-pharmacy-login session pattern as app/settings/page.tsx.
   const [session, setSession] = useState<SessionState>(null);
@@ -413,6 +464,12 @@ export default function AppointmentsPage() {
   const [afterToday, setAfterToday] = useState<AfterTodaySummary | null>(null);
   const [afterTodayLoading, setAfterTodayLoading] = useState(false);
   const [afterTodayError, setAfterTodayError] = useState<string | undefined>(undefined);
+
+  // Hourly-table toggle (V-T-hourly-table, Will 2026-09-05, verbatim:
+  // "make # vaccines the default"). Purely client-side — switching never
+  // refetches; buildHourlyBreakdownTable just re-derives the grid from the
+  // already-loaded `poll.hourlyCounts`, which carries both metrics.
+  const [hourlyMetric, setHourlyMetric] = useState<HourlyMetric>("vaccines");
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -626,6 +683,13 @@ export default function AppointmentsPage() {
     afterToday?.byColumnId ?? null
   );
 
+  // Hourly breakdown table (V-T-hourly-table) — same `days` as the main
+  // table above ("show the same number of days in the future as the other
+  // table"), self-heals to an empty grid when `hourlyCounts` is missing
+  // (unconfigured/stale-cache/not-yet-loaded) rather than crashing — see
+  // buildHourlyBreakdownTable's doc comment.
+  const hourlyTable = buildHourlyBreakdownTable(poll?.hourlyCounts ?? [], days, hourlyMetric);
+
   return (
     <main style={styles.mainWide}>
       <div style={styles.sessionBar}>
@@ -838,6 +902,88 @@ export default function AppointmentsPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {poll && poll.configured && (
+        // Hourly breakdown (V-T-hourly-table, Will 2026-09-05, verbatim):
+        // "Add a second table that shows hourly breakdown of how many
+        // vaccines are scheduled by the hour from 8-6 ... Include the
+        // daily totals as the lefternmost column as well, and show the
+        // same number of days in the future as the other table. Make a
+        // toggle that switches between vaccine appointments and # vaccines
+        // for this table, and make # vaccines the default." Same
+        // compact/vertical-border/natural-width look as the main table
+        // (dataCellStyle/COLUMN_DIVIDER reused below) but a PLAIN header —
+        // there's no vaccine grouping here, just hours, so no
+        // groupHeaderStyle/GROUP_COLORS tint. Doc comment on
+        // HourlyBreakdownRow.outsideTotal (lib/appointment-table.ts)
+        // covers the "+N outside 8-6" judgment call for appointments
+        // outside the 8am-6pm grid that still count toward the day Total.
+        <>
+          <h2 style={styles.hourlyHeading}>Hourly breakdown</h2>
+          <div style={styles.toggleRow}>
+            <button
+              type="button"
+              style={hourlyMetric === "vaccines" ? styles.toggleButtonActive : styles.toggleButton}
+              onClick={() => setHourlyMetric("vaccines")}
+              aria-pressed={hourlyMetric === "vaccines"}
+            >
+              # vaccines
+            </button>
+            <button
+              type="button"
+              style={hourlyMetric === "appointments" ? styles.toggleButtonActive : styles.toggleButton}
+              onClick={() => setHourlyMetric("appointments")}
+              aria-pressed={hourlyMetric === "appointments"}
+            >
+              appointments
+            </button>
+          </div>
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <colgroup>
+                {/* Date column: no explicit width, same as the main table. */}
+                <col />
+                <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
+                {hourlyTable.hours.map((hour) => (
+                  <col key={hour} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
+                ))}
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style={styles.thType}>Scheduled date</th>
+                  <th style={styles.thLeaf}>Total</th>
+                  {hourlyTable.hours.map((hour) => (
+                    <th key={hour} style={{ ...styles.thLeaf, ...COLUMN_DIVIDER }}>
+                      {formatHourLabel(hour)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {hourlyTable.rows.map((row) => (
+                  <tr key={row.date}>
+                    <td style={styles.tdType}>{formatDayLabel(row.date)}</td>
+                    <td style={totalCellStyle(styles.totalCell, heatmapCellBackground(row.dayTotal, hourlyTable.totalScaleMax))}>
+                      {row.dayTotal}
+                      {row.outsideTotal > 0 && (
+                        <span style={styles.outsideNote}>+{row.outsideTotal} outside 8-6</span>
+                      )}
+                    </td>
+                    {row.hourValues.map((value, index) => (
+                      <td
+                        key={hourlyTable.hours[index]}
+                        style={dataCellStyle(value === 0, heatmapCellBackground(value, hourlyTable.hourScaleMax))}
+                      >
+                        {value}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </main>
   );

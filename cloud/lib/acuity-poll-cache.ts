@@ -1,6 +1,6 @@
 import "server-only";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import type { VaccineCount } from "@/lib/acuity-client";
+import type { HourlyCount, VaccineCount } from "@/lib/acuity-client";
 
 /**
  * Server-side cache for app/api/acuity/poll/route.ts, backed by the
@@ -29,6 +29,17 @@ import type { VaccineCount } from "@/lib/acuity-client";
 
 export type CachedPoll = {
   counts: VaccineCount[];
+  /**
+   * V-T-hourly-table addition — self-heals to [] (rather than being
+   * undefined/null) both when the `hourly_counts` column value is
+   * genuinely empty AND when a row was cached before this migration
+   * shipped or the column doesn't exist yet (a Postgrest "unknown column"
+   * error on the select falls into the existing `if (error || !data)
+   * return null` branch below, same fail-soft path as no-Supabase-
+   * configured — a full cache miss, not a crash) — see
+   * getCachedCounts' JSDoc-style parsing below.
+   */
+  hourlyCounts: HourlyCount[];
   possiblyTruncated: boolean;
   computedAt: string;
 };
@@ -46,7 +57,7 @@ export async function getCachedCounts(
     const supabase = getSupabaseServerClient();
     const { data, error } = await supabase
       .from("acuity_poll_cache")
-      .select("counts, computed_at, possibly_truncated")
+      .select("counts, computed_at, possibly_truncated, hourly_counts")
       .eq("range_key", rangeKey(minDate, maxDate))
       .maybeSingle();
 
@@ -58,6 +69,11 @@ export async function getCachedCounts(
 
     return {
       counts: data.counts as VaccineCount[],
+      // Self-heal (see CachedPoll.hourlyCounts doc comment): a row's
+      // `hourly_counts` should always be at least '[]' thanks to the
+      // migration's column default, but this guards against any row that
+      // somehow has it as null/missing rather than trusting the DB shape.
+      hourlyCounts: Array.isArray(data.hourly_counts) ? (data.hourly_counts as HourlyCount[]) : [],
       possiblyTruncated: Boolean(data.possibly_truncated),
       computedAt: data.computed_at,
     };
@@ -67,11 +83,24 @@ export async function getCachedCounts(
   }
 }
 
+/**
+ * `hourlyCounts` (V-T-hourly-table addition) is OPTIONAL, defaulting to
+ * [] — this cache table has two other writers besides
+ * app/api/acuity/poll/route.ts (app/api/ordering/recommendation/route.ts
+ * and lib/acuity-future-summary.ts, both out of scope for this change),
+ * which don't compute an hourly breakdown and shouldn't need to. A row
+ * written by one of those callers simply has an empty hourly_counts —
+ * same self-heal-to-empty behavior as a row cached before this feature
+ * existed at all (see CachedPoll.hourlyCounts's doc comment) — rather than
+ * this signature change forcing an unrelated caller to pass a value it has
+ * no use for.
+ */
 export async function setCachedCounts(
   minDate: string,
   maxDate: string,
   counts: VaccineCount[],
-  possiblyTruncated: boolean
+  possiblyTruncated: boolean,
+  hourlyCounts: HourlyCount[] = []
 ): Promise<void> {
   try {
     const supabase = getSupabaseServerClient();
@@ -81,6 +110,7 @@ export async function setCachedCounts(
       range_end: maxDate,
       counts,
       possibly_truncated: possiblyTruncated,
+      hourly_counts: hourlyCounts,
       computed_at: new Date().toISOString(),
     });
   } catch {

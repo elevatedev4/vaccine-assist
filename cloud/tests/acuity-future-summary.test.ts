@@ -121,6 +121,7 @@ describe("fetchAfterTodaySummary", () => {
   it("never touches Acuity at all when every window is already cached", async () => {
     vi.mocked(getCachedCounts).mockResolvedValue({
       counts: [{ date: "2026-09-06", vaccineName: "RSV Vaccine", count: 5 }],
+      hourlyCounts: [],
       possiblyTruncated: false,
       computedAt: new Date().toISOString(),
     });

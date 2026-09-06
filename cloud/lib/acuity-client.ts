@@ -1,5 +1,5 @@
 import "server-only";
-import { chicagoDateString } from "@/lib/chicago-date";
+import { chicagoDateString, chicagoHour } from "@/lib/chicago-date";
 
 /**
  * Minimal server-side Acuity Scheduling API client. Acuity uses HTTP
@@ -190,6 +190,17 @@ export type CountableAppointment = {
    * a cache row, or a log line.
    */
   fluAgeBucket: FluAgeBucket;
+  /**
+   * PHI boundary, extension of the CountableAppointment doc comment above
+   * (V-T-hourly-table, Will 2026-09-05: "hourly breakdown of how many
+   * vaccines are scheduled by the hour"). 0-23, derived from the SAME
+   * `datetime` instant as `date` (via lib/chicago-date.ts's chicagoHour) —
+   * one Chicago wall-clock hour bucket, nothing finer. The raw `datetime`
+   * string itself is discarded the instant both `date` and `hourOfDay` are
+   * derived from it (see acuityDatetimeToChicagoHour below) — like every
+   * other field here, only the bucketed value ever leaves this module.
+   */
+  hourOfDay: number;
 };
 
 /** Brand-preference bucket for a COVID appointment — see covidBrand above. */
@@ -240,6 +251,22 @@ function acuityDatetimeToChicagoDate(value: unknown): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "";
   return chicagoDateString(parsed);
+}
+
+/**
+ * -1 (an out-of-range sentinel, never a real hour) on anything unparseable
+ * — same fail-soft shape as acuityDatetimeToChicagoDate's "" sentinel
+ * above. Harmless in practice: fetchAppointmentsForRange's final filter
+ * already drops any entry whose `date` came back "" (unparseable
+ * `datetime`), and `date`/`hourOfDay` are always derived from that same
+ * `datetime` value, so a surviving entry's `hourOfDay` is always a real
+ * 0-23 value.
+ */
+function acuityDatetimeToChicagoHour(value: unknown): number {
+  if (typeof value !== "string" || value.length === 0) return -1;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return -1;
+  return chicagoHour(parsed);
 }
 
 /**
@@ -587,6 +614,7 @@ export async function fetchAppointmentsForRange(
       const ageInYears = deriveAgeInYears(entry.forms);
       return {
         date: acuityDatetimeToChicagoDate(entry.datetime),
+        hourOfDay: acuityDatetimeToChicagoHour(entry.datetime),
         appointmentTypeId: Number(entry.appointmentTypeID),
         vaccineNames: extractVaccineNamesFromForms(entry.forms),
         covidBrand: deriveCovidBrand(entry.forms),
@@ -666,4 +694,60 @@ export function aggregateAppointmentCounts(
   return Array.from(groups.values()).sort(
     (a, b) => a.date.localeCompare(b.date) || a.vaccineName.localeCompare(b.vaccineName)
   );
+}
+
+export type HourlyCount = {
+  date: string; // "YYYY-MM-DD"
+  hour: number; // 0-23, America/Chicago — see CountableAppointment.hourOfDay
+  /** Number of distinct appointments in this (date, hour) bucket. */
+  appointmentCount: number;
+  /**
+   * Number of vaccines administered in this bucket — a multi-vaccine visit
+   * (e.g. Flu + COVID in one appointment) counts once toward EACH vaccine,
+   * same "count each name, not the visit" rule aggregateAppointmentCounts
+   * uses for its own `count`. An appointment with no matched vaccine-name
+   * form field falls back to counting as exactly 1 vaccine (matching
+   * aggregateAppointmentCounts's own appointment-type-name fallback) —
+   * this function doesn't need the appointment-type name itself, only how
+   * many names would have been produced, so it takes no
+   * `appointmentTypeNames` map.
+   */
+  vaccineCount: number;
+};
+
+/**
+ * Pure aggregation, parallel to aggregateAppointmentCounts but bucketed by
+ * (date, hour) instead of (date, vaccineName) — see HourlyCount above for
+ * the exact counting rules (V-T-hourly-table, Will 2026-09-05: "hourly
+ * breakdown of how many vaccines are scheduled by the hour from 8-6").
+ * Only ever reads `.date`, `.hourOfDay`, and `.vaccineNames` off each input
+ * — no PHI, same boundary as aggregateAppointmentCounts. Every hour 0-23 is
+ * included here, not just the 8-17 "business hours" window the dashboard
+ * displays — lib/appointment-table.ts's buildHourlyBreakdownTable is what
+ * folds anything outside 8-17 into a day's "outside 8-6" total, so this
+ * aggregation stays a complete, unopinionated summary of the full day.
+ * `hourOfDay` values outside [0, 23] (the -1 sentinel from
+ * acuityDatetimeToChicagoHour) are defensively skipped — in practice this
+ * never happens, since fetchAppointmentsForRange only returns entries whose
+ * `date` (and therefore `hourOfDay`, derived from the same instant) parsed
+ * successfully.
+ */
+export function aggregateHourlyCounts(appointments: CountableAppointment[]): HourlyCount[] {
+  const groups = new Map<string, HourlyCount>();
+
+  for (const { date, hourOfDay, vaccineNames } of appointments) {
+    if (hourOfDay < 0 || hourOfDay > 23) continue;
+
+    const vaccineCountForEntry = vaccineNames.length > 0 ? vaccineNames.length : 1;
+    const key = `${date}::${hourOfDay}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.appointmentCount += 1;
+      existing.vaccineCount += vaccineCountForEntry;
+      continue;
+    }
+    groups.set(key, { date, hour: hourOfDay, appointmentCount: 1, vaccineCount: vaccineCountForEntry });
+  }
+
+  return Array.from(groups.values()).sort((a, b) => a.date.localeCompare(b.date) || a.hour - b.hour);
 }

@@ -139,6 +139,7 @@ describe("GET /api/ordering/recommendation", () => {
         {
           date: "2026-08-19",
           appointmentTypeId: 1,
+          hourOfDay: 10,
           vaccineNames: ["Flu Quad 2025-26"],
           covidBrand: "any",
           covidAgeBucket: "unknown",
@@ -147,6 +148,7 @@ describe("GET /api/ordering/recommendation", () => {
         {
           date: "2026-08-20",
           appointmentTypeId: 1,
+          hourOfDay: 10,
           vaccineNames: ["Flu Quad 2025-26"],
           covidBrand: "any",
           covidAgeBucket: "unknown",
@@ -155,6 +157,7 @@ describe("GET /api/ordering/recommendation", () => {
         {
           date: "2026-08-20",
           appointmentTypeId: 1,
+          hourOfDay: 10,
           vaccineNames: ["Some Unmatched Vaccine"],
           covidBrand: "any",
           covidAgeBucket: "unknown",
@@ -205,6 +208,7 @@ describe("GET /api/ordering/recommendation", () => {
         {
           date: "2026-08-19",
           appointmentTypeId: 1,
+          hourOfDay: 10,
           vaccineNames: ["COVID-Pfizer"],
           covidBrand: "pfizer",
           covidAgeBucket: "65+",
@@ -213,6 +217,7 @@ describe("GET /api/ordering/recommendation", () => {
         {
           date: "2026-08-20",
           appointmentTypeId: 1,
+          hourOfDay: 10,
           vaccineNames: ["COVID-Pfizer"],
           covidBrand: "pfizer",
           covidAgeBucket: "12-64",
@@ -221,6 +226,7 @@ describe("GET /api/ordering/recommendation", () => {
         {
           date: "2026-08-20",
           appointmentTypeId: 1,
+          hourOfDay: 10,
           vaccineNames: ["COVID-Moderna"],
           covidBrand: "moderna",
           covidAgeBucket: "12-64",
