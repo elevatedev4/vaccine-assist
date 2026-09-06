@@ -820,6 +820,146 @@ export function heatmapCellBackground(count: number, max: number): string {
  * pass that straight into heatmapCellBackground, whose own `max <= 0`
  * guard already renders plain white for exactly this case.
  */
+/**
+ * Client-safe copy of lib/acuity-client.ts's HourlyCount (same rationale as
+ * this file's own VaccineCount re-declaration above: acuity-client.ts is
+ * `server-only`, so app/appointments/page.tsx — a client component — can't
+ * import a type from it directly; this file already has no import from
+ * that module at all). Shape is intentionally identical, field for field.
+ */
+export type HourlyCount = {
+  date: string;
+  hour: number;
+  appointmentCount: number;
+  vaccineCount: number;
+};
+
+/** Which of HourlyCount's two per-cell numbers the hourly table currently
+ * displays — the toggle app/appointments/page.tsx renders above the hourly
+ * table (V-T-hourly-table, Will 2026-09-05: "Make a toggle that switches
+ * between vaccine appointments and # vaccines for this table, and make
+ * # vaccines the default"). */
+export type HourlyMetric = "vaccines" | "appointments";
+
+/**
+ * The hourly table's fixed 8am-6pm column set (V-T-hourly-table, verbatim:
+ * "hourly breakdown ... from 8-6. So 8am-9am would show '8:00' as the
+ * heading, and so on") — one column per hour bucket STARTING at 8 through
+ * 17 (5pm-6pm), 10 columns total. Exported so app/appointments/page.tsx can
+ * build the <colgroup>/header without duplicating this range.
+ */
+export const HOURLY_TABLE_HOURS: readonly number[] = Array.from({ length: 10 }, (_, i) => 8 + i);
+
+const HOURLY_TABLE_HOUR_INDEX = new Map(HOURLY_TABLE_HOURS.map((hour, index) => [hour, index]));
+
+export type HourlyBreakdownRow = {
+  date: string;
+  /** Aligned with HOURLY_TABLE_HOURS — hourValues[i] is the count for
+   * HOURLY_TABLE_HOURS[i], already resolved for the selected metric. */
+  hourValues: number[];
+  /**
+   * This day's ALL-hours total for the selected metric — includes
+   * appointments outside the 8am-6pm window (see `outsideTotal` below),
+   * so it is NOT simply the sum of `hourValues`. Will, verbatim: "Include
+   * the daily totals as the lefternmost column" — his spec never said to
+   * exclude non-business-hours appointments from that total, only that the
+   * hourly GRID itself only shows 8-6, so an early/late outlier still
+   * counts toward the day's Total instead of silently vanishing.
+   */
+  dayTotal: number;
+  /**
+   * Count for the selected metric that fell OUTSIDE the 8am-6pm window
+   * (hour < 8 or hour > 17) — folded into `dayTotal` above but with no
+   * column of its own. JUDGMENT CALL (brief: "your call, deterministic,
+   * never silently hidden"): app/appointments/page.tsx surfaces this as a
+   * small "+N outside 8-6" note next to the Total cell whenever it's
+   * nonzero, rather than adding an 11th grid column for a case that's
+   * usually zero — deterministic (always the same rule) and never hidden
+   * (it only disappears from view when there's genuinely nothing to show).
+   */
+  outsideTotal: number;
+};
+
+export type HourlyBreakdownTable = {
+  days: string[];
+  hours: readonly number[];
+  rows: HourlyBreakdownRow[];
+  /**
+   * ONE scale across the entire hourly grid (every day x every hour cell)
+   * — Will, verbatim: "green heatmap on the hour cells with ONE scale
+   * across the hourly grid." Never split per-day or per-hour.
+   */
+  hourScaleMax: number;
+  /** Separate scale for the leftmost day-Total column only — same
+   * "Total gets its own scale" pattern as computeHeatmapMaxes's
+   * totalsScaleMax for the main table. */
+  totalScaleMax: number;
+};
+
+/**
+ * Builds the hourly-breakdown table for app/appointments/page.tsx's second
+ * table (V-T-hourly-table, Will 2026-09-05) from the poll route's additive
+ * `hourlyCounts` field, `days` (the SAME day list the main table uses — "
+ * show the same number of days in the future as the other table"), and the
+ * currently-selected toggle `metric`. Pure and metric-agnostic in its
+ * INPUT (both appointmentCount and vaccineCount ride through in every
+ * HourlyCount either way — "no refetch" on toggle) but metric-SPECIFIC in
+ * its output: callers re-invoke this (cheaply — everything is already in
+ * memory) whenever the toggle changes, rather than this function returning
+ * both metrics pre-computed.
+ *
+ * Any HourlyCount entry whose `date` isn't in `days` is ignored, same
+ * stale-response guard as buildAppointmentTable. `hourlyCounts` missing or
+ * empty (a stale pre-hourly-table cache row, or a fresh poll with nothing
+ * scheduled) renders every row zeroed rather than throwing or omitting
+ * rows — see HourlyCount's self-heal doc comment in lib/acuity-poll-cache.ts.
+ */
+export function buildHourlyBreakdownTable(
+  hourlyCounts: HourlyCount[],
+  days: string[],
+  metric: HourlyMetric
+): HourlyBreakdownTable {
+  const metricValue = (entry: HourlyCount): number =>
+    metric === "vaccines" ? entry.vaccineCount : entry.appointmentCount;
+
+  const rowsByDate = new Map<string, HourlyBreakdownRow>();
+  for (const date of days) {
+    rowsByDate.set(date, {
+      date,
+      hourValues: HOURLY_TABLE_HOURS.map(() => 0),
+      dayTotal: 0,
+      outsideTotal: 0,
+    });
+  }
+
+  for (const entry of hourlyCounts) {
+    const row = rowsByDate.get(entry.date);
+    if (!row) continue;
+
+    const value = metricValue(entry);
+    row.dayTotal += value;
+
+    const hourIndex = HOURLY_TABLE_HOUR_INDEX.get(entry.hour);
+    if (hourIndex === undefined) {
+      row.outsideTotal += value;
+    } else {
+      row.hourValues[hourIndex] += value;
+    }
+  }
+
+  const rows = days.map((date) => rowsByDate.get(date)!);
+
+  let hourScaleMax = 0;
+  for (const row of rows) {
+    for (const value of row.hourValues) hourScaleMax = Math.max(hourScaleMax, value);
+  }
+
+  let totalScaleMax = 0;
+  for (const row of rows) totalScaleMax = Math.max(totalScaleMax, row.dayTotal);
+
+  return { days, hours: HOURLY_TABLE_HOURS, rows, hourScaleMax, totalScaleMax };
+}
+
 export function computeHeatmapMaxes(
   table: AppointmentTable,
   todayByColumnId: Record<string, number>,

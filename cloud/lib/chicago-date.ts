@@ -40,6 +40,29 @@ export function todayInChicago(): string {
   return chicagoDateString(new Date());
 }
 
+// hourCycle: "h23" (rather than plain hour12: false) is deliberate — some
+// environments render hour12:false as "24" for midnight under an "en-US"
+// -style locale (a documented Intl quirk), which would make chicagoHour
+// return 24 instead of 0 for a midnight appointment. "h23" pins the output
+// to the conventional 0-23 range with no such wraparound.
+const chicagoHourFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: CHICAGO_TZ,
+  hour: "2-digit",
+  hourCycle: "h23",
+});
+
+/**
+ * 0-23 — the America/Chicago hour-of-day containing `instant` (V-T-hourly
+ * -table, Will 2026-09-05: hourly appointment breakdown). Same fixed
+ * -timezone rationale as chicagoDateString above — this is used to bucket
+ * an appointment's `datetime` (which carries its own UTC offset) into a
+ * Chicago wall-clock hour, not whatever hour a server or browser's local
+ * zone would compute.
+ */
+export function chicagoHour(instant: Date): number {
+  return Number(chicagoHourFormatter.format(instant));
+}
+
 /**
  * `dateStr` ("YYYY-MM-DD") + `days`, still "YYYY-MM-DD". Pure calendar-date
  * arithmetic — never touches a timezone or DST, since it operates on the

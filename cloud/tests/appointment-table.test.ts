@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildAppointmentTable,
   buildColumnTotals,
+  buildHourlyBreakdownTable,
   computeHeatmapMaxes,
   computeTodayAndNext7Summaries,
   compositeNameToMatchableBase,
   heatmapCellBackground,
+  HOURLY_TABLE_HOURS,
   type AppointmentTableColumn,
+  type HourlyCount,
 } from "@/lib/appointment-table";
 
 const DAYS = ["2026-08-17", "2026-08-18", "2026-08-19"];
@@ -930,5 +933,153 @@ describe("computeHeatmapMaxes", () => {
       expect(maxes.totalsScaleMax).toBe(500);
       expect(maxes.weeklyScaleMax).toBe(4);
     });
+  });
+});
+
+// V-T-hourly-table (Will, 2026-09-05, verbatim): "Add a second table that
+// shows hourly breakdown of how many vaccines are scheduled by the hour
+// from 8-6 ... Include the daily totals as the lefternmost column as well,
+// and show the same number of days in the future as the other table. Make
+// a toggle that switches between vaccine appointments and # vaccines for
+// this table, and make # vaccines the default."
+describe("buildHourlyBreakdownTable", () => {
+  const HOURLY_DAYS = ["2026-08-17", "2026-08-18"];
+
+  function hc(overrides: Partial<HourlyCount> = {}): HourlyCount {
+    return { date: "2026-08-17", hour: 10, appointmentCount: 1, vaccineCount: 1, ...overrides };
+  }
+
+  it("exposes the fixed 8am-6pm hour column set (8..17, 10 columns)", () => {
+    expect(HOURLY_TABLE_HOURS).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+    const table = buildHourlyBreakdownTable([], HOURLY_DAYS, "vaccines");
+    expect(table.hours).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+  });
+
+  it("zeroes every row/hour when hourlyCounts is empty (fresh poll, or a self-healed stale cache row)", () => {
+    const table = buildHourlyBreakdownTable([], HOURLY_DAYS, "vaccines");
+
+    expect(table.rows).toEqual([
+      { date: "2026-08-17", hourValues: Array(10).fill(0), dayTotal: 0, outsideTotal: 0 },
+      { date: "2026-08-18", hourValues: Array(10).fill(0), dayTotal: 0, outsideTotal: 0 },
+    ]);
+    expect(table.hourScaleMax).toBe(0);
+    expect(table.totalScaleMax).toBe(0);
+  });
+
+  it("places a count in the correct hour column and rolls it into that day's Total", () => {
+    // hour 10 is HOURLY_TABLE_HOURS[2] (8, 9, 10, ...).
+    const table = buildHourlyBreakdownTable([hc({ date: "2026-08-17", hour: 10, vaccineCount: 3 })], HOURLY_DAYS, "vaccines");
+
+    const day1 = table.rows.find((r) => r.date === "2026-08-17")!;
+    expect(day1.hourValues).toEqual([0, 0, 3, 0, 0, 0, 0, 0, 0, 0]);
+    expect(day1.dayTotal).toBe(3);
+    expect(day1.outsideTotal).toBe(0);
+  });
+
+  it("switches metric client-side: vaccines vs. appointments produce different grids from the SAME input", () => {
+    const hourlyCounts = [hc({ hour: 9, appointmentCount: 1, vaccineCount: 2 })];
+
+    const vaccinesTable = buildHourlyBreakdownTable(hourlyCounts, HOURLY_DAYS, "vaccines");
+    const appointmentsTable = buildHourlyBreakdownTable(hourlyCounts, HOURLY_DAYS, "appointments");
+
+    const vaccinesRow = vaccinesTable.rows.find((r) => r.date === "2026-08-17")!;
+    const appointmentsRow = appointmentsTable.rows.find((r) => r.date === "2026-08-17")!;
+    expect(vaccinesRow.dayTotal).toBe(2);
+    expect(appointmentsRow.dayTotal).toBe(1);
+  });
+
+  // JUDGMENT CALL (brief: "appointments outside 8-6 still count toward the
+  // day Total; ... show a small note or extra column, your call,
+  // deterministic, never silently hidden") — see HourlyBreakdownRow.
+  // outsideTotal's doc comment in lib/appointment-table.ts.
+  describe("appointments outside the 8am-6pm window", () => {
+    it("folds an early-morning count into dayTotal and outsideTotal, but not into any hour column", () => {
+      const table = buildHourlyBreakdownTable([hc({ hour: 6, vaccineCount: 5 })], HOURLY_DAYS, "vaccines");
+
+      const day1 = table.rows.find((r) => r.date === "2026-08-17")!;
+      expect(day1.hourValues).toEqual(Array(10).fill(0));
+      expect(day1.dayTotal).toBe(5);
+      expect(day1.outsideTotal).toBe(5);
+    });
+
+    it("folds a late-evening count into dayTotal and outsideTotal too", () => {
+      const table = buildHourlyBreakdownTable([hc({ hour: 20, vaccineCount: 2 })], HOURLY_DAYS, "vaccines");
+
+      const day1 = table.rows.find((r) => r.date === "2026-08-17")!;
+      expect(day1.hourValues).toEqual(Array(10).fill(0));
+      expect(day1.dayTotal).toBe(2);
+      expect(day1.outsideTotal).toBe(2);
+    });
+
+    it("combines an in-window and an outside-window count into the same dayTotal", () => {
+      const table = buildHourlyBreakdownTable(
+        [hc({ hour: 9, vaccineCount: 4 }), hc({ hour: 19, vaccineCount: 1 })],
+        HOURLY_DAYS,
+        "vaccines"
+      );
+
+      const day1 = table.rows.find((r) => r.date === "2026-08-17")!;
+      expect(day1.hourValues).toEqual([0, 4, 0, 0, 0, 0, 0, 0, 0, 0]);
+      expect(day1.dayTotal).toBe(5);
+      expect(day1.outsideTotal).toBe(1);
+    });
+  });
+
+  it("ignores an HourlyCount entry whose date isn't in the requested days (stale/mismatched response guard)", () => {
+    const table = buildHourlyBreakdownTable([hc({ date: "2099-01-01", vaccineCount: 9 })], HOURLY_DAYS, "vaccines");
+
+    for (const row of table.rows) {
+      expect(row.dayTotal).toBe(0);
+    }
+  });
+
+  describe("scale maxes", () => {
+    it("hourScaleMax is ONE scale across the entire grid (every day x every hour), not per-day", () => {
+      const table = buildHourlyBreakdownTable(
+        [hc({ date: "2026-08-17", hour: 9, vaccineCount: 3 }), hc({ date: "2026-08-18", hour: 14, vaccineCount: 7 })],
+        HOURLY_DAYS,
+        "vaccines"
+      );
+
+      expect(table.hourScaleMax).toBe(7);
+    });
+
+    it("totalScaleMax tracks the max day Total, independent of hourScaleMax", () => {
+      // Many small per-hour counts summing to a much bigger day total than
+      // any single hour cell — totalScaleMax must reflect the SUM, not the
+      // per-cell max.
+      const table = buildHourlyBreakdownTable(
+        HOURLY_TABLE_HOURS.map((hour) => hc({ date: "2026-08-17", hour, vaccineCount: 2 })),
+        HOURLY_DAYS,
+        "vaccines"
+      );
+
+      expect(table.hourScaleMax).toBe(2); // no single hour cell exceeds 2
+      expect(table.totalScaleMax).toBe(20); // 10 hours x 2 each
+    });
+
+    it("an outside-8-6 count contributes to totalScaleMax but never to hourScaleMax", () => {
+      const table = buildHourlyBreakdownTable([hc({ hour: 22, vaccineCount: 50 })], HOURLY_DAYS, "vaccines");
+
+      expect(table.hourScaleMax).toBe(0);
+      expect(table.totalScaleMax).toBe(50);
+    });
+
+    it("is {0, 0} for an all-empty grid", () => {
+      const table = buildHourlyBreakdownTable([], HOURLY_DAYS, "vaccines");
+      expect(table.hourScaleMax).toBe(0);
+      expect(table.totalScaleMax).toBe(0);
+    });
+  });
+
+  it("accumulates multiple entries in the same (date, hour) cell rather than overwriting", () => {
+    const table = buildHourlyBreakdownTable(
+      [hc({ hour: 9, vaccineCount: 2 }), hc({ hour: 9, vaccineCount: 5 })],
+      HOURLY_DAYS,
+      "vaccines"
+    );
+
+    const day1 = table.rows.find((r) => r.date === "2026-08-17")!;
+    expect(day1.hourValues[1]).toBe(7); // hour 9 is index 1
   });
 });

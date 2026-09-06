@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   aggregateAppointmentCounts,
+  aggregateHourlyCounts,
   fetchAppointmentsForRange,
   fetchAppointmentTypes,
   isAgeFormFieldName,
   isCovidBrandFormFieldName,
   isVaccineFormFieldName,
   testAcuityConnection,
+  type CountableAppointment,
 } from "@/lib/acuity-client";
 
 describe("testAcuityConnection", () => {
@@ -98,7 +100,7 @@ describe("fetchAppointmentsForRange", () => {
     vi.unstubAllGlobals();
   });
 
-  it("strips every field down to {date, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket, fluAgeBucket} — no PHI keys survive", async () => {
+  it("strips every field down to {date, hourOfDay, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket, fluAgeBucket} — no PHI keys survive", async () => {
     const fixture = [
       acuityAppointmentFixture(),
       acuityAppointmentFixture({
@@ -115,8 +117,8 @@ describe("fetchAppointmentsForRange", () => {
 
     expect(result.possiblyTruncated).toBe(false);
     expect(result.appointments).toEqual([
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
-      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-18", hourOfDay: 9, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
 
     // No raw age/DOB field name survives either — the PHI keys list here
@@ -129,9 +131,39 @@ describe("fetchAppointmentsForRange", () => {
         expect(Object.prototype.hasOwnProperty.call(entry, key)).toBe(false);
       }
       expect(Object.keys(entry).sort()).toEqual(
-        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "vaccineNames"].sort()
+        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "hourOfDay", "vaccineNames"].sort()
       );
     }
+  });
+
+  // V-T-hourly-table (Will, 2026-09-05): hourOfDay is derived from the
+  // SAME `datetime` instant as `date`, via chicago-date.ts's chicagoHour
+  // — not a second independent field.
+  describe("hourOfDay derivation", () => {
+    it("derives the America/Chicago hour from datetime, independent of the UTC offset", async () => {
+      const fixture = [acuityAppointmentFixture({ datetime: "2026-08-17T14:30:00-0500" })];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toHaveLength(1);
+      expect(result.appointments[0].hourOfDay).toBe(14);
+    });
+
+    it("is DST-safe (America/Chicago, not a fixed UTC offset)", async () => {
+      // 2026-01-15T14:00:00-0600 (CST, winter) and 2026-08-17T14:00:00-0500
+      // (CDT, summer) are both "2:00pm Central" — both must bucket to hour
+      // 14 even though their UTC offsets differ.
+      const fixture = [
+        acuityAppointmentFixture({ id: 1, datetime: "2026-01-15T14:00:00-0600" }),
+        acuityAppointmentFixture({ id: 2, datetime: "2026-08-17T14:00:00-0500" }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-01-01", "2026-12-31");
+
+      expect(result.appointments.map((a) => a.hourOfDay)).toEqual([14, 14]);
+    });
   });
 
   // The vaccine-name pivot (V-T-something, Will 2026-08-19): the exact
@@ -157,7 +189,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments).toEqual([
-        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: ["Flu"], ...DEFAULT_BUCKETS },
+        { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: ["Flu"], ...DEFAULT_BUCKETS },
       ]);
     });
 
@@ -180,6 +212,7 @@ describe("fetchAppointmentsForRange", () => {
       expect(result.appointments).toEqual([
         {
           date: "2026-08-17",
+          hourOfDay: 10,
           appointmentTypeId: 111,
           vaccineNames: ["COVID-Pfizer", "Flu", "RSV"],
           ...DEFAULT_BUCKETS,
@@ -207,12 +240,14 @@ describe("fetchAppointmentsForRange", () => {
       expect(result.appointments).toEqual([
         {
           date: "2026-08-17",
+          hourOfDay: 10,
           appointmentTypeId: 111,
           vaccineNames: ["Flu", "COVID-Moderna"],
           ...DEFAULT_BUCKETS,
         },
         {
           date: "2026-08-18",
+          hourOfDay: 9,
           appointmentTypeId: 111,
           vaccineNames: ["Flu", "RSV"],
           ...DEFAULT_BUCKETS,
@@ -233,7 +268,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments).toEqual([
-        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+        { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
       ]);
     });
 
@@ -244,7 +279,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(result.appointments).toEqual([
-        { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+        { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
       ]);
     });
   });
@@ -436,7 +471,7 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(Object.keys(result.appointments[0]).sort()).toEqual(
-        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "vaccineNames"].sort()
+        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "hourOfDay", "vaccineNames"].sort()
       );
       expect(JSON.stringify(result.appointments[0])).not.toContain("1990-01-01");
     });
@@ -519,7 +554,7 @@ describe("fetchAppointmentsForRange", () => {
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
 
     expect(result.appointments).toEqual([
-      { date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-16", hourOfDay: 22, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
   });
 
@@ -531,7 +566,7 @@ describe("fetchAppointmentsForRange", () => {
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-16", "2026-08-23");
 
     expect(result.appointments).toEqual([
-      { date: "2026-08-16", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-16", hourOfDay: 23, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
   });
 
@@ -574,7 +609,7 @@ describe("fetchAppointmentsForRange", () => {
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
     expect(result.appointments).toEqual([
-      { date: "2026-08-19", appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-19", hourOfDay: 9, appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
   });
 });
@@ -603,10 +638,10 @@ describe("fetchAppointmentTypes", () => {
 describe("aggregateAppointmentCounts", () => {
   it("falls back to the appointment type's name, grouped by date + name, when vaccineNames is empty", () => {
     const appointments = [
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
-      { date: "2026-08-17", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
-      { date: "2026-08-17", appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
-      { date: "2026-08-18", appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
+      { date: "2026-08-18", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
     ];
     const names = new Map([
       [111, "Flu Shot"],
@@ -630,7 +665,7 @@ describe("aggregateAppointmentCounts", () => {
 
   it("falls back to a generic label when the type id has no matching name", () => {
     const result = aggregateAppointmentCounts(
-      [{ date: "2026-08-17", appointmentTypeId: 999, vaccineNames: [], ...DEFAULT_BUCKETS }],
+      [{ date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 999, vaccineNames: [], ...DEFAULT_BUCKETS }],
       new Map()
     );
 
@@ -648,6 +683,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: ["Flu", "COVID-Pfizer"],
         covidBrand: "pfizer" as const,
         covidAgeBucket: "12-64" as const,
@@ -656,6 +692,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: ["Flu"],
         covidBrand: "any" as const,
         covidAgeBucket: "unknown" as const,
@@ -681,6 +718,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: [],
         covidBrand: "any",
         covidAgeBucket: "unknown",
@@ -691,6 +729,7 @@ describe("aggregateAppointmentCounts", () => {
     ] as unknown as {
       date: string;
       appointmentTypeId: number;
+      hourOfDay: number;
       vaccineNames: string[];
       covidBrand: "any";
       covidAgeBucket: "unknown";
@@ -707,6 +746,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: ["covid"],
         covidBrand: "pfizer" as const,
         covidAgeBucket: "65+" as const,
@@ -715,6 +755,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: ["COVID"],
         covidBrand: "moderna" as const,
         covidAgeBucket: "3-11" as const,
@@ -723,6 +764,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: ["COVID"],
         covidBrand: "moderna" as const,
         covidAgeBucket: "3-11" as const,
@@ -731,6 +773,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: ["COVID"],
         covidBrand: "any" as const,
         covidAgeBucket: "unknown" as const,
@@ -757,6 +800,7 @@ describe("aggregateAppointmentCounts", () => {
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
+        hourOfDay: 10,
         vaccineNames: ["COVID-Pfizer"],
         covidBrand: "pfizer" as const,
         covidAgeBucket: "3-11" as const,
@@ -778,6 +822,7 @@ describe("aggregateAppointmentCounts", () => {
         {
           date: "2026-08-17",
           appointmentTypeId: 111,
+          hourOfDay: 10,
           vaccineNames: ["Flu"],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
@@ -786,6 +831,7 @@ describe("aggregateAppointmentCounts", () => {
         {
           date: "2026-08-17",
           appointmentTypeId: 111,
+          hourOfDay: 10,
           vaccineNames: ["FluMist"],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
@@ -794,6 +840,7 @@ describe("aggregateAppointmentCounts", () => {
         {
           date: "2026-08-17",
           appointmentTypeId: 111,
+          hourOfDay: 10,
           vaccineNames: ["Influenza Quadrivalent"],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
@@ -819,6 +866,7 @@ describe("aggregateAppointmentCounts", () => {
         {
           date: "2026-08-17",
           appointmentTypeId: 111,
+          hourOfDay: 10,
           vaccineNames: ["RSV"],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
@@ -830,5 +878,109 @@ describe("aggregateAppointmentCounts", () => {
 
       expect(result).toEqual([{ date: "2026-08-17", vaccineName: "RSV", count: 1 }]);
     });
+  });
+});
+
+// V-T-hourly-table (Will, 2026-09-05): "Add a second table that shows
+// hourly breakdown of how many vaccines are scheduled by the hour."
+describe("aggregateHourlyCounts", () => {
+  function appt(overrides: Partial<CountableAppointment> = {}): CountableAppointment {
+    return {
+      date: "2026-08-17",
+      hourOfDay: 10,
+      appointmentTypeId: 111,
+      vaccineNames: [],
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "unknown",
+      ...overrides,
+    };
+  }
+
+  it("counts a single-vaccine appointment as 1 appointment and 1 vaccine in its (date, hour) bucket", () => {
+    const result = aggregateHourlyCounts([appt({ vaccineNames: ["Flu"] })]);
+
+    expect(result).toEqual([{ date: "2026-08-17", hour: 10, appointmentCount: 1, vaccineCount: 1 }]);
+  });
+
+  it("counts a multi-vaccine visit as 1 appointment but N vaccines (Will: 'Flu and COVID-Pfizer' in one visit)", () => {
+    const result = aggregateHourlyCounts([appt({ vaccineNames: ["Flu", "COVID-Pfizer"] })]);
+
+    expect(result).toEqual([{ date: "2026-08-17", hour: 10, appointmentCount: 1, vaccineCount: 2 }]);
+  });
+
+  it("counts a fallback-to-type-name appointment (no vaccineNames) as exactly 1 vaccine, matching aggregateAppointmentCounts semantics", () => {
+    const result = aggregateHourlyCounts([appt({ vaccineNames: [] })]);
+
+    expect(result).toEqual([{ date: "2026-08-17", hour: 10, appointmentCount: 1, vaccineCount: 1 }]);
+  });
+
+  it("accumulates multiple appointments in the same (date, hour) bucket", () => {
+    const result = aggregateHourlyCounts([
+      appt({ vaccineNames: ["Flu"] }),
+      appt({ vaccineNames: ["Flu", "COVID-Pfizer"] }),
+      appt({ vaccineNames: [] }),
+    ]);
+
+    // 3 appointments; vaccine count = 1 + 2 + 1 = 4.
+    expect(result).toEqual([{ date: "2026-08-17", hour: 10, appointmentCount: 3, vaccineCount: 4 }]);
+  });
+
+  it("buckets separately by hour within the same day, and separately by day at the same hour", () => {
+    const result = aggregateHourlyCounts([
+      appt({ date: "2026-08-17", hourOfDay: 9, vaccineNames: ["Flu"] }),
+      appt({ date: "2026-08-17", hourOfDay: 14, vaccineNames: ["Flu"] }),
+      appt({ date: "2026-08-18", hourOfDay: 9, vaccineNames: ["Flu"] }),
+    ]);
+
+    expect(result).toEqual([
+      { date: "2026-08-17", hour: 9, appointmentCount: 1, vaccineCount: 1 },
+      { date: "2026-08-17", hour: 14, appointmentCount: 1, vaccineCount: 1 },
+      { date: "2026-08-18", hour: 9, appointmentCount: 1, vaccineCount: 1 },
+    ]);
+  });
+
+  // Outside the dashboard's 8am-6pm display window — this aggregation
+  // itself has no opinion on business hours (lib/appointment-table.ts's
+  // buildHourlyBreakdownTable is what folds these into a day's "outside
+  // 8-6" total), so an early-morning or evening appointment still gets a
+  // real (date, hour) bucket rather than being dropped or clamped.
+  it("includes appointments outside the 8am-6pm display window with their real hour", () => {
+    const result = aggregateHourlyCounts([
+      appt({ hourOfDay: 6, vaccineNames: ["Flu"] }), // 6am
+      appt({ hourOfDay: 19, vaccineNames: ["Flu"] }), // 7pm
+    ]);
+
+    expect(result).toEqual([
+      { date: "2026-08-17", hour: 6, appointmentCount: 1, vaccineCount: 1 },
+      { date: "2026-08-17", hour: 19, appointmentCount: 1, vaccineCount: 1 },
+    ]);
+  });
+
+  it("is sorted by date then hour", () => {
+    const result = aggregateHourlyCounts([
+      appt({ date: "2026-08-18", hourOfDay: 9 }),
+      appt({ date: "2026-08-17", hourOfDay: 14 }),
+      appt({ date: "2026-08-17", hourOfDay: 9 }),
+    ]);
+
+    expect(result.map((r) => [r.date, r.hour])).toEqual([
+      ["2026-08-17", 9],
+      ["2026-08-17", 14],
+      ["2026-08-18", 9],
+    ]);
+  });
+
+  it("returns [] for an empty input", () => {
+    expect(aggregateHourlyCounts([])).toEqual([]);
+  });
+
+  // Defensive guard (see aggregateHourlyCounts's doc comment) — never
+  // actually hit in practice, since fetchAppointmentsForRange only returns
+  // entries whose hourOfDay is a real 0-23 value.
+  it("skips an out-of-range hourOfDay (the -1 unparseable-datetime sentinel) rather than creating a bogus bucket", () => {
+    const result = aggregateHourlyCounts([appt({ hourOfDay: -1, vaccineNames: ["Flu"] })]);
+
+    expect(result).toEqual([]);
   });
 });

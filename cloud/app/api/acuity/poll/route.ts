@@ -5,6 +5,7 @@ import { getAcuityCredentials } from "@/lib/acuity-credentials";
 import {
   AcuityApiError,
   aggregateAppointmentCounts,
+  aggregateHourlyCounts,
   fetchAppointmentsForRange,
   fetchAppointmentTypes,
 } from "@/lib/acuity-client";
@@ -85,7 +86,22 @@ import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-fut
  *     possiblyTruncated: boolean,
  *     cacheHit: boolean,
  *     asOf: string,                 // ISO 8601
+ *     hourlyCounts: HourlyCount[],  // ADDITIVE (V-T-hourly-table, 2026-09-05) — see below
  *   }
+ *
+ * `hourlyCounts` (V-T-hourly-table, Will 2026-09-05: "hourly breakdown of
+ * how many vaccines are scheduled by the hour") is a purely ADDITIVE field
+ * — a flat {date, hour, appointmentCount, vaccineCount}[] list (see
+ * lib/acuity-client.ts's HourlyCount), independent of `table`/`counts`.
+ * Existing callers (desktop's Scheduling tab) that don't know about this
+ * field are completely unaffected — they simply never read it. Built by
+ * aggregateHourlyCounts from the SAME already-PHI-stripped
+ * `appointments` this route fetches for `counts`/`table`, so there's no
+ * extra Acuity round-trip. Cached alongside `counts` in the same
+ * acuity_poll_cache row (see lib/acuity-poll-cache.ts) — a row cached
+ * before this shipped self-heals to `hourlyCounts: []` (the migration's
+ * column default) rather than crashing or omitting the field, so a stale
+ * cache hit still renders an (empty, not broken) hourly table.
  *
  * `table` is the SAME grouping the cloud dashboard renders
  * (app/appointments/page.tsx), built by lib/appointment-table.ts's
@@ -290,6 +306,7 @@ export async function GET(request: Request) {
       possiblyTruncated: false,
       cacheHit: false,
       asOf: null,
+      hourlyCounts: [],
     });
   }
 
@@ -305,6 +322,7 @@ export async function GET(request: Request) {
       possiblyTruncated: cached.possiblyTruncated,
       cacheHit: true,
       asOf: cached.computedAt,
+      hourlyCounts: cached.hourlyCounts,
     });
   }
 
@@ -317,9 +335,10 @@ export async function GET(request: Request) {
     const nameById = new Map(appointmentTypes.map((type) => [type.id, type.name]));
     const counts = aggregateAppointmentCounts(appointments, nameById);
     const table: AppointmentTable = buildAppointmentTable(counts, days);
+    const hourlyCounts = aggregateHourlyCounts(appointments);
     const asOf = new Date().toISOString();
 
-    await setCachedCounts(start, end, counts, possiblyTruncated);
+    await setCachedCounts(start, end, counts, possiblyTruncated, hourlyCounts);
 
     return NextResponse.json({
       configured: true,
@@ -329,6 +348,7 @@ export async function GET(request: Request) {
       possiblyTruncated,
       cacheHit: false,
       asOf,
+      hourlyCounts,
     });
   } catch (err) {
     const message = err instanceof AcuityApiError ? err.message : "Failed to poll Acuity for appointments.";
