@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { addDaysToChicagoDate, chicagoDayRange, todayInChicago } from "@/lib/chicago-date";
@@ -672,6 +672,29 @@ export default function AppointmentsPage() {
     });
   }
 
+  // V-cloud-tabs addendum (Will, 2026-09-07): "make sure the refresh
+  // button and autorefresh refreshes the scheduling activity table too."
+  // Read via a ref (rather than depending on `activityExpanded` directly)
+  // so toggling the section doesn't reset the auto-refresh interval's own
+  // 15-minute cadence below — only ITS callback needs the CURRENT
+  // expanded state at fire time, not a re-created interval every toggle.
+  const activityExpandedRef = useRef(false);
+  useEffect(() => {
+    activityExpandedRef.current = activityExpanded;
+  }, [activityExpanded]);
+
+  // Re-fetches the scheduling-activity table, force-bypassing its cache
+  // the same way the main tables do on manual refresh — but ONLY when the
+  // section is currently expanded. Collapsed keeps the existing lazy
+  // behavior (loadActivity only ever fires on first expand, in
+  // handleToggleActivity above) — never fetched here while collapsed.
+  const refreshActivityIfExpanded = useCallback(
+    (token: string) => {
+      if (activityExpandedRef.current) void loadActivity(token, { force: true });
+    },
+    [loadActivity]
+  );
+
   useEffect(() => {
     if (session) void loadAll(session.accessToken);
   }, [session, loadAll]);
@@ -684,9 +707,10 @@ export default function AppointmentsPage() {
     const token = session.accessToken;
     const intervalId = setInterval(() => {
       void loadAll(token);
+      refreshActivityIfExpanded(token);
     }, AUTO_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [session, loadAll]);
+  }, [session, loadAll, refreshActivityIfExpanded]);
 
   async function handleSignIn(event: FormEvent) {
     event.preventDefault();
@@ -844,7 +868,10 @@ export default function AppointmentsPage() {
         <button
           style={styles.button}
           type="button"
-          onClick={() => void loadAll(session.accessToken, { force: true })}
+          onClick={() => {
+            void loadAll(session.accessToken, { force: true });
+            refreshActivityIfExpanded(session.accessToken);
+          }}
           disabled={loading}
         >
           {loading ? "Refreshing…" : "Refresh"}

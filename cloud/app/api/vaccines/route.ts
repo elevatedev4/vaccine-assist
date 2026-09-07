@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
+import { isMissingColumnError } from "@/lib/schema-degradation";
 
 /**
  * REST endpoint for the desktop app's Vaccines screen (what we offer).
@@ -15,7 +16,21 @@ import { requireAuthenticatedUser } from "@/lib/auth";
  * kept out of the default path: the Lots tab's vaccine dropdown and the
  * Data-entry popup's vaccine dropdown both call GET with no query params
  * and depend on the default staying active-only, unfiltered-lot-free.
+ *
+ * V-cloud-tabs (Will, 2026-09-05/07): also selects `quantity`/`directions`
+ * (Pioneer prescription-entry defaults, editable on the Active vaccines
+ * page) — supabase/migrations/0009_lots_bud_vaccine_defaults.sql. Named
+ * explicitly (not `select("*")`) so a database that hasn't run that
+ * migration yet can be detected and degraded gracefully: try selecting
+ * WITH those columns first, and if Postgres reports they don't exist,
+ * retry WITHOUT them and flag `quantityDirectionsSupported: false` in the
+ * response so the client can hide those inputs with a "pending
+ * migration" note instead of crashing. See lib/schema-degradation.ts.
  */
+const VACCINE_COLUMNS_BASE =
+  "id, name, ndc, dose, short_code, cash_price_cents, active, created_at, updated_at";
+const VACCINE_COLUMNS_FULL = `${VACCINE_COLUMNS_BASE}, quantity, directions`;
+
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
@@ -27,25 +42,43 @@ export async function GET(request: Request) {
     const supabase = getSupabaseServerClient();
 
     if (!includeInactive) {
-      const { data, error } = await supabase
-        .from("vaccine")
-        .select("*")
-        .eq("active", true)
-        .order("name", { ascending: true });
+      // Loosely typed on purpose: the FULL and BASE column-list selects
+      // below produce different literal row types (supabase-js infers a
+      // type from the select() string), and this variable gets
+      // reassigned to whichever one actually succeeded.
+      let { data, error }: { data: Record<string, unknown>[] | null; error: { message?: string; code?: string } | null } =
+        await supabase.from("vaccine").select(VACCINE_COLUMNS_FULL).eq("active", true).order("name", { ascending: true });
+      let quantityDirectionsSupported = true;
+
+      if (error && isMissingColumnError(error)) {
+        quantityDirectionsSupported = false;
+        ({ data, error } = await supabase
+          .from("vaccine")
+          .select(VACCINE_COLUMNS_BASE)
+          .eq("active", true)
+          .order("name", { ascending: true }));
+      }
 
       if (error) {
         console.error("GET /api/vaccines: Supabase error", error);
         return NextResponse.json({ error: "Failed to load vaccines." }, { status: 500 });
       }
 
-      return NextResponse.json({ vaccines: data });
+      return NextResponse.json({ vaccines: data, quantityDirectionsSupported });
     }
 
-    const [
-      { data: vaccines, error: vaccinesError },
-      { data: activeLots, error: lotsError },
-    ] = await Promise.all([
-      supabase.from("vaccine").select("*").order("name", { ascending: true }),
+    let vaccinesResult: {
+      data: Record<string, unknown>[] | null;
+      error: { message?: string; code?: string } | null;
+    } = await supabase.from("vaccine").select(VACCINE_COLUMNS_FULL).order("name", { ascending: true });
+    let quantityDirectionsSupported = true;
+    if (vaccinesResult.error && isMissingColumnError(vaccinesResult.error)) {
+      quantityDirectionsSupported = false;
+      vaccinesResult = await supabase.from("vaccine").select(VACCINE_COLUMNS_BASE).order("name", { ascending: true });
+    }
+
+    const [{ data: vaccines, error: vaccinesError }, { data: activeLots, error: lotsError }] = await Promise.all([
+      Promise.resolve(vaccinesResult),
       supabase.from("lot").select("vaccine_id").eq("status", "active"),
     ]);
 
@@ -60,7 +93,7 @@ export async function GET(request: Request) {
       hasActiveLot: vaccineIdsWithActiveLot.has(vaccine.id),
     }));
 
-    return NextResponse.json({ vaccines: vaccinesWithLotFlag });
+    return NextResponse.json({ vaccines: vaccinesWithLotFlag, quantityDirectionsSupported });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

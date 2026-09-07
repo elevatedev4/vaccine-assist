@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
+import { isMissingColumnError } from "@/lib/schema-degradation";
 
 /**
  * PATCH /api/physician-rules/[id] — edits a vaccine/age-range -> physician
  * assignment rule. DELETE removes one. See
  * supabase/migrations/0007_physicians.sql / app/api/physician-rules/route.ts.
+ *
+ * V-cloud-tabs (Will, 2026-09-05/07): also edits `vaccine_group`
+ * (mutually exclusive with vaccine_id — validated below), degrading the
+ * same way as the POST route's insert if that column doesn't exist yet.
  */
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAuthenticatedUser(request);
@@ -18,7 +23,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   try {
     const body = await request.json();
-    const { physician_id, vaccine_id, min_age, max_age, priority } = body ?? {};
+    const { physician_id, vaccine_id, vaccine_group, min_age, max_age, priority } = body ?? {};
 
     const update: Record<string, string | number | null> = {};
     if (physician_id !== undefined) {
@@ -32,6 +37,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         return NextResponse.json({ error: "vaccine_id must be a string or null." }, { status: 400 });
       }
       update.vaccine_id = vaccine_id;
+    }
+    if (vaccine_group !== undefined) {
+      if (vaccine_group !== null && typeof vaccine_group !== "string") {
+        return NextResponse.json({ error: "vaccine_group must be a string or null." }, { status: 400 });
+      }
+      update.vaccine_group = vaccine_group;
+    }
+    if ((update.vaccine_id ?? null) !== null && (update.vaccine_group ?? null) !== null) {
+      return NextResponse.json(
+        { error: "A rule may target a specific vaccine_id OR a vaccine_group, not both." },
+        { status: 400 }
+      );
     }
     if (min_age !== undefined) {
       if (min_age !== null && typeof min_age !== "number") {
@@ -65,19 +82,35 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
 
     const supabase = getSupabaseServerClient();
-    const { data, error } = await supabase
-      .from("physician_rule")
-      .update(update)
-      .eq("id", id)
-      .select()
-      .single();
+    let { data, error } = await supabase.from("physician_rule").update(update).eq("id", id).select().single();
+    let vaccineGroupSupported = true;
+
+    if (error && isMissingColumnError(error) && "vaccine_group" in update) {
+      vaccineGroupSupported = false;
+      if (update.vaccine_group !== null) {
+        return NextResponse.json(
+          { error: "vaccine_group is not available yet — the migration hasn't run.", vaccineGroupSupported },
+          { status: 409 }
+        );
+      }
+      const { vaccine_group: _vg, ...withoutVaccineGroup } = update;
+      if (Object.keys(withoutVaccineGroup).length === 0) {
+        return NextResponse.json({ error: "Nothing to update.", vaccineGroupSupported }, { status: 400 });
+      }
+      ({ data, error } = await supabase
+        .from("physician_rule")
+        .update(withoutVaccineGroup)
+        .eq("id", id)
+        .select()
+        .single());
+    }
 
     if (error) {
       console.error("PATCH /api/physician-rules/[id]: Supabase error", error);
       return NextResponse.json({ error: "Failed to update physician rule." }, { status: 500 });
     }
 
-    return NextResponse.json({ physicianRule: data });
+    return NextResponse.json({ physicianRule: data, vaccineGroupSupported });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

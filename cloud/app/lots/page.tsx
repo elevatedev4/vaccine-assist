@@ -4,16 +4,24 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
-import { isLotExpired } from "@/lib/vaccine-entry-payload";
+import { isLotRowDue, pickCurrentActiveLot } from "@/lib/lots-table";
 
 /**
- * Web edition of the desktop app's Lots screen
- * (desktop/VaccineAssist.Desktop/Views/LotsView.xaml +
- * ViewModels/LotsViewModel.cs) — inventory + expirations, plus the
- * add-a-lot form staff use when a shipment comes in. Same GET/POST
- * /api/lots routes the desktop app already uses (no new API route
- * needed); the vaccine dropdown uses the default (active-only) GET
- * /api/vaccines, same as LotsViewModel.LoadAsync's GetVaccinesAsync.
+ * Rebuilt /lots page (V-cloud-tabs, Will 2026-09-05, third message):
+ * "just a table with all the vaccines where you can update the lot /
+ * expiration / beyond use date (optional) within the table. The row
+ * should highlight if expired or beyond use date is met."
+ *
+ * ONE row per ACTIVE vaccine (from GET /api/vaccines, the default
+ * active-only list — same source the old page's "add a lot" dropdown
+ * used). Each row shows/edits that vaccine's CURRENT active lot
+ * (lib/lots-table.ts's pickCurrentActiveLot) inline: lot number,
+ * expiration, and an optional beyond-use date. A per-row "Save" button
+ * (JUDGMENT CALL: explicit button over save-on-blur — blur is easy to
+ * trigger accidentally while tabbing between fields, and an explicit
+ * button gives a clear "did this save" moment plus somewhere to show a
+ * per-row error) PATCHes the vaccine's existing lot, or POSTs a new one
+ * if it doesn't have one yet.
  */
 
 type VaccineOption = { id: string; name: string };
@@ -25,16 +33,19 @@ type LotRow = {
   expiration: string;
   status: string;
   note: string | null;
+  beyond_use_date?: string | null;
 };
 
+/** Per-row draft state — separate from the loaded LotRow so in-progress edits don't get clobbered by a background refresh, and so a brand-new (no lot yet) row has somewhere to hold its inputs before the first save. */
+type RowDraft = { lotId: string | null; lotNumber: string; expiration: string; beyondUseDate: string };
+
 const styles = {
-  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 900 },
-  field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
-  label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
-  button: { padding: "0.5rem 1rem", marginRight: "0.5rem" },
+  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 960 },
+  button: { padding: "0.4rem 0.9rem" },
   error: { color: "#b00020" },
   success: { color: "#0a7d27" },
   muted: { color: "#555", fontSize: "0.875rem" },
+  note: { color: "#8a5300", fontSize: "0.8rem", fontStyle: "italic" },
   sessionBar: {
     display: "flex",
     alignItems: "center",
@@ -44,24 +55,13 @@ const styles = {
     background: "#f0f4f8",
     borderRadius: 4,
   },
-  formRow: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "0.5rem",
-    alignItems: "flex-end",
-    padding: "0.75rem",
-    marginBottom: "1rem",
-    background: "#fafafa",
-    border: "1px solid #ddd",
-    borderRadius: 4,
-  } as const,
-  formField: { display: "flex", flexDirection: "column" as const, gap: "0.15rem" },
   table: { borderCollapse: "collapse", width: "100%", fontSize: "0.85rem" },
   th: { textAlign: "left", padding: "0.35rem 0.5rem", borderBottom: "2px solid #ccc" },
-  thCenter: { textAlign: "center", padding: "0.35rem 0.5rem", borderBottom: "2px solid #ccc" },
-  td: { textAlign: "left", padding: "0.3rem 0.5rem", borderBottom: "1px solid #eee" },
-  tdCenter: { textAlign: "center", padding: "0.3rem 0.5rem", borderBottom: "1px solid #eee" },
-  expiredRow: { background: "#fde8e8" },
+  td: { textAlign: "left", padding: "0.35rem 0.5rem", borderBottom: "1px solid #eee" },
+  input: { width: "100%", padding: "0.3rem", boxSizing: "border-box" as const },
+  dueRow: { background: "#fde8e8" },
+  field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
+  label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
 } as const;
 
 export default function LotsPage() {
@@ -74,16 +74,14 @@ export default function LotsPage() {
 
   const [vaccines, setVaccines] = useState<VaccineOption[]>([]);
   const [lots, setLots] = useState<LotRow[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [beyondUseDateSupported, setBeyondUseDateSupported] = useState(true);
 
-  const [newVaccineId, setNewVaccineId] = useState("");
-  const [newLotNumber, setNewLotNumber] = useState("");
-  const [newExpiration, setNewExpiration] = useState("");
-  const [newNote, setNewNote] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
-  const [addOk, setAddOk] = useState(false);
+  const [savingVaccineId, setSavingVaccineId] = useState<string | null>(null);
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [rowSaved, setRowSaved] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -100,6 +98,21 @@ export default function LotsPage() {
       unsubscribe?.();
     };
   }, []);
+
+  function draftsFromLots(vaccineList: VaccineOption[], lotList: LotRow[]): Record<string, RowDraft> {
+    const next: Record<string, RowDraft> = {};
+    for (const vaccine of vaccineList) {
+      const vaccineLots = lotList.filter((l) => l.vaccine_id === vaccine.id);
+      const current = pickCurrentActiveLot(vaccineLots);
+      next[vaccine.id] = {
+        lotId: current?.id ?? null,
+        lotNumber: current?.lot_number ?? "",
+        expiration: current?.expiration ?? "",
+        beyondUseDate: current?.beyond_use_date ?? "",
+      };
+    }
+    return next;
+  }
 
   const loadAll = useCallback(async (token: string) => {
     setLoading(true);
@@ -124,13 +137,14 @@ export default function LotsPage() {
       const loadedVaccines: VaccineOption[] = (vaccinesData.vaccines ?? [])
         .map((v: { id: string; name: string }) => ({ id: v.id, name: v.name }))
         .sort((a: VaccineOption, b: VaccineOption) => a.name.localeCompare(b.name));
-      setVaccines(loadedVaccines);
-      setNewVaccineId((current) => current || loadedVaccines[0]?.id || "");
+      const loadedLots: LotRow[] = lotsData.lots ?? [];
 
-      const loadedLots: LotRow[] = [...(lotsData.lots ?? [])].sort((a, b) =>
-        a.expiration.localeCompare(b.expiration)
-      );
+      setVaccines(loadedVaccines);
       setLots(loadedLots);
+      setDrafts(draftsFromLots(loadedVaccines, loadedLots));
+      setBeyondUseDateSupported(lotsData.beyondUseDateSupported !== false);
+      setRowErrors({});
+      setRowSaved({});
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not load lots.");
     } finally {
@@ -174,43 +188,75 @@ export default function LotsPage() {
       setSession(null);
       setVaccines([]);
       setLots([]);
+      setDrafts({});
       setLoadError(null);
-      setAddError(null);
-      setAddOk(false);
     }
   }
 
-  async function handleAddLot(event: FormEvent) {
-    event.preventDefault();
-    if (!session || !newVaccineId || !newLotNumber.trim() || !newExpiration) return;
+  function updateDraft(vaccineId: string, patch: Partial<RowDraft>) {
+    setDrafts((prev) => ({ ...prev, [vaccineId]: { ...prev[vaccineId], ...patch } }));
+    setRowSaved((prev) => ({ ...prev, [vaccineId]: false }));
+  }
 
-    setAdding(true);
-    setAddError(null);
-    setAddOk(false);
+  async function handleSaveRow(vaccineId: string) {
+    if (!session) return;
+    const draft = drafts[vaccineId];
+    if (!draft || !draft.lotNumber.trim() || !draft.expiration) {
+      setRowErrors((prev) => ({ ...prev, [vaccineId]: "Lot number and expiration are required." }));
+      return;
+    }
+
+    setSavingVaccineId(vaccineId);
+    setRowErrors((prev) => ({ ...prev, [vaccineId]: "" }));
+    setRowSaved((prev) => ({ ...prev, [vaccineId]: false }));
     try {
-      const response = await fetch("/api/lots", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-        body: JSON.stringify({
-          vaccine_id: newVaccineId,
-          lot_number: newLotNumber.trim(),
-          expiration: newExpiration,
-          note: newNote.trim() || undefined,
-        }),
-      });
+      const payload: Record<string, unknown> = {
+        lot_number: draft.lotNumber.trim(),
+        expiration: draft.expiration,
+        beyond_use_date: draft.beyondUseDate || null,
+      };
+
+      const response = await fetch(
+        draft.lotId ? `/api/lots/${draft.lotId}` : "/api/lots",
+        draft.lotId
+          ? {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+              body: JSON.stringify(payload),
+            }
+          : {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+              body: JSON.stringify({ vaccine_id: vaccineId, ...payload }),
+            }
+      );
       const data = await response.json();
       if (!response.ok) {
-        setAddError(data.error ?? "Failed to add lot.");
+        setRowErrors((prev) => ({ ...prev, [vaccineId]: data.error ?? "Failed to save lot." }));
         return;
       }
-      setLots((prev) => [...prev, data.lot].sort((a, b) => a.expiration.localeCompare(b.expiration)));
-      setNewLotNumber("");
-      setNewNote("");
-      setAddOk(true);
+
+      if (data.beyondUseDateSupported === false) setBeyondUseDateSupported(false);
+
+      const savedLot: LotRow = data.lot;
+      setLots((prev) => {
+        const withoutOld = draft.lotId ? prev.filter((l) => l.id !== draft.lotId) : prev;
+        return [...withoutOld, savedLot];
+      });
+      setDrafts((prev) => ({
+        ...prev,
+        [vaccineId]: {
+          lotId: savedLot.id,
+          lotNumber: savedLot.lot_number,
+          expiration: savedLot.expiration,
+          beyondUseDate: savedLot.beyond_use_date ?? "",
+        },
+      }));
+      setRowSaved((prev) => ({ ...prev, [vaccineId]: true }));
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : "Failed to add lot.");
+      setRowErrors((prev) => ({ ...prev, [vaccineId]: err instanceof Error ? err.message : "Failed to save lot." }));
     } finally {
-      setAdding(false);
+      setSavingVaccineId(null);
     }
   }
 
@@ -265,7 +311,6 @@ export default function LotsPage() {
   }
 
   const today = todayInChicago();
-  const vaccineNameById = new Map(vaccines.map((v) => [v.id, v.name]));
 
   return (
     <main style={styles.main}>
@@ -279,7 +324,13 @@ export default function LotsPage() {
       </div>
 
       <h1>Lots</h1>
-      <p style={styles.muted}>Inventory and expirations. Expired lots are highlighted below.</p>
+      <p style={styles.muted}>
+        One row per active vaccine. Edit the lot number, expiration, and (optional) beyond-use date, then Save. A row
+        highlights when its expiration or beyond-use date is today or already past.
+      </p>
+      {!beyondUseDateSupported && (
+        <p style={styles.note}>Beyond-use date isn&apos;t available yet on this environment (pending migration).</p>
+      )}
 
       <p>
         <button style={styles.button} type="button" onClick={() => void loadAll(session.accessToken)} disabled={loading}>
@@ -289,79 +340,66 @@ export default function LotsPage() {
 
       {loadError && <p style={styles.error}>{loadError}</p>}
 
-      <form onSubmit={handleAddLot} style={styles.formRow}>
-        <div style={styles.formField}>
-          <label style={styles.label} htmlFor="newVaccine">
-            Vaccine
-          </label>
-          <select id="newVaccine" value={newVaccineId} onChange={(e) => setNewVaccineId(e.target.value)} required>
-            {vaccines.length === 0 && <option value="">No active vaccines</option>}
-            {vaccines.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div style={styles.formField}>
-          <label style={styles.label} htmlFor="newLotNumber">
-            Lot number
-          </label>
-          <input
-            id="newLotNumber"
-            type="text"
-            value={newLotNumber}
-            onChange={(e) => setNewLotNumber(e.target.value)}
-            required
-          />
-        </div>
-        <div style={styles.formField}>
-          <label style={styles.label} htmlFor="newExpiration">
-            Expiration
-          </label>
-          <input
-            id="newExpiration"
-            type="date"
-            value={newExpiration}
-            onChange={(e) => setNewExpiration(e.target.value)}
-            required
-          />
-        </div>
-        <div style={styles.formField}>
-          <label style={styles.label} htmlFor="newNote">
-            Note
-          </label>
-          <input id="newNote" type="text" value={newNote} onChange={(e) => setNewNote(e.target.value)} />
-        </div>
-        <button style={styles.button} type="submit" disabled={adding || !newVaccineId}>
-          {adding ? "Adding…" : "Add lot"}
-        </button>
-      </form>
-      {addError && <p style={styles.error}>{addError}</p>}
-      {addOk && <p style={styles.success}>Lot added.</p>}
-
       <table style={styles.table}>
         <thead>
           <tr>
             <th style={styles.th}>Vaccine</th>
             <th style={styles.th}>Lot number</th>
             <th style={styles.th}>Expiration</th>
-            <th style={styles.thCenter}>Expired</th>
-            <th style={styles.th}>Note</th>
+            {beyondUseDateSupported && <th style={styles.th}>Beyond-use date (optional)</th>}
+            <th style={styles.th}></th>
           </tr>
         </thead>
         <tbody>
-          {lots.map((lot) => {
-            const expired = isLotExpired(lot.expiration, today);
+          {vaccines.map((vaccine) => {
+            const draft = drafts[vaccine.id] ?? { lotId: null, lotNumber: "", expiration: "", beyondUseDate: "" };
+            const due = isLotRowDue(
+              { expiration: draft.expiration || null, beyond_use_date: draft.beyondUseDate || null },
+              today
+            );
+            const rowError = rowErrors[vaccine.id];
+            const saved = rowSaved[vaccine.id];
+            const saving = savingVaccineId === vaccine.id;
+
             return (
-              <tr key={lot.id} style={expired ? styles.expiredRow : undefined}>
-                <td style={styles.td}>{vaccineNameById.get(lot.vaccine_id) ?? "(unknown vaccine)"}</td>
-                <td style={styles.td}>{lot.lot_number}</td>
-                <td style={styles.td}>{lot.expiration}</td>
-                <td style={styles.tdCenter}>
-                  <input type="checkbox" checked={expired} readOnly disabled />
+              <tr key={vaccine.id} style={due ? styles.dueRow : undefined}>
+                <td style={styles.td}>{vaccine.name}</td>
+                <td style={styles.td}>
+                  <input
+                    style={styles.input}
+                    type="text"
+                    aria-label={`${vaccine.name} lot number`}
+                    value={draft.lotNumber}
+                    onChange={(e) => updateDraft(vaccine.id, { lotNumber: e.target.value })}
+                  />
                 </td>
-                <td style={styles.td}>{lot.note ?? ""}</td>
+                <td style={styles.td}>
+                  <input
+                    style={styles.input}
+                    type="date"
+                    aria-label={`${vaccine.name} expiration`}
+                    value={draft.expiration}
+                    onChange={(e) => updateDraft(vaccine.id, { expiration: e.target.value })}
+                  />
+                </td>
+                {beyondUseDateSupported && (
+                  <td style={styles.td}>
+                    <input
+                      style={styles.input}
+                      type="date"
+                      aria-label={`${vaccine.name} beyond-use date`}
+                      value={draft.beyondUseDate}
+                      onChange={(e) => updateDraft(vaccine.id, { beyondUseDate: e.target.value })}
+                    />
+                  </td>
+                )}
+                <td style={styles.td}>
+                  <button style={styles.button} type="button" onClick={() => void handleSaveRow(vaccine.id)} disabled={saving}>
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                  {rowError && <div style={styles.error}>{rowError}</div>}
+                  {saved && !rowError && <div style={styles.success}>Saved.</div>}
+                </td>
               </tr>
             );
           })}

@@ -21,7 +21,14 @@ const VACCINE_ID = "11111111-1111-1111-1111-111111111111";
  * separate parameterized calls against physician_rule — .eq("vaccine_id", ...)
  * for the exact-vaccine half and .is("vaccine_id", null) for the wildcard
  * half — plus a plain physician select. See route.ts's SECURITY doc
- * comment for why this replaced a single .or() call. */
+ * comment for why this replaced a single .or() call.
+ *
+ * Also mocks the "vaccine" table lookup added for V-cloud-tabs group-rule
+ * matching (route.ts fetches the vaccine's name via
+ * .eq("id", vaccineId).maybeSingle() to compute its catalog group) —
+ * `vaccineRow` defaults to null (vaccine not found / lookup not relevant
+ * to a given test), which resolves to vaccineGroup: null, preserving
+ * every pre-existing test's behavior exactly. */
 function mockFrom(options: {
   vaccineRuleRows?: unknown[];
   vaccineRulesError?: Error | null;
@@ -29,6 +36,7 @@ function mockFrom(options: {
   wildcardRulesError?: Error | null;
   physicianRows?: unknown[];
   physiciansError?: Error | null;
+  vaccineRow?: { name: string } | null;
   onEq?: (column: string, value: string) => void;
   onIs?: (column: string, value: unknown) => void;
 }) {
@@ -39,6 +47,7 @@ function mockFrom(options: {
     wildcardRulesError = null,
     physicianRows = [],
     physiciansError = null,
+    vaccineRow = null,
     onEq,
     onIs,
   } = options;
@@ -60,6 +69,15 @@ function mockFrom(options: {
     }
     if (table === "physician") {
       return { select: async () => ({ data: physicianRows, error: physiciansError }) };
+    }
+    if (table === "vaccine") {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: vaccineRow, error: null }),
+          }),
+        }),
+      };
     }
     throw new Error(`unexpected table ${table}`);
   });
@@ -177,5 +195,77 @@ describe("GET /api/physicians/resolve", () => {
 
     const response = await GET(authedRequest(`/api/physicians/resolve?vaccineId=${VACCINE_ID}&ageYears=10`));
     expect(response.status).toBe(500);
+  });
+
+  // V-cloud-tabs: group-rule matching end to end through the real route.
+  it("resolves via a matching vaccine_group rule (fetched through the same wildcard .is() call, distinguished by vaccine_group) when the vaccine's name maps to that group", async () => {
+    const from = mockFrom({
+      vaccineRuleRows: [],
+      wildcardRuleRows: [
+        { id: "group-rule", physician_id: "p3", vaccine_id: null, vaccine_group: "Flu", min_age: 6, max_age: null, priority: 0 },
+      ],
+      physicianRows: [{ id: "p3", display_name: "Ortiz, Maria", alternate_id: "ALTFLU" }],
+      vaccineRow: { name: "Fluzone High-Dose" },
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest(`/api/physicians/resolve?vaccineId=${VACCINE_ID}&ageYears=70`));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.physician).toEqual({ id: "p3", display_name: "Ortiz, Maria", alternate_id: "ALTFLU" });
+  });
+
+  it("a specific-vaccine rule still outranks a matching group rule end to end", async () => {
+    const from = mockFrom({
+      vaccineRuleRows: [
+        { id: "specific-rule", physician_id: "p1", vaccine_id: VACCINE_ID, min_age: 6, max_age: null, priority: 99 },
+      ],
+      wildcardRuleRows: [
+        { id: "group-rule", physician_id: "p3", vaccine_id: null, vaccine_group: "Flu", min_age: 6, max_age: null, priority: 0 },
+      ],
+      physicianRows: [
+        { id: "p1", display_name: "Rivera, Ana", alternate_id: "ALTPRIMARY" },
+        { id: "p3", display_name: "Ortiz, Maria", alternate_id: "ALTFLU" },
+      ],
+      vaccineRow: { name: "Fluzone High-Dose" },
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest(`/api/physicians/resolve?vaccineId=${VACCINE_ID}&ageYears=70`));
+    const body = await response.json();
+    expect(body.physician).toEqual({ id: "p1", display_name: "Rivera, Ana", alternate_id: "ALTPRIMARY" });
+  });
+
+  it("a group rule for a DIFFERENT group than the vaccine's does not match, falling through to the plain wildcard", async () => {
+    const from = mockFrom({
+      wildcardRuleRows: [
+        { id: "group-rule", physician_id: "p3", vaccine_id: null, vaccine_group: "COVID", min_age: 3, max_age: null, priority: 0 },
+        { id: "wildcard", physician_id: "p2", vaccine_id: null, vaccine_group: null, min_age: 3, max_age: null, priority: 0 },
+      ],
+      physicianRows: [
+        { id: "p2", display_name: "Kim, David", alternate_id: "ALTSECOND" },
+        { id: "p3", display_name: "Ortiz, Maria", alternate_id: "ALTFLU" },
+      ],
+      vaccineRow: { name: "Fluzone High-Dose" },
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest(`/api/physicians/resolve?vaccineId=${VACCINE_ID}&ageYears=30`));
+    const body = await response.json();
+    expect(body.physician).toEqual({ id: "p2", display_name: "Kim, David", alternate_id: "ALTSECOND" });
+  });
+
+  it("pre-migration data (no vaccine_group key on the row at all) behaves as a plain wildcard, never crashes", async () => {
+    const from = mockFrom({
+      wildcardRuleRows: [{ id: "wildcard", physician_id: "p2", vaccine_id: null, min_age: 3, max_age: null, priority: 0 }],
+      physicianRows: [{ id: "p2", display_name: "Kim, David", alternate_id: "ALTSECOND" }],
+      vaccineRow: { name: "Fluzone High-Dose" },
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest(`/api/physicians/resolve?vaccineId=${VACCINE_ID}&ageYears=30`));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.physician).toEqual({ id: "p2", display_name: "Kim, David", alternate_id: "ALTSECOND" });
   });
 });

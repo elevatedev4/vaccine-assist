@@ -172,4 +172,144 @@ describe("PATCH /api/vaccines/[id]", () => {
 
     expect(response.status).toBe(400);
   });
+
+  // V-cloud-tabs: editable quantity/directions on the Active vaccines page.
+  it("updates quantity and directions together", async () => {
+    const single = vi.fn(async () => ({
+      data: { id: "v1", name: "Flu", quantity: "0.5 mL", directions: "1 dose IM x1" },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity: "0.5 mL", directions: "1 dose IM x1" }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.vaccine).toEqual({ id: "v1", name: "Flu", quantity: "0.5 mL", directions: "1 dose IM x1" });
+    expect(body.quantityDirectionsSupported).toBe(true);
+    expect(update).toHaveBeenCalledWith({ quantity: "0.5 mL", directions: "1 dose IM x1" });
+  });
+
+  it("rejects a non-string, non-null quantity", async () => {
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity: 5 }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("degrades gracefully pre-migration: retries without quantity/directions and flags them unsupported", async () => {
+    const missingColumnError = { code: "42703", message: 'column "quantity" of relation "vaccine" does not exist' };
+    let updateCallCount = 0;
+    const single = vi.fn(async () => ({ data: { id: "v1", name: "Flu", active: true }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn((payload: Record<string, unknown>) => {
+      updateCallCount += 1;
+      if (updateCallCount === 1) {
+        // First attempt (with quantity/directions) fails.
+        return {
+          eq: () => ({
+            select: () => ({ single: async () => ({ data: null, error: missingColumnError }) }),
+          }),
+        };
+      }
+      return { eq };
+    });
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: true, quantity: "0.5 mL" }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.quantityDirectionsSupported).toBe(false);
+    // Retried with only `active` — quantity dropped.
+    expect(update).toHaveBeenNthCalledWith(2, { active: true });
+  });
+
+  it("returns 409 when quantity/directions is the ONLY thing to update and the columns don't exist yet", async () => {
+    const missingColumnError = { code: "42703", message: 'column "quantity" of relation "vaccine" does not exist' };
+    const update = vi.fn(() => ({
+      eq: () => ({
+        select: () => ({ single: async () => ({ data: null, error: missingColumnError }) }),
+      }),
+    }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity: "0.5 mL" }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.quantityDirectionsSupported).toBe(false);
+  });
+});
+
+describe("GET /api/vaccines — quantityDirectionsSupported degradation", () => {
+  afterEach(() => {
+    vi.mocked(getSupabaseServerClient).mockReset();
+  });
+
+  it("flags quantityDirectionsSupported: true when the columns are present", async () => {
+    const order = vi.fn(async () => ({ data: [{ id: "v1", name: "Flu" }], error: null }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest("/api/vaccines"));
+    const body = await response.json();
+    expect(body.quantityDirectionsSupported).toBe(true);
+  });
+
+  it("retries without quantity/directions and flags false when the columns are missing", async () => {
+    const missingColumnError = { code: "42703", message: 'column "quantity" does not exist' };
+    let selectCallCount = 0;
+    const select = vi.fn(() => {
+      selectCallCount += 1;
+      if (selectCallCount === 1) {
+        return { eq: () => ({ order: async () => ({ data: null, error: missingColumnError }) }) };
+      }
+      return { eq: () => ({ order: async () => ({ data: [{ id: "v1", name: "Flu" }], error: null }) }) };
+    });
+    const from = vi.fn(() => ({ select }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest("/api/vaccines"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.quantityDirectionsSupported).toBe(false);
+    expect(body.vaccines).toEqual([{ id: "v1", name: "Flu" }]);
+  });
 });
