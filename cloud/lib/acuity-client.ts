@@ -201,6 +201,27 @@ export type CountableAppointment = {
    * other field here, only the bucketed value ever leaves this module.
    */
   hourOfDay: number;
+  /**
+   * PHI boundary, extension of the CountableAppointment doc comment above
+   * (V-T-booking-activity, Will 2026-09-05/07: "# vaccines BOOKED per day
+   * — the day the booking was MADE, not the appointment date — for the
+   * last 28 days, so I can track marketing"). "YYYY-MM-DD" — the
+   * America/Chicago calendar day the booking was CREATED on, derived from
+   * Acuity's `datetimeCreated` field the exact same way `date` is derived
+   * from `datetime` (see acuityDatetimeToChicagoDate). Acuity's
+   * appointments endpoint returns `datetimeCreated` alongside `datetime`
+   * on every real appointment (verified against
+   * developers.acuityscheduling.com's sample response) — same ISO 8601 +
+   * UTC-offset shape, just timestamping when the booking was made rather
+   * than when the visit happens. "" on anything unparseable/missing, same
+   * fail-soft sentinel as `date` — a caller aggregating by createdDate
+   * (lib/acuity-booking-activity.ts) filters these out via its own
+   * date-range check rather than this module dropping them outright,
+   * since an entry with a bad createdDate is still perfectly valid for
+   * every OTHER purpose (the main day-by-day table keys off `date`, never
+   * `createdDate`).
+   */
+  createdDate: string;
 };
 
 /** Brand-preference bucket for a COVID appointment — see covidBrand above. */
@@ -599,7 +620,11 @@ export async function fetchAppointmentsForRange(
 
   // PHI-stripping projection — see CountableAppointment doc comment.
   // Every other field on `entry` (name/email/phone/notes/...) is dropped
-  // right here and never touched again. `forms` is read ONLY through
+  // right here and never touched again — `datetimeCreated` (V-T-booking
+  // -activity) is the one addition, and it's reduced to `createdDate`
+  // ("YYYY-MM-DD") the same instant, exactly like `datetime` -> `date`;
+  // the raw timestamp string itself never survives past this map step.
+  // `forms` is read ONLY through
   // extractVaccineNamesFromForms/deriveCovidBrand/deriveAgeInYears, each
   // of which extracts (and, for age, immediately buckets via
   // bucketCovidAge/bucketFluAge) only its own specific question's answer
@@ -620,6 +645,7 @@ export async function fetchAppointmentsForRange(
         covidBrand: deriveCovidBrand(entry.forms),
         covidAgeBucket: bucketCovidAge(ageInYears),
         fluAgeBucket: bucketFluAge(ageInYears),
+        createdDate: acuityDatetimeToChicagoDate(entry.datetimeCreated),
       };
     })
     .filter((entry) => entry.date && Number.isFinite(entry.appointmentTypeId));

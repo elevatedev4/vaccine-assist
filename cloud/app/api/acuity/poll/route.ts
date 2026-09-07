@@ -9,10 +9,16 @@ import {
   fetchAppointmentsForRange,
   fetchAppointmentTypes,
 } from "@/lib/acuity-client";
-import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
+import {
+  getCachedActivityCounts,
+  getCachedCounts,
+  setCachedActivityCounts,
+  setCachedCounts,
+} from "@/lib/acuity-poll-cache";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
 import { buildAppointmentTable, type AppointmentTable } from "@/lib/appointment-table";
 import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-future-summary";
+import { bookingActivityCreatedRange, fetchBookingActivityCounts } from "@/lib/acuity-booking-activity";
 
 /**
  * Acuity Scheduling appointment-count polling (phase 2 v1, V-Q1).
@@ -148,6 +154,33 @@ import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-fut
  * chunked-fetch mechanics (including its concurrency limit) and
  * ColumnTotals's doc comment for the one documented column-alignment
  * tradeoff.
+ *
+ * `?activity=1` (V-T-booking-activity, Will 2026-09-05/07: "# vaccines
+ * BOOKED per day ... for the last 28 days, so I can track marketing") —
+ * same "own separate, later request" shape/rationale as
+ * `?afterTodayOnly=1` above: app/appointments/page.tsx only fires this on
+ * the scheduling-activity section's FIRST expand (it's collapsed by
+ * default), never on initial page load, so a slow/failed activity fetch
+ * can never hold up the main table either. RESPONSE CONTRACT:
+ *
+ *   {
+ *     configured: boolean,
+ *     activityCounts: VaccineCount[], // `date` here is the BOOKING'S createdDate, not the appointment date
+ *     possiblyTruncated: boolean,
+ *     cacheHit: boolean,
+ *     asOf: string | null,
+ *   }
+ *
+ * `activityCounts` is cached (lib/acuity-poll-cache.ts's
+ * getCachedActivityCounts/setCachedActivityCounts, `created_${min}_${max}`
+ * key — see lib/acuity-booking-activity.ts's bookingActivityCreatedRange)
+ * in the SAME acuity_poll_cache table as everything else on this route, no
+ * new table/migration. A cache miss fetches a wide ~134-day APPOINTMENT
+ * -date range in chunked windows (see fetchBookingActivityCounts) and
+ * re-aggregates by each appointment's createdDate — see that module's doc
+ * comment for why this can't reuse the main range cache. `configured:
+ * false` (no Acuity credentials) returns `activityCounts: []` the same way
+ * the main mode returns `counts: []`.
  */
 
 // Reliability fix (2026-09-05): the `?afterTodayOnly=1` mode can run up to
@@ -156,7 +189,11 @@ import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-fut
 // day. Next.js/Vercel's default function timeout (10-15s on most plans)
 // is comfortably enough for the normal range request but was cutting it
 // close for that mode — sized generously here since this route now never
-// blocks the main table on that work (see the doc above).
+// blocks the main table on that work (see the doc above). `?activity=1`
+// (V-T-booking-activity) is the same shape of concern — roughly 20
+// concurrency-limited windows over its ~134-day range — well within this
+// same budget, and likewise never blocks the main table since
+// app/appointments/page.tsx only fires it on first expand.
 export const maxDuration = 60;
 
 const MAX_RANGE_DAYS = 31;
@@ -246,6 +283,63 @@ async function handleAfterTodayOnly(requestUrl: URL): Promise<Response> {
   return NextResponse.json({ configured: true, afterToday, afterTodayError });
 }
 
+/**
+ * `?activity=1` — see this route's doc comment for the response contract
+ * and why this is its own separate, later request. Same
+ * skip-validation-entirely shape as handleAfterTodayOnly above: this mode
+ * has nothing to do with a caller-supplied start/end, only with "today"
+ * (and the fixed BOOKING_ACTIVITY_LOOKBACK_DAYS lookback derived from it)
+ * computed server-side. `force=1` bypasses the cache the same way as
+ * every other mode on this route.
+ */
+async function handleActivityOnly(requestUrl: URL): Promise<Response> {
+  const credentials = await getAcuityCredentials();
+  if (!credentials) {
+    return NextResponse.json({ configured: false, activityCounts: [], possiblyTruncated: false, asOf: null });
+  }
+
+  const force = requestUrl.searchParams.get("force") === "1";
+  const cacheSeconds = force ? FORCE_COOLDOWN_SECONDS : env.acuityPollCacheSeconds();
+
+  const today = todayInChicago();
+  const { minCreated, maxCreated } = bookingActivityCreatedRange(today);
+
+  const cached = await getCachedActivityCounts(minCreated, maxCreated, cacheSeconds);
+  if (cached) {
+    return NextResponse.json({
+      configured: true,
+      activityCounts: cached.counts,
+      possiblyTruncated: cached.possiblyTruncated,
+      cacheHit: true,
+      asOf: cached.computedAt,
+    });
+  }
+
+  try {
+    const { counts, truncatedWindows } = await fetchBookingActivityCounts(
+      credentials.userId,
+      credentials.apiKey,
+      today
+    );
+    const possiblyTruncated = truncatedWindows.length > 0;
+    const asOf = new Date().toISOString();
+
+    await setCachedActivityCounts(minCreated, maxCreated, counts, possiblyTruncated);
+
+    return NextResponse.json({
+      configured: true,
+      activityCounts: counts,
+      possiblyTruncated,
+      cacheHit: false,
+      asOf,
+    });
+  } catch (err) {
+    const message = err instanceof AcuityApiError ? err.message : "Failed to compute scheduling activity.";
+    console.error("GET /api/acuity/poll: activity fetch failed", message);
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}
+
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
@@ -254,6 +348,10 @@ export async function GET(request: Request) {
 
   if (requestUrl.searchParams.get("afterTodayOnly") === "1") {
     return handleAfterTodayOnly(requestUrl);
+  }
+
+  if (requestUrl.searchParams.get("activity") === "1") {
+    return handleActivityOnly(requestUrl);
   }
 
   const startParam = requestUrl.searchParams.get("start");

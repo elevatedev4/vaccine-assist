@@ -48,6 +48,19 @@ function rangeKey(minDate: string, maxDate: string): string {
   return `${minDate}_${maxDate}`;
 }
 
+// V-T-booking-activity (Will, 2026-09-05/07): the "scheduling activity"
+// table's counts are aggregated by createdDate (booking date), not
+// appointment date — a completely different meaning than every other row
+// in this table, which is why it gets its own key PREFIX rather than
+// reusing rangeKey's bare "${minDate}_${maxDate}" (that could otherwise
+// collide with, or be confused for, a real appointment-date range that
+// happens to share the same two dates). See
+// lib/acuity-booking-activity.ts's bookingActivityCreatedRange for how a
+// caller derives minDate/maxDate here.
+function activityRangeKey(minDate: string, maxDate: string): string {
+  return `created_${minDate}_${maxDate}`;
+}
+
 export async function getCachedCounts(
   minDate: string,
   maxDate: string,
@@ -116,5 +129,80 @@ export async function setCachedCounts(
   } catch {
     // Best-effort — a failed cache write just means the next request
     // re-fetches from Acuity instead of hitting a stale/absent cache.
+  }
+}
+
+export type CachedActivityPoll = {
+  /** {date, vaccineName, count} where `date` is createdDate (booking
+   * date) — see lib/acuity-booking-activity.ts. */
+  counts: VaccineCount[];
+  possiblyTruncated: boolean;
+  computedAt: string;
+};
+
+/**
+ * Same table, same TTL/fail-soft contract as getCachedCounts above — the
+ * ONLY difference is the key (activityRangeKey's `created_` prefix) and
+ * that there's no hourlyCounts to read back (the activity table has no
+ * hourly breakdown of its own). See lib/acuity-booking-activity.ts's doc
+ * comment for why this can't just reuse getCachedCounts/setCachedCounts
+ * directly: those cache appointment-date-aggregated counts, which have
+ * already discarded the one field (createdDate) this feature needs.
+ */
+export async function getCachedActivityCounts(
+  minDate: string,
+  maxDate: string,
+  ttlSeconds: number
+): Promise<CachedActivityPoll | null> {
+  try {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("acuity_poll_cache")
+      .select("counts, computed_at, possibly_truncated")
+      .eq("range_key", activityRangeKey(minDate, maxDate))
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    const computedAt = new Date(data.computed_at);
+    if (Number.isNaN(computedAt.getTime())) return null;
+    if (Date.now() - computedAt.getTime() >= ttlSeconds * 1000) return null;
+
+    return {
+      counts: data.counts as VaccineCount[],
+      possiblyTruncated: Boolean(data.possibly_truncated),
+      computedAt: data.computed_at,
+    };
+  } catch {
+    // Supabase not configured / table missing — treat as a cache miss.
+    return null;
+  }
+}
+
+/**
+ * `hourly_counts` is written as `[]` (this feature has no hourly
+ * breakdown) rather than omitted, matching every other writer of this
+ * shared table — see setCachedCounts's own doc comment on why every
+ * writer keeps that column populated rather than leaving it null/absent.
+ */
+export async function setCachedActivityCounts(
+  minDate: string,
+  maxDate: string,
+  counts: VaccineCount[],
+  possiblyTruncated: boolean
+): Promise<void> {
+  try {
+    const supabase = getSupabaseServerClient();
+    await supabase.from("acuity_poll_cache").upsert({
+      range_key: activityRangeKey(minDate, maxDate),
+      range_start: minDate,
+      range_end: maxDate,
+      counts,
+      possibly_truncated: possiblyTruncated,
+      hourly_counts: [],
+      computed_at: new Date().toISOString(),
+    });
+  } catch {
+    // Best-effort — same fail-soft rationale as setCachedCounts above.
   }
 }
