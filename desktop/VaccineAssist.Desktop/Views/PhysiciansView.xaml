@@ -106,6 +106,24 @@
                             </ComboBox.GroupStyle>
                         </ComboBox>
                     </StackPanel>
+                    <!-- BLOCKING SAFETY FIX (reviewer, 2026-09-07): the "All
+                         <group> vaccines" ComboBox entries above are only
+                         ever ADDED (PhysiciansViewModel.BuildVaccineOptions)
+                         while VaccineGroupSupported is true, so this note is
+                         the only visible sign of that state when it's
+                         false — never a disabled-but-visible option. -->
+                    <TextBlock Text="&quot;All &lt;type&gt; vaccines&quot; rules are available after the pending migration runs." Foreground="Gray" FontStyle="Italic" TextWrapping="Wrap" Margin="0,4,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding VaccineGroupSupported}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="Min age:" VerticalAlignment="Center" Margin="0,0,6,0"/>
                         <TextBox Width="60" Text="{Binding NewRuleMinAgeText, UpdateSourceTrigger=PropertyChanged}" ToolTip="Blank = no floor"/>

@@ -99,9 +99,18 @@ public interface IVaccineApiService
     /// <summary>Calls DELETE /api/physicians/{id}.</summary>
     Task DeletePhysicianAsync(Guid id, CancellationToken cancellationToken = default);
 
-    /// <summary>Calls GET /api/physician-rules — every vaccine/age-range
-    /// -> physician assignment rule, for the Physicians settings tab.</summary>
-    Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Calls GET /api/physician-rules — every vaccine/age-range -> physician
+    /// assignment rule, for the Physicians settings tab, PLUS (reviewer
+    /// fix, 2026-09-07) whether the server currently supports
+    /// physician_rule.vaccine_group (see PhysicianRulesResult's own doc
+    /// comment — a parallel migration/cloud branch added this flag for a
+    /// real safety reason: a group-intent rule saved against a database
+    /// missing that column silently becomes an unrestricted "any vaccine"
+    /// wildcard). PhysiciansViewModel gates its entire "All &lt;group&gt;
+    /// vaccines" ComboBox option list on this flag.
+    /// </summary>
+    Task<PhysicianRulesResult> GetPhysicianRulesAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Calls POST /api/physician-rules. vaccineId null means
     /// "any vaccine" (the wildcard/"everything else" fallback rule) unless

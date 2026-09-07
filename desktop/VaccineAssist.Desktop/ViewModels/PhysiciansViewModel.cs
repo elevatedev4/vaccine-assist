@@ -77,6 +77,34 @@ public sealed class PhysiciansViewModel : ObservableObject
     /// free rather than needing its own CollectionViewSource resource.</summary>
     public ICollectionView VaccineOptionsView => _vaccineOptionsView;
 
+    private bool _vaccineGroupSupported;
+
+    /// <summary>
+    /// BLOCKING SAFETY FIX (reviewer, 2026-09-07 request-changes round):
+    /// whether the server currently supports physician_rule.vaccine_group
+    /// (set from GetPhysicianRulesAsync's own PhysicianRulesResult — see
+    /// that type's doc comment for the parallel migration/cloud-branch
+    /// context). Defaults to FALSE — fail CLOSED — before the first
+    /// successful LoadAsync, so the "All &lt;group&gt; vaccines" options
+    /// never appear even fleetingly on a fresh, not-yet-loaded tab.
+    /// BuildVaccineOptions omits every group option entirely while this is
+    /// false; AddRuleAsync also re-checks it directly before sending a
+    /// group (belt-and-suspenders, in case VaccineOptions ever goes stale
+    /// relative to this flag). Bound in Views/PhysiciansView.xaml to show
+    /// a short "pending migration" note when false.
+    ///
+    /// WHY THIS MATTERS: on a database that hasn't run migration 0009 yet
+    /// (no vaccine_group column at all), a rule "saved" with only a GROUP
+    /// intent silently persists as vaccine_id=null/vaccine_group=null —
+    /// an UNRESTRICTED "any vaccine" wildcard rule. That's a silent
+    /// over-grant of prescriber authority, not just a cosmetic gap.
+    /// </summary>
+    public bool VaccineGroupSupported
+    {
+        get => _vaccineGroupSupported;
+        private set => SetProperty(ref _vaccineGroupSupported, value);
+    }
+
     public bool IsBusy
     {
         get => _isBusy;
@@ -173,8 +201,12 @@ public sealed class PhysiciansViewModel : ObservableObject
             Physicians.Clear();
             foreach (var physician in physiciansTask.Result) Physicians.Add(physician);
 
+            var rulesResult = rulesTask.Result;
             PhysicianRules.Clear();
-            foreach (var rule in rulesTask.Result) PhysicianRules.Add(rule);
+            foreach (var rule in rulesResult.PhysicianRules) PhysicianRules.Add(rule);
+            // MUST be set before BuildVaccineOptions() below reads it —
+            // see VaccineGroupSupported's own doc comment.
+            VaccineGroupSupported = rulesResult.VaccineGroupSupported;
 
             Vaccines.Clear();
             foreach (var vaccine in vaccinesTask.Result.OrderBy(v => v.Name)) Vaccines.Add(vaccine);
@@ -192,10 +224,14 @@ public sealed class PhysiciansViewModel : ObservableObject
 
     /// <summary>(Re)builds VaccineOptions from Vaccines — VaccineGroupCatalog.DisplayOrder
     /// order, one "All &lt;group&gt; vaccines" option first in each group
-    /// present, then that group's vaccines by name. Always Clear()s before
-    /// re-Add()ing (same convention DataEntryPopupViewModel's
-    /// BuildAvailableGroups/BuildProductOptions use) so VaccineOptionsView's
-    /// grouping stays in sync with a fresh load.</summary>
+    /// present (ONLY when VaccineGroupSupported — see that property's own
+    /// doc comment for why an unsupported server must never see this
+    /// option at all, not even a disabled one), then that group's vaccines
+    /// by name. Always Clear()s before re-Add()ing (same convention
+    /// DataEntryPopupViewModel's BuildAvailableGroups/BuildProductOptions
+    /// use) so VaccineOptionsView's grouping stays in sync with a fresh
+    /// load. Callers MUST set VaccineGroupSupported before calling this —
+    /// see LoadAsync.</summary>
     private void BuildVaccineOptions()
     {
         VaccineOptions.Clear();
@@ -205,7 +241,10 @@ public sealed class PhysiciansViewModel : ObservableObject
 
         foreach (var group in VaccineGroupCatalog.DisplayOrder.Where(byGroup.ContainsKey))
         {
-            VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = $"All {group} vaccines" });
+            if (VaccineGroupSupported)
+            {
+                VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = $"All {group} vaccines" });
+            }
             foreach (var vaccine in byGroup[group])
             {
                 VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = vaccine.Name, Vaccine = vaccine });
@@ -313,6 +352,20 @@ public sealed class PhysiciansViewModel : ObservableObject
         {
             if (NewRuleVaccineOption!.IsGroupWildcard)
             {
+                // Belt-and-suspenders (reviewer fix, 2026-09-07):
+                // BuildVaccineOptions is supposed to never OFFER a group
+                // option at all while VaccineGroupSupported is false, but
+                // this is a hard stop in case NewRuleVaccineOption is ever
+                // stale relative to that flag (e.g. selected just before a
+                // reload flips it) — never silently send a group intent
+                // the server can't persist as a group (see
+                // VaccineGroupSupported's own doc comment for why that's
+                // an unrestricted-wildcard safety issue, not just UX).
+                if (!VaccineGroupSupported)
+                {
+                    ErrorMessage = "Vaccine-type rules aren't available yet — the migration hasn't run. Refresh and pick a specific vaccine instead.";
+                    return;
+                }
                 vaccineGroup = NewRuleVaccineOption.Group;
             }
             else

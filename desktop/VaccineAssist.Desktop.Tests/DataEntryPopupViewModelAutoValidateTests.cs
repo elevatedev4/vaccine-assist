@@ -206,7 +206,7 @@ public class DataEntryPopupViewModelAutoValidateTests
         public Task DeletePhysicianAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default) =>
+        public Task<PhysicianRulesResult> GetPhysicianRulesAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<PhysicianRule> CreatePhysicianRuleAsync(

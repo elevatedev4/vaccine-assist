@@ -130,11 +130,11 @@ public sealed class VaccineApiService : IVaccineApiService
         await SendAsync<OkResponse>(request, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default)
+    public async Task<PhysicianRulesResult> GetPhysicianRulesAsync(CancellationToken cancellationToken = default)
     {
         using var request = CreateRequest(HttpMethod.Get, "/api/physician-rules");
         var result = await SendAsync<PhysicianRulesResponse>(request, cancellationToken);
-        return result.PhysicianRules;
+        return new PhysicianRulesResult(result.PhysicianRules, result.VaccineGroupSupported);
     }
 
     public async Task<PhysicianRule> CreatePhysicianRuleAsync(
@@ -265,6 +265,15 @@ public sealed class VaccineApiService : IVaccineApiService
     {
         [JsonPropertyName("physicianRules")]
         public List<PhysicianRule> PhysicianRules { get; set; } = new();
+
+        // Reviewer fix (2026-09-07): defaults to FALSE — fail CLOSED, not
+        // open — if this key is ever absent from the response (unexpected
+        // server shape), rather than treating an unrecognized/missing
+        // response as "group rules are safe to offer." The real cloud API
+        // (feat/cloud-tabs, migration 0009) always includes this key; see
+        // PhysicianRulesResult's own doc comment for why it matters.
+        [JsonPropertyName("vaccineGroupSupported")]
+        public bool VaccineGroupSupported { get; set; } = false;
     }
 
     private sealed class PhysicianRuleResponse

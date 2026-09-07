@@ -181,15 +181,18 @@ HALT when the chosen vaccine's lot is expired OR past its beyond-use date.
 
 - NEW `Sequencing/Steps/SendF3AndDismissPreEntryDialogsStep.cs` — runs
   right after FocusPioneerWindowStep: sends F3 to the attached Rx Profile
-  window, then waits (with its own per-dialog timeout,
-  `PerDialogTimeout` = 4s) for windows titled like "Priority" and
-  "Scan Hard Copy" (`Uia/PreEntryDialogTitles.cs`) and ESCs each one that
-  appears, in whatever order they show up; a dialog that never appears
-  (Will: "may be configured off on some machines") logs a warning and the
-  step continues rather than hanging or failing. Re-attaches to the
-  resulting "Add New Rx" window afterward (via PioneerRxAttachment.TryAttach
-  again) and overwrites context.AttachedWindow — the Rx Profile reference
-  FocusPioneerWindowStep captured is stale once F3 has been sent.
+  window, then polls against a SINGLE SHARED deadline
+  (`CombinedDialogsTimeout` = 8s, reviewer fix 2026-09-07 — see below) for
+  windows titled like "Priority" and "Scan Hard Copy"
+  (`Uia/PreEntryDialogTitles.cs`) and ESCs whichever is found on each tick,
+  in whatever order they show up; a dialog that never appears (Will: "may
+  be configured off on some machines") logs a warning and the step
+  continues rather than hanging or failing. Re-attaches to the resulting
+  "Add New Rx" window afterward — via a DEDICATED title+handle-exclusion
+  lookup, not a plain PioneerRxAttachment.TryAttach() re-run (reviewer fix
+  2026-09-07 — see below) — and overwrites context.AttachedWindow, since
+  the Rx Profile reference FocusPioneerWindowStep captured is stale once
+  F3 has been sent.
   **NOT CONFIRMED against a live UIA dump** — no dump of either dialog
   exists in this repo; the exact window titles are built directly from
   Will's own wording, not a captured screen. Confirm/adjust
@@ -241,3 +244,60 @@ HALT when the chosen vaccine's lot is expired OR past its beyond-use date.
   `DataEntryPopupViewModel.BuildLivePayloadAsync` in place of the existing
   `IVaccineApiService.ResolvePhysicianAsync` cloud call: that's a judgment
   call flagged for Will, not an oversight.
+
+## V-... reviewer request-changes round (2026-09-07)
+
+A parallel cloud branch (feat/cloud-tabs) landed the SERVER side of the
+group-rule work above while this branch was in review: migration 0009
+(`physician_rule.vaccine_group`), the specific > group > wildcard tier in
+`cloud/lib/physician-resolution.ts`, group derivation in
+`/api/physicians/resolve`, and — the piece this round's fix #1 depends on
+— a `vaccineGroupSupported` flag on GET/POST/PATCH `/api/physician-rules`
+that's `false` whenever the `vaccine_group` column doesn't exist yet on a
+given database (schema-degradation fallback, same pattern
+`hasActiveLot`/`eligibility` already use elsewhere in this app). Four
+fixes from that review round, all in this branch, none touching cloud/:
+
+1. **BLOCKING (safety)**: the desktop's "All &lt;group&gt; vaccines"
+   ComboBox option is now HIDDEN unless the server's own
+   `vaccineGroupSupported` flag says the column exists —
+   `PhysiciansViewModel.VaccineGroupSupported` (read from the new
+   `Models/PhysicianRulesResult.VaccineGroupSupported`,
+   `GetPhysicianRulesAsync`'s new return shape) gates `BuildVaccineOptions`
+   entirely, and `AddRuleAsync` has a belt-and-suspenders second check
+   before ever sending a group. Reason: on a database still missing the
+   column, a rule "saved" with only a group intent would persist as
+   `vaccine_id=null` with no group at all — an UNRESTRICTED "any vaccine"
+   wildcard, i.e. a silent over-grant of prescriber authority. Defaults to
+   `false` (hide) before the first successful load and whenever the flag
+   is unexpectedly absent from a response — fail CLOSED, not open; this is
+   a deliberate divergence from the cloud web page's own more lenient
+   `!== false` (defaults to shown) convention, since that page predates
+   the flag and needs backward compatibility this brand-new desktop code
+   doesn't. Physicians tab shows a short note ("vaccine-type rules
+   available after the pending migration") when hidden. See
+   `PhysiciansViewModelVaccineGroupSupportTests.cs`.
+2. **BLOCKING**: `SendF3AndDismissPreEntryDialogsStep`'s dialog wait was
+   order-dependent (waited out "Priority"'s own full timeout before ever
+   checking "Scan Hard Copy", so a sequential/modal second dialog could be
+   missed or the whole budget wasted on a dialog that's configured off).
+   Rewritten to a single shared deadline (`CombinedDialogsTimeout` = 8s)
+   with a set of pending titles, rescanning for ANY of them on every tick
+   and removing each the moment it's dismissed — order-agnostic, and an
+   immediate rescan after each dismissal catches a dialog that only
+   appears once the first is gone. See that file's own doc comment
+   (REVIEWER FIX notes) and `SendF3AndDismissPreEntryDialogsStepTests.cs`.
+3. Robustness: the re-attach after F3 no longer just re-runs
+   `PioneerRxAttachment.TryAttach()` (which matches "Rx Profile" AND
+   "New Rx" both, first-candidate-wins with no ordering guarantee — could
+   silently hand back the SAME stale Rx Profile window). New
+   `TryAttachToAddNewRxWindow` (private to this step) requires the title
+   to contain "New Rx" specifically AND excludes the previously-attached
+   window's native handle (`FrameworkAutomationElement.NativeWindowHandle`,
+   same pattern as rx-verify's `PioneerRxWindow.SafeNativeHandle`); fails
+   loud (the step returns failure) if nothing distinct matches, rather
+   than risking a silent wrong-window re-attach.
+4. Doc-only: `InputVaccineCodeStep.cs`'s "NOT USED: Quantity..." comment
+   was stale after `InputQuantityStep.cs` reversed that decision for
+   `uxQuantityPrescribed` specifically — updated to cross-reference it
+   (Days-Supply/Refills are still correctly NOT USED).
