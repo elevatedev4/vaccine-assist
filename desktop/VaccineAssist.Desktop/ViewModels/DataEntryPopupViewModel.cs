@@ -206,6 +206,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
                 NewLotNote = null;
                 SelectedVaccineActiveLot = null;
                 OnPropertyChanged(nameof(IsLotExpiredOrMissing));
+                OnPropertyChanged(nameof(LotGateMessage));
                 TryAutoValidate();
                 _ = RefreshSelectedVaccineActiveLotAsync();
             }
@@ -294,18 +295,61 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             if (SetProperty(ref _selectedVaccineActiveLot, value))
             {
                 OnPropertyChanged(nameof(IsLotExpiredOrMissing));
+                OnPropertyChanged(nameof(LotGateMessage));
             }
         }
     }
 
-    /// <summary>True when a vaccine is selected and either no active lot is
-    /// on file for it, or the earliest one on file is already expired —
-    /// the popup's expiration gate (Views/DataEntryPopupWindow.xaml) shows
-    /// the "add a lot" mini-form plus "leave blank and proceed" affordance
-    /// whenever this is true, and EnterIntoPioneerCommand is blocked unless
-    /// SkipLotAndExpiration is also true.</summary>
+    /// <summary>
+    /// True when a vaccine is selected and either no active lot is on file
+    /// for it, the earliest one on file is already expired, OR (Will,
+    /// 2026-09-07: "entry must HALT when the chosen vaccine's lot is
+    /// expired OR past its beyond-use date") that lot is past its
+    /// beyond-use date — the popup's expiration gate
+    /// (Views/DataEntryPopupWindow.xaml) shows the "add a lot" mini-form
+    /// plus "leave blank and proceed" affordance whenever this is true,
+    /// and EnterIntoPioneerCommand is blocked unless SkipLotAndExpiration
+    /// is also true. See LotGateMessage for the block text shown for each
+    /// of these three cases.
+    /// </summary>
     public bool IsLotExpiredOrMissing =>
-        SelectedVaccine is not null && (SelectedVaccineActiveLot is null || SelectedVaccineActiveLot.IsExpired);
+        SelectedVaccine is not null &&
+        (SelectedVaccineActiveLot is null || SelectedVaccineActiveLot.IsExpired || SelectedVaccineActiveLot.IsPastBeyondUseDate);
+
+    /// <summary>
+    /// The expiration gate's inline block message (bound from
+    /// Views/DataEntryPopupWindow.xaml, replacing that view's old static
+    /// "No unexpired lot on file for this vaccine." text) — covers all
+    /// three IsLotExpiredOrMissing cases. The expired/BUD-past cases both
+    /// additionally tell staff to have the pharmacist update the VAR
+    /// (Will's brief, verbatim: "alert them to tell the pharmacist to
+    /// update the VAR") — a lot that was never entered has no VAR entry
+    /// yet to update, so that line is specific to the two "was fine, now
+    /// isn't" cases. Empty string when the gate isn't active (no vaccine
+    /// selected, or the active lot is fine) — the XAML block itself is
+    /// only visible when IsLotExpiredOrMissing is true, so this is never
+    /// shown otherwise.
+    /// </summary>
+    public string LotGateMessage
+    {
+        get
+        {
+            var lot = SelectedVaccineActiveLot;
+            if (lot is null)
+            {
+                return "No unexpired lot on file for this vaccine. Add one below, or choose \"Leave lot/expiration blank\" to continue without one.";
+            }
+            if (lot.IsExpired)
+            {
+                return "This lot has EXPIRED. Update it below, and tell the pharmacist to update the VAR.";
+            }
+            if (lot.IsPastBeyondUseDate)
+            {
+                return "This lot is past its beyond-use date. Update it below, and tell the pharmacist to update the VAR.";
+            }
+            return "";
+        }
+    }
 
     /// <summary>Set by SkipLotAndExpirationCommand — see VaccineEntryPayload.SkipLotAndExpiration's
     /// doc comment for how this reaches the Pioneer entry sequence. Reset to
@@ -778,12 +822,14 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// <summary>
     /// Builds the Pioneer entry payload for the currently selected vaccine.
     /// FEFO (earliest expiration first, the standard inventory-rotation
-    /// rule) among UNEXPIRED active lots only — V-... Part C tightened this
-    /// from "any active lot" to "any active, unexpired lot": the popup's
-    /// expiration gate (IsLotExpiredOrMissing) is supposed to stop an
-    /// expired lot from ever reaching here at all, but this is the same
-    /// belt-and-suspenders double-check BuildPayloadAsync already did for
-    /// "no lot at all" before this change.
+    /// rule) among UNEXPIRED, non-BUD-past active lots only — V-... Part C
+    /// tightened this from "any active lot" to "any active, unexpired
+    /// lot"; 2026-09-07 tightened it again to also exclude a lot past its
+    /// beyond-use date: the popup's expiration gate (IsLotExpiredOrMissing)
+    /// is supposed to stop an expired-or-BUD-past lot from ever reaching
+    /// here at all, but this is the same belt-and-suspenders double-check
+    /// BuildPayloadAsync already did for "no lot at all" before this
+    /// change.
     ///
     /// REVIEWER FIX (BLOCKER 1, request-changes round): this method used to
     /// check SkipLotAndExpiration FIRST and return a blank-lot payload
@@ -817,17 +863,21 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         }
 
         var ndc = SelectedVaccine.Ndc ?? "";
+        var quantity = SelectedVaccine.Quantity;
+        var directions = SelectedVaccine.Directions;
         var activeLots = await _apiService.GetLotsAsync(SelectedVaccine.Id, status: "active");
-        var lot = activeLots.Where(l => !l.IsExpired).OrderBy(l => l.Expiration).FirstOrDefault();
+        var lot = activeLots.Where(l => !l.IsExpired && !l.IsPastBeyondUseDate).OrderBy(l => l.Expiration).FirstOrDefault();
 
         if (lot is not null)
         {
-            return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText(), Ndc: ndc);
+            return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText(),
+                Ndc: ndc, Quantity: quantity, Directions: directions);
         }
 
         if (SkipLotAndExpiration)
         {
-            return new VaccineEntryPayload(SelectedVaccine.ShortCode, "", "", AdminSite.ToDisplayText(), Ndc: ndc, SkipLotAndExpiration: true);
+            return new VaccineEntryPayload(SelectedVaccine.ShortCode, "", "", AdminSite.ToDisplayText(),
+                Ndc: ndc, SkipLotAndExpiration: true, Quantity: quantity, Directions: directions);
         }
 
         ErrorMessage = $"No unexpired lot on file for {SelectedVaccine.Name} — add one below, or choose \"Leave lot/expiration blank\" to continue without one.";

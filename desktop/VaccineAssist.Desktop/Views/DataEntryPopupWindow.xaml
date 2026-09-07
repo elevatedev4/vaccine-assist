@@ -175,7 +175,7 @@
                     </Style>
                 </Border.Style>
                 <StackPanel>
-                    <TextBlock Text="No unexpired lot on file for this vaccine." Foreground="DarkOrange"
+                    <TextBlock Text="{Binding LotGateMessage}" Foreground="DarkOrange"
                                FontWeight="Bold" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                         <TextBox Text="{Binding NewLotNumber, UpdateSourceTrigger=PropertyChanged}" Width="90" ToolTip="Lot number"/>

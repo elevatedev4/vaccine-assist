@@ -20,18 +20,41 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 /// behavior change, which felt like unnecessary churn for a cosmetic
 /// improvement; flagged as a judgment call, not an oversight.
 ///
+/// 2026-09-07 UPDATE (Will, verbatim): "The data entry should start from
+/// the patient Rx Profile, not from Add New Rx. So from that profile
+/// screen, push F3, then two windows will open that have to be escaped
+/// from, Priority, and Scan hard copy... Once on Add New Rx, you
+/// successfully got to enter the prescriber and vaccine by NDC, but did
+/// not yet enter the quantity, directions, lot, or expiration." Added
+/// SendF3AndDismissPreEntryDialogsStep (the Rx-Profile-to-Add-New-Rx
+/// transition) right after FocusPioneerWindowStep, and InputQuantityStep +
+/// InputDirectionsStep right after InputVaccineCodeStep, matching that
+/// entry order exactly.
+///
 /// STEP ORDER (Will's own described workflow, physician-then-drug, plus
 /// the live dumps' own progressive-fill order — prescriber and drug/
 /// quantity/days-supply all appeared together in the SAME dump capture,
 /// lot/expiration only in the LAST one):
 ///   1. FocusPioneerWindowStep — attach to the PioneerRx window (real
-///      since before this change).
-///   2. SelectPrescriberStep — physician alternate ID, ENTER x2 (was
+///      since before this change) — the patient's Rx Profile.
+///   2. SendF3AndDismissPreEntryDialogsStep — F3 from the Rx Profile,
+///      ESC through the "Priority"/"Scan Hard Copy" dialogs if they
+///      appear, re-attach to the resulting "Add New Rx" window (NEW,
+///      2026-09-07 — see its own doc comment; NOT confirmed against a
+///      live UIA dump, unlike every step below it).
+///   3. SelectPrescriberStep — physician alternate ID, ENTER x2 (was
 ///      "NavigateToVaccineFieldsStep": the real Add New Rx screen needs
 ///      no separate navigation step, every field is already visible).
-///   3. InputVaccineCodeStep — drug NDC, ENTER x2.
-///   4. InputLotAndExpirationStep — lot + expiration, plain text entry.
-///   5. ConfirmEntryStep — locates PioneerRx's Save &amp; Continue button
+///   4. InputVaccineCodeStep — drug NDC, ENTER x2.
+///   5. InputQuantityStep — this vaccine's quantity (NEW, 2026-09-07 —
+///      reverses InputVaccineCodeStep's earlier "don't type into
+///      uxQuantityPrescribed, it auto-populates" decision; see that
+///      step's own doc comment).
+///   6. InputDirectionsStep — this vaccine's directions (NEW, 2026-09-07
+///      — placeholder AutomationId, not yet confirmed against a live UIA
+///      dump; see that step's own doc comment).
+///   7. InputLotAndExpirationStep — lot + expiration, plain text entry.
+///   8. ConfirmEntryStep — locates PioneerRx's Save &amp; Continue button
 ///      but does not click it (safety stop before the real Rx save).
 /// </summary>
 public sealed class PlaceholderVaccineEntrySequence : IPioneerEntrySequence
@@ -41,8 +64,11 @@ public sealed class PlaceholderVaccineEntrySequence : IPioneerEntrySequence
     public IReadOnlyList<IPioneerEntryStep> Steps { get; } = new IPioneerEntryStep[]
     {
         new FocusPioneerWindowStep(),
+        new SendF3AndDismissPreEntryDialogsStep(),
         new SelectPrescriberStep(),
         new InputVaccineCodeStep(),
+        new InputQuantityStep(),
+        new InputDirectionsStep(),
         new InputLotAndExpirationStep(),
         new ConfirmEntryStep(),
     };

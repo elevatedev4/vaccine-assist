@@ -167,3 +167,185 @@ something a static UIA dump can prove), and whether `FocusNative()`
 reliably focuses these specific WinForms controls. First live run should
 be watched closely — see PlaceholderVaccineEntrySequence.cs's own doc
 comment for the exact step order.
+
+## V-... update — start from Rx Profile (F3), quantity/directions, BUD gate, physician groups (2026-09-07)
+
+Will's verbatim brief: "The data entry should start from the patient Rx
+Profile, not from Add New Rx. So from that profile screen, push F3, then
+two windows will open that have to be escaped from, Priority, and Scan
+hard copy. Keep in mind, all of this is in the original macro I gave you.
+Once on Add New Rx, you successfully got to enter the prescriber and
+vaccine by NDC, but did not yet enter the quantity, directions, lot, or
+expiration. Each vaccine will have its own quantity." Plus: entry must
+HALT when the chosen vaccine's lot is expired OR past its beyond-use date.
+
+- NEW `Sequencing/Steps/SendF3AndDismissPreEntryDialogsStep.cs` — runs
+  right after FocusPioneerWindowStep: sends F3 to the attached Rx Profile
+  window, then polls against a SINGLE SHARED deadline
+  (`CombinedDialogsTimeout` = 8s, reviewer fix 2026-09-07 — see below) for
+  windows titled like "Priority" and "Scan Hard Copy"
+  (`Uia/PreEntryDialogTitles.cs`) and ESCs whichever is found on each tick,
+  in whatever order they show up; a dialog that never appears (Will: "may
+  be configured off on some machines") logs a warning and the step
+  continues rather than hanging or failing. Re-attaches to the resulting
+  "Add New Rx" window afterward — via a DEDICATED title+handle-exclusion
+  lookup, not a plain PioneerRxAttachment.TryAttach() re-run (reviewer fix
+  2026-09-07 — see below) — and overwrites context.AttachedWindow, since
+  the Rx Profile reference FocusPioneerWindowStep captured is stale once
+  F3 has been sent.
+  **NOT CONFIRMED against a live UIA dump** — no dump of either dialog
+  exists in this repo; the exact window titles are built directly from
+  Will's own wording, not a captured screen. Confirm/adjust
+  PreEntryDialogTitles.cs against a live dump before relying on this.
+- NEW `Sequencing/Steps/InputQuantityStep.cs` — types
+  `Models.Vaccine.Quantity` into `uxQuantityPrescribed` (the SAME
+  AutomationId the 2026-09-05 dumps confirmed for InputVaccineCodeStep's
+  own doc comment, which at the time deliberately did NOT type into it
+  because it auto-populates from the drug record — that decision is
+  REVERSED here per Will's explicit "each vaccine will have its own
+  quantity"). Skips (no PioneerRx call) when Quantity is null — the
+  `vaccines.quantity` column is a parallel migration not owned by this
+  change; tolerate its absence.
+- NEW `Sequencing/Steps/InputDirectionsStep.cs` — types
+  `Models.Vaccine.Directions` into a PLACEHOLDER AutomationId
+  (`uxDirections`) — no directions/sig field appeared in any of the six
+  live dumps collected so far. Loud TODO in that file's own doc comment:
+  confirm the real AutomationId against a live dump before relying on
+  this; skips when Directions is null/blank, same posture as quantity.
+- `PlaceholderVaccineEntrySequence.cs` step order is now: Focus → **F3 +
+  dismiss dialogs (NEW)** → Select prescriber → Enter vaccine code →
+  **Enter quantity (NEW)** → **Enter directions (NEW)** → Enter lot and
+  expiration → Confirm entry.
+- `Models/Lot.cs`: new `BeyondUseDate` (nullable, `lots.beyond_use_date` —
+  parallel migration, tolerate absence) + `IsPastBeyondUseDate` (true when
+  set and today-or-earlier). `DataEntryPopupViewModel.IsLotExpiredOrMissing`
+  now also blocks on `IsPastBeyondUseDate`, and the popup's inline block
+  message (`LotGateMessage`, replacing the old static XAML text) covers
+  both "expired" and "past its beyond-use date," each explicitly telling
+  staff to update the lot inline **and** "tell the pharmacist to update
+  the VAR" (Will's brief, verbatim). `BuildPayloadAsync`'s FEFO lot query
+  now also excludes BUD-past lots, not just expired ones.
+- `Models/Vaccine.cs`: new `Quantity` (`decimal?`) and `Directions`
+  (`string?`), mapping `vaccines.quantity`/`vaccines.directions` (parallel
+  migration, tolerate absence).
+- Physicians settings tab: rules can now target a whole VACCINE GROUP
+  (`Models/VaccineGroupCatalog`'s existing groups), not just one specific
+  vaccine or the true "any vaccine" wildcard. New
+  `Models/PhysicianRuleVaccineOption.cs` backs a grouped ComboBox
+  (group headers via WPF's native GroupStyle, "All &lt;group&gt; vaccines"
+  first in each group, then that group's vaccines by name — see
+  `PhysiciansViewModel.BuildVaccineOptions`/`VaccineOptionsView`).
+  `Models/PhysicianRule.VaccineGroup` (nullable, `physician_rule.vaccine_group`
+  — parallel migration, tolerate absence) is sent by
+  `CreatePhysicianRuleAsync`'s new optional `vaccineGroup` parameter.
+  New `Models/PhysicianRuleMatcher.cs` implements the specific > group >
+  wildcard precedence as a pure, independently-tested function — see that
+  file's own doc comment for why it is NOT (yet) wired into
+  `DataEntryPopupViewModel.BuildLivePayloadAsync` in place of the existing
+  `IVaccineApiService.ResolvePhysicianAsync` cloud call: that's a judgment
+  call flagged for Will, not an oversight.
+
+## V-... reviewer request-changes round (2026-09-07)
+
+A parallel cloud branch (feat/cloud-tabs) landed the SERVER side of the
+group-rule work above while this branch was in review: migration 0009
+(`physician_rule.vaccine_group`), the specific > group > wildcard tier in
+`cloud/lib/physician-resolution.ts`, group derivation in
+`/api/physicians/resolve`, and — the piece this round's fix #1 depends on
+— a `vaccineGroupSupported` flag on GET/POST/PATCH `/api/physician-rules`
+that's `false` whenever the `vaccine_group` column doesn't exist yet on a
+given database (schema-degradation fallback, same pattern
+`hasActiveLot`/`eligibility` already use elsewhere in this app). Four
+fixes from that review round, all in this branch, none touching cloud/:
+
+1. **BLOCKING (safety)**: the desktop's "All &lt;group&gt; vaccines"
+   ComboBox option is now HIDDEN unless the server's own
+   `vaccineGroupSupported` flag says the column exists —
+   `PhysiciansViewModel.VaccineGroupSupported` (read from the new
+   `Models/PhysicianRulesResult.VaccineGroupSupported`,
+   `GetPhysicianRulesAsync`'s new return shape) gates `BuildVaccineOptions`
+   entirely, and `AddRuleAsync` has a belt-and-suspenders second check
+   before ever sending a group. Reason: on a database still missing the
+   column, a rule "saved" with only a group intent would persist as
+   `vaccine_id=null` with no group at all — an UNRESTRICTED "any vaccine"
+   wildcard, i.e. a silent over-grant of prescriber authority. Defaults to
+   `false` (hide) before the first successful load and whenever the flag
+   is unexpectedly absent from a response — fail CLOSED, not open; this is
+   a deliberate divergence from the cloud web page's own more lenient
+   `!== false` (defaults to shown) convention, since that page predates
+   the flag and needs backward compatibility this brand-new desktop code
+   doesn't. Physicians tab shows a short note ("vaccine-type rules
+   available after the pending migration") when hidden. See
+   `PhysiciansViewModelVaccineGroupSupportTests.cs`.
+2. **BLOCKING**: `SendF3AndDismissPreEntryDialogsStep`'s dialog wait was
+   order-dependent (waited out "Priority"'s own full timeout before ever
+   checking "Scan Hard Copy", so a sequential/modal second dialog could be
+   missed or the whole budget wasted on a dialog that's configured off).
+   Rewritten to a single shared deadline (`CombinedDialogsTimeout` = 8s)
+   with a set of pending titles, rescanning for ANY of them on every tick
+   and removing each the moment it's dismissed — order-agnostic, and an
+   immediate rescan after each dismissal catches a dialog that only
+   appears once the first is gone. See that file's own doc comment
+   (REVIEWER FIX notes) and `SendF3AndDismissPreEntryDialogsStepTests.cs`.
+3. Robustness: the re-attach after F3 no longer just re-runs
+   `PioneerRxAttachment.TryAttach()` (which matches "Rx Profile" AND
+   "New Rx" both, first-candidate-wins with no ordering guarantee — could
+   silently hand back the SAME stale Rx Profile window). New
+   `TryAttachToAddNewRxWindow` (private to this step) requires the title
+   to contain "New Rx" specifically AND excludes the previously-attached
+   window's native handle (`FrameworkAutomationElement.NativeWindowHandle`,
+   same pattern as rx-verify's `PioneerRxWindow.SafeNativeHandle`); fails
+   loud (the step returns failure) if nothing distinct matches, rather
+   than risking a silent wrong-window re-attach.
+4. Doc-only: `InputVaccineCodeStep.cs`'s "NOT USED: Quantity..." comment
+   was stale after `InputQuantityStep.cs` reversed that decision for
+   `uxQuantityPrescribed` specifically — updated to cross-reference it
+   (Days-Supply/Refills are still correctly NOT USED).
+
+## V-... reviewer follow-up: Quantity is TEXT, not numeric (2026-09-07)
+
+Cross-checking the cloud contract after the round above surfaced one more
+BLOCKING issue: migration 0009 (by then already on `main`, see
+`supabase/migrations/0009_lots_bud_vaccine_defaults.sql` lines 26-30)
+defines `vaccine.quantity` as `text` — free text like `"0.5 mL"` or
+`"1 dose IM x1"`, since Pioneer's own quantity field on a prescription
+accepts arbitrary strings, not a single unit type. This branch had typed
+`Models/Vaccine.cs`'s `Quantity` as `decimal?`. PostgREST serializes a
+`text` column as a JSON string, and `VaccineApiService` deserializes with
+strict default `System.Text.Json` options — so the FIRST real (non-numeric)
+quantity value ever entered on the cloud `/vaccines` page would have
+hard-crashed `GetVaccinesAsync`, and every screen that loads vaccines with
+it (Physicians tab, Active vaccines, the whole guided data-entry flow).
+
+Fixed:
+- `Models/Vaccine.Quantity`: `decimal?` → `string?` (now matches
+  `Directions`'s existing type exactly).
+- `PioneerEntryAutomation/VaccineEntryPayload.Quantity`: `decimal?` →
+  `string?`.
+- `Sequencing/Steps/InputQuantityStep.cs`: dropped the `0.####` decimal
+  formatting — types whatever string is on file VERBATIM, gated on
+  `string.IsNullOrWhiteSpace` (matching `InputDirectionsStep`'s exact
+  null/blank-skip convention) instead of a `decimal?` pattern match.
+- Every affected test/fake updated (`InputQuantityStepTests.cs` rewritten
+  with realistic free-text sample values instead of decimal literals;
+  `PlaceholderVaccineEntrySequenceTests.cs`'s dry-run payload updated to
+  match).
+- `DataEntryPopupViewModel.BuildPayloadAsync`'s `var quantity = SelectedVaccine.Quantity;`
+  needed NO code change — it already just passes the value straight
+  through untyped-inferred, so the type change alone fixes it.
+
+SKIPPED (reviewer's own explicit "optional, skip if it snowballs" call):
+also reading cloud `/api/vaccines`'s new `quantityDirectionsSupported`
+flag (same schema-degradation pattern as `vaccineGroupSupported` on
+`/api/physician-rules`, added in the same migration/cloud branch). Unlike
+the physician-rules group flag, this one isn't a SAFETY gate — a null
+`Quantity`/`Directions` already correctly skips the corresponding entry
+step regardless of WHY it's null (migration pending vs. simply unset), so
+the flag would only ever be a UI nicety (e.g. "why is this blank" hint).
+Threading a new result-wrapper type through `GetVaccinesAsync`,
+`GetAllVaccinesAsync`, AND `GetEligibleVaccinesForAgeAsync` would touch
+8+ files across screens well outside this brief's scope (EntryViewModel,
+LotsViewModel, ActiveVaccinesViewModel, PhysiciansViewModel,
+DataEntryPopupViewModel, and every fake/test for each) — exactly the
+"snowballs" case the reviewer flagged as a reason to skip. Worth doing as
+its own small follow-up if Will wants the UI hint.

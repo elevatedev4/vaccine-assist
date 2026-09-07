@@ -99,19 +99,33 @@ public interface IVaccineApiService
     /// <summary>Calls DELETE /api/physicians/{id}.</summary>
     Task DeletePhysicianAsync(Guid id, CancellationToken cancellationToken = default);
 
-    /// <summary>Calls GET /api/physician-rules — every vaccine/age-range
-    /// -> physician assignment rule, for the Physicians settings tab.</summary>
-    Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Calls GET /api/physician-rules — every vaccine/age-range -> physician
+    /// assignment rule, for the Physicians settings tab, PLUS (reviewer
+    /// fix, 2026-09-07) whether the server currently supports
+    /// physician_rule.vaccine_group (see PhysicianRulesResult's own doc
+    /// comment — a parallel migration/cloud branch added this flag for a
+    /// real safety reason: a group-intent rule saved against a database
+    /// missing that column silently becomes an unrestricted "any vaccine"
+    /// wildcard). PhysiciansViewModel gates its entire "All &lt;group&gt;
+    /// vaccines" ComboBox option list on this flag.
+    /// </summary>
+    Task<PhysicianRulesResult> GetPhysicianRulesAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Calls POST /api/physician-rules. vaccineId null means
-    /// "any vaccine" (the wildcard/"everything else" fallback rule) — see
-    /// cloud/lib/physician-resolution.ts.</summary>
+    /// "any vaccine" (the wildcard/"everything else" fallback rule) unless
+    /// vaccineGroup is set, in which case it means "any vaccine in that
+    /// VaccineGroupCatalog group" (Will, 2026-09-07 — see
+    /// Models/PhysicianRuleMatcher.cs for the specific &gt; group &gt;
+    /// wildcard precedence this enables). vaccineGroup is ignored/should be
+    /// null whenever vaccineId is set.</summary>
     Task<PhysicianRule> CreatePhysicianRuleAsync(
         Guid physicianId,
         Guid? vaccineId,
         int? minAge,
         int? maxAge,
         int priority = 0,
+        string? vaccineGroup = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>Calls DELETE /api/physician-rules/{id}.</summary>

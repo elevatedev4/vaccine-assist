@@ -26,12 +26,16 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// identical resolved value together), so typing into ONE field is
 /// sufficient; Will's own description only ever mentions one action here.
 ///
-/// NOT USED: Quantity/Days-Supply/Refills (uxDispensedQuantity,
-/// uxDaysSupply, uxQuantityPrescribed) — the same live dumps show these
-/// auto-populate from the drug record the moment it's resolved (e.g.
-/// Comirnaty's quantity 0.3 / days-supply 1 appeared with no separate
-/// typing action), so per the brief's "only wire what the dumps support —
-/// do NOT invent fields", no step types into them.
+/// STILL NOT USED here: Days-Supply/Refills (uxDaysSupply,
+/// uxDispensedQuantity) — the live dumps show these auto-populate from the
+/// drug record the moment it's resolved, so per the brief's "only wire
+/// what the dumps support — do NOT invent fields", no step types into
+/// them. uxQuantityPrescribed (also confirmed auto-populating in these
+/// same dumps) is the ONE exception, REVERSED 2026-09-07 per Will's
+/// explicit "each vaccine will have its own quantity" — see
+/// InputQuantityStep.cs, which now runs right after this step and types
+/// Models.Vaccine.Quantity into uxQuantityPrescribed, overwriting whatever
+/// Pioneer auto-populated.
 /// </summary>
 public sealed class InputVaccineCodeStep : IPioneerEntryStep
 {

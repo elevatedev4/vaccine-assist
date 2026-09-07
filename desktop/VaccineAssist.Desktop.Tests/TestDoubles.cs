@@ -172,6 +172,14 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     public List<Physician> PhysicianRows { get; } = new();
     public List<PhysicianRule> PhysicianRuleRows { get; } = new();
 
+    /// <summary>Defaults to true so every EXISTING test that loads
+    /// physician rules (written before the reviewer's vaccineGroupSupported
+    /// safety fix existed) keeps passing unchanged — only tests
+    /// specifically covering the "migration hasn't run yet, hide group
+    /// options" case need to set this false. See
+    /// PhysiciansViewModelVaccineGroupSupportTests.cs.</summary>
+    public bool VaccineGroupSupported { get; set; } = true;
+
     public Task<IReadOnlyList<Physician>> GetPhysiciansAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Physician>>(PhysicianRows);
 
@@ -189,17 +197,19 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<PhysicianRule>>(PhysicianRuleRows);
+    public Task<PhysicianRulesResult> GetPhysicianRulesAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new PhysicianRulesResult(PhysicianRuleRows, VaccineGroupSupported));
 
     public Task<PhysicianRule> CreatePhysicianRuleAsync(
-        Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, CancellationToken cancellationToken = default)
+        Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, string? vaccineGroup = null,
+        CancellationToken cancellationToken = default)
     {
         var rule = new PhysicianRule
         {
             Id = Guid.NewGuid(),
             PhysicianId = physicianId,
             VaccineId = vaccineId,
+            VaccineGroup = vaccineGroup,
             MinAge = minAge,
             MaxAge = maxAge,
             Priority = priority,

@@ -21,6 +21,21 @@ public sealed class PhysicianRule
     [JsonPropertyName("vaccine_id")]
     public Guid? VaccineId { get; set; }
 
+    /// <summary>
+    /// Populated by the `physician_rule.vaccine_group` column — added by a
+    /// parallel migration effort alongside this change (see
+    /// PioneerEntryAutomation/TODO.md's 2026-09-07 entry). Only meaningful
+    /// when VaccineId is null: this rule applies to every vaccine in this
+    /// VaccineGroupCatalog group (Will, 2026-09-07: "assign vaccine TYPES,
+    /// not just specific vaccines, to a protocol physician"). Null on both
+    /// a specific-vaccine rule (VaccineId set — VaccineGroup is ignored)
+    /// and a true wildcard/"any vaccine" fallback rule (both null). See
+    /// PhysicianRuleMatcher for the specific &gt; group &gt; wildcard
+    /// precedence this enables.
+    /// </summary>
+    [JsonPropertyName("vaccine_group")]
+    public string? VaccineGroup { get; set; }
+
     [JsonPropertyName("min_age")]
     public int? MinAge { get; set; }
 
