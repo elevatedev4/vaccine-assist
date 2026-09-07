@@ -49,10 +49,13 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation;
 /// work entirely rather than trying to type blank values into the admin
 /// form.
 /// </param>
-/// <param name="Quantity">This vaccine's Models.Vaccine.Quantity, typed
-/// into PioneerRx's quantity field by InputQuantityStep. Null skips that
-/// step entirely (migration not applied yet, or simply unset for this
-/// vaccine) — never a guessed/placeholder value.</param>
+/// <param name="Quantity">This vaccine's Models.Vaccine.Quantity — free
+/// text (e.g. "0.5 mL", "1 dose IM x1"; vaccine.quantity is a `text`
+/// column, not numeric — REVIEWER FIX 2026-09-07, see Vaccine.Quantity's
+/// own doc comment), typed VERBATIM into PioneerRx's quantity field by
+/// InputQuantityStep. Null/blank skips that step entirely (migration not
+/// applied yet, or simply unset for this vaccine) — never a
+/// guessed/placeholder value.</param>
 /// <param name="Directions">This vaccine's Models.Vaccine.Directions,
 /// typed into PioneerRx's directions field by InputDirectionsStep. Same
 /// null-skips posture as Quantity.</param>
@@ -66,7 +69,7 @@ public sealed record VaccineEntryPayload(
     bool IsMedicareHomeVisit = false,
     string? HomeVisitReason = null,
     bool SkipLotAndExpiration = false,
-    decimal? Quantity = null,
+    string? Quantity = null,
     string? Directions = null)
 {
     /// <summary>The exact "code,lot,exp" clipboard format the old macro read from

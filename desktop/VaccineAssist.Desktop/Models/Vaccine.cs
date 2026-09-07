@@ -55,16 +55,24 @@ public sealed class Vaccine
     /// This vaccine's administered quantity, for PioneerRx's "Add New Rx"
     /// quantity field (Will, 2026-09-07: "did not yet enter the quantity...
     /// Each vaccine will have its own quantity"). Populated by the
-    /// `vaccines.quantity` column — added by a parallel migration effort
-    /// alongside this change (see PioneerEntryAutomation/TODO.md's
-    /// 2026-09-07 entry); null until that migration runs, or when a
-    /// specific vaccine simply has no quantity set yet.
-    /// Sequencing/Steps/InputQuantityStep.cs SKIPS typing anything into
-    /// Pioneer when this is null rather than guessing or typing a
-    /// placeholder value.
+    /// `vaccines.quantity` column — confirmed on main as `text`, NOT
+    /// numeric (supabase/migrations/0009_lots_bud_vaccine_defaults.sql
+    /// lines 26-30: free-text because Pioneer's own quantity field accepts
+    /// arbitrary strings like "0.5 mL" or "1 dose IM x1", not a single unit
+    /// type) — REVIEWER FIX 2026-09-07: this was originally typed
+    /// `decimal?`, which would have hard-crashed GetVaccinesAsync (and
+    /// every screen that loads vaccines) the moment a real, non-numeric
+    /// quantity string was ever entered on the cloud /vaccines page, since
+    /// PostgREST serializes a `text` column as a JSON string and this
+    /// service deserializes with strict default System.Text.Json options.
+    /// Null until that migration runs, or when a specific vaccine simply
+    /// has no quantity set yet. Sequencing/Steps/InputQuantityStep.cs SKIPS
+    /// typing anything into Pioneer when this is null/blank rather than
+    /// guessing or typing a placeholder value, and types whatever string IS
+    /// here VERBATIM (no numeric parsing/formatting).
     /// </summary>
     [JsonPropertyName("quantity")]
-    public decimal? Quantity { get; set; }
+    public string? Quantity { get; set; }
 
     /// <summary>
     /// Free-text directions/sig for PioneerRx's "Add New Rx" directions

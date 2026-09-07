@@ -52,8 +52,12 @@ public class PlaceholderVaccineEntrySequenceTests
         // environment included) — dry run must still complete cleanly,
         // since every step checks context.DryRun before touching UIA.
         var sequence = new PlaceholderVaccineEntrySequence();
+        // Quantity is free text (vaccine.quantity is a `text` column, not
+        // numeric — reviewer fix 2026-09-07, see Models/Vaccine.cs's own
+        // doc comment), so this deliberately uses a non-numeric-looking
+        // value rather than a bare "0.5" to prove nothing tries to parse it.
         var payload = new VaccineEntryPayload("mmr1", "LOT123", "01152027", "Left arm",
-            Ndc: "00069-2025-10", PhysicianAlternateId: "ALTPRIMARY", Quantity: 0.5m, Directions: "IM in deltoid");
+            Ndc: "00069-2025-10", PhysicianAlternateId: "ALTPRIMARY", Quantity: "0.5 mL", Directions: "IM in deltoid");
         var log = new System.Collections.Generic.List<string>();
         var context = new PioneerEntryStepContext(payload, dryRun: true, log.Add);
 
@@ -64,7 +68,7 @@ public class PlaceholderVaccineEntrySequenceTests
         Assert.All(result.StepResults, r => Assert.True(r.DryRun));
         Assert.Contains(log, line => line.Contains("ALTPRIMARY")); // SelectPrescriberStep
         Assert.Contains(log, line => line.Contains("00069-2025-10")); // InputVaccineCodeStep
-        Assert.Contains(log, line => line.Contains("0.5")); // InputQuantityStep
+        Assert.Contains(log, line => line.Contains("0.5 mL")); // InputQuantityStep
         Assert.Contains(log, line => line.Contains("IM in deltoid")); // InputDirectionsStep
         Assert.Contains(log, line => line.Contains("LOT123")); // InputLotAndExpirationStep
     }

@@ -301,3 +301,51 @@ fixes from that review round, all in this branch, none touching cloud/:
    was stale after `InputQuantityStep.cs` reversed that decision for
    `uxQuantityPrescribed` specifically — updated to cross-reference it
    (Days-Supply/Refills are still correctly NOT USED).
+
+## V-... reviewer follow-up: Quantity is TEXT, not numeric (2026-09-07)
+
+Cross-checking the cloud contract after the round above surfaced one more
+BLOCKING issue: migration 0009 (by then already on `main`, see
+`supabase/migrations/0009_lots_bud_vaccine_defaults.sql` lines 26-30)
+defines `vaccine.quantity` as `text` — free text like `"0.5 mL"` or
+`"1 dose IM x1"`, since Pioneer's own quantity field on a prescription
+accepts arbitrary strings, not a single unit type. This branch had typed
+`Models/Vaccine.cs`'s `Quantity` as `decimal?`. PostgREST serializes a
+`text` column as a JSON string, and `VaccineApiService` deserializes with
+strict default `System.Text.Json` options — so the FIRST real (non-numeric)
+quantity value ever entered on the cloud `/vaccines` page would have
+hard-crashed `GetVaccinesAsync`, and every screen that loads vaccines with
+it (Physicians tab, Active vaccines, the whole guided data-entry flow).
+
+Fixed:
+- `Models/Vaccine.Quantity`: `decimal?` → `string?` (now matches
+  `Directions`'s existing type exactly).
+- `PioneerEntryAutomation/VaccineEntryPayload.Quantity`: `decimal?` →
+  `string?`.
+- `Sequencing/Steps/InputQuantityStep.cs`: dropped the `0.####` decimal
+  formatting — types whatever string is on file VERBATIM, gated on
+  `string.IsNullOrWhiteSpace` (matching `InputDirectionsStep`'s exact
+  null/blank-skip convention) instead of a `decimal?` pattern match.
+- Every affected test/fake updated (`InputQuantityStepTests.cs` rewritten
+  with realistic free-text sample values instead of decimal literals;
+  `PlaceholderVaccineEntrySequenceTests.cs`'s dry-run payload updated to
+  match).
+- `DataEntryPopupViewModel.BuildPayloadAsync`'s `var quantity = SelectedVaccine.Quantity;`
+  needed NO code change — it already just passes the value straight
+  through untyped-inferred, so the type change alone fixes it.
+
+SKIPPED (reviewer's own explicit "optional, skip if it snowballs" call):
+also reading cloud `/api/vaccines`'s new `quantityDirectionsSupported`
+flag (same schema-degradation pattern as `vaccineGroupSupported` on
+`/api/physician-rules`, added in the same migration/cloud branch). Unlike
+the physician-rules group flag, this one isn't a SAFETY gate — a null
+`Quantity`/`Directions` already correctly skips the corresponding entry
+step regardless of WHY it's null (migration pending vs. simply unset), so
+the flag would only ever be a UI nicety (e.g. "why is this blank" hint).
+Threading a new result-wrapper type through `GetVaccinesAsync`,
+`GetAllVaccinesAsync`, AND `GetEligibleVaccinesForAgeAsync` would touch
+8+ files across screens well outside this brief's scope (EntryViewModel,
+LotsViewModel, ActiveVaccinesViewModel, PhysiciansViewModel,
+DataEntryPopupViewModel, and every fake/test for each) — exactly the
+"snowballs" case the reviewer flagged as a reason to skip. Worth doing as
+its own small follow-up if Will wants the UI hint.
