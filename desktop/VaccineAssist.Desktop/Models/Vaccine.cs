@@ -51,6 +51,29 @@ public sealed class Vaccine
     [JsonPropertyName("eligibility")]
     public EligibilityResult? Eligibility { get; set; }
 
+    /// <summary>
+    /// This vaccine's administered quantity, for PioneerRx's "Add New Rx"
+    /// quantity field (Will, 2026-09-07: "did not yet enter the quantity...
+    /// Each vaccine will have its own quantity"). Populated by the
+    /// `vaccines.quantity` column — added by a parallel migration effort
+    /// alongside this change (see PioneerEntryAutomation/TODO.md's
+    /// 2026-09-07 entry); null until that migration runs, or when a
+    /// specific vaccine simply has no quantity set yet.
+    /// Sequencing/Steps/InputQuantityStep.cs SKIPS typing anything into
+    /// Pioneer when this is null rather than guessing or typing a
+    /// placeholder value.
+    /// </summary>
+    [JsonPropertyName("quantity")]
+    public decimal? Quantity { get; set; }
+
+    /// <summary>
+    /// Free-text directions/sig for PioneerRx's "Add New Rx" directions
+    /// field. Same null-tolerant/skip posture as Quantity above — see
+    /// Sequencing/Steps/InputDirectionsStep.cs.
+    /// </summary>
+    [JsonPropertyName("directions")]
+    public string? Directions { get; set; }
+
     /// <summary>Formatted for display, e.g. "$147.99" or "—" when unknown.</summary>
     public string CashPriceDisplay => CashPriceCents is int cents ? (cents / 100.0).ToString("C") : "—";
 

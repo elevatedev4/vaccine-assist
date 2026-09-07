@@ -49,6 +49,13 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation;
 /// work entirely rather than trying to type blank values into the admin
 /// form.
 /// </param>
+/// <param name="Quantity">This vaccine's Models.Vaccine.Quantity, typed
+/// into PioneerRx's quantity field by InputQuantityStep. Null skips that
+/// step entirely (migration not applied yet, or simply unset for this
+/// vaccine) — never a guessed/placeholder value.</param>
+/// <param name="Directions">This vaccine's Models.Vaccine.Directions,
+/// typed into PioneerRx's directions field by InputDirectionsStep. Same
+/// null-skips posture as Quantity.</param>
 public sealed record VaccineEntryPayload(
     string ShortCode,
     string LotNumber,
@@ -58,7 +65,9 @@ public sealed record VaccineEntryPayload(
     string PhysicianAlternateId = "",
     bool IsMedicareHomeVisit = false,
     string? HomeVisitReason = null,
-    bool SkipLotAndExpiration = false)
+    bool SkipLotAndExpiration = false,
+    decimal? Quantity = null,
+    string? Directions = null)
 {
     /// <summary>The exact "code,lot,exp" clipboard format the old macro read from
     /// %vaccinedata% (vaccine-add-new.mxe line 32-36) — kept for the Entry

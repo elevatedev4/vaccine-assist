@@ -167,3 +167,77 @@ something a static UIA dump can prove), and whether `FocusNative()`
 reliably focuses these specific WinForms controls. First live run should
 be watched closely — see PlaceholderVaccineEntrySequence.cs's own doc
 comment for the exact step order.
+
+## V-... update — start from Rx Profile (F3), quantity/directions, BUD gate, physician groups (2026-09-07)
+
+Will's verbatim brief: "The data entry should start from the patient Rx
+Profile, not from Add New Rx. So from that profile screen, push F3, then
+two windows will open that have to be escaped from, Priority, and Scan
+hard copy. Keep in mind, all of this is in the original macro I gave you.
+Once on Add New Rx, you successfully got to enter the prescriber and
+vaccine by NDC, but did not yet enter the quantity, directions, lot, or
+expiration. Each vaccine will have its own quantity." Plus: entry must
+HALT when the chosen vaccine's lot is expired OR past its beyond-use date.
+
+- NEW `Sequencing/Steps/SendF3AndDismissPreEntryDialogsStep.cs` — runs
+  right after FocusPioneerWindowStep: sends F3 to the attached Rx Profile
+  window, then waits (with its own per-dialog timeout,
+  `PerDialogTimeout` = 4s) for windows titled like "Priority" and
+  "Scan Hard Copy" (`Uia/PreEntryDialogTitles.cs`) and ESCs each one that
+  appears, in whatever order they show up; a dialog that never appears
+  (Will: "may be configured off on some machines") logs a warning and the
+  step continues rather than hanging or failing. Re-attaches to the
+  resulting "Add New Rx" window afterward (via PioneerRxAttachment.TryAttach
+  again) and overwrites context.AttachedWindow — the Rx Profile reference
+  FocusPioneerWindowStep captured is stale once F3 has been sent.
+  **NOT CONFIRMED against a live UIA dump** — no dump of either dialog
+  exists in this repo; the exact window titles are built directly from
+  Will's own wording, not a captured screen. Confirm/adjust
+  PreEntryDialogTitles.cs against a live dump before relying on this.
+- NEW `Sequencing/Steps/InputQuantityStep.cs` — types
+  `Models.Vaccine.Quantity` into `uxQuantityPrescribed` (the SAME
+  AutomationId the 2026-09-05 dumps confirmed for InputVaccineCodeStep's
+  own doc comment, which at the time deliberately did NOT type into it
+  because it auto-populates from the drug record — that decision is
+  REVERSED here per Will's explicit "each vaccine will have its own
+  quantity"). Skips (no PioneerRx call) when Quantity is null — the
+  `vaccines.quantity` column is a parallel migration not owned by this
+  change; tolerate its absence.
+- NEW `Sequencing/Steps/InputDirectionsStep.cs` — types
+  `Models.Vaccine.Directions` into a PLACEHOLDER AutomationId
+  (`uxDirections`) — no directions/sig field appeared in any of the six
+  live dumps collected so far. Loud TODO in that file's own doc comment:
+  confirm the real AutomationId against a live dump before relying on
+  this; skips when Directions is null/blank, same posture as quantity.
+- `PlaceholderVaccineEntrySequence.cs` step order is now: Focus → **F3 +
+  dismiss dialogs (NEW)** → Select prescriber → Enter vaccine code →
+  **Enter quantity (NEW)** → **Enter directions (NEW)** → Enter lot and
+  expiration → Confirm entry.
+- `Models/Lot.cs`: new `BeyondUseDate` (nullable, `lots.beyond_use_date` —
+  parallel migration, tolerate absence) + `IsPastBeyondUseDate` (true when
+  set and today-or-earlier). `DataEntryPopupViewModel.IsLotExpiredOrMissing`
+  now also blocks on `IsPastBeyondUseDate`, and the popup's inline block
+  message (`LotGateMessage`, replacing the old static XAML text) covers
+  both "expired" and "past its beyond-use date," each explicitly telling
+  staff to update the lot inline **and** "tell the pharmacist to update
+  the VAR" (Will's brief, verbatim). `BuildPayloadAsync`'s FEFO lot query
+  now also excludes BUD-past lots, not just expired ones.
+- `Models/Vaccine.cs`: new `Quantity` (`decimal?`) and `Directions`
+  (`string?`), mapping `vaccines.quantity`/`vaccines.directions` (parallel
+  migration, tolerate absence).
+- Physicians settings tab: rules can now target a whole VACCINE GROUP
+  (`Models/VaccineGroupCatalog`'s existing groups), not just one specific
+  vaccine or the true "any vaccine" wildcard. New
+  `Models/PhysicianRuleVaccineOption.cs` backs a grouped ComboBox
+  (group headers via WPF's native GroupStyle, "All &lt;group&gt; vaccines"
+  first in each group, then that group's vaccines by name — see
+  `PhysiciansViewModel.BuildVaccineOptions`/`VaccineOptionsView`).
+  `Models/PhysicianRule.VaccineGroup` (nullable, `physician_rule.vaccine_group`
+  — parallel migration, tolerate absence) is sent by
+  `CreatePhysicianRuleAsync`'s new optional `vaccineGroup` parameter.
+  New `Models/PhysicianRuleMatcher.cs` implements the specific > group >
+  wildcard precedence as a pure, independently-tested function — see that
+  file's own doc comment for why it is NOT (yet) wired into
+  `DataEntryPopupViewModel.BuildLivePayloadAsync` in place of the existing
+  `IVaccineApiService.ResolvePhysicianAsync` cloud call: that's a judgment
+  call flagged for Will, not an oversight.

@@ -143,10 +143,11 @@ public sealed class VaccineApiService : IVaccineApiService
         int? minAge,
         int? maxAge,
         int priority = 0,
+        string? vaccineGroup = null,
         CancellationToken cancellationToken = default)
     {
         using var request = CreateRequest(HttpMethod.Post, "/api/physician-rules");
-        request.Content = JsonContent.Create(new CreatePhysicianRuleRequest(physicianId, vaccineId, minAge, maxAge, priority));
+        request.Content = JsonContent.Create(new CreatePhysicianRuleRequest(physicianId, vaccineId, minAge, maxAge, priority, vaccineGroup));
 
         var result = await SendAsync<PhysicianRuleResponse>(request, cancellationToken);
         return result.PhysicianRule;
@@ -281,7 +282,14 @@ public sealed class VaccineApiService : IVaccineApiService
         [property: JsonPropertyName("vaccine_id")] Guid? VaccineId,
         [property: JsonPropertyName("min_age")] int? MinAge,
         [property: JsonPropertyName("max_age")] int? MaxAge,
-        [property: JsonPropertyName("priority")] int Priority);
+        [property: JsonPropertyName("priority")] int Priority,
+        // NEW (2026-09-07): physician_rule.vaccine_group — a parallel
+        // migration adds this column; harmless to send before that lands,
+        // since the existing /api/physician-rules route (owned by that
+        // other work) either accepts and stores it or ignores an unknown
+        // field, per this brief's "code against those column names,
+        // tolerating their absence."
+        [property: JsonPropertyName("vaccine_group")] string? VaccineGroup = null);
 
     private sealed record CreateLotRequest(
         [property: JsonPropertyName("vaccine_id")] Guid VaccineId,

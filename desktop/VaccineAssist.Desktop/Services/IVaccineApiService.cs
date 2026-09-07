@@ -104,14 +104,19 @@ public interface IVaccineApiService
     Task<IReadOnlyList<PhysicianRule>> GetPhysicianRulesAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Calls POST /api/physician-rules. vaccineId null means
-    /// "any vaccine" (the wildcard/"everything else" fallback rule) — see
-    /// cloud/lib/physician-resolution.ts.</summary>
+    /// "any vaccine" (the wildcard/"everything else" fallback rule) unless
+    /// vaccineGroup is set, in which case it means "any vaccine in that
+    /// VaccineGroupCatalog group" (Will, 2026-09-07 — see
+    /// Models/PhysicianRuleMatcher.cs for the specific &gt; group &gt;
+    /// wildcard precedence this enables). vaccineGroup is ignored/should be
+    /// null whenever vaccineId is set.</summary>
     Task<PhysicianRule> CreatePhysicianRuleAsync(
         Guid physicianId,
         Guid? vaccineId,
         int? minAge,
         int? maxAge,
         int priority = 0,
+        string? vaccineGroup = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>Calls DELETE /api/physician-rules/{id}.</summary>

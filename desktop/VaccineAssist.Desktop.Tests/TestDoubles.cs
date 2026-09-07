@@ -193,13 +193,15 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         Task.FromResult<IReadOnlyList<PhysicianRule>>(PhysicianRuleRows);
 
     public Task<PhysicianRule> CreatePhysicianRuleAsync(
-        Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, CancellationToken cancellationToken = default)
+        Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, string? vaccineGroup = null,
+        CancellationToken cancellationToken = default)
     {
         var rule = new PhysicianRule
         {
             Id = Guid.NewGuid(),
             PhysicianId = physicianId,
             VaccineId = vaccineId,
+            VaccineGroup = vaccineGroup,
             MinAge = minAge,
             MaxAge = maxAge,
             Priority = priority,

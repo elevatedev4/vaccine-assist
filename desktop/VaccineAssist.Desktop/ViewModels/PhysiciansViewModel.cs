@@ -1,8 +1,10 @@
 using System;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Windows.Data;
 using System.Windows.Input;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Models;
@@ -31,11 +33,12 @@ public sealed class PhysiciansViewModel : ObservableObject
     private string _newPhysicianDisplayName = "";
     private string _newPhysicianAlternateId = "";
     private Physician? _newRulePhysician;
-    private Vaccine? _newRuleVaccine;
+    private PhysicianRuleVaccineOption? _newRuleVaccineOption;
     private bool _newRuleIsAnyVaccine;
     private string _newRuleMinAgeText = "";
     private string _newRuleMaxAgeText = "";
     private string _newRulePriorityText = "0";
+    private readonly ICollectionView _vaccineOptionsView;
 
     public PhysiciansViewModel(IVaccineApiService apiService)
     {
@@ -45,13 +48,34 @@ public sealed class PhysiciansViewModel : ObservableObject
             () => !IsBusy && !string.IsNullOrWhiteSpace(NewPhysicianDisplayName) && !string.IsNullOrWhiteSpace(NewPhysicianAlternateId));
         DeletePhysicianCommand = new AsyncRelayCommand<Physician>(DeletePhysicianAsync, _ => !IsBusy);
         AddRuleCommand = new AsyncRelayCommand(AddRuleAsync,
-            () => !IsBusy && NewRulePhysician is not null && (NewRuleIsAnyVaccine || NewRuleVaccine is not null));
+            () => !IsBusy && NewRulePhysician is not null && (NewRuleIsAnyVaccine || NewRuleVaccineOption is not null));
         DeleteRuleCommand = new AsyncRelayCommand<PhysicianRule>(DeleteRuleAsync, _ => !IsBusy);
+
+        // Grouped ComboBox (Will, 2026-09-07: "vaccine types as group
+        // headers... with an 'All <group> vaccines' selectable item per
+        // group... and specific vaccines beneath") — WPF's native
+        // GroupStyle grouping over VaccineOptions, rebuilt by
+        // BuildVaccineOptions whenever Vaccines (re)loads. A
+        // ListCollectionView over an ObservableCollection observes that
+        // collection's own Clear()/Add() changes automatically, so no
+        // manual Refresh() is needed after each rebuild — same
+        // Clear()-then-Add() convention this class and
+        // DataEntryPopupViewModel already use elsewhere.
+        _vaccineOptionsView = CollectionViewSource.GetDefaultView(VaccineOptions);
+        _vaccineOptionsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(PhysicianRuleVaccineOption.Group)));
     }
 
     public ObservableCollection<Physician> Physicians { get; } = new();
     public ObservableCollection<PhysicianRule> PhysicianRules { get; } = new();
     public ObservableCollection<Vaccine> Vaccines { get; } = new();
+    public ObservableCollection<PhysicianRuleVaccineOption> VaccineOptions { get; } = new();
+
+    /// <summary>Bound as the Physicians tab's "Vaccine" ComboBox's
+    /// ItemsSource (Views/PhysiciansView.xaml) — VaccineOptions grouped by
+    /// VaccineGroupCatalog group, rendered via GroupStyle. Exposed
+    /// separately from VaccineOptions itself so the view gets grouping for
+    /// free rather than needing its own CollectionViewSource resource.</summary>
+    public ICollectionView VaccineOptionsView => _vaccineOptionsView;
 
     public bool IsBusy
     {
@@ -86,16 +110,25 @@ public sealed class PhysiciansViewModel : ObservableObject
         set => SetProperty(ref _newRulePhysician, value);
     }
 
-    public Vaccine? NewRuleVaccine
+    /// <summary>
+    /// The Physicians tab's grouped "Vaccine" ComboBox selection — either a
+    /// specific-vaccine option or an "All &lt;group&gt; vaccines" option
+    /// (PhysicianRuleVaccineOption.IsGroupWildcard). See AddRuleAsync for
+    /// how each shape maps onto PhysicianRule.VaccineId/VaccineGroup.
+    /// </summary>
+    public PhysicianRuleVaccineOption? NewRuleVaccineOption
     {
-        get => _newRuleVaccine;
-        set => SetProperty(ref _newRuleVaccine, value);
+        get => _newRuleVaccineOption;
+        set => SetProperty(ref _newRuleVaccineOption, value);
     }
 
-    /// <summary>When true, the rule applies to any vaccine (the wildcard/
-    /// "everything else" fallback — Will's own example: the protocol
-    /// physician who covers everything the pharmacist's own PREP-act
-    /// authority doesn't) — NewRuleVaccine is ignored in that case.</summary>
+    /// <summary>When true, the rule applies to any vaccine (the true
+    /// wildcard/"everything else" fallback — Will's own example: the
+    /// protocol physician who covers everything the pharmacist's own
+    /// PREP-act authority doesn't) — NewRuleVaccineOption is ignored in
+    /// that case. Distinct from picking "All &lt;group&gt; vaccines" in the
+    /// ComboBox, which targets one specific VaccineGroupCatalog group
+    /// rather than every vaccine.</summary>
     public bool NewRuleIsAnyVaccine
     {
         get => _newRuleIsAnyVaccine;
@@ -145,6 +178,7 @@ public sealed class PhysiciansViewModel : ObservableObject
 
             Vaccines.Clear();
             foreach (var vaccine in vaccinesTask.Result.OrderBy(v => v.Name)) Vaccines.Add(vaccine);
+            BuildVaccineOptions();
         }
         catch (Exception ex)
         {
@@ -153,6 +187,29 @@ public sealed class PhysiciansViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+        }
+    }
+
+    /// <summary>(Re)builds VaccineOptions from Vaccines — VaccineGroupCatalog.DisplayOrder
+    /// order, one "All &lt;group&gt; vaccines" option first in each group
+    /// present, then that group's vaccines by name. Always Clear()s before
+    /// re-Add()ing (same convention DataEntryPopupViewModel's
+    /// BuildAvailableGroups/BuildProductOptions use) so VaccineOptionsView's
+    /// grouping stays in sync with a fresh load.</summary>
+    private void BuildVaccineOptions()
+    {
+        VaccineOptions.Clear();
+        var byGroup = Vaccines
+            .GroupBy(VaccineGroupCatalog.GetGroup)
+            .ToDictionary(g => g.Key, g => g.OrderBy(v => v.Name).ToList());
+
+        foreach (var group in VaccineGroupCatalog.DisplayOrder.Where(byGroup.ContainsKey))
+        {
+            VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = $"All {group} vaccines" });
+            foreach (var vaccine in byGroup[group])
+            {
+                VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = vaccine.Name, Vaccine = vaccine });
+            }
         }
     }
 
@@ -212,7 +269,7 @@ public sealed class PhysiciansViewModel : ObservableObject
 
     private async Task AddRuleAsync()
     {
-        if (NewRulePhysician is null || (!NewRuleIsAnyVaccine && NewRuleVaccine is null)) return;
+        if (NewRulePhysician is null || (!NewRuleIsAnyVaccine && NewRuleVaccineOption is null)) return;
 
         int? minAge = null;
         if (!string.IsNullOrWhiteSpace(NewRuleMinAgeText))
@@ -250,12 +307,25 @@ public sealed class PhysiciansViewModel : ObservableObject
             return;
         }
 
+        Guid? vaccineId = null;
+        string? vaccineGroup = null;
+        if (!NewRuleIsAnyVaccine)
+        {
+            if (NewRuleVaccineOption!.IsGroupWildcard)
+            {
+                vaccineGroup = NewRuleVaccineOption.Group;
+            }
+            else
+            {
+                vaccineId = NewRuleVaccineOption.Vaccine!.Id;
+            }
+        }
+
         IsBusy = true;
         ErrorMessage = null;
         try
         {
-            var vaccineId = NewRuleIsAnyVaccine ? (Guid?)null : NewRuleVaccine!.Id;
-            var created = await _apiService.CreatePhysicianRuleAsync(NewRulePhysician.Id, vaccineId, minAge, maxAge, priority);
+            var created = await _apiService.CreatePhysicianRuleAsync(NewRulePhysician.Id, vaccineId, minAge, maxAge, priority, vaccineGroup);
             PhysicianRules.Add(created);
             NewRuleMinAgeText = "";
             NewRuleMaxAgeText = "";
@@ -293,13 +363,18 @@ public sealed class PhysiciansViewModel : ObservableObject
     }
 
     /// <summary>Display helper for the rules grid — "Any vaccine" for a
-    /// wildcard rule, otherwise the vaccine's name (looked up from the
+    /// true wildcard rule, "All &lt;group&gt; vaccines" for a group rule
+    /// (2026-09-07), otherwise the vaccine's name (looked up from the
     /// already-loaded Vaccines list; PhysicianRule itself only carries the
     /// id).</summary>
-    public string VaccineDisplayNameFor(PhysicianRule rule) =>
-        rule.VaccineId is null
-            ? "Any vaccine"
-            : Vaccines.FirstOrDefault(v => v.Id == rule.VaccineId)?.Name ?? "(unknown vaccine)";
+    public string VaccineDisplayNameFor(PhysicianRule rule)
+    {
+        if (rule.VaccineId is Guid vaccineId)
+        {
+            return Vaccines.FirstOrDefault(v => v.Id == vaccineId)?.Name ?? "(unknown vaccine)";
+        }
+        return rule.VaccineGroup is string group ? $"All {group} vaccines" : "Any vaccine";
+    }
 
     /// <summary>Display helper for the rules grid.</summary>
     public string PhysicianDisplayNameFor(PhysicianRule rule) =>

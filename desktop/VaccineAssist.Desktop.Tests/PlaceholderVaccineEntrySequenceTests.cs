@@ -15,6 +15,11 @@ namespace VaccineAssist.Desktop.Tests;
 /// type) instead of the old macro short code, and the live-run test
 /// documents the real "no attached window" failure message each step now
 /// returns instead of a generic PENDING-MACRO-FILE stub.
+///
+/// 2026-09-07 UPDATE: added SendF3AndDismissPreEntryDialogsStep (right
+/// after Focus) and InputQuantityStep/InputDirectionsStep (right after
+/// Enter vaccine product code) — see PlaceholderVaccineEntrySequence.cs's
+/// own doc comment for why.
 /// </summary>
 public class PlaceholderVaccineEntrySequenceTests
 {
@@ -29,8 +34,11 @@ public class PlaceholderVaccineEntrySequenceTests
             new[]
             {
                 "Focus PioneerRx window",
+                "Start Add New Rx (F3) and dismiss pre-entry dialogs",
                 "Select prescriber",
                 "Enter vaccine product code",
+                "Enter quantity",
+                "Enter directions",
                 "Enter lot and expiration",
                 "Confirm entry",
             },
@@ -44,7 +52,8 @@ public class PlaceholderVaccineEntrySequenceTests
         // environment included) — dry run must still complete cleanly,
         // since every step checks context.DryRun before touching UIA.
         var sequence = new PlaceholderVaccineEntrySequence();
-        var payload = new VaccineEntryPayload("mmr1", "LOT123", "01152027", "Left arm", Ndc: "00069-2025-10", PhysicianAlternateId: "ALTPRIMARY");
+        var payload = new VaccineEntryPayload("mmr1", "LOT123", "01152027", "Left arm",
+            Ndc: "00069-2025-10", PhysicianAlternateId: "ALTPRIMARY", Quantity: 0.5m, Directions: "IM in deltoid");
         var log = new System.Collections.Generic.List<string>();
         var context = new PioneerEntryStepContext(payload, dryRun: true, log.Add);
 
@@ -55,6 +64,8 @@ public class PlaceholderVaccineEntrySequenceTests
         Assert.All(result.StepResults, r => Assert.True(r.DryRun));
         Assert.Contains(log, line => line.Contains("ALTPRIMARY")); // SelectPrescriberStep
         Assert.Contains(log, line => line.Contains("00069-2025-10")); // InputVaccineCodeStep
+        Assert.Contains(log, line => line.Contains("0.5")); // InputQuantityStep
+        Assert.Contains(log, line => line.Contains("IM in deltoid")); // InputDirectionsStep
         Assert.Contains(log, line => line.Contains("LOT123")); // InputLotAndExpirationStep
     }
 

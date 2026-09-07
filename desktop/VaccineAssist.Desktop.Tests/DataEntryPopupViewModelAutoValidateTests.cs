@@ -210,7 +210,8 @@ public class DataEntryPopupViewModelAutoValidateTests
             throw new NotSupportedException();
 
         public Task<PhysicianRule> CreatePhysicianRuleAsync(
-            Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, CancellationToken cancellationToken = default) =>
+            Guid physicianId, Guid? vaccineId, int? minAge, int? maxAge, int priority = 0, string? vaccineGroup = null,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task DeletePhysicianRuleAsync(Guid id, CancellationToken cancellationToken = default) =>
