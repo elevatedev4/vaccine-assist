@@ -75,6 +75,78 @@ describe("resolvePhysicianRule", () => {
   });
 });
 
+describe("resolvePhysicianRule — vaccine_group tier (V-cloud-tabs)", () => {
+  it("a group rule matches a subject whose vaccineGroup equals the rule's group", () => {
+    const groupRule = rule({ vaccineId: null, vaccineGroup: "Flu", minAge: 6 });
+    expect(
+      resolvePhysicianRule([groupRule], { vaccineId: "fluzone-id", vaccineGroup: "Flu", ageYears: 10 })
+    ).toEqual(groupRule);
+  });
+
+  it("a group rule does NOT match a subject in a different group", () => {
+    const groupRule = rule({ vaccineId: null, vaccineGroup: "Flu" });
+    expect(
+      resolvePhysicianRule([groupRule], { vaccineId: "covid-id", vaccineGroup: "COVID", ageYears: 10 })
+    ).toBeNull();
+  });
+
+  it("a group rule does not match when the subject's group is unknown/omitted", () => {
+    const groupRule = rule({ vaccineId: null, vaccineGroup: "Flu" });
+    expect(resolvePhysicianRule([groupRule], { vaccineId: "fluzone-id", ageYears: 10 })).toBeNull();
+  });
+
+  it("specific-vaccine rule outranks a matching group rule for the same age, regardless of priority", () => {
+    const specific = rule({ id: "specific", vaccineId: "fluzone-id", priority: 99 });
+    const group = rule({ id: "group", vaccineId: null, vaccineGroup: "Flu", priority: 0 });
+    const winner = resolvePhysicianRule([specific, group], {
+      vaccineId: "fluzone-id",
+      vaccineGroup: "Flu",
+      ageYears: 10,
+    });
+    expect(winner?.id).toBe("specific");
+  });
+
+  it("a matching group rule outranks the wildcard for the same age, regardless of priority", () => {
+    const group = rule({ id: "group", vaccineId: null, vaccineGroup: "Flu", priority: 99 });
+    const wildcard = rule({ id: "wildcard", vaccineId: null, vaccineGroup: null, priority: 0 });
+    const winner = resolvePhysicianRule([group, wildcard], {
+      vaccineId: "fluzone-id",
+      vaccineGroup: "Flu",
+      ageYears: 10,
+    });
+    expect(winner?.id).toBe("group");
+  });
+
+  it("full precedence chain: specific > group > wildcard", () => {
+    const specific = rule({ id: "specific", vaccineId: "fluzone-id", minAge: 3 });
+    const group = rule({ id: "group", vaccineId: null, vaccineGroup: "Flu", minAge: 3 });
+    const wildcard = rule({ id: "wildcard", vaccineId: null, vaccineGroup: null, minAge: 3 });
+    const subject = { vaccineId: "fluzone-id", vaccineGroup: "Flu", ageYears: 10 };
+
+    expect(resolvePhysicianRule([specific, group, wildcard], subject)?.id).toBe("specific");
+    expect(resolvePhysicianRule([group, wildcard], subject)?.id).toBe("group");
+    expect(resolvePhysicianRule([wildcard], subject)?.id).toBe("wildcard");
+  });
+
+  it("falls back past a non-matching group rule to the wildcard", () => {
+    const group = rule({ id: "group", vaccineId: null, vaccineGroup: "COVID", minAge: 3 });
+    const wildcard = rule({ id: "wildcard", vaccineId: null, vaccineGroup: null, minAge: 3 });
+    const winner = resolvePhysicianRule([group, wildcard], {
+      vaccineId: "fluzone-id",
+      vaccineGroup: "Flu",
+      ageYears: 10,
+    });
+    expect(winner?.id).toBe("wildcard");
+  });
+
+  it("ties within the group tier still break by priority ascending", () => {
+    const a = rule({ id: "a", vaccineId: null, vaccineGroup: "Flu", priority: 5 });
+    const b = rule({ id: "b", vaccineId: null, vaccineGroup: "Flu", priority: 1 });
+    const winner = resolvePhysicianRule([a, b], { vaccineId: "x", vaccineGroup: "Flu", ageYears: 10 });
+    expect(winner?.id).toBe("b");
+  });
+});
+
 describe("resolvePhysician", () => {
   it("joins the winning rule to its Physician row", () => {
     const rules = [rule({ physicianId: "pharmacist", vaccineId: "flu", minAge: 3 })];

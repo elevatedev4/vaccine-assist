@@ -14,6 +14,15 @@ import { formatCashPrice } from "@/lib/vaccine-entry-payload";
  * semantics as VaccinesViewModel.OnActiveToggleRequested, and the same
  * PATCH /api/vaccines/[id] route the desktop app already uses (no new
  * API route needed).
+ *
+ * V-cloud-tabs (Will, 2026-09-05/07, item G): also exposes editable
+ * `quantity`/`directions` columns — Pioneer prescription-entry defaults
+ * feeding the desktop app's entry flow later. Plumbing only per Will's
+ * brief: no defaults are invented here, staff/Will fill these in. These
+ * are additive columns (supabase/migrations/0009_lots_bud_vaccine_defaults.sql)
+ * that may not exist yet — GET /api/vaccines reports
+ * `quantityDirectionsSupported`, and when false the columns are hidden
+ * with a "pending migration" note instead of rendering broken inputs.
  */
 
 type VaccineRow = {
@@ -25,6 +34,8 @@ type VaccineRow = {
   cash_price_cents: number | null;
   active: boolean;
   hasActiveLot: boolean;
+  quantity?: string | null;
+  directions?: string | null;
 };
 
 const styles = {
@@ -34,6 +45,8 @@ const styles = {
   button: { padding: "0.5rem 1rem", marginRight: "0.5rem" },
   error: { color: "#b00020" },
   muted: { color: "#555", fontSize: "0.875rem" },
+  pendingNote: { color: "#8a5300", fontSize: "0.8rem", fontStyle: "italic" },
+  fieldInput: { width: "100%", padding: "0.3rem", boxSizing: "border-box" as const },
   sessionBar: {
     display: "flex",
     alignItems: "center",
@@ -64,6 +77,10 @@ export default function VaccinesPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
+  const [quantityDirectionsSupported, setQuantityDirectionsSupported] = useState(true);
+  const [fieldDrafts, setFieldDrafts] = useState<Record<string, { quantity: string; directions: string }>>({});
+  const [savingField, setSavingField] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -101,7 +118,14 @@ export default function VaccinesPage() {
         setLoadError(data.error ?? "Could not load vaccines.");
         return;
       }
-      setVaccines(sortVaccines(data.vaccines ?? []));
+      const loaded: VaccineRow[] = sortVaccines(data.vaccines ?? []);
+      setVaccines(loaded);
+      setQuantityDirectionsSupported(data.quantityDirectionsSupported !== false);
+      setFieldDrafts(
+        Object.fromEntries(
+          loaded.map((v) => [v.id, { quantity: v.quantity ?? "", directions: v.directions ?? "" }])
+        )
+      );
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not load vaccines.");
     } finally {
@@ -170,6 +194,39 @@ export default function VaccinesPage() {
       setToggleError(`Couldn't update ${row.name}: ${err instanceof Error ? err.message : "unknown error"}`);
       // Revert.
       setVaccines((prev) => sortVaccines(prev.map((v) => (v.id === row.id ? { ...v, active: row.active } : v))));
+    }
+  }
+
+  function updateFieldDraft(vaccineId: string, patch: Partial<{ quantity: string; directions: string }>) {
+    setFieldDrafts((prev) => ({ ...prev, [vaccineId]: { ...prev[vaccineId], ...patch } }));
+  }
+
+  async function handleSaveFields(row: VaccineRow) {
+    if (!session) return;
+    const draft = fieldDrafts[row.id] ?? { quantity: "", directions: "" };
+    setSavingField(row.id);
+    setFieldErrors((prev) => ({ ...prev, [row.id]: "" }));
+    try {
+      const response = await fetch(`/api/vaccines/${row.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+        body: JSON.stringify({ quantity: draft.quantity || null, directions: draft.directions || null }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setFieldErrors((prev) => ({ ...prev, [row.id]: data.error ?? "Failed to save." }));
+        return;
+      }
+      if (data.quantityDirectionsSupported === false) setQuantityDirectionsSupported(false);
+      setVaccines((prev) =>
+        sortVaccines(
+          prev.map((v) => (v.id === row.id ? { ...v, quantity: data.vaccine?.quantity, directions: data.vaccine?.directions } : v))
+        )
+      );
+    } catch (err) {
+      setFieldErrors((prev) => ({ ...prev, [row.id]: err instanceof Error ? err.message : "Failed to save." }));
+    } finally {
+      setSavingField(null);
     }
   }
 
@@ -248,6 +305,9 @@ export default function VaccinesPage() {
 
       {loadError && <p style={styles.error}>{loadError}</p>}
       {toggleError && <p style={styles.error}>{toggleError}</p>}
+      {!quantityDirectionsSupported && (
+        <p style={styles.pendingNote}>Quantity/Directions aren&apos;t available yet on this environment (pending migration).</p>
+      )}
 
       <table style={styles.table}>
         <thead>
@@ -259,6 +319,9 @@ export default function VaccinesPage() {
             <th style={styles.th}>Cash price</th>
             <th style={styles.thCenter}>Current lot</th>
             <th style={styles.thCenter}>Active</th>
+            {quantityDirectionsSupported && <th style={styles.th}>Quantity</th>}
+            {quantityDirectionsSupported && <th style={styles.th}>Directions</th>}
+            {quantityDirectionsSupported && <th style={styles.th}></th>}
           </tr>
         </thead>
         <tbody>
@@ -279,6 +342,41 @@ export default function VaccinesPage() {
                   onChange={(e) => void handleToggleActive(vaccine, e.target.checked)}
                 />
               </td>
+              {quantityDirectionsSupported && (
+                <td style={styles.td}>
+                  <input
+                    style={styles.fieldInput}
+                    type="text"
+                    aria-label={`${vaccine.name} quantity`}
+                    value={fieldDrafts[vaccine.id]?.quantity ?? ""}
+                    onChange={(e) => updateFieldDraft(vaccine.id, { quantity: e.target.value })}
+                  />
+                </td>
+              )}
+              {quantityDirectionsSupported && (
+                <td style={styles.td}>
+                  <input
+                    style={styles.fieldInput}
+                    type="text"
+                    aria-label={`${vaccine.name} directions`}
+                    value={fieldDrafts[vaccine.id]?.directions ?? ""}
+                    onChange={(e) => updateFieldDraft(vaccine.id, { directions: e.target.value })}
+                  />
+                </td>
+              )}
+              {quantityDirectionsSupported && (
+                <td style={styles.td}>
+                  <button
+                    style={styles.button}
+                    type="button"
+                    onClick={() => void handleSaveFields(vaccine)}
+                    disabled={savingField === vaccine.id}
+                  >
+                    {savingField === vaccine.id ? "Saving…" : "Save"}
+                  </button>
+                  {fieldErrors[vaccine.id] && <div style={styles.error}>{fieldErrors[vaccine.id]}</div>}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

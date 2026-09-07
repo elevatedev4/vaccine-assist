@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
+import { availableGroupsFor, getVaccineGroup } from "@/lib/vaccine-group-catalog";
+import { parseRuleTargetValue } from "@/lib/physician-rule-target";
 
 /**
  * Web edition of the desktop app's Physicians settings tab
@@ -13,6 +15,19 @@ import { subscribeToSessionState, toSessionState, type SessionState } from "@/li
  * routes the desktop app already uses (no new API route needed), and the
  * same resolved-name display (VaccineDisplayNameFor/PhysicianDisplayNameFor)
  * instead of showing raw GUIDs in the rules list.
+ *
+ * V-cloud-tabs (Will, 2026-09-05/07, rule #5): the vaccine dropdown is
+ * now grouped by catalog TYPE (flu, COVID, Tdap, pneumonia, ... — see
+ * lib/vaccine-group-catalog.ts), with an "All <group> vaccines" option at
+ * the top of each optgroup so a rule can target the whole group instead
+ * of one product. The dropdown's single value is either
+ * `group:<GroupName>` or `id:<vaccineId>` (parseRuleTargetValue below);
+ * the "All <group> vaccines" options are hidden (with a "pending
+ * migration" note) when the backend reports vaccine_group isn't
+ * supported yet (physician_rule.vaccine_group, an additive column — see
+ * supabase/migrations/0009_lots_bud_vaccine_defaults.sql and
+ * lib/schema-degradation.ts) — display grouping itself has no schema
+ * dependency and always works.
  */
 
 type Vaccine = { id: string; name: string };
@@ -21,6 +36,7 @@ type PhysicianRule = {
   id: string;
   physician_id: string;
   vaccine_id: string | null;
+  vaccine_group?: string | null;
   min_age: number | null;
   max_age: number | null;
   priority: number;
@@ -87,12 +103,13 @@ export default function PhysiciansPage() {
 
   const [newRulePhysicianId, setNewRulePhysicianId] = useState("");
   const [newRuleIsAnyVaccine, setNewRuleIsAnyVaccine] = useState(false);
-  const [newRuleVaccineId, setNewRuleVaccineId] = useState("");
+  const [newRuleTargetValue, setNewRuleTargetValue] = useState("");
   const [newRuleMinAge, setNewRuleMinAge] = useState("");
   const [newRuleMaxAge, setNewRuleMaxAge] = useState("");
   const [newRulePriority, setNewRulePriority] = useState("0");
   const [ruleError, setRuleError] = useState<string | null>(null);
   const [ruleBusy, setRuleBusy] = useState(false);
+  const [vaccineGroupSupported, setVaccineGroupSupported] = useState(true);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -141,11 +158,12 @@ export default function PhysiciansPage() {
 
       setPhysicians(physiciansData.physicians ?? []);
       setRules(rulesData.physicianRules ?? []);
+      setVaccineGroupSupported(rulesData.vaccineGroupSupported !== false);
       const loadedVaccines: Vaccine[] = [...(vaccinesData.vaccines ?? [])].sort(
         (a: Vaccine, b: Vaccine) => a.name.localeCompare(b.name)
       );
       setVaccines(loadedVaccines);
-      setNewRuleVaccineId((current) => current || loadedVaccines[0]?.id || "");
+      setNewRuleTargetValue((current) => current || (loadedVaccines[0] ? `id:${loadedVaccines[0].id}` : ""));
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not load physicians.");
     } finally {
@@ -254,7 +272,9 @@ export default function PhysiciansPage() {
 
   async function handleAddRule(event: FormEvent) {
     event.preventDefault();
-    if (!session || !newRulePhysicianId || (!newRuleIsAnyVaccine && !newRuleVaccineId)) return;
+    const { vaccineId: targetVaccineId, vaccineGroup: targetVaccineGroup } = parseRuleTargetValue(newRuleTargetValue);
+    if (!session || !newRulePhysicianId) return;
+    if (!newRuleIsAnyVaccine && !targetVaccineId && !targetVaccineGroup) return;
 
     const minAge = newRuleMinAge.trim() === "" ? null : Number(newRuleMinAge);
     const maxAge = newRuleMaxAge.trim() === "" ? null : Number(newRuleMaxAge);
@@ -284,7 +304,8 @@ export default function PhysiciansPage() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
         body: JSON.stringify({
           physician_id: newRulePhysicianId,
-          vaccine_id: newRuleIsAnyVaccine ? null : newRuleVaccineId,
+          vaccine_id: newRuleIsAnyVaccine ? null : targetVaccineId,
+          vaccine_group: newRuleIsAnyVaccine ? null : targetVaccineGroup,
           min_age: minAge,
           max_age: maxAge,
           priority,
@@ -487,16 +508,26 @@ export default function PhysiciansPage() {
             </label>
             <select
               id="newRuleVaccine"
-              value={newRuleVaccineId}
-              onChange={(e) => setNewRuleVaccineId(e.target.value)}
+              value={newRuleTargetValue}
+              onChange={(e) => setNewRuleTargetValue(e.target.value)}
               disabled={newRuleIsAnyVaccine}
             >
-              {vaccines.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name}
-                </option>
+              {availableGroupsFor(vaccines.map((v) => v.name)).map((group) => (
+                <optgroup key={group} label={group}>
+                  {vaccineGroupSupported && <option value={`group:${group}`}>All {group} vaccines</option>}
+                  {vaccines
+                    .filter((v) => getVaccineGroup(v.name) === group)
+                    .map((v) => (
+                      <option key={v.id} value={`id:${v.id}`}>
+                        {v.name}
+                      </option>
+                    ))}
+                </optgroup>
               ))}
             </select>
+            {!vaccineGroupSupported && (
+              <span style={styles.muted}>&quot;All &lt;type&gt; vaccines&quot; rules pending migration.</span>
+            )}
           </div>
           <div style={styles.formField}>
             <label style={styles.label}>
@@ -550,15 +581,19 @@ export default function PhysiciansPage() {
           <button
             style={styles.button}
             type="submit"
-            disabled={ruleBusy || !newRulePhysicianId || (!newRuleIsAnyVaccine && !newRuleVaccineId)}
+            disabled={
+              ruleBusy ||
+              !newRulePhysicianId ||
+              (!newRuleIsAnyVaccine && !parseRuleTargetValue(newRuleTargetValue).vaccineId && !parseRuleTargetValue(newRuleTargetValue).vaccineGroup)
+            }
           >
             {ruleBusy ? "Adding…" : "Add rule"}
           </button>
         </form>
         {ruleError && <p style={styles.error}>{ruleError}</p>}
         <p style={styles.italic}>
-          A specific-vaccine rule always outranks a fallback (&quot;any vaccine&quot;) rule for the same age,
-          regardless of priority.
+          A specific-vaccine rule always outranks an &quot;All &lt;type&gt; vaccines&quot; rule, which always outranks
+          the fallback (&quot;any vaccine&quot;) rule, for the same age — regardless of priority.
         </p>
 
         <table style={styles.table}>
@@ -577,7 +612,11 @@ export default function PhysiciansPage() {
               <tr key={rule.id}>
                 <td style={styles.td}>{physicianNameById.get(rule.physician_id) ?? "(unknown physician)"}</td>
                 <td style={styles.td}>
-                  {rule.vaccine_id === null ? "Any vaccine" : vaccineNameById.get(rule.vaccine_id) ?? "(unknown vaccine)"}
+                  {rule.vaccine_id !== null
+                    ? vaccineNameById.get(rule.vaccine_id) ?? "(unknown vaccine)"
+                    : rule.vaccine_group
+                      ? `All ${rule.vaccine_group} vaccines`
+                      : "Any vaccine"}
                 </td>
                 <td style={styles.td}>{rule.min_age ?? "—"}</td>
                 <td style={styles.td}>{rule.max_age ?? "—"}</td>

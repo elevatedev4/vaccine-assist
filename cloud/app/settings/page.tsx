@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
+import { InstallDesktopAppSection, OtherSettingsLinks } from "@/app/settings/sections";
 
 type AcuityStatus = {
   configured: boolean;
@@ -16,12 +17,14 @@ type AcuityStatus = {
 type TestResult = { ok: boolean; message: string };
 
 const styles = {
-  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 480 },
+  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 640 },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
   button: { padding: "0.5rem 1rem", marginRight: "0.5rem" },
   error: { color: "#b00020" },
   success: { color: "#0a7d27" },
+  muted: { color: "#555", fontSize: "0.875rem" },
+  section: { marginBottom: "2rem" },
   sessionBar: {
     display: "flex",
     alignItems: "center",
@@ -232,6 +235,9 @@ export default function AcuitySettingsPage() {
             {signingIn ? "Signing in…" : "Sign in"}
           </button>
         </form>
+
+        <OtherSettingsLinks />
+        <InstallDesktopAppSection />
       </main>
     );
   }
@@ -247,13 +253,16 @@ export default function AcuitySettingsPage() {
         </button>
       </div>
 
-      <h1>Acuity Scheduling settings</h1>
-      <p>
-        Credentials are stored server-side and used only to poll appointment
-        counts (no patient data is stored or displayed). The API key is
-        never shown again after saving — only a status line confirming it&apos;s
-        configured.
-      </p>
+      <h1>Settings</h1>
+
+      <section style={styles.section}>
+        <h2>Acuity Scheduling</h2>
+        <p style={styles.muted}>
+          Credentials are stored server-side and used only to poll appointment
+          counts (no patient data is stored or displayed). The API key is
+          never shown again after saving — only a status line confirming it&apos;s
+          configured.
+        </p>
 
       {statusError && <p style={styles.error}>{statusError}</p>}
       {status?.configured ? (
@@ -308,6 +317,10 @@ export default function AcuitySettingsPage() {
           {testResult.message}
         </p>
       )}
+      </section>
+
+      <OtherSettingsLinks />
+      <InstallDesktopAppSection />
     </main>
   );
 }

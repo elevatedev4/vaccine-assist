@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { resolvePhysician, type Physician, type PhysicianRule } from "@/lib/physician-resolution";
 import { requireAuthenticatedUser } from "@/lib/auth";
+import { getVaccineGroup } from "@/lib/vaccine-group-catalog";
 
 /** Postgres `uuid` shape, version-agnostic — matches gen_random_uuid() output
  * (used by every id column in this schema, see supabase/migrations/0001_init.sql)
@@ -38,6 +39,19 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * still removed entirely rather than just gated behind the check, so no
  * future edit to this route can reintroduce the same class of bug by
  * loosening the validation.
+ *
+ * V-cloud-tabs (Will, 2026-09-05/07): also resolves via a matching
+ * vaccine-GROUP rule (e.g. a rule targeting "Flu" generally) when no
+ * specific-vaccine rule applies — see lib/physician-resolution.ts's
+ * specificity tiers. The `.is("vaccine_id", null)` fetch below already
+ * covers BOTH plain wildcard rows and group rows (a group rule also has
+ * vaccine_id null; only vaccine_group distinguishes it), so no extra
+ * query is needed for that half. This route additionally looks up the
+ * vaccine's own name to compute its catalog group
+ * (getVaccineGroup) — a failure/miss on that lookup (e.g. the vaccine
+ * row was deleted) just means group rules won't match, not a hard error,
+ * since specific-vaccine and wildcard resolution must keep working
+ * either way.
  */
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -65,10 +79,12 @@ export async function GET(request: Request) {
       { data: vaccineRuleRows, error: vaccineRulesError },
       { data: wildcardRuleRows, error: wildcardRulesError },
       { data: physicianRows, error: physiciansError },
+      { data: vaccineRow },
     ] = await Promise.all([
       supabase.from("physician_rule").select("*").eq("vaccine_id", vaccineId),
       supabase.from("physician_rule").select("*").is("vaccine_id", null),
       supabase.from("physician").select("*"),
+      supabase.from("vaccine").select("name").eq("id", vaccineId).maybeSingle(),
     ]);
 
     const rulesError = vaccineRulesError ?? wildcardRulesError;
@@ -83,6 +99,9 @@ export async function GET(request: Request) {
       id: row.id,
       physicianId: row.physician_id,
       vaccineId: row.vaccine_id,
+      // Absent pre-migration (0009) — undefined is handled the same as
+      // "not a group rule" by resolvePhysicianRule.
+      vaccineGroup: row.vaccine_group ?? null,
       minAge: row.min_age,
       maxAge: row.max_age,
       priority: row.priority,
@@ -94,7 +113,8 @@ export async function GET(request: Request) {
       alternateId: row.alternate_id,
     }));
 
-    const resolved = resolvePhysician(rules, physicians, { vaccineId, ageYears });
+    const vaccineGroup = vaccineRow?.name ? getVaccineGroup(vaccineRow.name) : null;
+    const resolved = resolvePhysician(rules, physicians, { vaccineId, vaccineGroup, ageYears });
 
     return NextResponse.json({
       physician: resolved
