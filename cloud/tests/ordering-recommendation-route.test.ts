@@ -144,6 +144,7 @@ describe("GET /api/ordering/recommendation", () => {
           covidBrand: "any",
           covidAgeBucket: "unknown",
           fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
         },
         {
           date: "2026-08-20",
@@ -153,6 +154,7 @@ describe("GET /api/ordering/recommendation", () => {
           covidBrand: "any",
           covidAgeBucket: "unknown",
           fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
         },
         {
           date: "2026-08-20",
@@ -162,6 +164,7 @@ describe("GET /api/ordering/recommendation", () => {
           covidBrand: "any",
           covidAgeBucket: "unknown",
           fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
         },
       ],
       possiblyTruncated: false,
@@ -213,6 +216,7 @@ describe("GET /api/ordering/recommendation", () => {
           covidBrand: "pfizer",
           covidAgeBucket: "65+",
           fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
         },
         {
           date: "2026-08-20",
@@ -222,6 +226,7 @@ describe("GET /api/ordering/recommendation", () => {
           covidBrand: "pfizer",
           covidAgeBucket: "12-64",
           fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
         },
         {
           date: "2026-08-20",
@@ -231,6 +236,7 @@ describe("GET /api/ordering/recommendation", () => {
           covidBrand: "moderna",
           covidAgeBucket: "12-64",
           fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
         },
       ],
       possiblyTruncated: false,

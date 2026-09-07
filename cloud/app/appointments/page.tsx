@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
-import { chicagoDayRange } from "@/lib/chicago-date";
+import { addDaysToChicagoDate, chicagoDayRange, todayInChicago } from "@/lib/chicago-date";
 import {
+  BOOKING_ACTIVITY_LOOKBACK_DAYS,
   buildAppointmentTable,
+  buildBookingActivityTable,
   buildHourlyBreakdownTable,
   computeHeatmapMaxes,
   computeTodayAndNext7Summaries,
@@ -52,6 +54,20 @@ type AfterTodayResponse = {
   configured: boolean;
   afterToday: AfterTodaySummary | null;
   afterTodayError?: string;
+};
+
+// V-T-booking-activity (Will, 2026-09-05/07): the "scheduling activity"
+// table — same "own separate, later request, never blocks the main table"
+// shape as AfterTodayResponse above, fired only on the section's first
+// expand (it's collapsed by default) rather than on page load at all. See
+// app/api/acuity/poll/route.ts's `?activity=1` doc comment for the full
+// response contract.
+type ActivityResponse = {
+  configured: boolean;
+  activityCounts: VaccineCount[];
+  possiblyTruncated: boolean;
+  cacheHit?: boolean;
+  asOf: string | null;
 };
 
 // Total header-row depth: COVID needs 3 (group "COVID" -> brand "Pfizer"/
@@ -221,6 +237,25 @@ const styles = {
   // lib/appointment-table.ts): deliberately muted/small so it reads as a
   // footnote on the Total, not a second number competing with it.
   outsideNote: { display: "block", fontSize: "0.62rem", fontWeight: 400, color: "#777", whiteSpace: "nowrap" },
+  // V-T-booking-activity (Will, 2026-09-05/07): "collapsed by default
+  // behind a visually de-emphasized link at the BOTTOM of the page" — a
+  // plain-text toggle, deliberately with none of styles.toggleButton's
+  // button chrome (no border/background/padding box), small and muted so
+  // it reads as a footnote link rather than competing with the two real
+  // tables above it.
+  activityLinkRow: { margin: "1.5rem 0 0" },
+  activityToggleLink: {
+    background: "none",
+    border: "none",
+    padding: 0,
+    font: "inherit",
+    fontSize: "0.75rem",
+    color: "#888",
+    textDecoration: "underline",
+    cursor: "pointer",
+  },
+  activitySection: { marginTop: "0.5rem" },
+  activityCaption: { color: "#555", fontSize: "0.8rem", margin: "0 0 0.4rem" },
 } as const;
 
 /**
@@ -419,6 +454,43 @@ function nextSevenDayRange(): { start: string; end: string; days: string[] } {
   return { start: days[0], end: days[days.length - 1], days };
 }
 
+/**
+ * The full lookback range buildBookingActivityTable needs — ascending,
+ * BOOKING_ACTIVITY_LOOKBACK_DAYS days before today through today itself
+ * (see that constant's doc comment in lib/appointment-table.ts for why
+ * this is more than just the 28 days actually displayed: the OLDEST
+ * displayed row's 7-day avg and WoW comparison both need days further
+ * back than the display window). Mirrors nextSevenDayRange's "always a
+ * fixed America/Chicago calendar day" rationale.
+ */
+function bookingActivityDaysRange(): string[] {
+  const today = todayInChicago();
+  const days: string[] = [];
+  for (let i = BOOKING_ACTIVITY_LOOKBACK_DAYS; i >= 0; i--) {
+    days.push(addDaysToChicagoDate(today, -i));
+  }
+  return days;
+}
+
+/** One decimal, e.g. "14.3" — matches BookingActivityRow.sevenDayAvg's
+ * own rounding (lib/appointment-table.ts). */
+function formatSevenDayAvg(avg: number): string {
+  return avg.toFixed(1);
+}
+
+/**
+ * "+12%" / "-8%" / "0%" / "—" (insufficient data — see
+ * BookingActivityRow.weekOverWeek's doc comment). Rounds to the nearest
+ * whole percent — Will's own example format ("+12%, -8%") shows no
+ * decimal place.
+ */
+function formatWeekOverWeek(wow: number | null): string {
+  if (wow === null) return "—";
+  const rounded = Math.round(wow);
+  if (rounded > 0) return `+${rounded}%`;
+  return `${rounded}%`;
+}
+
 function formatDayLabel(dateStr: string): string {
   // Parse as local, not UTC, so the weekday shown matches the date shown.
   // Abbreviated ("Mon 8/17" not "Mon, Aug 17") — part of the compact-table
@@ -464,6 +536,17 @@ export default function AppointmentsPage() {
   const [afterToday, setAfterToday] = useState<AfterTodaySummary | null>(null);
   const [afterTodayLoading, setAfterTodayLoading] = useState(false);
   const [afterTodayError, setAfterTodayError] = useState<string | undefined>(undefined);
+
+  // Scheduling activity (V-T-booking-activity, Will 2026-09-05/07):
+  // collapsed by default, so `activity` stays null and no request is ever
+  // made until the section is expanded for the FIRST time — see
+  // `activityLoaded` below, which latches once the fetch has been fired so
+  // re-collapsing/re-expanding doesn't refetch every toggle.
+  const [activityExpanded, setActivityExpanded] = useState(false);
+  const [activityLoaded, setActivityLoaded] = useState(false);
+  const [activity, setActivity] = useState<ActivityResponse | null>(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState<string | undefined>(undefined);
 
   // Hourly-table toggle (V-T-hourly-table, Will 2026-09-05, verbatim:
   // "make # vaccines the default"). Purely client-side — switching never
@@ -548,6 +631,47 @@ export default function AppointmentsPage() {
     [loadCounts, loadAfterToday]
   );
 
+  // Fired ONLY on the scheduling-activity section's first expand (see
+  // handleToggleActivity below) — never on page load, and never as part
+  // of loadAll, same "own separate, later, non-blocking request" pattern
+  // as loadAfterToday. The ~134-day chunked fetch behind a cache miss here
+  // (lib/acuity-booking-activity.ts) is heavier than either of the other
+  // two requests, so it firing only when a staff member actually opens
+  // the section — most sessions never will — matters more here than
+  // anywhere else on this page.
+  const loadActivity = useCallback(async (token: string, options?: { force?: boolean }) => {
+    setActivityLoading(true);
+    setActivityError(undefined);
+    try {
+      const forceParam = options?.force ? "&force=1" : "";
+      const response = await fetch(`/api/acuity/poll?activity=1${forceParam}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = (await response.json()) as ActivityResponse | { error: string };
+      if (!response.ok) {
+        setActivityError("error" in data ? data.error : "Could not load scheduling activity.");
+        return;
+      }
+      if ("error" in data) return; // unreachable in practice, satisfies the union
+      setActivity(data);
+    } catch (err) {
+      setActivityError(err instanceof Error ? err.message : "Could not load scheduling activity.");
+    } finally {
+      setActivityLoading(false);
+    }
+  }, []);
+
+  function handleToggleActivity() {
+    setActivityExpanded((wasExpanded) => {
+      const expanding = !wasExpanded;
+      if (expanding && !activityLoaded && session) {
+        setActivityLoaded(true);
+        void loadActivity(session.accessToken);
+      }
+      return expanding;
+    });
+  }
+
   useEffect(() => {
     if (session) void loadAll(session.accessToken);
   }, [session, loadAll]);
@@ -598,6 +722,10 @@ export default function AppointmentsPage() {
       setLoadError(null);
       setAfterToday(null);
       setAfterTodayError(undefined);
+      setActivityExpanded(false);
+      setActivityLoaded(false);
+      setActivity(null);
+      setActivityError(undefined);
     }
   }
 
@@ -689,6 +817,15 @@ export default function AppointmentsPage() {
   // (unconfigured/stale-cache/not-yet-loaded) rather than crashing — see
   // buildHourlyBreakdownTable's doc comment.
   const hourlyTable = buildHourlyBreakdownTable(poll?.hourlyCounts ?? [], days, hourlyMetric);
+
+  // Scheduling activity (V-T-booking-activity) — only ever built once
+  // `activity` has actually loaded (the section is collapsed, and its
+  // fetch hasn't fired, until the very first expand — see
+  // handleToggleActivity), so this stays cheap on every render before
+  // that point rather than reshaping an empty table nobody's looking at.
+  const activityDays = activity ? bookingActivityDaysRange() : null;
+  const activityTable = activity && activityDays ? buildBookingActivityTable(activity.activityCounts, activityDays) : null;
+  const activityHeaderRows = activityTable ? buildHeaderRows(activityTable.columns) : null;
 
   return (
     <main style={styles.mainWide}>
@@ -984,6 +1121,120 @@ export default function AppointmentsPage() {
             </table>
           </div>
         </>
+      )}
+
+      {/* V-T-booking-activity (Will, 2026-09-05/07): "collapsed by default
+          behind a visually de-emphasized link at the BOTTOM of the page."
+          The fetch itself only fires on this link's FIRST click (see
+          handleToggleActivity) — never on page load, collapsed or not. */}
+      <div style={styles.activityLinkRow}>
+        <button type="button" style={styles.activityToggleLink} onClick={handleToggleActivity}>
+          {activityExpanded ? "Hide scheduling activity ▾" : "Show scheduling activity ▸"}
+        </button>
+      </div>
+
+      {activityExpanded && (
+        <div style={styles.activitySection}>
+          <p style={styles.activityCaption}>Vaccines booked per day (by booking date) — last 28 days</p>
+
+          {activityLoading && !activity && <p style={styles.muted}>Loading…</p>}
+          {activityError && <p style={styles.warning}>Could not load scheduling activity: {activityError}</p>}
+          {activity?.possiblyTruncated && (
+            <p style={styles.warning}>
+              100+ appointments in one or more booking windows — counts may be incomplete.
+            </p>
+          )}
+
+          {activityTable && activityHeaderRows && (
+            // Same column set/grouped-header rendering as the main table
+            // above (buildHeaderRows, groupHeaderStyle/subHeaderStyle/
+            // leafHeaderStyle, renderCount's heatmap+dim-zero treatment) —
+            // reused wholesale per this feature's spec ("same vaccine
+            // column breakdown/structure as the main table"). The two
+            // structural differences: rows are DAYS (newest first) instead
+            // of vaccines, and there are two trailing stat columns (7-day
+            // avg, WoW) after the per-vaccine columns — both deliberately
+            // UNSHADED (no heatmap), only the per-vaccine cells use this
+            // table's own independent scale (activityTable.heatmapMax).
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <colgroup>
+                  <col />
+                  <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
+                  {activityTable.columns.map((column) => (
+                    <col key={column.vaccineName} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
+                  ))}
+                  <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
+                  <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th style={styles.thType} rowSpan={HEADER_ROW_COUNT}>
+                      Booked date
+                    </th>
+                    <th style={styles.thLeaf} rowSpan={HEADER_ROW_COUNT}>
+                      Total
+                    </th>
+                    {activityHeaderRows.row1.map((cell) => (
+                      <th
+                        key={cell.key}
+                        style={groupHeaderStyle(cell.group)}
+                        colSpan={cell.colSpan}
+                        rowSpan={cell.rowSpan}
+                      >
+                        {cell.label}
+                      </th>
+                    ))}
+                    <th style={styles.thLeaf} rowSpan={HEADER_ROW_COUNT}>
+                      7-day avg
+                    </th>
+                    <th style={styles.thLeaf} rowSpan={HEADER_ROW_COUNT}>
+                      WoW
+                    </th>
+                  </tr>
+                  <tr>
+                    {activityHeaderRows.row2.map((cell) =>
+                      cell.rowSpan === HEADER_ROW_COUNT - 1 ? (
+                        <th key={cell.key} style={leafHeaderStyle(cell.group)} rowSpan={cell.rowSpan}>
+                          {cell.label}
+                        </th>
+                      ) : (
+                        <th
+                          key={cell.key}
+                          style={subHeaderStyle(cell.group)}
+                          colSpan={cell.colSpan}
+                          rowSpan={cell.rowSpan}
+                        >
+                          {cell.label}
+                        </th>
+                      )
+                    )}
+                  </tr>
+                  <tr>
+                    {activityHeaderRows.row3.map((cell) => (
+                      <th key={cell.key} style={leafHeaderStyle(cell.group)} rowSpan={cell.rowSpan}>
+                        {cell.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {activityTable.rows.map((row) => (
+                    <tr key={row.date}>
+                      <td style={styles.tdType}>{formatDayLabel(row.date)}</td>
+                      <td style={styles.totalCell}>{row.total}</td>
+                      {activityTable.columns.map((column) =>
+                        renderCount(column, row.countsByColumn[column.vaccineName] ?? 0, activityTable.heatmapMax)
+                      )}
+                      <td style={styles.totalCell}>{formatSevenDayAvg(row.sevenDayAvg)}</td>
+                      <td style={styles.totalCell}>{formatWeekOverWeek(row.weekOverWeek)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
     </main>
   );

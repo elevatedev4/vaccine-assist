@@ -993,3 +993,166 @@ export function computeHeatmapMaxes(
 
   return { dailyScaleMax, weeklyScaleMax, totalsScaleMax };
 }
+
+/**
+ * Booking-activity table (V-T-booking-activity, Will 2026-09-05/07): a
+ * THIRD table for app/appointments/page.tsx, tracking marketing rather
+ * than the schedule itself — "# vaccines BOOKED per day (the day the
+ * booking was MADE, not the appointment date) for the last 28 days."
+ * Reuses the exact same vaccine-column set/resolution as
+ * buildAppointmentTable (FIXED_COLUMNS, resolveColumn, extras-adjacency —
+ * `columns` below is literally that function's own `columns` output) so
+ * app/appointments/page.tsx's buildHeaderRows renders an identical grouped
+ * header with zero new header logic. The one structural difference from
+ * buildAppointmentTable: THIS table is day-major (one row per day, with
+ * per-vaccine counts as columns within that row) rather than
+ * vaccine-major (buildAppointmentTable's one row per vaccine) — Will's
+ * spec explicitly wants day-rows, newest first, like the main table's
+ * "Scheduled date" rows, not a transposed vaccine-rows layout.
+ *
+ * `days` is the FULL lookback array this table's math needs — every
+ * caller passes lib/acuity-booking-activity.ts's
+ * BOOKING_ACTIVITY_LOOKBACK_DAYS+1 ascending days ending today (see that
+ * module and BOOKING_ACTIVITY_DISPLAY_DAYS below), NOT just the 28 days
+ * that end up rendered: the 7-day avg on the OLDEST displayed row still
+ * needs 6 days before it, and the WoW comparison on that same row needs a
+ * further 7-day window before THAT — 14 lookback days beyond the 28
+ * displayed ones covers both with one spare day of slack. `activityCounts`
+ * is {date, vaccineName, count} shaped exactly like VaccineCount, except
+ * `date` here means the day the BOOKING was made (createdDate), never the
+ * appointment day — see lib/acuity-booking-activity.ts for how that's
+ * produced (aggregateAppointmentCounts run against appointments remapped
+ * onto their own createdDate, so every COVID/Flu composite-name and
+ * fixed-column rule applies identically to this table too).
+ */
+export const BOOKING_ACTIVITY_DISPLAY_DAYS = 28;
+
+// One 7-day window for "this week's" avg, plus another 7-day window
+// further back for the WoW comparison — see this module's doc comment
+// above for why the OLDEST displayed row needs both in full.
+export const BOOKING_ACTIVITY_LOOKBACK_DAYS = BOOKING_ACTIVITY_DISPLAY_DAYS + 7 + 7;
+
+export type BookingActivityRow = {
+  /** "YYYY-MM-DD" — the day the booking was made. */
+  date: string;
+  /** Keyed by column id, same ids as `columns`/AppointmentTable.rows. */
+  countsByColumn: Record<string, number>;
+  /** Sum across every column for this day — analogous to
+   * AppointmentTable.dailyTotals[date], just inlined per-row since this
+   * table has no separate totals map. */
+  total: number;
+  /**
+   * Mean of `total` over this day and the 6 days before it (7 days), to
+   * one decimal — 0 when the lookback window isn't fully covered by the
+   * `days` array a caller passed in (should never happen given the
+   * BOOKING_ACTIVITY_LOOKBACK_DAYS contract above, but this degrades to 0
+   * rather than an inaccurate partial average or a crash).
+   */
+  sevenDayAvg: number;
+  /**
+   * Percent change of `sevenDayAvg` vs. the 7-day avg ending 7 days
+   * EARLIER (i.e., this same row's window shifted back a further week) —
+   * signed (positive omits no sign here; app/appointments/page.tsx adds
+   * the "+"/formats the "%" — this is the raw signed number, e.g. 12.3 or
+   * -8.4). `null` — rendered "—" by the caller — when that comparison
+   * window isn't (fully) covered by `days`, OR when its avg is exactly 0
+   * (a percent change against a zero baseline is undefined, not "0%" or
+   * "+Infinity%" — documented judgment call, no spec guidance either way).
+   */
+  weekOverWeek: number | null;
+};
+
+export type BookingActivityTable = {
+  /** The displayed 28 days, NEWEST FIRST — aligned with `rows`. */
+  days: string[];
+  /** Same column set/order as AppointmentTable.columns (see doc comment
+   * above) — feed directly into app/appointments/page.tsx's
+   * buildHeaderRows. */
+  columns: AppointmentTableColumn[];
+  /** One row per day in `days`, same order (newest first). */
+  rows: BookingActivityRow[];
+  /** Single heatmap scale across every row's per-column cell — Will's
+   * spec calls for the activity table's own scale, independent of the
+   * main table's dailyScaleMax/weeklyScaleMax/totalsScaleMax (see
+   * computeBookingActivityHeatmapMax). Total/7-day avg/WoW are
+   * deliberately NOT part of this scale — they render unshaded. */
+  heatmapMax: number;
+};
+
+/**
+ * The per-column heatmap scale for a BookingActivityTable's `rows` — the
+ * max single-cell per-vaccine count across every displayed day, mirroring
+ * computeHeatmapMaxes's "own independent scale" pattern above but as one
+ * flat scale (this table has no Today/Next-7/After-today split to keep
+ * separate). Exported separately from buildBookingActivityTable so it's
+ * directly unit-testable, same rationale as heatmapCellBackground/
+ * computeHeatmapMaxes being separate exports.
+ */
+export function computeBookingActivityHeatmapMax(rows: BookingActivityRow[]): number {
+  let max = 0;
+  for (const row of rows) {
+    for (const value of Object.values(row.countsByColumn)) {
+      max = Math.max(max, value);
+    }
+  }
+  return max;
+}
+
+export function buildBookingActivityTable(activityCounts: VaccineCount[], days: string[]): BookingActivityTable {
+  // Reuses buildAppointmentTable wholesale for the vaccine-column
+  // resolution/fixed-set/extras-adjacency logic (see this section's doc
+  // comment) — `table.dailyTotals`/`table.rows[i].countsByDay` give us
+  // every number this function needs; only the day-major reshaping below
+  // is new.
+  const table = buildAppointmentTable(activityCounts, days);
+  const indexByDate = new Map(days.map((day, index) => [day, index]));
+
+  // Mean of table.dailyTotals over the 7-day window ENDING at `days[endIndex]`
+  // (inclusive) — null when that window runs off the front of `days`.
+  function sevenDayAvg(endIndex: number): number | null {
+    if (endIndex < 0 || endIndex - 6 < 0) return null;
+    let sum = 0;
+    for (let i = endIndex - 6; i <= endIndex; i++) {
+      sum += table.dailyTotals[days[i]] ?? 0;
+    }
+    return sum / 7;
+  }
+
+  const displayDays = days.slice(-BOOKING_ACTIVITY_DISPLAY_DAYS);
+
+  // Ascending first (oldest -> newest, matching `days`/`table`), then
+  // reversed once at the end for the newest-first display order Will
+  // asked for — simpler than computing indices backwards throughout.
+  const ascendingRows: BookingActivityRow[] = displayDays.map((date) => {
+    const endIndex = indexByDate.get(date)!;
+    const avg = sevenDayAvg(endIndex);
+    const priorAvg = sevenDayAvg(endIndex - 7);
+
+    const countsByColumn: Record<string, number> = {};
+    for (const row of table.rows) {
+      countsByColumn[row.vaccineName] = row.countsByDay[date] ?? 0;
+    }
+
+    let weekOverWeek: number | null = null;
+    if (avg !== null && priorAvg !== null && priorAvg !== 0) {
+      weekOverWeek = ((avg - priorAvg) / priorAvg) * 100;
+    }
+
+    return {
+      date,
+      countsByColumn,
+      total: table.dailyTotals[date] ?? 0,
+      sevenDayAvg: avg !== null ? Math.round(avg * 10) / 10 : 0,
+      weekOverWeek,
+    };
+  });
+
+  const rows = ascendingRows.slice().reverse();
+
+  return {
+    days: rows.map((row) => row.date),
+    columns: table.columns,
+    rows,
+    heatmapMax: computeBookingActivityHeatmapMax(rows),
+  };
+}

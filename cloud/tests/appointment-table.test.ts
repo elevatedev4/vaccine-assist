@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOOKING_ACTIVITY_DISPLAY_DAYS,
+  BOOKING_ACTIVITY_LOOKBACK_DAYS,
   buildAppointmentTable,
+  buildBookingActivityTable,
   buildColumnTotals,
   buildHourlyBreakdownTable,
+  computeBookingActivityHeatmapMax,
   computeHeatmapMaxes,
   computeTodayAndNext7Summaries,
   compositeNameToMatchableBase,
   heatmapCellBackground,
   HOURLY_TABLE_HOURS,
   type AppointmentTableColumn,
+  type BookingActivityRow,
   type HourlyCount,
+  type VaccineCount,
 } from "@/lib/appointment-table";
 
 const DAYS = ["2026-08-17", "2026-08-18", "2026-08-19"];
@@ -1081,5 +1087,174 @@ describe("buildHourlyBreakdownTable", () => {
 
     const day1 = table.rows.find((r) => r.date === "2026-08-17")!;
     expect(day1.hourValues[1]).toBe(7); // hour 9 is index 1
+  });
+});
+
+// V-T-booking-activity (Will, 2026-09-05/07): "# vaccines BOOKED per day
+// (the day the booking was MADE, not the appointment date) for the last
+// 28 days, so I can track marketing" — the third table on /appointments.
+describe("buildBookingActivityTable", () => {
+  function addDays(dateStr: string, days: number): string {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const date = new Date(Date.UTC(y, m - 1, d));
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  }
+
+  function daysRange(start: string, count: number): string[] {
+    return Array.from({ length: count }, (_, i) => addDays(start, i));
+  }
+
+  // The real contract every caller (app/api/acuity/poll/route.ts via
+  // app/appointments/page.tsx) actually passes: BOOKING_ACTIVITY_LOOKBACK_DAYS
+  // days before today, plus today itself.
+  const FULL_DAYS = daysRange("2026-07-01", BOOKING_ACTIVITY_LOOKBACK_DAYS + 1);
+
+  function vc(date: string, vaccineName: string, count: number): VaccineCount {
+    return { date, vaccineName, count };
+  }
+
+  it("renders exactly BOOKING_ACTIVITY_DISPLAY_DAYS rows, NEWEST FIRST", () => {
+    const table = buildBookingActivityTable([], FULL_DAYS);
+
+    expect(table.rows).toHaveLength(BOOKING_ACTIVITY_DISPLAY_DAYS);
+    expect(table.days).toHaveLength(BOOKING_ACTIVITY_DISPLAY_DAYS);
+    // Newest (last of FULL_DAYS) first, oldest displayed day last.
+    const expectedDisplayDays = FULL_DAYS.slice(-BOOKING_ACTIVITY_DISPLAY_DAYS).slice().reverse();
+    expect(table.days).toEqual(expectedDisplayDays);
+    expect(table.rows.map((r) => r.date)).toEqual(expectedDisplayDays);
+    expect(table.rows[0].date).toBe(FULL_DAYS[FULL_DAYS.length - 1]); // today
+    expect(table.rows[table.rows.length - 1].date).toBe(
+      FULL_DAYS[FULL_DAYS.length - BOOKING_ACTIVITY_DISPLAY_DAYS]
+    );
+  });
+
+  it("reuses the exact same fixed column set/order as buildAppointmentTable", () => {
+    const table = buildBookingActivityTable([], FULL_DAYS);
+    expect(table.columns.map((c) => c.vaccineName)).toEqual(FIXED_COLUMN_IDS);
+  });
+
+  it("puts each day's per-vaccine counts on that day's row, keyed by column id, plus a Total", () => {
+    const newest = FULL_DAYS[FULL_DAYS.length - 1];
+    const counts = [vc(newest, "RSV", 3), vc(newest, "MMR", 2)];
+
+    const table = buildBookingActivityTable(counts, FULL_DAYS);
+
+    const row = table.rows[0]; // newest day, first row
+    expect(row.date).toBe(newest);
+    expect(row.countsByColumn["rsv"]).toBe(3);
+    expect(row.countsByColumn["mmr"]).toBe(2);
+    expect(row.countsByColumn["hpv"]).toBe(0);
+    expect(row.total).toBe(5);
+  });
+
+  it("computes the 7-day avg as the mean of this day and the prior 6 days, rounded to one decimal (hand-computed)", () => {
+    // The 7 days ending at "today" (the newest displayed day) get RSV
+    // counts summing to exactly 100 -> 100/7 = 14.2857... -> 14.3.
+    const last7 = [];
+    for (let i = 0; i < 7; i++) last7.push(FULL_DAYS[FULL_DAYS.length - 1 - i]);
+    const dailyValues = [12, 15, 9, 20, 14, 18, 12]; // sums to 100
+    expect(dailyValues.reduce((a, b) => a + b, 0)).toBe(100);
+    const counts = last7.map((date, i) => vc(date, "RSV", dailyValues[i]));
+
+    const table = buildBookingActivityTable(counts, FULL_DAYS);
+
+    expect(table.rows[0].total).toBe(dailyValues[0]); // today's own total
+    expect(table.rows[0].sevenDayAvg).toBeCloseTo(14.3, 5);
+  });
+
+  describe("week-over-week", () => {
+    // Builds an activity table where the 7-day window ending "today" sums
+    // to `currentSum` and the 7-day window ending 7 days earlier sums to
+    // `priorSum` — both windows entirely within FULL_DAYS's lookback, so
+    // this exercises the plain, fully-covered WoW math (not the
+    // insufficient-data edge case, covered separately below).
+    function tableWithTwoWeeks(currentSum: number, priorSum: number) {
+      const currentWeek = Array.from({ length: 7 }, (_, i) => FULL_DAYS[FULL_DAYS.length - 1 - i]);
+      const priorWeek = Array.from({ length: 7 }, (_, i) => FULL_DAYS[FULL_DAYS.length - 8 - i]);
+      const counts = [
+        ...currentWeek.map((date) => vc(date, "RSV", currentSum / 7)),
+        ...priorWeek.map((date) => vc(date, "RSV", priorSum / 7)),
+      ];
+      return buildBookingActivityTable(counts, FULL_DAYS);
+    }
+
+    it("is positive (and signed) when this week's avg is higher than the prior week's", () => {
+      const table = tableWithTwoWeeks(140, 70); // avg 20 vs avg 10 -> +100%
+      expect(table.rows[0].weekOverWeek).toBeCloseTo(100, 5);
+    });
+
+    it("is negative when this week's avg is lower than the prior week's", () => {
+      const table = tableWithTwoWeeks(70, 140); // avg 10 vs avg 20 -> -50%
+      expect(table.rows[0].weekOverWeek).toBeCloseTo(-50, 5);
+    });
+
+    it("is 0 when nothing changed week over week", () => {
+      const table = tableWithTwoWeeks(70, 70);
+      expect(table.rows[0].weekOverWeek).toBeCloseTo(0, 5);
+    });
+
+    it("is null (rendered \"—\" by the caller) when the prior week's avg is exactly 0 — no baseline to compare against", () => {
+      const table = tableWithTwoWeeks(70, 0);
+      expect(table.rows[0].weekOverWeek).toBeNull();
+    });
+
+    it("is null when the comparison window isn't (fully) covered by the days a caller passed in", () => {
+      // Only BOOKING_ACTIVITY_DISPLAY_DAYS + 7 days total — enough lookback
+      // for every displayed row's OWN 7-day avg, but not enough for the
+      // WoW comparison window on the OLDEST displayed rows.
+      const shortDays = daysRange("2026-08-01", BOOKING_ACTIVITY_DISPLAY_DAYS + 7);
+      // Give the newest day's current AND prior 7-day windows real
+      // (nonzero) data — both windows fall entirely within `shortDays` for
+      // the newest row (indices 21-34), so its WoW should compute fine;
+      // this also rules out the newest row's weekOverWeek being null for
+      // the UNRELATED "prior avg is exactly 0" reason (see the "is null...
+      // no baseline" test above) rather than the front-of-array reason
+      // this test actually targets.
+      const counts = shortDays.slice(21).map((date) => vc(date, "RSV", 7));
+
+      const table = buildBookingActivityTable(counts, shortDays);
+
+      const oldestRow = table.rows[table.rows.length - 1];
+      const newestRow = table.rows[0];
+
+      // The oldest displayed row's own 7-day avg IS computable (0, since
+      // there's no data there, but not null)...
+      expect(oldestRow.sevenDayAvg).toBe(0);
+      // ...but its WoW comparison window runs off the front of `shortDays`.
+      expect(oldestRow.weekOverWeek).toBeNull();
+      // The newest displayed row has full lookback (and real data) for
+      // both windows, so it resolves to a real percentage, not "—".
+      expect(newestRow.weekOverWeek).not.toBeNull();
+    });
+  });
+
+  it("computeBookingActivityHeatmapMax is the max single per-vaccine cell across all rows — Total is never part of it", () => {
+    const newest = FULL_DAYS[FULL_DAYS.length - 1];
+    const older = FULL_DAYS[FULL_DAYS.length - 2];
+    // One day combines two vaccines whose SUM (14) exceeds any single
+    // column's own count (9) — the heatmap scale must reflect the column
+    // max (9), never the combined Total (14).
+    const counts = [vc(newest, "RSV", 5), vc(newest, "MMR", 9), vc(older, "HPV", 3)];
+
+    const table = buildBookingActivityTable(counts, FULL_DAYS);
+
+    expect(table.heatmapMax).toBe(9);
+    expect(computeBookingActivityHeatmapMax(table.rows)).toBe(9);
+  });
+
+  it("computeBookingActivityHeatmapMax is 0 for an all-empty table", () => {
+    const table = buildBookingActivityTable([], FULL_DAYS);
+    expect(table.heatmapMax).toBe(0);
+  });
+
+  it("ignores a count entry whose date falls outside the `days` array passed in", () => {
+    const outOfRange = addDays(FULL_DAYS[0], -1);
+    const counts = [vc(outOfRange, "RSV", 99)];
+
+    const table = buildBookingActivityTable(counts, FULL_DAYS);
+
+    const total = table.rows.reduce((sum: number, row: BookingActivityRow) => sum + row.total, 0);
+    expect(total).toBe(0);
   });
 });

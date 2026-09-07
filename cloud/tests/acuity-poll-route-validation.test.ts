@@ -17,13 +17,18 @@ vi.mock("@/lib/auth", () => ({
 // test environment (see tests/acuity-poll-cache.test.ts), so every
 // PRE-EXISTING test in this file that doesn't override these mocks still
 // exercises the same cache-miss path it always has.
+// getCachedActivityCounts/setCachedActivityCounts (V-T-booking-activity)
+// added alongside these for the same reason, exercised by the
+// "?activity=1" describe block below.
 vi.mock("@/lib/acuity-poll-cache", () => ({
   getCachedCounts: vi.fn(async () => null),
   setCachedCounts: vi.fn(async () => undefined),
+  getCachedActivityCounts: vi.fn(async () => null),
+  setCachedActivityCounts: vi.fn(async () => undefined),
 }));
 
 import { GET } from "@/app/api/acuity/poll/route";
-import { getCachedCounts } from "@/lib/acuity-poll-cache";
+import { getCachedActivityCounts, getCachedCounts, setCachedActivityCounts } from "@/lib/acuity-poll-cache";
 
 const ACUITY_ENV_KEYS = ["ACUITY_USER_ID", "ACUITY_API_KEY"] as const;
 
@@ -290,6 +295,183 @@ describe("GET /api/acuity/poll — validation", () => {
       const ttlArgsUsed = vi.mocked(getCachedCounts).mock.calls.map((call) => call[2]);
       expect(ttlArgsUsed.length).toBeGreaterThan(0);
       for (const ttl of ttlArgsUsed) expect(ttl).toBe(20);
+    });
+  });
+
+  // V-T-booking-activity (Will, 2026-09-05/07) — same "separate, later
+  // request" shape as `?afterTodayOnly=1` above.
+  describe("?activity=1 (V-T-booking-activity)", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      for (const key of ACUITY_ENV_KEYS) delete process.env[key];
+      vi.mocked(getCachedActivityCounts).mockReset();
+      vi.mocked(getCachedActivityCounts).mockResolvedValue(null);
+      vi.mocked(setCachedActivityCounts).mockReset();
+      vi.mocked(setCachedActivityCounts).mockResolvedValue(undefined);
+    });
+
+    function activityRequest(query = "") {
+      return new Request(`http://localhost/api/acuity/poll?activity=1${query}`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+    }
+
+    function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 1,
+        datetime: "2026-09-01T10:00:00-0500",
+        datetimeCreated: "2026-09-01T09:00:00-0500",
+        appointmentTypeID: 111,
+        forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Vaccine", value: "Flu" }] }],
+        ...overrides,
+      };
+    }
+
+    it("returns configured: false, activityCounts: [] when Acuity credentials aren't set — no start/end needed", async () => {
+      const response = await GET(activityRequest());
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ configured: false, activityCounts: [], possiblyTruncated: false, asOf: null });
+    });
+
+    it("skips range validation entirely — an invalid/huge range in the query string is simply ignored", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+
+      const response = await GET(activityRequest("&start=0000-01-01&end=2999-12-31"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.configured).toBe(true);
+      expect(body.error).toBeUndefined();
+    });
+
+    it("returns the cached activityCounts (cacheHit: true) under the created_ prefixed key without touching Acuity", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+      const cachedCounts = [{ date: "2026-08-20", vaccineName: "flu_unknown", count: 4 }];
+      vi.mocked(getCachedActivityCounts).mockResolvedValue({
+        counts: cachedCounts,
+        possiblyTruncated: false,
+        computedAt: new Date().toISOString(),
+      });
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(activityRequest());
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(body).toEqual({
+        configured: true,
+        activityCounts: cachedCounts,
+        possiblyTruncated: false,
+        cacheHit: true,
+        asOf: expect.any(String),
+      });
+      // The lookup used the `created_` prefixed key, not a bare range key
+      // — see lib/acuity-poll-cache.ts's activityRangeKey.
+      const [minArg, maxArg] = vi.mocked(getCachedActivityCounts).mock.calls[0];
+      expect(maxArg >= minArg).toBe(true);
+    });
+
+    it("computes activityCounts via the chunked fetch on a cache miss, then caches the result", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+
+      const fetchMock = vi.fn(async (url: string | URL) => {
+        const urlStr = url.toString();
+        if (urlStr.includes("appointment-types")) {
+          return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
+        }
+        const minDate = new URL(urlStr).searchParams.get("minDate")!;
+        const maxDate = new URL(urlStr).searchParams.get("maxDate")!;
+        // Only the window covering 2026-09-01 (the fixture's booking date)
+        // returns anything.
+        if (minDate <= "2026-09-01" && "2026-09-01" <= maxDate) {
+          return new Response(JSON.stringify([acuityAppointmentFixture()]), { status: 200 });
+        }
+        return new Response(JSON.stringify([]), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(activityRequest());
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.configured).toBe(true);
+      // "Flu" (no age-question form field in this fixture) rewrites to
+      // the "Flu · Unknown" composite — same aggregateAppointmentCounts
+      // rule the main table's raw `counts` list uses (see the "table
+      // field" describe block above); a renderer resolves this onto the
+      // fixed "flu_unknown" column via buildBookingActivityTable, same as
+      // the main table's buildAppointmentTable. Grouped under 2026-09-01,
+      // the booking's createdDate — NOT its appointment date.
+      expect(body.activityCounts).toEqual([{ date: "2026-09-01", vaccineName: "Flu · Unknown", count: 1 }]);
+      expect(body.possiblyTruncated).toBe(false);
+      expect(body.cacheHit).toBe(false);
+      expect(body.asOf).toEqual(expect.any(String));
+      expect(vi.mocked(setCachedActivityCounts)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(setCachedActivityCounts)).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        body.activityCounts,
+        false
+      );
+    });
+
+    it("marks possiblyTruncated when any fetch window hits the 100-appointment cap", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+
+      const fetchMock = vi.fn(async (url: string | URL) => {
+        const urlStr = url.toString();
+        if (urlStr.includes("appointment-types")) {
+          return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
+        }
+        const minDate = new URL(urlStr).searchParams.get("minDate")!;
+        const maxDate = new URL(urlStr).searchParams.get("maxDate")!;
+        if (minDate <= "2026-09-01" && "2026-09-01" <= maxDate) {
+          const hundred = Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+          return new Response(JSON.stringify(hundred), { status: 200 });
+        }
+        return new Response(JSON.stringify([]), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(activityRequest());
+      const body = await response.json();
+
+      expect(body.possiblyTruncated).toBe(true);
+    });
+
+    it("returns 502 when the underlying Acuity fetch fails", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+      // fetchAppointmentTypes (fired alongside the window fetches) hits
+      // this 401 first — its own error message ("unexpected status") is
+      // what surfaces, same as acuity-future-summary.ts's equivalent test.
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
+
+      const response = await GET(activityRequest());
+      expect(response.status).toBe(502);
+      const body = await response.json();
+      expect(body.error).toMatch(/unexpected status \(401\)/i);
+    });
+
+    it("honors ?force=1 by using the shorter FORCE_COOLDOWN_SECONDS cache floor", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+
+      await GET(activityRequest("&force=1"));
+
+      expect(vi.mocked(getCachedActivityCounts)).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        20
+      );
     });
   });
 });

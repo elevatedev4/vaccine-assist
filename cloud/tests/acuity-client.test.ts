@@ -83,6 +83,14 @@ function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
     date: "August 17, 2026",
     time: "10:00am",
     datetime: "2026-08-17T10:00:00-0500",
+    // V-T-booking-activity: the raw `datetimeCreated` field Acuity's real
+    // appointments endpoint returns alongside `datetime` — same ISO 8601
+    // + UTC-offset shape, timestamping when the booking was MADE, not the
+    // appointment itself. Deliberately a different calendar day than
+    // `datetime` above (Aug 10 vs Aug 17) so every assertion using this
+    // default proves createdDate and date are derived independently, not
+    // accidentally aliasing the same field.
+    datetimeCreated: "2026-08-10T09:00:00-0500",
     appointmentTypeID: 111,
     notes: "Allergic to eggs",
     forms: [{ id: 1, name: "Intake", values: [] }],
@@ -91,16 +99,23 @@ function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
 }
 
 // Every appointment lacking an explicit age/brand form field buckets to
-// this default — used throughout to avoid repeating the same 3 fields on
-// every fixture expectation below.
-const DEFAULT_BUCKETS = { covidBrand: "any", covidAgeBucket: "unknown", fluAgeBucket: "unknown" } as const;
+// this default, and every appointment using the fixture's default
+// datetimeCreated (2026-08-10) resolves to this createdDate — used
+// throughout to avoid repeating the same 4 fields on every fixture
+// expectation below.
+const DEFAULT_BUCKETS = {
+  covidBrand: "any",
+  covidAgeBucket: "unknown",
+  fluAgeBucket: "unknown",
+  createdDate: "2026-08-10",
+} as const;
 
 describe("fetchAppointmentsForRange", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("strips every field down to {date, hourOfDay, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket, fluAgeBucket} — no PHI keys survive", async () => {
+  it("strips every field down to {date, hourOfDay, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket, fluAgeBucket, createdDate} — no PHI keys survive", async () => {
     const fixture = [
       acuityAppointmentFixture(),
       acuityAppointmentFixture({
@@ -125,13 +140,36 @@ describe("fetchAppointmentsForRange", () => {
     // plus the exact-key assertion below cover both the general PHI
     // fields and the age/DOB boundary specifically (see
     // CountableAppointment's covidAgeBucket/fluAgeBucket doc comments).
-    const phiKeys = ["firstName", "lastName", "phone", "email", "notes", "forms", "id", "time", "dob", "age"];
+    // "datetimeCreated" is included too (V-T-booking-activity) — only its
+    // bucketed derivative `createdDate` may survive, never the raw field.
+    const phiKeys = [
+      "firstName",
+      "lastName",
+      "phone",
+      "email",
+      "notes",
+      "forms",
+      "id",
+      "time",
+      "dob",
+      "age",
+      "datetimeCreated",
+    ];
     for (const entry of result.appointments) {
       for (const key of phiKeys) {
         expect(Object.prototype.hasOwnProperty.call(entry, key)).toBe(false);
       }
       expect(Object.keys(entry).sort()).toEqual(
-        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "hourOfDay", "vaccineNames"].sort()
+        [
+          "appointmentTypeId",
+          "covidAgeBucket",
+          "covidBrand",
+          "createdDate",
+          "date",
+          "fluAgeBucket",
+          "hourOfDay",
+          "vaccineNames",
+        ].sort()
       );
     }
   });
@@ -163,6 +201,98 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-01-01", "2026-12-31");
 
       expect(result.appointments.map((a) => a.hourOfDay)).toEqual([14, 14]);
+    });
+  });
+
+  // V-T-booking-activity (Will, 2026-09-05/07): createdDate is derived from
+  // `datetimeCreated` via the SAME acuityDatetimeToChicagoDate helper as
+  // `date` is derived from `datetime` — these tests mirror the "10pm
+  // Central" / "11:45pm Central" boundary tests further down for `date`,
+  // proving the SAME Chicago-day boundary correctness applies to
+  // `createdDate` independently, not just to the appointment day.
+  describe("createdDate derivation", () => {
+    it("derives createdDate from datetimeCreated, independent of the appointment's own datetime", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          datetime: "2026-08-17T10:00:00-0500",
+          datetimeCreated: "2026-07-30T08:15:00-0500",
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toHaveLength(1);
+      expect(result.appointments[0].date).toBe("2026-08-17");
+      expect(result.appointments[0].createdDate).toBe("2026-07-30");
+    });
+
+    // Reproduces the same class of bug the `date` boundary tests below
+    // guard against: a booking made late at night Central must land on
+    // the Central calendar day it was actually made, not the UTC day a
+    // naive `datetimeCreated.slice(0, 10)` read would produce.
+    // 2026-08-16T22:00:00-05:00 Central == 2026-08-17T03:00:00Z UTC — a
+    // naive UTC-day read would wrongly put this booking on 2026-08-17.
+    it("assigns a booking made at 10pm Central to the Central calendar day the booking was made, not the UTC day", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          datetime: "2026-08-20T10:00:00-0500",
+          datetimeCreated: "2026-08-16T22:00:00-0500",
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].createdDate).toBe("2026-08-16");
+    });
+
+    // The other side of the same boundary: a booking made right at
+    // 11:45pm Central (2026-08-16T23:45:00-05:00 Central ==
+    // 2026-08-17T04:45:00Z UTC) is still 2026-08-16 in Chicago, even
+    // though it's already past midnight UTC.
+    it("assigns a booking made at 11:45pm Central to the Central day, even though it's after midnight UTC", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          datetime: "2026-08-20T10:00:00-0500",
+          datetimeCreated: "2026-08-16T23:45:00-0500",
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].createdDate).toBe("2026-08-16");
+    });
+
+    it("is DST-safe (America/Chicago, not a fixed UTC offset), same as date/hourOfDay", async () => {
+      const fixture = [
+        acuityAppointmentFixture({ id: 1, datetimeCreated: "2026-01-15T23:30:00-0600" }), // CST, winter
+        acuityAppointmentFixture({ id: 2, datetimeCreated: "2026-08-17T23:30:00-0500" }), // CDT, summer
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-01-01", "2026-12-31");
+
+      expect(result.appointments.map((a) => a.createdDate)).toEqual(["2026-01-15", "2026-08-17"]);
+    });
+
+    it("falls back to \"\" when datetimeCreated is missing or unparseable, without dropping the appointment", async () => {
+      const fixture = [
+        acuityAppointmentFixture({ datetimeCreated: undefined }),
+        acuityAppointmentFixture({ id: 2, datetimeCreated: "not-a-real-datetime" }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toHaveLength(2);
+      expect(result.appointments.map((a) => a.createdDate)).toEqual(["", ""]);
+      // Still fully valid on every other field — a bad/missing
+      // createdDate never disqualifies the appointment itself, only a
+      // createdDate-keyed aggregation (lib/acuity-booking-activity.ts)
+      // filters these out.
+      expect(result.appointments[0].date).toBe("2026-08-17");
     });
   });
 
@@ -471,7 +601,16 @@ describe("fetchAppointmentsForRange", () => {
       const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
       expect(Object.keys(result.appointments[0]).sort()).toEqual(
-        ["appointmentTypeId", "covidAgeBucket", "covidBrand", "date", "fluAgeBucket", "hourOfDay", "vaccineNames"].sort()
+        [
+          "appointmentTypeId",
+          "covidAgeBucket",
+          "covidBrand",
+          "createdDate",
+          "date",
+          "fluAgeBucket",
+          "hourOfDay",
+          "vaccineNames",
+        ].sort()
       );
       expect(JSON.stringify(result.appointments[0])).not.toContain("1990-01-01");
     });
@@ -688,6 +827,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "pfizer" as const,
         covidAgeBucket: "12-64" as const,
         fluAgeBucket: "3-64" as const,
+        createdDate: "2026-08-10",
       },
       {
         date: "2026-08-17",
@@ -697,6 +837,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "any" as const,
         covidAgeBucket: "unknown" as const,
         fluAgeBucket: "65+" as const,
+        createdDate: "2026-08-10",
       },
     ];
 
@@ -723,6 +864,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "any",
         covidAgeBucket: "unknown",
         fluAgeBucket: "unknown",
+        createdDate: "2026-08-10",
         firstName: "Jane",
         email: "jane@example.com",
       },
@@ -734,6 +876,7 @@ describe("aggregateAppointmentCounts", () => {
       covidBrand: "any";
       covidAgeBucket: "unknown";
       fluAgeBucket: "unknown";
+      createdDate: string;
     }[];
 
     const result = aggregateAppointmentCounts(appointments, new Map());
@@ -751,6 +894,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "pfizer" as const,
         covidAgeBucket: "65+" as const,
         fluAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
       },
       {
         date: "2026-08-17",
@@ -760,6 +904,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "moderna" as const,
         covidAgeBucket: "3-11" as const,
         fluAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
       },
       {
         date: "2026-08-17",
@@ -769,6 +914,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "moderna" as const,
         covidAgeBucket: "3-11" as const,
         fluAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
       },
       {
         date: "2026-08-17",
@@ -778,6 +924,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "any" as const,
         covidAgeBucket: "unknown" as const,
         fluAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
       },
     ];
 
@@ -805,6 +952,7 @@ describe("aggregateAppointmentCounts", () => {
         covidBrand: "pfizer" as const,
         covidAgeBucket: "3-11" as const,
         fluAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
       },
     ];
 
@@ -827,6 +975,7 @@ describe("aggregateAppointmentCounts", () => {
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "3-64" as const,
+          createdDate: "2026-08-10",
         },
         {
           date: "2026-08-17",
@@ -836,6 +985,7 @@ describe("aggregateAppointmentCounts", () => {
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "65+" as const,
+          createdDate: "2026-08-10",
         },
         {
           date: "2026-08-17",
@@ -845,6 +995,7 @@ describe("aggregateAppointmentCounts", () => {
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "unknown" as const,
+          createdDate: "2026-08-10",
         },
       ];
 
@@ -871,6 +1022,7 @@ describe("aggregateAppointmentCounts", () => {
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "65+" as const,
+          createdDate: "2026-08-10",
         },
       ];
 
@@ -893,6 +1045,7 @@ describe("aggregateHourlyCounts", () => {
       covidBrand: "any",
       covidAgeBucket: "unknown",
       fluAgeBucket: "unknown",
+      createdDate: "2026-08-10",
       ...overrides,
     };
   }
