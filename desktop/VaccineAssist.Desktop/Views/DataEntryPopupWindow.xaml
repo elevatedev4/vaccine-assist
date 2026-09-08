@@ -82,7 +82,7 @@
                 </Style>
             </StackPanel.Style>
             <TextBlock Text="Vaccine group" FontWeight="Bold"/>
-            <ItemsControl ItemsSource="{Binding AvailableGroups}" Margin="0,4,0,0">
+            <ItemsControl x:Name="GroupItemsControl" ItemsSource="{Binding AvailableGroups}" Margin="0,4,0,0">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <RadioButton GroupName="GroupChoice" Content="{Binding}"
@@ -105,7 +105,7 @@
                 </Style>
             </StackPanel.Style>
             <TextBlock Text="{Binding SelectedGroup, StringFormat='{}{0} product'}" FontWeight="Bold"/>
-            <ItemsControl ItemsSource="{Binding ProductOptions}" Margin="0,4,0,0">
+            <ItemsControl x:Name="ProductItemsControl" ItemsSource="{Binding ProductOptions}" Margin="0,4,0,0">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <RadioButton GroupName="ProductChoice" Content="{Binding Name}"
@@ -128,7 +128,7 @@
                 </Style>
             </StackPanel.Style>
             <TextBlock Text="Dose number" FontWeight="Bold"/>
-            <ItemsControl ItemsSource="{Binding DoseOptions}" Margin="0,4,0,0">
+            <ItemsControl x:Name="DoseItemsControl" ItemsSource="{Binding DoseOptions}" Margin="0,4,0,0">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <RadioButton GroupName="DoseChoice" Content="{Binding Dose, StringFormat='Dose {0}'}"
@@ -199,7 +199,7 @@
                     </Style.Triggers>
                 </Style>
             </StackPanel.Style>
-            <Button Content="Enter into Pioneer" Command="{Binding EnterIntoPioneerCommand}" Padding="8,2" Margin="0,0,8,0"/>
+            <Button x:Name="EnterIntoPioneerButton" Content="Enter into Pioneer" Command="{Binding EnterIntoPioneerCommand}" Padding="8,2" Margin="0,0,8,0"/>
             <Button Content="Copy to clipboard" Command="{Binding CopyToClipboardCommand}" Padding="8,2"/>
         </StackPanel>
 

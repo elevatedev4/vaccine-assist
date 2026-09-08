@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Models;
 
@@ -24,13 +25,31 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// RACE HANDLING: EditCommitted carries an incrementing token (bumped on
 /// EVERY committed edit, not just the field that changed) so LotsViewModel
 /// can tell whether the save it's about to apply the result of is still
-/// the LATEST edit for this row. An older, slower PATCH response landing
-/// after a newer edit has already started is simply ignored (neither
-/// committed nor reverted) — the newer edit's own in-flight PATCH already
-/// carries this row's full, up-to-date field snapshot (every field is
-/// sent on every save, not just the one that changed — see
-/// IVaccineApiService.UpdateLotAsync's own doc comment) and will resolve
-/// the row's final state on its own completion.
+/// the LATEST edit for this row. A stale FAILURE (an older edit's PATCH
+/// failing after a newer edit has already superseded it) is simply
+/// ignored — the newer edit's own in-flight PATCH already carries this
+/// row's full, up-to-date field snapshot and will resolve the row's
+/// visible state on its own completion.
+///
+/// REVIEWER FIX (Major, request-changes round): a stale SUCCESS is a
+/// DIFFERENT case and must NOT be simply ignored the same way. Repro: two
+/// overlapping edits (token 1 = "A", token 2 = "B"); token 2's PATCH
+/// resolves FIRST and FAILS, reverting the visible fields to whatever was
+/// committed before either edit; token 1's PATCH resolves SECOND and
+/// SUCCEEDS. "A" genuinely persisted server-side, so the row's revert
+/// target (_committed) MUST move to "A" — silently no-op'ing this success
+/// (the old `token != _editToken` guard alone) left _committed stuck at
+/// the pre-edit original forever, so a LATER failure would revert all the
+/// way back past a value the server actually holds, and nothing ever
+/// reconciled the drift short of a full reload. Fixed by tracking
+/// _appliedToken (the highest token whose OWN captured snapshot has been
+/// applied to _committed) separately from _editToken (the highest token
+/// COMMITTED locally, regardless of whether it has resolved yet) — see
+/// ApplySaveSuccess. Per-token snapshots are captured at RequestSave time
+/// (_pendingSnapshotsByToken) specifically so a late success can still
+/// commit the EXACT values that edit actually sent, not whatever the row
+/// happens to display by the time the response arrives (which may since
+/// have been reverted or re-edited).
 /// </summary>
 public sealed class LotRowViewModel : ObservableObject
 {
@@ -41,6 +60,19 @@ public sealed class LotRowViewModel : ObservableObject
     private string? _note;
     private string? _saveError;
     private int _editToken;
+
+    /// <summary>Highest token whose snapshot has actually been applied to
+    /// _committed so far — guards against an even-OLDER stale success
+    /// arriving later and regressing _committed backward past a newer
+    /// one already applied. See class doc comment.</summary>
+    private int _appliedToken;
+
+    /// <summary>Snapshot captured at the moment each token's edit
+    /// committed (RequestSave) — so ApplySaveSuccess can update _committed
+    /// to what THAT specific save actually sent, even if arrives late and
+    /// the row's live fields have since moved on. Pruned as tokens
+    /// resolve (success or failure) so this never grows unbounded.</summary>
+    private readonly Dictionary<int, (string LotNumber, DateTime Expiration, DateTime? BeyondUseDate, string? Note)> _pendingSnapshotsByToken = new();
 
     /// <summary>The last field snapshot known to have been saved
     /// successfully (or the lot's original loaded values, before any
@@ -148,6 +180,7 @@ public sealed class LotRowViewModel : ObservableObject
         if (_suppressPersist) return;
         SaveError = null;
         var token = ++_editToken;
+        _pendingSnapshotsByToken[token] = CurrentSnapshot();
         EditCommitted?.Invoke(this, token);
     }
 
@@ -158,23 +191,48 @@ public sealed class LotRowViewModel : ObservableObject
     public (string LotNumber, DateTime Expiration, DateTime? BeyondUseDate, string? Note) CurrentSnapshot() =>
         (_lotNumber, _expiration, _beyondUseDate, _note);
 
-    /// <summary>Called by LotsViewModel once a PATCH succeeds. No-ops if
-    /// a newer edit has since superseded this one (see class doc comment)
-    /// — otherwise marks the just-saved values as the new revert target
-    /// and clears any previous error.</summary>
+    /// <summary>
+    /// Called by LotsViewModel once a PATCH succeeds. REVIEWER FIX: unlike
+    /// ApplySaveFailure, this does NOT no-op just because a newer edit has
+    /// since superseded this one — a stale success still means the SERVER
+    /// genuinely holds these values now, so _committed (the revert target)
+    /// must move forward to reflect that, using this token's OWN captured
+    /// snapshot (_pendingSnapshotsByToken), not whatever the row currently
+    /// displays. Guarded by _appliedToken (not _editToken) so an
+    /// even-older success arriving later still can't regress _committed
+    /// past a newer one already applied.
+    ///
+    /// Visible fields/SaveError are only touched when this success IS for
+    /// the current edit (token == _editToken) — a stale success updating
+    /// the invisible revert target is exactly the fix; forcibly overwriting
+    /// what the user currently sees (which may already reflect a NEWER,
+    /// still-unresolved edit) is a separate, larger UX question this fix
+    /// deliberately does not take on.
+    /// </summary>
     public void ApplySaveSuccess(int token)
     {
-        if (token != _editToken) return;
-        _committed = CurrentSnapshot();
-        SaveError = null;
+        if (token > _appliedToken && _pendingSnapshotsByToken.TryGetValue(token, out var savedSnapshot))
+        {
+            _appliedToken = token;
+            _committed = savedSnapshot;
+        }
+        _pendingSnapshotsByToken.Remove(token);
+
+        if (token == _editToken)
+        {
+            SaveError = null;
+        }
     }
 
-    /// <summary>Called by LotsViewModel once a PATCH fails. No-ops if a
-    /// newer edit has since superseded this one; otherwise reverts every
-    /// editable field back to the last known-good (committed) values and
-    /// surfaces <paramref name="message"/> via SaveError.</summary>
+    /// <summary>Called by LotsViewModel once a PATCH fails. No-ops (other
+    /// than pruning this token's pending snapshot) if a newer edit has
+    /// since superseded this one — that newer edit's own save will resolve
+    /// the row's visible state; otherwise reverts every editable field
+    /// back to the last known-good (_committed) values and surfaces
+    /// <paramref name="message"/> via SaveError.</summary>
     public void ApplySaveFailure(int token, string message)
     {
+        _pendingSnapshotsByToken.Remove(token);
         if (token != _editToken) return;
 
         _suppressPersist = true;
@@ -186,4 +244,15 @@ public sealed class LotRowViewModel : ObservableObject
 
         SaveError = message;
     }
+
+    /// <summary>
+    /// Lets the view surface a client-side validation problem that never
+    /// goes through EditCommitted/autosave at all (MSG893 reviewer fix,
+    /// Minor: a cleared Expiration DatePicker — see LotsView.xaml.cs's
+    /// ExpirationDatePicker_OnSelectedDateChanged) — reuses the same
+    /// SaveError column an actual failed PATCH uses, so no separate UI is
+    /// needed for "this edit was rejected before it ever reached the
+    /// server."
+    /// </summary>
+    public void ReportValidationError(string message) => SaveError = message;
 }

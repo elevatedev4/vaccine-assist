@@ -90,11 +90,25 @@
                      matches the DatePicker already used elsewhere in this
                      app (Add-lot form below, the data-entry popup's
                      expiration gate) for date entry, and avoids ambiguous
-                     free-text date parsing in a DataGrid cell. -->
+                     free-text date parsing in a DataGrid cell.
+
+                     REVIEWER FIX (Minor): Expiration binds to
+                     LotRowViewModel.Expiration, a non-nullable DateTime
+                     (a lot's expiration is required — unlike Beyond-use
+                     date below, which stays nullable on purpose). WPF's
+                     default binding conversion can't push a cleared
+                     (null) SelectedDate into a non-nullable DateTime
+                     property, and by default fails that SILENTLY — no
+                     revert, no autosave, no visible feedback. The
+                     SelectedDateChanged handler below is this DatePicker's
+                     own explicit guard against exactly that: see
+                     LotsView.xaml.cs. -->
                 <DataGridTemplateColumn Header="Expiration" Width="*">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
-                            <DatePicker SelectedDate="{Binding Expiration, UpdateSourceTrigger=PropertyChanged}" BorderThickness="0"/>
+                            <DatePicker SelectedDate="{Binding Expiration, UpdateSourceTrigger=PropertyChanged}"
+                                        SelectedDateChanged="ExpirationDatePicker_OnSelectedDateChanged"
+                                        BorderThickness="0"/>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

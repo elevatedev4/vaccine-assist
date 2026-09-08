@@ -182,6 +182,82 @@ public class LotRowViewModelTests
     }
 
     [Fact]
+    public void AnEarlierSuccessArrivingAfterALaterFailureStillUpdatesTheRevertTarget()
+    {
+        // Reviewer finding (Major): two overlapping edits race — the
+        // LATER-token PATCH resolves FIRST and FAILS (reverting the
+        // visible fields to whatever was committed before either edit),
+        // then the EARLIER-token PATCH resolves SECOND and SUCCEEDS. The
+        // earlier edit genuinely persisted server-side, so the revert
+        // target (_committed) must move forward to reflect that — the OLD
+        // code's `token != _editToken` guard on ApplySaveSuccess silently
+        // dropped this, leaving _committed stuck at the pre-edit original
+        // forever (provable via a THIRD, later failure: it must revert to
+        // the earlier edit's real values, not all the way back to the
+        // original).
+        var row = new LotRowViewModel(MakeLot("ORIGINAL"), "MMR-II", null);
+        var tokens = new List<int>();
+        row.EditCommitted += (_, t) => tokens.Add(t);
+
+        row.LotNumber = "EARLIER"; // token 1 -- its save is presumed slow
+        row.LotNumber = "LATER";   // token 2 -- overlapping, resolves first
+        Assert.Equal(new[] { 1, 2 }, tokens);
+
+        // token 2 (LATER) fails first.
+        row.ApplySaveFailure(tokens[1], "later failed");
+        Assert.Equal("ORIGINAL", row.LotNumber); // reverted to the pre-edit baseline
+
+        // token 1 (EARLIER) succeeds AFTER that failure — the exact race
+        // from the reviewer's report.
+        row.ApplySaveSuccess(tokens[0]);
+
+        // Force another failure to observe the revert target directly: it
+        // must now land on "EARLIER" (what the server actually holds),
+        // never back on "ORIGINAL".
+        row.LotNumber = "THIRD"; // token 3
+        row.ApplySaveFailure(tokens[2], "third failed");
+
+        Assert.Equal("EARLIER", row.LotNumber);
+    }
+
+    [Fact]
+    public void AnOlderSuccessArrivingAfterANewerSuccessAlreadyAppliedDoesNotRegressTheRevertTarget()
+    {
+        // Companion case to the fix above: the _appliedToken guard must
+        // stop an even-OLDER success that finally arrives LAST from
+        // undoing a newer success that already moved the revert target
+        // forward.
+        var row = new LotRowViewModel(MakeLot("ORIGINAL"), "MMR-II", null);
+        var tokens = new List<int>();
+        row.EditCommitted += (_, t) => tokens.Add(t);
+
+        row.LotNumber = "FIRST";  // token 1
+        row.LotNumber = "SECOND"; // token 2
+
+        row.ApplySaveSuccess(tokens[1]); // newer (token 2) succeeds first
+        row.ApplySaveSuccess(tokens[0]); // older (token 1) success arrives late — must NOT win
+
+        row.LotNumber = "THIRD"; // token 3
+        row.ApplySaveFailure(tokens[2], "failed");
+
+        Assert.Equal("SECOND", row.LotNumber); // NOT "FIRST"
+    }
+
+    [Fact]
+    public void ReportValidationErrorSetsSaveErrorWithoutTouchingFieldsOrRaisingEditCommitted()
+    {
+        var row = new LotRowViewModel(MakeLot("L1"), "MMR-II", null);
+        var raised = false;
+        row.EditCommitted += (_, _) => raised = true;
+
+        row.ReportValidationError("Expiration can't be blank — reverted to the last saved date.");
+
+        Assert.Equal("Expiration can't be blank — reverted to the last saved date.", row.SaveError);
+        Assert.Equal("L1", row.LotNumber);
+        Assert.False(raised);
+    }
+
+    [Fact]
     public void CurrentSnapshotReflectsLiveFieldValues()
     {
         var row = new LotRowViewModel(MakeLot("L1"), "MMR-II", null);

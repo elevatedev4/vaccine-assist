@@ -174,7 +174,7 @@ public partial class MainWindow : Window
     /// MSG893 item 2 (2026-09-07-ish): if the popup is ALREADY open (a
     /// repeat hotkey press, or the "Open data entry popup" button clicked
     /// again), re-activate and re-focus that SAME instance
-    /// (DataEntryPopupWindow.ActivateAndFocusAge) instead of opening a
+    /// (DataEntryPopupWindow.ActivateAndFocusCurrentStage) instead of opening a
     /// second one — a pharmacist who presses the hotkey again because the
     /// first press didn't visibly grab focus should land back in the age
     /// box, not get a confusing stack of popups. This is a deliberate
@@ -185,7 +185,7 @@ public partial class MainWindow : Window
     {
         if (_openDataEntryPopup is not null)
         {
-            _openDataEntryPopup.ActivateAndFocusAge();
+            _openDataEntryPopup.ActivateAndFocusCurrentStage();
             return;
         }
 
