@@ -845,7 +845,6 @@ export default function AppointmentsPage() {
           </span>
         )}
       </p>
-      <p style={styles.autoRefreshNote}>Auto-refreshes every 15 minutes while this page is open.</p>
 
       {loadError && <p style={styles.error}>{loadError}</p>}
 
