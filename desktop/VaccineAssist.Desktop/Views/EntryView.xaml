@@ -21,11 +21,11 @@
                 <Style TargetType="TextBlock">
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding IsHotkeyActive}" Value="True">
-                            <Setter Property="Text" Value="Ctrl+NumPad2 is active — press it anywhere, including inside PioneerRx, to open the data-entry popup."/>
+                            <Setter Property="Text" Value="Ctrl+NumPad7 is active — press it anywhere, including inside PioneerRx, to open the data-entry popup."/>
                             <Setter Property="Foreground" Value="Green"/>
                         </DataTrigger>
                         <DataTrigger Binding="{Binding IsHotkeyActive}" Value="False">
-                            <Setter Property="Text" Value="Ctrl+NumPad2 couldn't be registered — it's likely already in use by another application. Use the button below instead."/>
+                            <Setter Property="Text" Value="Ctrl+NumPad7 couldn't be registered — it's likely already in use by another application. Use the button below instead."/>
                             <Setter Property="Foreground" Value="Red"/>
                         </DataTrigger>
                     </Style.Triggers>

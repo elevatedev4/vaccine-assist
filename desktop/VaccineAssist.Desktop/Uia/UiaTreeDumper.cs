@@ -318,7 +318,7 @@ public static class UiaTreeDumper
             "===========================================\r\n\r\n" +
             "Each dump-YYYYMMDD-HHMMSS.txt file here is a full snapshot of the PioneerRx\r\n" +
             "window's accessibility (UIA) tree, captured by the app's \"Dump Pioneer UIA\r\n" +
-            "tree\" button (Data entry tab, and the Ctrl+NumPad2 popup) -- see\r\n" +
+            "tree\" button (Data entry tab, and the Ctrl+NumPad7 popup) -- see\r\n" +
             "PioneerEntryAutomation\\TODO.md for why this is needed: wiring the real\r\n" +
             "vaccine-entry automation against confirmed field targets instead of guesses.\r\n\r\n" +
             "PHI NOTE: field VALUES are captured (truncated to 40 characters) alongside\r\n" +

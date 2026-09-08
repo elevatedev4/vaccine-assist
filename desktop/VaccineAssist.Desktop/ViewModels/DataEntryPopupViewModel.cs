@@ -15,7 +15,7 @@ using VaccineAssist.Desktop.Uia;
 namespace VaccineAssist.Desktop.ViewModels;
 
 /// <summary>
-/// Backs the Ctrl+NumPad2 data-entry popup (V-T3, the headline feature —
+/// Backs the Ctrl+NumPad7 data-entry popup (V-T3, the headline feature —
 /// "replacing my macro"). Unlike EntryViewModel (the existing Entry
 /// screen: browse-and-copy, reachable from the main nav), this is the
 /// hotkey-triggered quick-entry flow.
@@ -83,6 +83,18 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     private string _newLotNumber = "";
     private DateTime _newLotExpiration = DateTime.Today.AddYears(1);
     private string? _newLotNote;
+
+    /// <summary>
+    /// MSG893 item 3 fix: monotonic guard against out-of-order lot-status
+    /// responses. Bumped every time RefreshSelectedVaccineActiveLotAsync
+    /// starts a new lookup (including a rapid re-selection of the SAME
+    /// vaccine, which the old "did SelectedVaccine.Id change?" check could
+    /// not detect at all); a completing lookup only applies its result if
+    /// its own token still matches — an older, slower response for a
+    /// selection the user has since moved away from is silently dropped
+    /// instead of overwriting whatever a newer lookup already found.
+    /// </summary>
+    private int _lotRefreshToken;
 
     /// <summary>Every active vaccine eligible for the age entered on the Age
     /// step (GetEligibleVaccinesForAgeAsync's result) — the pool SelectGroup/
@@ -641,29 +653,105 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     }
 
     /// <summary>V-... Part C: (re)loads the earliest-expiration active lot
-    /// for SelectedVaccine. Guards against a slow response landing after
-    /// the user has already moved on to a different vaccine by re-checking
-    /// SelectedVaccine's id once the call returns.</summary>
+    /// for SelectedVaccine — MSG893 item 3: now via FindActiveLotForVaccineAsync
+    /// so a known-orphan-duplicate vaccine row with no lot of its own
+    /// still resolves to the real lot (see that method's doc comment).
+    /// Guards against a slow response landing after the user has already
+    /// moved on to a different vaccine (or re-selected the SAME one again)
+    /// via _lotRefreshToken — a plain "did SelectedVaccine.Id change?"
+    /// check (the old guard) can't catch the second case at all.</summary>
     private async Task RefreshSelectedVaccineActiveLotAsync()
     {
+        var token = ++_lotRefreshToken;
+
         if (SelectedVaccine is null)
         {
             SelectedVaccineActiveLot = null;
             return;
         }
 
-        var vaccineId = SelectedVaccine.Id;
+        var vaccine = SelectedVaccine;
         try
         {
-            var activeLots = await _apiService.GetLotsAsync(vaccineId, status: "active");
-            if (SelectedVaccine?.Id != vaccineId) return; // selection moved on while this was in flight
-            SelectedVaccineActiveLot = activeLots.OrderBy(l => l.Expiration).FirstOrDefault();
+            var lot = await FindActiveLotForVaccineAsync(vaccine);
+            if (token != _lotRefreshToken) return; // superseded by a newer lookup
+
+            SelectedVaccineActiveLot = lot;
+            if (lot is null)
+            {
+                AppFileLog.Log($"[DataEntry] No active lot on file for '{vaccine.Name}' (id {vaccine.Id}), " +
+                    "including any duplicate vaccine rows checked — showing the \"no lot on file\" gate.");
+            }
         }
         catch (Exception ex)
         {
-            if (SelectedVaccine?.Id != vaccineId) return;
+            if (token != _lotRefreshToken) return;
             ErrorMessage = $"Couldn't check lot status: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// MSG893 item 3 ("mNEXSPIKE lot/exp not showing up right"): looks up
+    /// the earliest-expiration active lot for `vaccine` by id first — the
+    /// normal, expected path. KNOWN DATA ISSUE (Will): the Supabase
+    /// `vaccine` table has orphan duplicate rows for at least one product
+    /// (same/similar name, e.g. an mNEXSPIKE year-suffix split) where a
+    /// lot was only ever added against ONE of the duplicate rows — a data
+    /// cleanup tracked and handled SEPARATELY, deliberately NOT touched
+    /// here. Left as-is, the guided flow's own grouping
+    /// (BuildProductOptions groups eligible vaccines by exact Name, so two
+    /// orphan rows sharing a name land as two near-identical "Dose"
+    /// options at the Dose step) means a pharmacist can end up with the
+    /// lot-less duplicate row selected and see a false "no lot on file"
+    /// gate for a product that DOES have one on file — just under its
+    /// sibling row's id.
+    ///
+    /// Mitigation: if the direct id lookup comes back empty, this falls
+    /// back to every OTHER vaccine already loaded in _eligibleVaccinesForAge
+    /// (no extra vaccine-catalog round trip — that list is already the
+    /// exact set the guided flow drew this selection from) that shares
+    /// this vaccine's Name (case-insensitive), and returns the first lot
+    /// found there instead. `filter` lets callers narrow which lots count
+    /// — RefreshSelectedVaccineActiveLotAsync passes none (the review gate
+    /// wants to see even an expired/BUD-past lot, so it can show the
+    /// right "expired"/"past its beyond-use date" message), while
+    /// BuildPayloadAsync passes "unexpired and not past its beyond-use
+    /// date" (a live entry must never use a lot the gate would have
+    /// blocked). Logs whenever the fallback is what actually found
+    /// something, so a real occurrence of this is diagnosable from
+    /// "Copy logs" without a live repro.
+    /// </summary>
+    private async Task<Lot?> FindActiveLotForVaccineAsync(Vaccine vaccine, Func<Lot, bool>? filter = null)
+    {
+        filter ??= static _ => true;
+
+        async Task<Lot?> EarliestActiveLotForAsync(Guid vaccineId)
+        {
+            var lots = await _apiService.GetLotsAsync(vaccineId, status: "active");
+            return lots.Where(filter).OrderBy(l => l.Expiration).FirstOrDefault();
+        }
+
+        var direct = await EarliestActiveLotForAsync(vaccine.Id);
+        if (direct is not null) return direct;
+
+        var siblingIds = _eligibleVaccinesForAge
+            .Where(v => v.Id != vaccine.Id && string.Equals(v.Name, vaccine.Name, StringComparison.OrdinalIgnoreCase))
+            .Select(v => v.Id)
+            .Distinct();
+
+        foreach (var siblingId in siblingIds)
+        {
+            var siblingLot = await EarliestActiveLotForAsync(siblingId);
+            if (siblingLot is not null)
+            {
+                AppFileLog.Log($"[DataEntry] '{vaccine.Name}' (id {vaccine.Id}) has no lot on file, but a " +
+                    $"duplicate vaccine row (id {siblingId}) does — using lot {siblingLot.LotNumber} from it " +
+                    "(known orphan-duplicate-vaccine-row issue; data cleanup pending separately).");
+                return siblingLot;
+            }
+        }
+
+        return null;
     }
 
     private async Task AddLotAsync()
@@ -865,8 +953,11 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         var ndc = SelectedVaccine.Ndc ?? "";
         var quantity = SelectedVaccine.Quantity;
         var directions = SelectedVaccine.Directions;
-        var activeLots = await _apiService.GetLotsAsync(SelectedVaccine.Id, status: "active");
-        var lot = activeLots.Where(l => !l.IsExpired && !l.IsPastBeyondUseDate).OrderBy(l => l.Expiration).FirstOrDefault();
+        // MSG893 item 3: routed through the same orphan-duplicate-aware
+        // lookup RefreshSelectedVaccineActiveLotAsync uses (see
+        // FindActiveLotForVaccineAsync's doc comment) so a live entry
+        // can't disagree with what the popup's own gate just showed.
+        var lot = await FindActiveLotForVaccineAsync(SelectedVaccine, l => !l.IsExpired && !l.IsPastBeyondUseDate);
 
         if (lot is not null)
         {

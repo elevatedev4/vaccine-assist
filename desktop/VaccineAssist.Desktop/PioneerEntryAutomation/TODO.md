@@ -334,6 +334,24 @@ Fixed:
   needed NO code change — it already just passes the value straight
   through untyped-inferred, so the type change alone fixes it.
 
+## MSG893 owner-reported hotfix round (2026-09-07-ish)
+
+Six small owner-reported issues fixed in one pass; only the one directly
+touching this folder is detailed here (see the branch's own commit/PR for
+the rest — hotkey rebind, popup focus/activation, lot-lookup robustness,
+the editable Lots grid, and beyond-use-date entry):
+
+- `Uia/PreEntryDialogTitles.cs`: added a THIRD recognized pre-entry
+  dialog, `PatientOnCycleFill` ("Patient on Cycle Fill") — a "Patient on
+  Cycle Fill" popup can also appear in the same F3-to-Add-New-Rx window
+  and needs an Esc, same as Priority/Scan Hard Copy. No change needed to
+  `SendF3AndDismissPreEntryDialogsStep.DismissPendingDialogsAsync` itself
+  — it already scans generically for whatever's in `PreEntryDialogTitles.All`
+  — only that array and the dry-run description (now built from `All`
+  instead of a hardcoded pair, so a future addition here can't go stale
+  in that message again) changed. Same "NOT CONFIRMED against a live UIA
+  dump" caveat as the other two — see that file's own doc comment.
+
 SKIPPED (reviewer's own explicit "optional, skip if it snowballs" call):
 also reading cloud `/api/vaccines`'s new `quantityDirectionsSupported`
 flag (same schema-degradation pattern as `vaccineGroupSupported` on

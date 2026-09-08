@@ -182,6 +182,12 @@ public class DataEntryPopupViewModelAutoValidateTests
         public Task<Lot> CreateLotAsync(Guid vaccineId, string lotNumber, DateOnly expiration, string status = "active", string? note = null, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        // MSG893 item 4: not exercised by this file's tests (none of them
+        // touch the Lots screen) — throwing matches every other unused
+        // member here.
+        public Task<Lot> UpdateLotAsync(Guid id, string lotNumber, DateOnly expiration, DateOnly? beyondUseDate, string? note, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<EligibilityResult> EvaluateEligibilityAsync(Guid vaccineId, int ageYears, bool? isPregnant = null, CancellationToken cancellationToken = default)
         {
             EvaluateEligibilityCallCount++;

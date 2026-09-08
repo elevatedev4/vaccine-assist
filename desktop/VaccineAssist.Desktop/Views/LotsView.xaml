@@ -48,20 +48,77 @@
             </StackPanel>
         </Border>
 
-        <DataGrid Grid.Row="6" ItemsSource="{Binding Lots}" AutoGenerateColumns="False" IsReadOnly="True">
+        <!--
+            MSG893 item 4: editable, autosaving table. IsReadOnly="False"
+            at the grid level; Vaccine/NDC/Status stay IsReadOnly="True"
+            per-column (joined/computed display fields, not part of this
+            item's editable-fields ask) — only Lot number/Expiration/
+            Beyond-use date/Note are genuinely editable. Each editable
+            column commits on cell-edit-end straight into
+            LotRowViewModel's matching property setter, which autosaves
+            (see that class's own doc comment) — no explicit "Save"
+            button/command needed here. No separate "Expired" column
+            (unlike the pre-item-4 grid) — the row highlight below covers
+            that, per the brief's own column list.
+
+            RowStyle below implements "row highlights if expired or
+            beyond-use date is met, clears automatically once the date is
+            edited to a future date" — LotRowViewModel.Expiration/
+            BeyondUseDate raise IsExpired/IsPastBeyondUseDate's own
+            PropertyChanged on every edit, so these DataTriggers react
+            live without any extra plumbing.
+        -->
+        <DataGrid Grid.Row="6" ItemsSource="{Binding Lots}" AutoGenerateColumns="False"
+                  IsReadOnly="False" CanUserAddRows="False" CanUserDeleteRows="False">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsExpired}" Value="True">
+                            <Setter Property="Background" Value="#FFCDD2"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsPastBeyondUseDate}" Value="True">
+                            <Setter Property="Background" Value="#FFCDD2"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Lot number" Binding="{Binding LotNumber}" Width="*"/>
-                <DataGridTextColumn Header="Expiration" Binding="{Binding Expiration}" Width="*"/>
-                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"/>
-                <!-- Mode=OneWay is required here: DataGridCheckBoxColumn always
-                     renders its cell with a live CheckBox, and CheckBox.IsChecked
-                     defaults to a TwoWay binding mode regardless of the grid's
-                     IsReadOnly="True" above. Since IsExpired (Models/Lot.cs) is
-                     a get-only computed property, WPF throws
-                     InvalidOperationException while generating the cell unless
-                     the mode is pinned to OneWay. -->
-                <DataGridCheckBoxColumn Header="Expired" Binding="{Binding IsExpired, Mode=OneWay}" Width="0.5*"/>
-                <DataGridTextColumn Header="Note" Binding="{Binding Note}" Width="2*"/>
+                <DataGridTextColumn Header="Vaccine" Binding="{Binding VaccineName}" Width="1.5*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="NDC" Binding="{Binding VaccineNdc}" Width="*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Lot number" Binding="{Binding LotNumber, UpdateSourceTrigger=LostFocus}" Width="*"/>
+                <!-- DatePicker template columns rather than plain text —
+                     matches the DatePicker already used elsewhere in this
+                     app (Add-lot form below, the data-entry popup's
+                     expiration gate) for date entry, and avoids ambiguous
+                     free-text date parsing in a DataGrid cell. -->
+                <DataGridTemplateColumn Header="Expiration" Width="*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <DatePicker SelectedDate="{Binding Expiration, UpdateSourceTrigger=PropertyChanged}" BorderThickness="0"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="Beyond-use date" Width="1.2*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <DatePicker SelectedDate="{Binding BeyondUseDate, UpdateSourceTrigger=PropertyChanged}" BorderThickness="0"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="0.6*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Note" Binding="{Binding Note, UpdateSourceTrigger=LostFocus}" Width="1.5*"/>
+                <!-- Save failures must not be silent (brief requirement):
+                     shows LotRowViewModel.SaveError inline, per row, in
+                     red — empty/collapsed whenever the row's last save (or
+                     load) was fine. -->
+                <DataGridTextColumn Header="Save status" Binding="{Binding SaveError}" Width="1.2*" IsReadOnly="True">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="Red"/>
+                            <Setter Property="TextWrapping" Value="Wrap"/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

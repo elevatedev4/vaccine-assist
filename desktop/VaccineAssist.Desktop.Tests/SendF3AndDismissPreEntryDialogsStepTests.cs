@@ -43,6 +43,7 @@ public class SendF3AndDismissPreEntryDialogsStepTests
         Assert.Contains("F3", result.Message);
         Assert.Contains("Priority", result.Message);
         Assert.Contains("Scan Hard Copy", result.Message);
+        Assert.Contains("Patient on Cycle Fill", result.Message); // MSG893 hotfix: third recognized dialog
         Assert.Null(context.AttachedWindow); // dry run never attaches
     }
 
@@ -66,15 +67,20 @@ public class SendF3AndDismissPreEntryDialogsStepTests
     [InlineData("scan hard copy order", "Scan Hard Copy", true)]
     [InlineData("Add New Rx", "Priority", false)]
     [InlineData("Rx Profile", "Scan Hard Copy", false)]
+    [InlineData("Patient on Cycle Fill", "Patient on Cycle Fill", true)]
+    [InlineData("patient on cycle fill", "Patient on Cycle Fill", true)]
+    [InlineData("Patient is on Cycle Fill", "Patient on Cycle Fill", false)] // Contains, not fuzzy — see class doc comment
     public void MatchesIsContainsCaseInsensitive(string windowTitle, string dialogTitleSubstring, bool expected)
     {
         Assert.Equal(expected, PreEntryDialogTitles.Matches(windowTitle, dialogTitleSubstring));
     }
 
     [Fact]
-    public void AllListsBothKnownDialogTitles()
+    public void AllListsEveryKnownDialogTitleIncludingCycleFill()
     {
-        Assert.Equal(new[] { PreEntryDialogTitles.Priority, PreEntryDialogTitles.ScanHardCopy }, PreEntryDialogTitles.All);
+        Assert.Equal(
+            new[] { PreEntryDialogTitles.Priority, PreEntryDialogTitles.ScanHardCopy, PreEntryDialogTitles.PatientOnCycleFill },
+            PreEntryDialogTitles.All);
     }
 
     // --- DismissPendingDialogsAsync: the reviewer's explicit ask for

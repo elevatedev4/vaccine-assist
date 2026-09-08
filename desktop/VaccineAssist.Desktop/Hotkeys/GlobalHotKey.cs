@@ -11,9 +11,15 @@ namespace VaccineAssist.Desktop.Hotkeys;
 /// WPF HwndSource interop pattern — no third-party library, matching this
 /// app's dependency-light style (see App.xaml.cs's DI-light doc comment).
 ///
-/// V-T3 (headline data-entry feature): registers Ctrl+NumPad2 against
+/// V-T3 (headline data-entry feature): registers Ctrl+NumPad7 against
 /// MainWindow so a pharmacist can trigger vaccine data-entry mode from
 /// inside PioneerRx itself, without alt-tabbing to this app first.
+///
+/// MSG893 hotfix (2026-09-07-ish, Will): moved off Ctrl+NumPad2 to
+/// Ctrl+NumPad7 — NumPad2 collided with something else on the pharmacy's
+/// workstations. Only the virtual-key constant changes here; everything
+/// else about registration (MOD_CONTROL, the HwndSource hook, the
+/// process-unique id) is unchanged.
 /// </summary>
 public sealed class GlobalHotKey : IDisposable
 {
@@ -26,8 +32,8 @@ public sealed class GlobalHotKey : IDisposable
     /// <summary>MOD_CONTROL — see Win32 RegisterHotKey docs.</summary>
     public const uint MOD_CONTROL = 0x0002;
 
-    /// <summary>VK_NUMPAD2 — see Win32 virtual-key codes.</summary>
-    public const uint VK_NUMPAD2 = 0x62;
+    /// <summary>VK_NUMPAD7 — see Win32 virtual-key codes.</summary>
+    public const uint VK_NUMPAD7 = 0x67;
 
     private readonly Window _window;
     private readonly int _id;
@@ -45,7 +51,7 @@ public sealed class GlobalHotKey : IDisposable
         _id = id;
     }
 
-    /// <summary>Registers Ctrl+NumPad2. Returns false (does not throw) if registration fails — e.g. another app already claimed that combination.</summary>
+    /// <summary>Registers Ctrl+NumPad7. Returns false (does not throw) if registration fails — e.g. another app already claimed that combination.</summary>
     public bool Register()
     {
         var handle = new WindowInteropHelper(_window).Handle;
@@ -58,7 +64,7 @@ public sealed class GlobalHotKey : IDisposable
         _source = HwndSource.FromHwnd(handle);
         _source?.AddHook(WndProc);
 
-        _registered = RegisterHotKey(handle, _id, MOD_CONTROL, VK_NUMPAD2);
+        _registered = RegisterHotKey(handle, _id, MOD_CONTROL, VK_NUMPAD7);
         return _registered;
     }
 

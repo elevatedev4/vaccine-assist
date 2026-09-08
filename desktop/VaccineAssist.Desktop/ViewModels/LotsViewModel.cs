@@ -9,8 +9,10 @@ using VaccineAssist.Desktop.Services;
 
 namespace VaccineAssist.Desktop.ViewModels;
 
-/// <summary>Backs the Lots screen (inventory + expirations) — lists lots
-/// and lets staff add a new one when a shipment comes in.</summary>
+/// <summary>Backs the Lots screen (inventory + expirations) — MSG893 item
+/// 4 turned this into an editable, autosaving table (vaccine name/NDC
+/// joined in, lot number/expiration/beyond-use date/note inline-editable)
+/// — plus lets staff add a new lot when a shipment comes in (unchanged).</summary>
 public sealed class LotsViewModel : ObservableObject
 {
     private readonly IVaccineApiService _apiService;
@@ -29,8 +31,11 @@ public sealed class LotsViewModel : ObservableObject
         AddLotCommand = new AsyncRelayCommand(AddLotAsync, () => !IsBusy && NewLotVaccine is not null && !string.IsNullOrWhiteSpace(NewLotNumber));
     }
 
+    /// <summary>ACTIVE vaccines only — backs the "Add a lot" form's
+    /// vaccine picker, unchanged from before MSG893 item 4.</summary>
     public ObservableCollection<Vaccine> Vaccines { get; } = new();
-    public ObservableCollection<Lot> Lots { get; } = new();
+
+    public ObservableCollection<LotRowViewModel> Lots { get; } = new();
 
     public bool IsBusy
     {
@@ -78,19 +83,34 @@ public sealed class LotsViewModel : ObservableObject
         try
         {
             var vaccinesTask = _apiService.GetVaccinesAsync();
+            // ALL vaccines (active + inactive), not just Vaccines above —
+            // MSG893 item 4's vaccine name/NDC join must still resolve for
+            // a lot attached to a since-deactivated (or orphan-duplicate,
+            // see DataEntryPopupViewModel.FindActiveLotForVaccineAsync's
+            // doc comment) vaccine row, not only active ones.
+            var allVaccinesTask = _apiService.GetAllVaccinesAsync();
             var lotsTask = _apiService.GetLotsAsync();
-            await Task.WhenAll(vaccinesTask, lotsTask);
+            await Task.WhenAll(vaccinesTask, allVaccinesTask, lotsTask);
 
             Vaccines.Clear();
-            foreach (var vaccine in vaccinesTask.Result.OrderBy(v => v.Name))
+            foreach (var vaccine in vaccinesTask.Result.OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase))
             {
                 Vaccines.Add(vaccine);
             }
 
+            var vaccinesById = allVaccinesTask.Result.ToDictionary(v => v.Id);
+
+            foreach (var existingRow in Lots)
+            {
+                existingRow.EditCommitted -= OnRowEditCommitted;
+            }
             Lots.Clear();
             foreach (var lot in lotsTask.Result.OrderBy(l => l.Expiration))
             {
-                Lots.Add(lot);
+                vaccinesById.TryGetValue(lot.VaccineId, out var vaccine);
+                var row = new LotRowViewModel(lot, vaccine?.Name ?? "(unknown vaccine)", vaccine?.Ndc);
+                row.EditCommitted += OnRowEditCommitted;
+                Lots.Add(row);
             }
         }
         catch (Exception ex)
@@ -115,7 +135,9 @@ public sealed class LotsViewModel : ObservableObject
             var created = await _apiService.CreateLotAsync(
                 NewLotVaccine.Id, NewLotNumber.Trim(), expiration, note: NewLotNote);
 
-            Lots.Add(created);
+            var row = new LotRowViewModel(created, NewLotVaccine.Name, NewLotVaccine.Ndc);
+            row.EditCommitted += OnRowEditCommitted;
+            Lots.Add(row);
             NewLotNumber = "";
             NewLotNote = null;
         }
@@ -126,6 +148,39 @@ public sealed class LotsViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// MSG893 item 4 ("AUTOSAVE"): fired by a LotRowViewModel every time
+    /// one of its editable fields commits (DataGrid cell-edit-end). Sends
+    /// the row's CURRENT full snapshot (not a partial diff — see
+    /// IVaccineApiService.UpdateLotAsync's own doc comment) via PATCH, and
+    /// reports the outcome back to the row itself: ApplySaveSuccess marks
+    /// these values as the new revert point, ApplySaveFailure reverts the
+    /// row and surfaces the error inline (row.SaveError — see
+    /// Views/LotsView.xaml's status column) rather than failing silently.
+    /// Both are no-ops if `token` has since been superseded by a newer
+    /// edit to the same row (see LotRowViewModel's own doc comment for why
+    /// that's the correct behavior, not a bug).
+    /// </summary>
+    private async void OnRowEditCommitted(LotRowViewModel row, int token)
+    {
+        var snapshot = row.CurrentSnapshot();
+        try
+        {
+            var beyondUseDate = snapshot.BeyondUseDate is DateTime bud ? DateOnly.FromDateTime(bud) : (DateOnly?)null;
+            await _apiService.UpdateLotAsync(
+                row.Id,
+                snapshot.LotNumber.Trim(),
+                DateOnly.FromDateTime(snapshot.Expiration),
+                beyondUseDate,
+                snapshot.Note);
+            row.ApplySaveSuccess(token);
+        }
+        catch (Exception ex)
+        {
+            row.ApplySaveFailure(token, $"Couldn't save: {ex.Message}");
         }
     }
 }

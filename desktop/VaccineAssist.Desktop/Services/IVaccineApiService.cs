@@ -45,6 +45,27 @@ public interface IVaccineApiService
         string? note = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Calls PATCH /api/lots/{id} (cloud/app/api/lots/[id]/route.ts) —
+    /// edits an existing lot's editable fields. Backs the Lots screen's
+    /// inline-editable DataGrid (MSG893 item 4: lot number/expiration/
+    /// beyond-use date/note, autosaved on cell-edit-end). Always sends
+    /// all four editable fields (not a partial patch) so each call is a
+    /// complete, self-consistent snapshot of the row at the moment it was
+    /// committed — see LotRowViewModel's own doc comment for why that
+    /// matters when two edits to the same row race. beyondUseDate is
+    /// nullable both ways: null clears it, a value sets/replaces it — the
+    /// cloud route distinguishes "field omitted" from "field explicitly
+    /// null" by JSON key presence, and this always includes the key.
+    /// </summary>
+    Task<Lot> UpdateLotAsync(
+        Guid id,
+        string lotNumber,
+        DateOnly expiration,
+        DateOnly? beyondUseDate,
+        string? note,
+        CancellationToken cancellationToken = default);
+
     Task<EligibilityResult> EvaluateEligibilityAsync(
         Guid vaccineId,
         int ageYears,

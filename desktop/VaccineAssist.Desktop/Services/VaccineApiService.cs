@@ -77,6 +77,21 @@ public sealed class VaccineApiService : IVaccineApiService
         return result.Lot;
     }
 
+    public async Task<Lot> UpdateLotAsync(
+        Guid id,
+        string lotNumber,
+        DateOnly expiration,
+        DateOnly? beyondUseDate,
+        string? note,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Patch, $"/api/lots/{id}");
+        request.Content = JsonContent.Create(new UpdateLotRequest(lotNumber, expiration, beyondUseDate, note));
+
+        var result = await SendAsync<LotResponse>(request, cancellationToken);
+        return result.Lot;
+    }
+
     public async Task<EligibilityResult> EvaluateEligibilityAsync(
         Guid vaccineId,
         int ageYears,
@@ -305,6 +320,12 @@ public sealed class VaccineApiService : IVaccineApiService
         [property: JsonPropertyName("lot_number")] string LotNumber,
         [property: JsonPropertyName("expiration")] DateOnly Expiration,
         [property: JsonPropertyName("status")] string Status,
+        [property: JsonPropertyName("note")] string? Note);
+
+    private sealed record UpdateLotRequest(
+        [property: JsonPropertyName("lot_number")] string LotNumber,
+        [property: JsonPropertyName("expiration")] DateOnly Expiration,
+        [property: JsonPropertyName("beyond_use_date")] DateOnly? BeyondUseDate,
         [property: JsonPropertyName("note")] string? Note);
 
     private sealed record EvaluateEligibilityRequest(

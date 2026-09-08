@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using VaccineAssist.Desktop.Models;
@@ -102,11 +103,26 @@ internal sealed class FakeAutoLoginConfigService : IAutoLoginConfigService
 internal sealed class FakeVaccineApiService : IVaccineApiService
 {
     public List<Vaccine> Vaccines { get; } = new();
+
+    /// <summary>Backs GetAllVaccinesAsync — MSG893 item 4: LotsViewModel
+    /// now joins vaccine name/NDC into each lot row via this (see that
+    /// class's own doc comment for why it deliberately queries ALL
+    /// vaccines, not just Vaccines above). Empty by default; tests that
+    /// don't exercise LotsViewModel/VaccinesViewModel never need to touch
+    /// this at all.</summary>
+    public List<Vaccine> AllVaccines { get; } = new();
+
     public Dictionary<int, List<Vaccine>> EligibleVaccinesByAge { get; } = new();
     public Dictionary<Guid, List<Lot>> LotsByVaccineId { get; } = new();
     public EligibilityResult EvaluateEligibilityResult { get; set; } = new() { Status = "allowed" };
     public int EvaluateEligibilityCallCount { get; private set; }
     public List<(Guid VaccineId, string LotNumber, DateOnly Expiration, string? Note)> CreatedLots { get; } = new();
+
+    /// <summary>Records every UpdateLotAsync call (MSG893 item 4's
+    /// autosave). Set UpdateLotException to make the next call(s) throw,
+    /// for revert-on-failure coverage.</summary>
+    public List<(Guid Id, string LotNumber, DateOnly Expiration, DateOnly? BeyondUseDate, string? Note)> UpdatedLots { get; } = new();
+    public Exception? UpdateLotException { get; set; }
 
     /// <summary>
     /// Defaults to a resolved physician so every EXISTING test that
@@ -123,7 +139,7 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         Task.FromResult<IReadOnlyList<Vaccine>>(Vaccines);
 
     public Task<IReadOnlyList<Vaccine>> GetAllVaccinesAsync(CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException();
+        Task.FromResult<IReadOnlyList<Vaccine>>(AllVaccines);
 
     public Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
@@ -132,9 +148,43 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         Task.FromResult<IReadOnlyList<Vaccine>>(
             EligibleVaccinesByAge.TryGetValue(ageYears, out var list) ? list : new List<Vaccine>());
 
-    public Task<IReadOnlyList<Lot>> GetLotsAsync(Guid? vaccineId = null, string? status = null, CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<Lot>>(
-            vaccineId is Guid id && LotsByVaccineId.TryGetValue(id, out var lots) ? lots : new List<Lot>());
+    /// <summary>Set to make the very NEXT GetLotsAsync call suspend (await
+    /// this) AFTER capturing its snapshot of LotsByVaccineId but BEFORE
+    /// returning — lets a test simulate an older, slower network response
+    /// that finally arrives AFTER a newer call already completed, to prove
+    /// a race guard (e.g. DataEntryPopupViewModel's _lotRefreshToken)
+    /// correctly ignores it. Consumed (reset to null) the moment it's
+    /// used, so only the one targeted call is delayed.</summary>
+    public TaskCompletionSource<bool>? DelayNextGetLotsCall { get; set; }
+
+    /// <summary>vaccineId == null means "every lot across every vaccine"
+    /// (MSG893 item 4: LotsViewModel.LoadAsync's unfiltered call) — a real
+    /// status filter is applied here too now (previously ignored), which
+    /// is harmless for every existing caller since every test-authored Lot
+    /// defaults to Status="active" already.</summary>
+    public async Task<IReadOnlyList<Lot>> GetLotsAsync(Guid? vaccineId = null, string? status = null, CancellationToken cancellationToken = default)
+    {
+        // Snapshot BEFORE any gating delay — a genuinely stale/slow
+        // response reflects the data as it was AT CALL TIME, not
+        // whatever it's since become while this call sat suspended.
+        IEnumerable<Lot> lots = vaccineId is Guid id
+            ? (LotsByVaccineId.TryGetValue(id, out var list) ? list.ToList() : new List<Lot>())
+            : LotsByVaccineId.Values.SelectMany(l => l).ToList();
+
+        var gate = DelayNextGetLotsCall;
+        if (gate is not null)
+        {
+            DelayNextGetLotsCall = null;
+            await gate.Task;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            lots = lots.Where(l => string.Equals(l.Status, status, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return lots.ToList();
+    }
 
     public Task<Lot> CreateLotAsync(
         Guid vaccineId, string lotNumber, DateOnly expiration, string status = "active", string? note = null,
@@ -151,6 +201,27 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         list.Add(lot);
 
         return Task.FromResult(lot);
+    }
+
+    public Task<Lot> UpdateLotAsync(
+        Guid id, string lotNumber, DateOnly expiration, DateOnly? beyondUseDate, string? note,
+        CancellationToken cancellationToken = default)
+    {
+        if (UpdateLotException is not null) throw UpdateLotException;
+
+        UpdatedLots.Add((id, lotNumber, expiration, beyondUseDate, note));
+
+        var existing = LotsByVaccineId.Values.SelectMany(l => l).FirstOrDefault(l => l.Id == id);
+        if (existing is not null)
+        {
+            existing.LotNumber = lotNumber;
+            existing.Expiration = expiration;
+            existing.BeyondUseDate = beyondUseDate;
+            existing.Note = note;
+            return Task.FromResult(existing);
+        }
+
+        return Task.FromResult(new Lot { Id = id, LotNumber = lotNumber, Expiration = expiration, BeyondUseDate = beyondUseDate, Note = note, Status = "active" });
     }
 
     public Task<EligibilityResult> EvaluateEligibilityAsync(Guid vaccineId, int ageYears, bool? isPregnant = null, CancellationToken cancellationToken = default)

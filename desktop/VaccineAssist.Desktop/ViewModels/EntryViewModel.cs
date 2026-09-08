@@ -11,7 +11,7 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// Backs the "Data entry" tab — repurposed 2026-08-19 per Will's feedback:
 /// this used to be a full second data-entry form (vaccine/lot/admin
 /// site/age/pregnant fields, eligibility check, clipboard payload),
-/// duplicating the Ctrl+NumPad2 popup (DataEntryPopupViewModel) almost
+/// duplicating the Ctrl+NumPad7 popup (DataEntryPopupViewModel) almost
 /// field-for-field. Will's words: data entry should happen through
 /// exactly one place — the popup — so this tab is now just a lightweight
 /// status/settings surface for the hotkey feature, not a second entry
@@ -42,7 +42,7 @@ public sealed class EntryViewModel : ObservableObject
     }
 
     /// <summary>Set by MainWindow right after GlobalHotKey.Register() runs
-    /// (SourceInitialized) — true means Ctrl+NumPad2 is live anywhere in
+    /// (SourceInitialized) — true means Ctrl+NumPad7 is live anywhere in
     /// Windows; false means registration failed (e.g. another app already
     /// owns that combo), in which case OpenPopupCommand's button is the
     /// only way to reach the popup.</summary>

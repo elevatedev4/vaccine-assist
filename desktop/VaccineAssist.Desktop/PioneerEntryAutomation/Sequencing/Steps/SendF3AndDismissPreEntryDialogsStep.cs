@@ -107,9 +107,14 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     {
         if (context.DryRun)
         {
+            // Built from PreEntryDialogTitles.All rather than hardcoded
+            // (MSG893 hotfix, 2026-09-07-ish) so adding a new recognized
+            // dialog there — like "Patient on Cycle Fill" was — can't go
+            // stale in this description again.
+            var dialogList = string.Join(", ", PreEntryDialogTitles.All.Select(t => $"\"{t}\""));
             return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
-                "Would press F3 from the Rx Profile, then ESC through the \"Priority\" and \"Scan Hard Copy\" " +
-                "dialogs if either appears (no PioneerRx call made).");
+                $"Would press F3 from the Rx Profile, then ESC through the {dialogList} dialog(s) if any appear " +
+                "(no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)

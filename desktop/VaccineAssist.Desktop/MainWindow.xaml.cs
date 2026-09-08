@@ -17,7 +17,7 @@ namespace VaccineAssist.Desktop;
 /// view-model-first matching) — consistent with this app's DI-light,
 /// manually-composed style (see App.xaml.cs).
 ///
-/// Also owns the V-T3 global hotkey (Ctrl+NumPad2): registered here
+/// Also owns the V-T3 global hotkey (Ctrl+NumPad7): registered here
 /// (not a standalone window) since MainWindow is the one window that
 /// stays open for the whole signed-in session — the hotkey should work
 /// no matter which tab is currently showing.
@@ -38,17 +38,18 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// The currently-open data-entry popup, if any — at most one can be
-    /// open at a time (ShowDataEntryPopup doesn't check this; see that
-    /// method's doc comment). Tracked so MainWindow can explicitly close
-    /// it on sign-out/window-close (see MainWindow_OnClosed and
+    /// open at a time. MSG893 item 2 changed ShowDataEntryPopup to
+    /// actively enforce that (re-activate/re-focus this instance instead
+    /// of opening a second one) rather than merely tracking it; see that
+    /// method's doc comment. Also lets MainWindow explicitly close it on
+    /// sign-out/window-close (see MainWindow_OnClosed and
     /// LogoutButton_OnClick) now that it's no longer an owned window (see
     /// ShowDataEntryPopup's doc comment on removing Owner=this) — without
     /// this, the popup would survive past logout, left bound to a
     /// DataEntryPopupViewModel/IVaccineApiService whose bearer token is
     /// now stale (calls would just start 401ing). Cleared via the popup's
-    /// own Closed event so a user closing it normally (or a second
-    /// ShowDataEntryPopup call replacing it) doesn't leave a stale
-    /// reference or cause a double-Close.
+    /// own Closed event so a user closing it normally doesn't leave a
+    /// stale reference or cause a double-Close.
     /// </summary>
     private DataEntryPopupWindow? _openDataEntryPopup;
 
@@ -102,7 +103,7 @@ public partial class MainWindow : Window
     public event EventHandler? LoggedOut;
 
     /// <summary>
-    /// Registers Ctrl+NumPad2 once this window has a native handle. A
+    /// Registers Ctrl+NumPad7 once this window has a native handle. A
     /// failed registration (e.g. another app already owns that
     /// combination) is surfaced once via a status-bar-free MessageBox
     /// rather than silently doing nothing — a hotkey that looks
@@ -124,7 +125,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                "Couldn't register the Ctrl+NumPad2 data-entry hotkey — it may already be in use by another application. " +
+                "Couldn't register the Ctrl+NumPad7 data-entry hotkey — it may already be in use by another application. " +
                 "You can still open the popup from the Data entry tab.",
                 "Vaccine Assist",
                 MessageBoxButton.OK,
@@ -169,20 +170,33 @@ public partial class MainWindow : Window
     /// need Owner to stay on top of PioneerRx: it already sets
     /// Topmost="True" and ShowInTaskbar="False" itself (see
     /// DataEntryPopupWindow.xaml).
+    ///
+    /// MSG893 item 2 (2026-09-07-ish): if the popup is ALREADY open (a
+    /// repeat hotkey press, or the "Open data entry popup" button clicked
+    /// again), re-activate and re-focus that SAME instance
+    /// (DataEntryPopupWindow.ActivateAndFocusAge) instead of opening a
+    /// second one — a pharmacist who presses the hotkey again because the
+    /// first press didn't visibly grab focus should land back in the age
+    /// box, not get a confusing stack of popups. This is a deliberate
+    /// change from the previous "multiple popups can stack, unchanged"
+    /// behavior.
     /// </summary>
     private void ShowDataEntryPopup()
     {
+        if (_openDataEntryPopup is not null)
+        {
+            _openDataEntryPopup.ActivateAndFocusAge();
+            return;
+        }
+
         var pioneerDetected = PioneerRxPresence.IsPresent();
         var viewModel = new DataEntryPopupViewModel(_vaccineApiService, _clipboardService, _pioneerEntrySequence, pioneerDetected);
         var popup = new DataEntryPopupWindow(viewModel);
 
         // Tracked so MainWindow_OnClosed can explicitly close this popup
         // on sign-out/window-close rather than leaving it orphaned (see
-        // _openDataEntryPopup's doc comment). If a popup from an earlier
-        // hotkey press/button click is still open, this only replaces
-        // the tracked reference — it does not close the old one first;
-        // that's an existing, unchanged behavior (multiple popups can
-        // stack), not something this lifecycle fix is scoped to change.
+        // _openDataEntryPopup's doc comment), and so a repeat hotkey press
+        // above re-activates this instance instead of opening a duplicate.
         popup.Closed += (_, _) =>
         {
             if (ReferenceEquals(_openDataEntryPopup, popup))
