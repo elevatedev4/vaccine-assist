@@ -5,6 +5,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
 import { isLotRowDue, pickCurrentActiveLot } from "@/lib/lots-table";
+import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**
  * Rebuilt /lots page (V-cloud-tabs, Will 2026-09-05, third message):
@@ -83,6 +84,17 @@ export default function LotsPage() {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [rowSaved, setRowSaved] = useState<Record<string, boolean>>({});
 
+  // Clears this page's own fetched state on sign-out, whatever triggers
+  // it (see top-nav.tsx's doc comment — sign-out now lives solely in
+  // TopNav's account menu, and every page's session subscription still
+  // picks it up via the standard onAuthStateChange broadcast).
+  function resetAfterSignOut() {
+    setVaccines([]);
+    setLots([]);
+    setDrafts({});
+    setLoadError(null);
+  }
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     try {
@@ -90,6 +102,7 @@ export default function LotsPage() {
       unsubscribe = subscribeToSessionState(supabase, (state) => {
         setSession(state);
         setAuthChecked(true);
+        if (!state) resetAfterSignOut();
       });
     } catch {
       setAuthChecked(true);
@@ -178,20 +191,6 @@ export default function LotsPage() {
     }
   }
 
-  async function handleSignOut() {
-    try {
-      const supabase = getSupabaseBrowserClient();
-      await supabase.auth.signOut();
-    } catch {
-      // Fall through — clear local state regardless.
-    } finally {
-      setSession(null);
-      setVaccines([]);
-      setLots([]);
-      setDrafts({});
-      setLoadError(null);
-    }
-  }
 
   function updateDraft(vaccineId: string, patch: Partial<RowDraft>) {
     setDrafts((prev) => ({ ...prev, [vaccineId]: { ...prev[vaccineId], ...patch } }));
@@ -261,52 +260,21 @@ export default function LotsPage() {
   }
 
   if (!authChecked) {
-    return (
-      <main style={styles.main}>
-        <p>Loading…</p>
-      </main>
-    );
+    return <AuthLoading />;
   }
 
   if (!session) {
     return (
-      <main style={styles.main}>
-        <p>
-          <strong>Not signed in</strong>
-        </p>
-        <h1>Sign in</h1>
-        <p>Use the shared pharmacy login to manage lots.</p>
-        <form onSubmit={handleSignIn}>
-          <label style={styles.label} htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="username"
-            style={styles.field}
-            value={signInEmail}
-            onChange={(e) => setSignInEmail(e.target.value)}
-            required
-          />
-          <label style={styles.label} htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            style={styles.field}
-            value={signInPassword}
-            onChange={(e) => setSignInPassword(e.target.value)}
-            required
-          />
-          {signInError && <p style={styles.error}>{signInError}</p>}
-          <button style={styles.button} type="submit" disabled={signingIn}>
-            {signingIn ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </main>
+      <SignInGate
+        description="Use the shared pharmacy login to manage lots."
+        email={signInEmail}
+        password={signInPassword}
+        onEmailChange={setSignInEmail}
+        onPasswordChange={setSignInPassword}
+        onSubmit={handleSignIn}
+        error={signInError}
+        submitting={signingIn}
+      />
     );
   }
 
@@ -314,15 +282,6 @@ export default function LotsPage() {
 
   return (
     <main style={styles.main}>
-      <div style={styles.sessionBar}>
-        <span>
-          Signed in as <strong>{session.email ?? "unknown user"}</strong>
-        </span>
-        <button style={styles.button} type="button" onClick={() => void handleSignOut()}>
-          Sign out
-        </button>
-      </div>
-
       <h1>Lots</h1>
       <p style={styles.muted}>
         One row per active vaccine. Edit the lot number, expiration, and (optional) beyond-use date, then Save. A row

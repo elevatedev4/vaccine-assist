@@ -5,6 +5,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { availableGroupsFor, getVaccineGroup } from "@/lib/vaccine-group-catalog";
 import { parseRuleTargetValue } from "@/lib/physician-rule-target";
+import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**
  * Web edition of the desktop app's Physicians settings tab
@@ -111,6 +112,19 @@ export default function PhysiciansPage() {
   const [ruleBusy, setRuleBusy] = useState(false);
   const [vaccineGroupSupported, setVaccineGroupSupported] = useState(true);
 
+  // Clears this page's own fetched state on sign-out, whatever triggers
+  // it (see top-nav.tsx's doc comment — sign-out now lives solely in
+  // TopNav's account menu, and every page's session subscription still
+  // picks it up via the standard onAuthStateChange broadcast).
+  function resetAfterSignOut() {
+    setVaccines([]);
+    setPhysicians([]);
+    setRules([]);
+    setLoadError(null);
+    setPhysicianError(null);
+    setRuleError(null);
+  }
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     try {
@@ -118,6 +132,7 @@ export default function PhysiciansPage() {
       unsubscribe = subscribeToSessionState(supabase, (state) => {
         setSession(state);
         setAuthChecked(true);
+        if (!state) resetAfterSignOut();
       });
     } catch {
       setAuthChecked(true);
@@ -194,23 +209,6 @@ export default function PhysiciansPage() {
       setSignInError(err instanceof Error ? err.message : "Sign-in failed.");
     } finally {
       setSigningIn(false);
-    }
-  }
-
-  async function handleSignOut() {
-    try {
-      const supabase = getSupabaseBrowserClient();
-      await supabase.auth.signOut();
-    } catch {
-      // Fall through — clear local state regardless.
-    } finally {
-      setSession(null);
-      setVaccines([]);
-      setPhysicians([]);
-      setRules([]);
-      setLoadError(null);
-      setPhysicianError(null);
-      setRuleError(null);
     }
   }
 
@@ -347,52 +345,21 @@ export default function PhysiciansPage() {
   }
 
   if (!authChecked) {
-    return (
-      <main style={styles.main}>
-        <p>Loading…</p>
-      </main>
-    );
+    return <AuthLoading />;
   }
 
   if (!session) {
     return (
-      <main style={styles.main}>
-        <p>
-          <strong>Not signed in</strong>
-        </p>
-        <h1>Sign in</h1>
-        <p>Use the shared pharmacy login to manage physicians.</p>
-        <form onSubmit={handleSignIn}>
-          <label style={styles.label} htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="username"
-            style={styles.field}
-            value={signInEmail}
-            onChange={(e) => setSignInEmail(e.target.value)}
-            required
-          />
-          <label style={styles.label} htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            style={styles.field}
-            value={signInPassword}
-            onChange={(e) => setSignInPassword(e.target.value)}
-            required
-          />
-          {signInError && <p style={styles.error}>{signInError}</p>}
-          <button style={styles.button} type="submit" disabled={signingIn}>
-            {signingIn ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </main>
+      <SignInGate
+        description="Use the shared pharmacy login to manage physicians."
+        email={signInEmail}
+        password={signInPassword}
+        onEmailChange={setSignInEmail}
+        onPasswordChange={setSignInPassword}
+        onSubmit={handleSignIn}
+        error={signInError}
+        submitting={signingIn}
+      />
     );
   }
 
@@ -401,15 +368,6 @@ export default function PhysiciansPage() {
 
   return (
     <main style={styles.main}>
-      <div style={styles.sessionBar}>
-        <span>
-          Signed in as <strong>{session.email ?? "unknown user"}</strong>
-        </span>
-        <button style={styles.button} type="button" onClick={() => void handleSignOut()}>
-          Sign out
-        </button>
-      </div>
-
       <h1>Physicians</h1>
 
       <p>

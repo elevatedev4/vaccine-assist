@@ -36,3 +36,17 @@ export type NavItem = NavTab & { active: boolean };
 export function buildNavItems(pathname: string): NavItem[] {
   return NAV_TABS.map((tab) => ({ ...tab, active: isTabActive(pathname, tab.href) }));
 }
+
+/**
+ * Whether the shared top tab strip (V-cloud-tabs) should render at all
+ * (MSG-895, Will verbatim: "signin page shouldn't have anything visible
+ * but the login form ... remove all the extra stuff (tabs)"). A
+ * signed-out visitor sees only that page's own sign-in form — no tab
+ * bar. `authChecked` is required alongside `hasSession` so the nav never
+ * flashes in during the brief window before the session check resolves,
+ * then disappears once it resolves to "signed out" — it simply never
+ * renders during that window either.
+ */
+export function shouldShowNav(authChecked: boolean, hasSession: boolean): boolean {
+  return authChecked && hasSession;
+}

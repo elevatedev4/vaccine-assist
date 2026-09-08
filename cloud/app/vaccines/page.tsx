@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { formatCashPrice } from "@/lib/vaccine-entry-payload";
+import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**
  * Web edition of the desktop app's "Active vaccines" tab
@@ -82,6 +83,16 @@ export default function VaccinesPage() {
   const [savingField, setSavingField] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
+  // Clears this page's own fetched state on sign-out, whatever triggers
+  // it (see top-nav.tsx's doc comment — sign-out now lives solely in
+  // TopNav's account menu, and every page's session subscription still
+  // picks it up via the standard onAuthStateChange broadcast).
+  function resetAfterSignOut() {
+    setVaccines([]);
+    setLoadError(null);
+    setToggleError(null);
+  }
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     try {
@@ -89,6 +100,7 @@ export default function VaccinesPage() {
       unsubscribe = subscribeToSessionState(supabase, (state) => {
         setSession(state);
         setAuthChecked(true);
+        if (!state) resetAfterSignOut();
       });
     } catch {
       setAuthChecked(true);
@@ -159,19 +171,6 @@ export default function VaccinesPage() {
     }
   }
 
-  async function handleSignOut() {
-    try {
-      const supabase = getSupabaseBrowserClient();
-      await supabase.auth.signOut();
-    } catch {
-      // Fall through — clear local state regardless.
-    } finally {
-      setSession(null);
-      setVaccines([]);
-      setLoadError(null);
-      setToggleError(null);
-    }
-  }
 
   // Optimistic toggle, revert on failure — same shape as
   // VaccineRowViewModel.Active's setter + VaccinesViewModel.OnActiveToggleRequested.
@@ -231,66 +230,26 @@ export default function VaccinesPage() {
   }
 
   if (!authChecked) {
-    return (
-      <main style={styles.main}>
-        <p>Loading…</p>
-      </main>
-    );
+    return <AuthLoading />;
   }
 
   if (!session) {
     return (
-      <main style={styles.main}>
-        <p>
-          <strong>Not signed in</strong>
-        </p>
-        <h1>Sign in</h1>
-        <p>Use the shared pharmacy login to view active vaccines.</p>
-        <form onSubmit={handleSignIn}>
-          <label style={styles.label} htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="username"
-            style={styles.field}
-            value={signInEmail}
-            onChange={(e) => setSignInEmail(e.target.value)}
-            required
-          />
-          <label style={styles.label} htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            style={styles.field}
-            value={signInPassword}
-            onChange={(e) => setSignInPassword(e.target.value)}
-            required
-          />
-          {signInError && <p style={styles.error}>{signInError}</p>}
-          <button style={styles.button} type="submit" disabled={signingIn}>
-            {signingIn ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </main>
+      <SignInGate
+        description="Use the shared pharmacy login to view active vaccines."
+        email={signInEmail}
+        password={signInPassword}
+        onEmailChange={setSignInEmail}
+        onPasswordChange={setSignInPassword}
+        onSubmit={handleSignIn}
+        error={signInError}
+        submitting={signingIn}
+      />
     );
   }
 
   return (
     <main style={styles.main}>
-      <div style={styles.sessionBar}>
-        <span>
-          Signed in as <strong>{session.email ?? "unknown user"}</strong>
-        </span>
-        <button style={styles.button} type="button" onClick={() => void handleSignOut()}>
-          Sign out
-        </button>
-      </div>
-
       <h1>Active vaccines</h1>
       <p style={styles.muted}>
         The full formulary. Toggling Active updates the catalog immediately — a failed toggle reverts itself and

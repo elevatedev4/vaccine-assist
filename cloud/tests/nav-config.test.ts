@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NAV_TABS, buildNavItems, isTabActive } from "@/lib/nav-config";
+import { NAV_TABS, buildNavItems, isTabActive, shouldShowNav } from "@/lib/nav-config";
 
 describe("NAV_TABS", () => {
   it("has exactly the five tabs from Will's brief, in order", () => {
@@ -59,5 +59,23 @@ describe("buildNavItems", () => {
   it("preserves NAV_TABS order and shape", () => {
     const items = buildNavItems("/appointments");
     expect(items.map((i) => i.label)).toEqual(NAV_TABS.map((t) => t.label));
+  });
+});
+
+describe("shouldShowNav", () => {
+  it("is false before the session check has resolved, even if a session will turn out to exist", () => {
+    expect(shouldShowNav(false, true)).toBe(false);
+  });
+
+  it("is false once checked but signed out (MSG-895: no tab bar on the sign-in gate)", () => {
+    expect(shouldShowNav(true, false)).toBe(false);
+  });
+
+  it("is false while unchecked and signed out", () => {
+    expect(shouldShowNav(false, false)).toBe(false);
+  });
+
+  it("is true once checked and signed in", () => {
+    expect(shouldShowNav(true, true)).toBe(true);
   });
 });

@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { DataEntryInstructions } from "@/app/data-entry/instructions";
+import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**
  * V-cloud-tabs (Will, 2026-09-05, second message): "no web data-entry
@@ -81,78 +82,27 @@ export default function DataEntryPage() {
     }
   }
 
-  async function handleSignOut() {
-    try {
-      const supabase = getSupabaseBrowserClient();
-      await supabase.auth.signOut();
-    } catch {
-      // Fall through — clear local state regardless.
-    } finally {
-      setSession(null);
-    }
-  }
-
   if (!authChecked) {
-    return (
-      <main style={styles.main}>
-        <p>Loading…</p>
-      </main>
-    );
+    return <AuthLoading />;
   }
 
   if (!session) {
     return (
-      <main style={styles.main}>
-        <p>
-          <strong>Not signed in</strong>
-        </p>
-        <h1>Sign in</h1>
-        <p>Use the shared pharmacy login to view data-entry instructions.</p>
-        <form onSubmit={handleSignIn}>
-          <label style={styles.label} htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="username"
-            style={styles.field}
-            value={signInEmail}
-            onChange={(e) => setSignInEmail(e.target.value)}
-            required
-          />
-          <label style={styles.label} htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            style={styles.field}
-            value={signInPassword}
-            onChange={(e) => setSignInPassword(e.target.value)}
-            required
-          />
-          {signInError && <p style={styles.error}>{signInError}</p>}
-          <button style={styles.button} type="submit" disabled={signingIn}>
-            {signingIn ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </main>
+      <SignInGate
+        description="Use the shared pharmacy login to view data-entry instructions."
+        email={signInEmail}
+        password={signInPassword}
+        onEmailChange={setSignInEmail}
+        onPasswordChange={setSignInPassword}
+        onSubmit={handleSignIn}
+        error={signInError}
+        submitting={signingIn}
+      />
     );
   }
 
   return (
     <main style={styles.main}>
-      <div style={styles.sessionBar}>
-        <span>
-          Signed in as <strong>{session.email ?? "unknown user"}</strong>
-        </span>
-        <button style={styles.button} type="button" onClick={() => void handleSignOut()}>
-          Sign out
-        </button>
-      </div>
-
       <DataEntryInstructions />
     </main>
   );

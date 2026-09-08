@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { InstallDesktopAppSection, OtherSettingsLinks } from "@/app/settings/sections";
+import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 type AcuityStatus = {
   configured: boolean;
@@ -59,6 +60,20 @@ export default function AcuitySettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
+  // Clears this page's own fetched state on sign-out, whatever triggers
+  // it (see top-nav.tsx's doc comment — sign-out now lives solely in
+  // TopNav's account menu, and every page's session subscription still
+  // picks it up via the standard onAuthStateChange broadcast).
+  function resetAfterSignOut() {
+    setStatus(null);
+    setStatusError(null);
+    setUserIdInput("");
+    setApiKeyInput("");
+    setSaveError(null);
+    setSaveOk(false);
+    setTestResult(null);
+  }
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     try {
@@ -66,6 +81,7 @@ export default function AcuitySettingsPage() {
       unsubscribe = subscribeToSessionState(supabase, (state) => {
         setSession(state);
         setAuthChecked(true);
+        if (!state) resetAfterSignOut();
       });
     } catch {
       // Supabase not configured yet (phase 1) — stay signed out.
@@ -120,25 +136,6 @@ export default function AcuitySettingsPage() {
     }
   }
 
-  async function handleSignOut() {
-    try {
-      const supabase = getSupabaseBrowserClient();
-      await supabase.auth.signOut();
-    } catch {
-      // Fall through — clear local state below regardless of whether the
-      // network call succeeded, so the UI never gets stuck half-signed-out.
-    } finally {
-      setSession(null);
-      setStatus(null);
-      setStatusError(null);
-      setUserIdInput("");
-      setApiKeyInput("");
-      setSaveError(null);
-      setSaveOk(false);
-      setTestResult(null);
-    }
-  }
-
   async function handleSave(event: FormEvent) {
     event.preventDefault();
     if (!session) return;
@@ -190,69 +187,29 @@ export default function AcuitySettingsPage() {
   }
 
   if (!authChecked) {
-    return (
-      <main style={styles.main}>
-        <p>Loading…</p>
-      </main>
-    );
+    return <AuthLoading />;
   }
 
   if (!session) {
     return (
-      <main style={styles.main}>
-        <p>
-          <strong>Not signed in</strong>
-        </p>
-        <h1>Sign in</h1>
-        <p>Use the shared pharmacy login to manage Acuity settings.</p>
-        <form onSubmit={handleSignIn}>
-          <label style={styles.label} htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="username"
-            style={styles.field}
-            value={signInEmail}
-            onChange={(e) => setSignInEmail(e.target.value)}
-            required
-          />
-          <label style={styles.label} htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            style={styles.field}
-            value={signInPassword}
-            onChange={(e) => setSignInPassword(e.target.value)}
-            required
-          />
-          {signInError && <p style={styles.error}>{signInError}</p>}
-          <button style={styles.button} type="submit" disabled={signingIn}>
-            {signingIn ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-
+      <SignInGate
+        description="Use the shared pharmacy login to manage Acuity settings."
+        email={signInEmail}
+        password={signInPassword}
+        onEmailChange={setSignInEmail}
+        onPasswordChange={setSignInPassword}
+        onSubmit={handleSignIn}
+        error={signInError}
+        submitting={signingIn}
+      >
         <OtherSettingsLinks />
         <InstallDesktopAppSection />
-      </main>
+      </SignInGate>
     );
   }
 
   return (
     <main style={styles.main}>
-      <div style={styles.sessionBar}>
-        <span>
-          Signed in as <strong>{session.email ?? "unknown user"}</strong>
-        </span>
-        <button style={styles.button} type="button" onClick={() => void handleSignOut()}>
-          Sign out
-        </button>
-      </div>
-
       <h1>Settings</h1>
 
       <section style={styles.section}>

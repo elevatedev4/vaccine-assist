@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
+import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import { addDaysToChicagoDate, chicagoDayRange, todayInChicago } from "@/lib/chicago-date";
 import {
   BOOKING_ACTIVITY_LOOKBACK_DAYS,
@@ -554,6 +555,25 @@ export default function AppointmentsPage() {
   // already-loaded `poll.hourlyCounts`, which carries both metrics.
   const [hourlyMetric, setHourlyMetric] = useState<HourlyMetric>("vaccines");
 
+  // Clears every piece of THIS page's own fetched/local UI state — called
+  // whenever the session transitions to signed-out, regardless of what
+  // triggered it (this page is gone now, but historically its own "Sign
+  // out" button; MSG-899 moved that control into TopNav's account menu,
+  // so this now fires off the SAME onAuthStateChange broadcast
+  // subscribeToSessionState already relies on — see top-nav.tsx's doc
+  // comment for why that broadcast is reliable enough to not need its
+  // own separate signOut() call here).
+  function resetAfterSignOut() {
+    setPoll(null);
+    setLoadError(null);
+    setAfterToday(null);
+    setAfterTodayError(undefined);
+    setActivityExpanded(false);
+    setActivityLoaded(false);
+    setActivity(null);
+    setActivityError(undefined);
+  }
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     try {
@@ -561,6 +581,7 @@ export default function AppointmentsPage() {
       unsubscribe = subscribeToSessionState(supabase, (state) => {
         setSession(state);
         setAuthChecked(true);
+        if (!state) resetAfterSignOut();
       });
     } catch {
       setAuthChecked(true);
@@ -734,72 +755,22 @@ export default function AppointmentsPage() {
     }
   }
 
-  async function handleSignOut() {
-    try {
-      const supabase = getSupabaseBrowserClient();
-      await supabase.auth.signOut();
-    } catch {
-      // Fall through — clear local state regardless.
-    } finally {
-      setSession(null);
-      setPoll(null);
-      setLoadError(null);
-      setAfterToday(null);
-      setAfterTodayError(undefined);
-      setActivityExpanded(false);
-      setActivityLoaded(false);
-      setActivity(null);
-      setActivityError(undefined);
-    }
-  }
-
   if (!authChecked) {
-    return (
-      <main style={styles.main}>
-        <p>Loading…</p>
-      </main>
-    );
+    return <AuthLoading />;
   }
 
   if (!session) {
     return (
-      <main style={styles.main}>
-        <p>
-          <strong>Not signed in</strong>
-        </p>
-        <h1>Sign in</h1>
-        <p>Use the shared pharmacy login to view appointment counts.</p>
-        <form onSubmit={handleSignIn}>
-          <label style={styles.label} htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="username"
-            style={styles.field}
-            value={signInEmail}
-            onChange={(e) => setSignInEmail(e.target.value)}
-            required
-          />
-          <label style={styles.label} htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            style={styles.field}
-            value={signInPassword}
-            onChange={(e) => setSignInPassword(e.target.value)}
-            required
-          />
-          {signInError && <p style={styles.error}>{signInError}</p>}
-          <button style={styles.button} type="submit" disabled={signingIn}>
-            {signingIn ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </main>
+      <SignInGate
+        description="Use the shared pharmacy login to view appointment counts."
+        email={signInEmail}
+        password={signInPassword}
+        onEmailChange={setSignInEmail}
+        onPasswordChange={setSignInPassword}
+        onSubmit={handleSignIn}
+        error={signInError}
+        submitting={signingIn}
+      />
     );
   }
 
@@ -853,15 +824,6 @@ export default function AppointmentsPage() {
 
   return (
     <main style={styles.mainWide}>
-      <div style={styles.sessionBar}>
-        <span>
-          Signed in as <strong>{session.email ?? "unknown user"}</strong>
-        </span>
-        <button style={styles.button} type="button" onClick={() => void handleSignOut()}>
-          Sign out
-        </button>
-      </div>
-
       <h1 style={styles.heading}>Upcoming appointments</h1>
 
       <p style={styles.actionsRow}>
