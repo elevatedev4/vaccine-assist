@@ -25,15 +25,6 @@ const styles = {
   button: { padding: "0.5rem 1rem", marginRight: "0.5rem", marginBottom: "0.5rem" },
   error: { color: "#b00020" },
   muted: { color: "#555", fontSize: "0.875rem" },
-  sessionBar: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "0.5rem 0.75rem",
-    marginBottom: "1rem",
-    background: "#f0f4f8",
-    borderRadius: 4,
-  },
 } as const;
 
 export default function DataEntryPage() {

@@ -8,8 +8,10 @@ import {
   isCovidBrandFormFieldName,
   isVaccineFormFieldName,
   testAcuityConnection,
+  REQUESTS_PER_RANGE_BUDGET,
   type CountableAppointment,
 } from "@/lib/acuity-client";
+import { addDaysToChicagoDate } from "@/lib/chicago-date";
 
 describe("testAcuityConnection", () => {
   afterEach(() => {
@@ -709,14 +711,26 @@ describe("fetchAppointmentsForRange", () => {
     ]);
   });
 
-  it("flags possiblyTruncated when the response hits the 100-row max cap", async () => {
+  // MSG-897: a saturated MULTI-day range now recurses/pages instead of
+  // stopping here — see the dedicated "chunked pagination" describe block
+  // below for that behavior. A single-day range is the recursion FLOOR
+  // (can't split a day any further), so it's the simplest case that still
+  // exercises the original "hits the cap" signal with exactly one
+  // request — a multi-day range against this same always-100 mock would
+  // recurse (this mock has no per-window variation to resolve against)
+  // and, more immediately, can't: a mocked Response's body can only be
+  // read once, so a second `fetch` call reusing the same mockResolvedValue
+  // Response would throw.
+  it("flags possiblyTruncated when a single day's response hits the 100-row max cap", async () => {
     const fixture = Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
 
-    const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+    const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-17");
 
     expect(result.possiblyTruncated).toBe(true);
     expect(result.appointments).toHaveLength(100);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("does not flag possiblyTruncated when the response is under the cap", async () => {
@@ -750,6 +764,139 @@ describe("fetchAppointmentsForRange", () => {
     expect(result.appointments).toEqual([
       { date: "2026-08-19", hourOfDay: 9, appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
     ]);
+  });
+
+  // MSG-897 (Will: "the app must be reliable regardless of volume" —
+  // "warning stays" isn't the end state when a deterministic workaround
+  // exists). These exercise the recursive date-window pagination itself
+  // — see fetchAppointmentsForRange's doc comment in lib/acuity-client.ts
+  // for the algorithm. Unlike every test above (one static fixture reused
+  // for every call, via mockResolvedValue — fine when only one request is
+  // ever expected), these use a fake server keyed by the actual
+  // minDate/maxDate query params of each request, so recursion behaves
+  // realistically and the exact request count/shape can be asserted.
+  describe("chunked pagination", () => {
+    function fakeAcuityServer(responder: (minDate: string, maxDate: string) => Record<string, unknown>[]) {
+      return vi.fn(async (input: string | URL) => {
+        const url = new URL(input);
+        const minDate = url.searchParams.get("minDate") ?? "";
+        const maxDate = url.searchParams.get("maxDate") ?? "";
+        return new Response(JSON.stringify(responder(minDate, maxDate)), { status: 200 });
+      });
+    }
+
+    it("<100 fast path: a non-saturated response completes in exactly one request, even across a multi-day range", async () => {
+      const fixture = [1, 2, 3, 4, 5].map((id) => acuityAppointmentFixture({ id }));
+      const fetchSpy = fakeAcuityServer(() => fixture);
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-01", "2026-08-14");
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(result.possiblyTruncated).toBe(false);
+      expect(result.appointments).toHaveLength(5);
+    });
+
+    it("splits a saturated multi-day window in half and recovers the complete count once both halves are under the cap", async () => {
+      const fetchSpy = fakeAcuityServer((minDate, maxDate) => {
+        if (minDate === "2026-08-01" && maxDate === "2026-08-14") {
+          // Top-level probe: saturated — triggers a split. This batch is
+          // discarded once the children resolve (see the doc comment on
+          // why), so its content doesn't matter, only its length.
+          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+        }
+        if (minDate === "2026-08-01" && maxDate === "2026-08-07") {
+          return Array.from({ length: 60 }, (_, i) => acuityAppointmentFixture({ id: i }));
+        }
+        if (minDate === "2026-08-08" && maxDate === "2026-08-14") {
+          return Array.from({ length: 55 }, (_, i) => acuityAppointmentFixture({ id: 1000 + i }));
+        }
+        throw new Error(`unexpected window requested: ${minDate}..${maxDate}`);
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-01", "2026-08-14");
+
+      expect(fetchSpy).toHaveBeenCalledTimes(3); // parent probe + 2 halves
+      expect(result.possiblyTruncated).toBe(false); // both halves completed — the parent's saturated probe doesn't count
+      expect(result.appointments).toHaveLength(115); // 60 + 55, the COMPLETE count, not the probe's saturated 100
+    });
+
+    it("floors recursion at a single day, flagging possiblyTruncated only for that day when it alone still saturates", async () => {
+      const fetchSpy = fakeAcuityServer((minDate, maxDate) => {
+        if (minDate === "2026-08-01" && maxDate === "2026-08-02") {
+          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+        }
+        if (minDate === "2026-08-01" && maxDate === "2026-08-01") {
+          // The single saturated day — recursion floor, can't split
+          // further, so this IS the residual "may be incomplete" case.
+          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+        }
+        if (minDate === "2026-08-02" && maxDate === "2026-08-02") {
+          // The other day resolves cleanly, under the cap.
+          return Array.from({ length: 10 }, (_, i) => acuityAppointmentFixture({ id: 1000 + i }));
+        }
+        throw new Error(`unexpected window requested: ${minDate}..${maxDate}`);
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-01", "2026-08-02");
+
+      expect(fetchSpy).toHaveBeenCalledTimes(3); // parent probe + 2 single-day halves
+      expect(result.possiblyTruncated).toBe(true); // the one saturated day taints the whole result
+      expect(result.appointments).toHaveLength(110); // 100 (saturated day, kept anyway) + 10 (complete day)
+    });
+
+    it("dedupes an appointment id that appears in both halves at a shared window boundary", async () => {
+      const fetchSpy = fakeAcuityServer((minDate, maxDate) => {
+        if (minDate === "2026-08-01" && maxDate === "2026-08-04") {
+          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+        }
+        if (minDate === "2026-08-01" && maxDate === "2026-08-02") {
+          return [
+            acuityAppointmentFixture({ id: 1 }),
+            acuityAppointmentFixture({ id: 2 }),
+            acuityAppointmentFixture({ id: 999 }), // boundary appointment
+          ];
+        }
+        if (minDate === "2026-08-03" && maxDate === "2026-08-04") {
+          return [
+            acuityAppointmentFixture({ id: 999 }), // the SAME id, appearing again
+            acuityAppointmentFixture({ id: 3 }),
+          ];
+        }
+        throw new Error(`unexpected window requested: ${minDate}..${maxDate}`);
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-01", "2026-08-04");
+
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(result.possiblyTruncated).toBe(false);
+      expect(result.appointments).toHaveLength(4); // ids 1, 2, 999 (once, not twice), 3
+    });
+
+    it("bails out once REQUESTS_PER_RANGE_BUDGET is spent, keeping what was already fetched and flagging possiblyTruncated", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // A pathological "never resolves" server — every window, at every
+      // granularity, comes back saturated. 64 days supports 6 levels of
+      // halving (64 -> 32 -> ... -> 1) before hitting single-day
+      // windows, so an UNBOUNDED recursion here would issue far more
+      // than REQUESTS_PER_RANGE_BUDGET requests — the budget, not the
+      // date range, is what has to stop it.
+      const fetchSpy = fakeAcuityServer(() => Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i })));
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const start = "2026-08-01";
+      const end = addDaysToChicagoDate(start, 63);
+      const result = await fetchAppointmentsForRange("user-1", "key-1", start, end);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(REQUESTS_PER_RANGE_BUDGET);
+      expect(result.possiblyTruncated).toBe(true);
+      expect(warnSpy).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
   });
 });
 

@@ -194,7 +194,20 @@ import { bookingActivityCreatedRange, fetchBookingActivityCounts } from "@/lib/a
 // concurrency-limited windows over its ~134-day range — well within this
 // same budget, and likewise never blocks the main table since
 // app/appointments/page.tsx only fires it on first expand.
-export const maxDuration = 60;
+//
+// Bumped 60 -> 90 (MSG-897): fetchAppointmentsForRange (lib/acuity-client.ts)
+// now recursively pages a saturated window instead of returning an
+// incomplete page, so any one of the windows above can now cost a few
+// extra PARALLEL round-trips (bounded by REQUESTS_PER_RANGE_BUDGET, and
+// halving keeps the added wall time roughly log2(budget) request-rounds,
+// not budget-many) instead of always exactly one. This is sized for the
+// realistic heavy case the same way 60 already was, not the theoretical
+// case where every single request across every window times out AND every
+// window saturates all the way down to single days — that scenario is the
+// "beyond plausible load" case fetchAppointmentsForRange's own doc comment
+// already accepts as an intentionally-unresolved residual warning, and no
+// finite budget here would fully cover it anyway.
+export const maxDuration = 90;
 
 const MAX_RANGE_DAYS = 31;
 

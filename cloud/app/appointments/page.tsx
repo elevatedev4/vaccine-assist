@@ -116,15 +116,6 @@ const styles = {
   heading: { margin: "0.5rem 0 0.5rem" },
   actionsRow: { margin: "0 0 0.35rem" },
   autoRefreshNote: { color: "#555", fontSize: "0.875rem", margin: "0 0 0.5rem" },
-  sessionBar: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "0.35rem 0.75rem",
-    marginBottom: "0.5rem",
-    background: "#f0f4f8",
-    borderRadius: 4,
-  },
   // Compact "read as a chart, not a document" table (V-T-schedule-table
   // ROUND 2, Will 2026-09-05: "make it look like a chart" — minimal
   // font/padding; V-T11: padding tightened further and header rows

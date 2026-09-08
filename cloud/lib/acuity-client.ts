@@ -1,5 +1,5 @@
 import "server-only";
-import { chicagoDateString, chicagoHour } from "@/lib/chicago-date";
+import { addDaysToChicagoDate, chicagoDateString, chicagoHour } from "@/lib/chicago-date";
 
 /**
  * Minimal server-side Acuity Scheduling API client. Acuity uses HTTP
@@ -250,16 +250,47 @@ export type FluAgeBucket = "3-64" | "65+" | "unknown";
 export type AppointmentRangeResult = {
   appointments: CountableAppointment[];
   /**
-   * True when the raw Acuity response came back at exactly the requested
-   * `max` cap (100) — a signal, not a certainty, that more appointments
-   * exist in the range than were returned (Acuity's API documents no
-   * offset/pagination param, so there's no way to fetch a next page).
-   * Callers must surface this rather than silently under-counting.
+   * MSG-897 (Will: "the app must be reliable regardless of volume" —
+   * "warning stays" isn't the end state when a deterministic workaround
+   * exists). Acuity's API documents no offset/pagination param (verified
+   * live against developers.acuityscheduling.com/reference/get-appointments,
+   * 2026-09-08 — `max` is the only result-limiting param), but it DOES
+   * accept `minDate`/`maxDate`, so fetchAppointmentsForRange below now
+   * pages by recursively halving the requested date window whenever a
+   * request comes back saturated (exactly `max` rows) — see that
+   * function's doc comment for the full algorithm. This flag now means
+   * something narrower than "this one request hit the cap": it's true
+   * ONLY in the two residual cases pagination can't resolve —
+   *   1. a SINGLE calendar day alone still returned exactly `max` rows
+   *      (the recursion floor — can't split a day any further), or
+   *   2. REQUESTS_PER_RANGE_BUDGET was exhausted before every sub-window
+   *      could be confirmed complete (a defensive ceiling, logged when it
+   *      fires).
+   * In every other case — including a range that used to trip this flag
+   * under the old single-request behavior — pagination now recovers the
+   * complete count and this is false. Callers (the dashboard's "100+
+   * appointments... may be incomplete" warnings) don't need to change:
+   * they already just render off this boolean, and it's simply true far
+   * less often now.
    */
   possiblyTruncated: boolean;
 };
 
 const ACUITY_APPOINTMENTS_MAX = 100;
+
+/**
+ * Ceiling on how many Acuity requests ONE top-level fetchAppointmentsForRange
+ * call may issue while recursively halving a saturated window (see that
+ * function's doc comment) — a defensive stop, not a number Will's real
+ * volume should ever approach: at 2 requests per split level, this affords
+ * roughly log2(24) ≈ 4-5 levels of halving before bailing, and a single
+ * calendar day hitting the cap on its own (the recursion floor) is already
+ * "beyond plausible load" per Will's own framing of this feature. Exported
+ * so tests/acuity-client.test.ts can assert against the real cap rather
+ * than a hardcoded duplicate of this number (same pattern as
+ * AFTER_TODAY_FETCH_CONCURRENCY in lib/acuity-future-summary.ts).
+ */
+export const REQUESTS_PER_RANGE_BUDGET = 24;
 
 /**
  * "" on anything not parseable — callers filter empty-date entries out,
@@ -565,23 +596,36 @@ function fluCompositeName(ageBucket: FluAgeBucket): string {
 }
 
 /**
- * Fetches appointments in [minDate, maxDate] (both "YYYY-MM-DD", inclusive
- * per Acuity's minDate/maxDate semantics) and strips every field down to
- * {date, appointmentTypeId} — see CountableAppointment above.
- *
- * Acuity's documented `max` param defaults to 100 with no documented
- * offset/pagination parameter, so a range that actually contains more
- * than 100 appointments cannot be fully fetched — see possiblyTruncated
- * above, which the caller (the poll route) must propagate through the
- * cache and into the dashboard as a visible warning rather than silently
- * under-counting.
+ * Internal-only shape: CountableAppointment plus the raw Acuity
+ * appointment `id` (opaque integer, not PHI — no name/email/phone/notes
+ * ever touch this type, same PHI boundary as CountableAppointment
+ * itself). Exists purely so fetchAppointmentsForRange's recursive
+ * pagination (below) can dedupe appointments that show up in two
+ * adjacent sub-windows before returning — the id is stripped back off
+ * before anything leaves this module, so CountableAppointment's public
+ * shape (and everything callers/tests already assert about it) is
+ * unchanged. `acuityId` is `null` on the defensive fallback path (a
+ * missing/non-numeric `id` on the raw entry, which real Acuity responses
+ * never produce per developers.acuityscheduling.com's documented shape)
+ * — see the dedupe step in fetchAppointmentsForRange for why `null`
+ * entries are never treated as duplicates of one another.
  */
-export async function fetchAppointmentsForRange(
+type RawWindowAppointment = CountableAppointment & { acuityId: number | null };
+
+/**
+ * Fetches ONE page — a single Acuity request for [minDate, maxDate] (both
+ * "YYYY-MM-DD", inclusive per Acuity's minDate/maxDate semantics), capped
+ * at ACUITY_APPOINTMENTS_MAX rows — and strips every field down to
+ * RawWindowAppointment. This is the single-request primitive
+ * fetchAppointmentsForRange below recurses on; nothing outside this file
+ * calls it directly.
+ */
+async function fetchAppointmentWindow(
   userId: string,
   apiKey: string,
   minDate: string,
   maxDate: string
-): Promise<AppointmentRangeResult> {
+): Promise<{ appointments: RawWindowAppointment[]; possiblyTruncated: boolean }> {
   const url = new URL(ACUITY_APPOINTMENTS_URL);
   url.searchParams.set("minDate", minDate);
   url.searchParams.set("maxDate", maxDate);
@@ -613,17 +657,22 @@ export async function fetchAppointmentsForRange(
     throw new AcuityApiError("Acuity returned an unexpected appointments response.");
   }
 
-  // Truncation signal: computed off the raw response length, before the
+  // Saturation signal: computed off the raw response length, before the
   // PHI-stripping/malformed-entry filtering below — a full page (exactly
-  // ACUITY_APPOINTMENTS_MAX rows) means more may exist beyond it.
+  // ACUITY_APPOINTMENTS_MAX rows) means more may exist beyond it in this
+  // window. fetchAppointmentsForRange below is what decides what to do
+  // about that (split and recurse); this function just reports it.
   const possiblyTruncated = data.length === ACUITY_APPOINTMENTS_MAX;
 
   // PHI-stripping projection — see CountableAppointment doc comment.
   // Every other field on `entry` (name/email/phone/notes/...) is dropped
   // right here and never touched again — `datetimeCreated` (V-T-booking
-  // -activity) is the one addition, and it's reduced to `createdDate`
-  // ("YYYY-MM-DD") the same instant, exactly like `datetime` -> `date`;
-  // the raw timestamp string itself never survives past this map step.
+  // -activity) is one addition, reduced to `createdDate` ("YYYY-MM-DD")
+  // the same instant, exactly like `datetime` -> `date`; the raw
+  // timestamp string itself never survives past this map step. `id`
+  // (MSG-897) is the other addition — a bare opaque integer, kept ONLY
+  // for this module's own dedupe step (see RawWindowAppointment) and
+  // stripped before anything returns from fetchAppointmentsForRange.
   // `forms` is read ONLY through
   // extractVaccineNamesFromForms/deriveCovidBrand/deriveAgeInYears, each
   // of which extracts (and, for age, immediately buckets via
@@ -637,6 +686,7 @@ export async function fetchAppointmentsForRange(
     .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
     .map((entry) => {
       const ageInYears = deriveAgeInYears(entry.forms);
+      const rawId = Number(entry.id);
       return {
         date: acuityDatetimeToChicagoDate(entry.datetime),
         hourOfDay: acuityDatetimeToChicagoHour(entry.datetime),
@@ -646,11 +696,165 @@ export async function fetchAppointmentsForRange(
         covidAgeBucket: bucketCovidAge(ageInYears),
         fluAgeBucket: bucketFluAge(ageInYears),
         createdDate: acuityDatetimeToChicagoDate(entry.datetimeCreated),
+        acuityId: Number.isFinite(rawId) ? rawId : null,
       };
     })
     .filter((entry) => entry.date && Number.isFinite(entry.appointmentTypeId));
 
   return { appointments, possiblyTruncated };
+}
+
+/** Whole calendar days between two "YYYY-MM-DD" strings (maxDate - minDate)
+ * — pure date-component math via a fixed UTC-noon anchor, same DST-proof
+ * approach as lib/chicago-date.ts's addDaysToChicagoDate, so this is never
+ * off by one around a spring/fall DST boundary. */
+function daysBetweenChicagoDates(minDate: string, maxDate: string): number {
+  const [y1, m1, d1] = minDate.split("-").map(Number);
+  const [y2, m2, d2] = maxDate.split("-").map(Number);
+  const a = Date.UTC(y1, m1 - 1, d1, 12);
+  const b = Date.UTC(y2, m2 - 1, d2, 12);
+  return Math.round((b - a) / 86_400_000);
+}
+
+/**
+ * Fetches every appointment in [minDate, maxDate] and strips every field
+ * down to CountableAppointment — see that type above for the PHI boundary.
+ *
+ * MSG-897 (Will: "the app must be reliable regardless of volume" —
+ * "warning stays" isn't the end state when a deterministic workaround
+ * exists). Acuity's `max` param caps a single request at
+ * ACUITY_APPOINTMENTS_MAX (100) rows with no documented offset/pagination
+ * param (see AppointmentRangeResult.possiblyTruncated's doc comment for
+ * the live-docs verification) — but it DOES accept minDate/maxDate, so a
+ * saturated window can be paginated by DATE instead: split it in half and
+ * fetch each half. Algorithm, run per top-level call:
+ *
+ *   1. Fetch [minDate, maxDate] (one request).
+ *   2. If the response isn't saturated (< max rows), this window is
+ *      COMPLETE — done, no further requests.
+ *   3. If saturated and minDate === maxDate (a single calendar day), this
+ *      is the recursion FLOOR — a day can't be split any further. Keep
+ *      what came back and flag possiblyTruncated (residual case #1 — see
+ *      that field's doc comment).
+ *   4. Otherwise, split [minDate, maxDate] at its date midpoint into two
+ *      contiguous, non-overlapping halves and recurse on each IN
+ *      PARALLEL (Promise.all — halving instead of scanning keeps this
+ *      fast: a window that needs N requests takes O(log N) sequential
+ *      rounds, not N).
+ *
+ * REQUESTS_PER_RANGE_BUDGET bounds the total requests one top-level call
+ * can issue — checked before every request, including the first split's
+ * children, so a window that keeps coming back saturated no matter how
+ * finely it's cut (implausible in practice; see that constant's doc
+ * comment) can't run away. Hitting the budget bails out the same way
+ * hitting the single-day floor does: keep whatever was already fetched
+ * and flag possiblyTruncated (residual case #2), plus a console.warn so
+ * this is visible in logs if it ever actually fires.
+ *
+ * DEDUPE: Acuity's minDate/maxDate docs don't specify whether a boundary
+ * appointment could appear in both an adjacent day's "before" and
+ * "after" query (this module already treats them as inclusive on both
+ * ends per the original doc comment here) — rather than trust that,
+ * every appointment's raw Acuity id is tracked through the recursion
+ * (RawWindowAppointment.acuityId) and deduped (dedupeByAcuityId) at every
+ * point two separately-fetched sub-windows are combined, regardless of
+ * whether an overlap is actually possible — this naturally covers the
+ * whole tree, however deep, without a separate final pass. A single
+ * request's own results are never deduped against themselves (see
+ * fetchWindowRecursive) — only ever against a SEPARATE request's
+ * results — since a real Acuity response never lists the same
+ * appointment twice within itself. An entry with no parseable id
+ * (acuityId: null — never happens on a real Acuity response, only a
+ * defensive fallback) is never treated as a duplicate of anything,
+ * including another null-id entry, so malformed data can't be
+ * miscounted as an accidental collision.
+ *
+ * ORDERING: the merged list is in ascending-by-sub-range order (earliest
+ * window's results first) — every caller of this function
+ * (aggregateAppointmentCounts, aggregateHourlyCounts) re-sorts its own
+ * output by date before returning, so no caller in this codebase actually
+ * depends on fetchAppointmentsForRange's own result order.
+ *
+ * Caching is UNCHANGED: callers (app/api/acuity/poll/route.ts,
+ * lib/acuity-future-summary.ts, lib/acuity-booking-activity.ts) still
+ * call this once per window and cache its result under that SAME
+ * (minDate, maxDate) key exactly as before — the pagination here is
+ * entirely internal to this one call.
+ */
+export async function fetchAppointmentsForRange(
+  userId: string,
+  apiKey: string,
+  minDate: string,
+  maxDate: string
+): Promise<AppointmentRangeResult> {
+  const budget = { remaining: REQUESTS_PER_RANGE_BUDGET };
+
+  async function fetchWindowRecursive(
+    min: string,
+    max: string
+  ): Promise<{ appointments: RawWindowAppointment[]; possiblyTruncated: boolean }> {
+    if (budget.remaining <= 0) {
+      console.warn(
+        `fetchAppointmentsForRange: REQUESTS_PER_RANGE_BUDGET (${REQUESTS_PER_RANGE_BUDGET}) exhausted before [${min}..${max}] could be confirmed complete for the overall range [${minDate}..${maxDate}] — keeping what was already fetched and flagging possiblyTruncated`
+      );
+      return { appointments: [], possiblyTruncated: true };
+    }
+    // Synchronous check-then-decrement, no `await` between them — safe
+    // against the parallel Promise.all recursion below even though JS
+    // has no locks, because nothing can interleave between two
+    // synchronous statements in the same tick.
+    budget.remaining -= 1;
+
+    const { appointments, possiblyTruncated } = await fetchAppointmentWindow(userId, apiKey, min, max);
+    // A single request's own results are returned as-is, undeduped — a
+    // real Acuity response never lists the same appointment twice within
+    // itself, so there's nothing to dedupe yet at this point (dedup
+    // happens below, only where two SEPARATE requests' results are about
+    // to be combined — see this function's doc comment on why a boundary
+    // appointment could appear in both).
+    if (!possiblyTruncated) return { appointments, possiblyTruncated: false };
+    if (min === max) return { appointments, possiblyTruncated: true };
+
+    const span = daysBetweenChicagoDates(min, max);
+    const half = Math.floor(span / 2);
+    const leftMax = addDaysToChicagoDate(min, half);
+    const rightMin = addDaysToChicagoDate(leftMax, 1);
+
+    const [left, right] = await Promise.all([fetchWindowRecursive(min, leftMax), fetchWindowRecursive(rightMin, max)]);
+
+    return {
+      appointments: dedupeByAcuityId([...left.appointments, ...right.appointments]),
+      possiblyTruncated: left.possiblyTruncated || right.possiblyTruncated,
+    };
+  }
+
+  const { appointments: merged, possiblyTruncated } = await fetchWindowRecursive(minDate, maxDate);
+  const appointments: CountableAppointment[] = merged.map(({ acuityId: _acuityId, ...rest }) => rest);
+
+  return { appointments, possiblyTruncated };
+}
+
+/**
+ * Drops any appointment whose acuityId has already been seen earlier in
+ * `list`, preserving order of first occurrence — used only where two
+ * separately-fetched sub-windows are being combined (see
+ * fetchWindowRecursive above), never on a single request's own raw
+ * results. `null` (no parseable id — a defensive fallback that never
+ * happens on a real Acuity response) is never treated as a duplicate of
+ * anything, including another null entry, so malformed data can't be
+ * miscounted as an accidental collision.
+ */
+function dedupeByAcuityId(list: RawWindowAppointment[]): RawWindowAppointment[] {
+  const seenIds = new Set<number>();
+  const deduped: RawWindowAppointment[] = [];
+  for (const appointment of list) {
+    if (appointment.acuityId !== null) {
+      if (seenIds.has(appointment.acuityId)) continue;
+      seenIds.add(appointment.acuityId);
+    }
+    deduped.push(appointment);
+  }
+  return deduped;
 }
 
 export type VaccineCount = {
