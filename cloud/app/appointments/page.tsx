@@ -817,6 +817,16 @@ export default function AppointmentsPage() {
     <main style={styles.mainWide}>
       <h1 style={styles.heading}>Upcoming appointments</h1>
 
+      {/* V-data-explorer (Will, 2026-09-08): "a data explorer page for me
+          to see all the data and search and filter and perform sum
+          functions on it" — a link into the new explorer, not a new top
+          tab (see lib/nav-config.ts's doc comment on what stays a tab). */}
+      <p style={{ margin: "0 0 0.5rem" }}>
+        <a href="/appointments/explorer" style={{ fontSize: "0.8rem" }}>
+          Data explorer →
+        </a>
+      </p>
+
       <p style={styles.actionsRow}>
         <button
           style={styles.button}
