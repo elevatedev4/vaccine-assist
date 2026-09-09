@@ -1084,6 +1084,93 @@ describe("aggregateAppointmentCounts", () => {
     expect(result).toEqual([{ date: "2026-08-17", vaccineName: "Type 999", count: 1 }]);
   });
 
+  // V-T-poc-testing follow-up (manager, 2026-09-08): a point-of-care
+  // testing appointment must NEVER count as a vaccine via the type-name
+  // fallback above — closing the gap the original point-of-care-testing
+  // brief flagged (a test-type appointment's own name, e.g. "Test
+  // appointment (Flu, COVID, Strep)", contains "covid" as a substring, so
+  // the fallback used to misread it as a COVID vaccine appointment).
+  describe("point-of-care testing exclusion from the vaccine table", () => {
+    it("excludes an appointment with testNames set and no vaccineNames, even though its fallback type name contains 'covid'", () => {
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 90788212,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: ["COVID"],
+        },
+      ];
+      const names = new Map([[90788212, "Test appointment (Flu, COVID, Strep)"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([]);
+    });
+
+    it("excludes an appointment whose type name looks test-ish even when testNames itself is empty (no parenthetical, no matching form field)", () => {
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 90788212,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      const names = new Map([[90788212, "COVID Test Visit"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([]);
+    });
+
+    it("still falls back to the type name normally for a genuine vaccine-type appointment (regression guard)", () => {
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 111,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      const names = new Map([[111, "RSV Vaccine"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "RSV Vaccine", count: 1 }]);
+    });
+
+    it("counts a HYBRID appointment (test type, but with an explicit vaccine form answer) under its vaccineNames normally", () => {
+      // A point-of-care testing appointment where the patient ALSO got a
+      // vaccine that same visit — the explicit vaccineNames answer always
+      // wins, test-type or not (the exclusion rule only applies in the
+      // vaccineNames-EMPTY branch).
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 90788212,
+          vaccineNames: ["Flu"],
+          testNames: ["COVID"],
+          covidBrand: "any",
+          covidAgeBucket: "unknown",
+          fluAgeBucket: "3-64",
+          createdDate: "2026-08-10",
+        },
+      ];
+      const names = new Map([[90788212, "Test appointment (Flu, COVID, Strep)"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "Flu · 3-64", count: 1 }]);
+    });
+  });
+
   it("groups by each of an appointment's vaccineNames, ignoring appointmentTypeId entirely, when present", () => {
     // A single appointment whose form answer lists two vaccines counts
     // once toward EACH vaccine's column, per Will: "a patient getting
@@ -1127,15 +1214,16 @@ describe("aggregateAppointmentCounts", () => {
 
   it("never emits PHI keys even if a caller (incorrectly) passed extra fields through", () => {
     // aggregateAppointmentCounts only ever destructures {date,
-    // appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket,
-    // fluAgeBucket} off each input — extra fields on the input object
-    // must not leak into output.
+    // appointmentTypeId, vaccineNames, testNames, covidBrand,
+    // covidAgeBucket, fluAgeBucket} off each input — extra fields on the
+    // input object must not leak into output.
     const appointments = [
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: [],
+        testNames: [],
         covidBrand: "any",
         covidAgeBucket: "unknown",
         fluAgeBucket: "unknown",

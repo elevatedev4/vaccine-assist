@@ -244,18 +244,18 @@ describe("GET /api/acuity/poll — validation", () => {
         dailyTotals: { "2026-08-17": 1, "2026-08-18": 0 },
         grandTotal: 1,
       });
-      // KNOWN PRE-EXISTING GAP, not introduced by this change and out of
-      // this brief's scope to fix: a point-of-care testing appointment has
-      // no vaccine-selection form field, so aggregateAppointmentCounts
-      // (lib/acuity-client.ts) falls back to the appointment TYPE's own
-      // name ("Test appointment (Flu, COVID, Strep)") for the vaccine
-      // table too — and that name happens to contain "covid" as a
-      // substring, so it's rewritten to a COVID composite and counted
-      // there. Flagged to Will as a follow-up rather than silently
-      // "fixed" by touching aggregateAppointmentCounts's shared fallback
-      // behavior (used by ordering's recommendation route too) inside a
-      // brief that didn't ask for it.
-      expect(body.table.grandTotal).toBe(1);
+      // FIXED (manager follow-up, 2026-09-08 — closing the gap this test
+      // originally documented as a known pre-existing issue): a
+      // point-of-care testing appointment has no vaccine-selection form
+      // field, so it falls back to the appointment TYPE's own name — but
+      // aggregateAppointmentCounts (lib/acuity-client.ts) now recognizes
+      // that fallback name/its own testNames as "this is a testing
+      // appointment" and excludes it from the vaccine table entirely,
+      // rather than letting "Test appointment (Flu, COVID, Strep)"'s own
+      // "covid" substring rewrite it into a bogus COVID vaccine entry.
+      // app/api/ordering/recommendation/route.ts consumes this same
+      // aggregate, so it inherits the fix with no changes of its own.
+      expect(body.table.grandTotal).toBe(0);
 
       // Cache round-trip: the fresh fetch above must have written a
       // SEPARATE cached row for testCounts (its own key prefix), not
@@ -265,6 +265,46 @@ describe("GET /api/acuity/poll — validation", () => {
         "2026-08-18",
         [{ date: "2026-08-17", testName: "COVID", count: 1 }]
       );
+    });
+
+    // Hybrid visit (manager follow-up, 2026-09-08): a point-of-care
+    // testing appointment where the patient ALSO got a vaccine that same
+    // visit — the explicit vaccine form answer always counts normally,
+    // test-type or not; the exclusion above only fires when vaccineNames
+    // is empty.
+    it("counts a hybrid appointment (test type, with an explicit vaccine form answer) in BOTH the test table and the vaccine table", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+
+      const fetchMock = vi.fn(async (url: string | URL) => {
+        const urlStr = url.toString();
+        if (urlStr.includes("appointment-types")) {
+          return new Response(
+            JSON.stringify([{ id: 90788212, name: "Test appointment (Flu, COVID, Strep)" }]),
+            { status: 200 }
+          );
+        }
+        const fixture = {
+          id: 1,
+          datetime: "2026-08-17T11:00:00-0500",
+          appointmentTypeID: 90788212,
+          type: "Test appointment (Flu, COVID, Strep)",
+          forms: [
+            { id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: "COVID (free)" }] },
+            { id: 2, name: "Vaccine Intake", values: [{ fieldID: 10, name: "Which vaccine?", value: "Flu" }] },
+          ],
+        };
+        return new Response(JSON.stringify([fixture]), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(pollRequest("?start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.testCounts).toEqual([{ date: "2026-08-17", testName: "COVID", count: 1 }]);
+      expect(body.counts).toEqual([{ date: "2026-08-17", vaccineName: "Flu · Unknown", count: 1 }]);
+      expect(body.table.grandTotal).toBe(1);
     });
 
     it("reads testCounts back from its own cache entry on a cache hit, self-healing to an empty test table when only the main counts row is cached", async () => {

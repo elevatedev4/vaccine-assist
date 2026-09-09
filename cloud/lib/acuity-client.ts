@@ -1026,6 +1026,22 @@ export type VaccineCount = {
 };
 
 /**
+ * True when an appointment TYPE's own name looks like a point-of-care
+ * testing type — case-insensitive substring match on "test", same simple
+ * heuristic style as isCovidVaccineName/isFluVaccineName below (and
+ * isTestFormFieldName above, for the analogous FORM FIELD check). Used
+ * ONLY by aggregateAppointmentCounts's type-name-fallback guard (see its
+ * doc comment) to stop a point-of-care testing appointment's own type name
+ * — e.g. "Test appointment (Flu, COVID, Strep)" — from being
+ * misinterpreted as a vaccine appointment (that exact name contains
+ * "covid" as a substring, so isCovidVaccineName would otherwise happily
+ * rewrite it into a bogus "COVID · ..." vaccine-table entry).
+ */
+function isTestAppointmentTypeName(name: string): boolean {
+  return typeof name === "string" && name.toLowerCase().includes("test");
+}
+
+/**
  * Pure aggregation: groups already-PHI-stripped appointments by
  * (date, vaccineName) and counts them. `vaccineName` is normally each of
  * an appointment's `vaccineNames` (see CountableAppointment) — an
@@ -1034,9 +1050,9 @@ export type VaccineCount = {
  * didn't have a field isVaccineFormFieldName matched, or Acuity returned
  * no forms at all), this falls back to the appointment type's name, same
  * behavior as before the vaccine-name pivot existed. Only ever reads
- * `.date`, `.appointmentTypeId`, `.vaccineNames`, `.covidBrand`,
- * `.covidAgeBucket`, and `.fluAgeBucket` off each input — see
- * CountableAppointment.
+ * `.date`, `.appointmentTypeId`, `.vaccineNames`, `.testNames`,
+ * `.covidBrand`, `.covidAgeBucket`, and `.fluAgeBucket` off each input —
+ * see CountableAppointment.
  *
  * COVID brand/age split (V-T-schedule-table, Will 2026-09-04): any name
  * that looks like COVID (isCovidVaccineName) is replaced with the
@@ -1054,6 +1070,29 @@ export type VaccineCount = {
  * through it. lib/appointment-table.ts (client-safe, no PHI ever reaches
  * it) parses this composite back into the fixed Flu <65/65+/(unk)
  * columns.
+ *
+ * V-T-poc-testing follow-up (manager, 2026-09-08 — closing the gap flagged
+ * in the original point-of-care-testing brief): a point-of-care testing
+ * appointment must NEVER count as a vaccine via the type-name fallback
+ * above. Rule, checked ONLY in the vaccineNames-empty branch (an
+ * appointment WITH explicit vaccineNames from the vaccine form field
+ * always counts under those names normally, test-type or not — a hybrid
+ * visit, e.g. a test-type appointment where the patient ALSO got a
+ * vaccine, still counts as that vaccine): if the appointment's own
+ * `testNames` is non-empty (a "Select tests:"-style field matched, or its
+ * type name's own parenthetical fallback fired — see
+ * extractTestNamesFromForms/parseTestNamesFromAppointmentTypeName) OR the
+ * resolved type name itself looks test-ish (isTestAppointmentTypeName —
+ * covers the residual case where NEITHER produced a testNames value, e.g.
+ * a test-type appointment whose name has no parenthetical list at all),
+ * this appointment is skipped entirely here — it contributes nothing to
+ * the vaccine table, only to aggregateTestCounts. A genuine vaccine-type
+ * appointment with no form answer (testNames always [] for those, and its
+ * type name never matches "test") still falls back to its type name
+ * exactly as before — this guard changes nothing for that case.
+ * app/api/ordering/recommendation/route.ts consumes this SAME aggregate
+ * for its `upcoming7d` counts, so it inherits this fix automatically, with
+ * no changes of its own needed.
  */
 export function aggregateAppointmentCounts(
   appointments: CountableAppointment[],
@@ -1061,11 +1100,15 @@ export function aggregateAppointmentCounts(
 ): VaccineCount[] {
   const groups = new Map<string, VaccineCount>();
 
-  for (const { date, appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket, fluAgeBucket } of appointments) {
-    const names =
-      vaccineNames.length > 0
-        ? vaccineNames
-        : [appointmentTypeNames.get(appointmentTypeId) ?? `Type ${appointmentTypeId}`];
+  for (const { date, appointmentTypeId, vaccineNames, testNames, covidBrand, covidAgeBucket, fluAgeBucket } of appointments) {
+    let names: string[];
+    if (vaccineNames.length > 0) {
+      names = vaccineNames;
+    } else {
+      const typeName = appointmentTypeNames.get(appointmentTypeId) ?? `Type ${appointmentTypeId}`;
+      if (testNames.length > 0 || isTestAppointmentTypeName(typeName)) continue;
+      names = [typeName];
+    }
 
     for (const rawName of names) {
       const vaccineName = isCovidVaccineName(rawName)
