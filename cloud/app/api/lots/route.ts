@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
+import { groupVaccinesIntoProducts } from "@/lib/lots-grouping";
 
 /**
  * REST endpoint for the desktop app's Lots screen (inventory +
@@ -58,6 +59,44 @@ function buildLotsQuery(
   return query;
 }
 
+/**
+ * V-T28 review follow-up (Will): server-side guard for every fan-out
+ * write (POST vaccine_ids, PATCH, DELETE) — fetches the given vaccine
+ * ids (service-role, bypassing whatever the client claims) and confirms
+ * they ALL exist and collapse to exactly ONE product under
+ * lib/lots-grouping.ts's groupVaccinesIntoProducts (same NDC, or a
+ * null-NDC dose matched by name), the identical rule the /lots page
+ * used client-side to build the group in the first place. A stale page
+ * or a buggy/malicious request otherwise couldn't be trusted not to
+ * fan a write out across two unrelated products, or against an id that
+ * doesn't exist at all. Returns an error NextResponse to short-circuit
+ * on (404 for an unknown id, 400 for a multi-product mix), or null when
+ * the group checks out.
+ */
+async function validateOneProductGroup(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  vaccineIds: string[]
+): Promise<NextResponse | null> {
+  const { data, error } = await supabase.from("vaccine").select("id, name, ndc").in("id", vaccineIds);
+  if (error) {
+    console.error("validateOneProductGroup: Supabase error", error);
+    return NextResponse.json({ error: "Failed to validate vaccine ids." }, { status: 500 });
+  }
+
+  const found = (data ?? []) as { id: string; name: string; ndc: string | null }[];
+  const foundIds = new Set(found.map((v) => v.id));
+  if (vaccineIds.some((id) => !foundIds.has(id))) {
+    return NextResponse.json({ error: "One or more vaccine ids were not found." }, { status: 404 });
+  }
+
+  const groups = groupVaccinesIntoProducts(found.map((v) => ({ ...v, active: true })));
+  if (groups.length !== 1) {
+    return NextResponse.json({ error: "vaccine_ids must belong to one product" }, { status: 400 });
+  }
+
+  return null;
+}
+
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
@@ -112,6 +151,9 @@ export async function POST(request: Request) {
       if (!lot_number || !expiration) {
         return NextResponse.json({ error: "vaccine_ids, lot_number, and expiration are required." }, { status: 400 });
       }
+
+      const groupError = await validateOneProductGroup(supabase, vaccine_ids);
+      if (groupError) return groupError;
 
       const basePayload = { lot_number, expiration, status: status ?? "active", note };
       const fullPayloads = vaccine_ids.map((id: string) => ({
@@ -177,21 +219,37 @@ export async function POST(request: Request) {
 }
 
 /**
- * V-T28 fan-out edit — UPSERT (Will, follow-up: "make the collection-
- * level PATCH an upsert ... so the dose rows can never drift apart after
- * an edit"): a product row's Save applies the new lot_number/expiration/
- * beyond_use_date to EVERY vaccine_id in `vaccineIds`. For each
- * vaccine_id, it first tries to UPDATE whichever lot currently matches
- * `matchLotNumber` (the row's lot number as loaded, before this edit —
- * needed since `lot_number` itself may be a rename in flight); if that
- * dose has no lot with that number (already drifted apart, or simply
- * never got one — see this route's earlier "known limitation" note),
- * it INSERTS a fresh lot on that dose with the new values instead of
- * silently leaving it behind. Body: { vaccineIds: string[],
- * matchLotNumber: string, lot_number: string, expiration: string,
- * beyond_use_date?, note?, status? } — lot_number and expiration are
- * REQUIRED here (unlike PATCH /api/lots/[id]'s partial-update shape)
- * because either one might need to become a brand-new row.
+ * V-T28 fan-out edit — UPSERT, batched (Will's review follow-up: "make
+ * the collection-level PATCH an upsert" + "make the fan-out all-or-
+ * nothing ... compute the full plan first ... execute with batched
+ * statements"): a product row's Save applies the new lot_number/
+ * expiration/beyond_use_date to EVERY vaccine_id in `vaccineIds`.
+ *
+ * Plan phase (one read): fetch every existing lot across `vaccineIds`
+ * and, comparing lot_number trimmed + case-insensitively (same
+ * normalization lib/lots-grouping.ts's dedupeLotsByNumber uses) against
+ * `matchLotNumber` — the row's lot number as loaded, before this edit,
+ * since `lot_number` itself may be a rename in flight — split the
+ * vaccine_ids into an UPDATE set (already has a matching lot) and an
+ * INSERT set (doesn't: already drifted apart, or never had one).
+ *
+ * Execute phase (at most two batched writes, not one round trip per
+ * vaccine_id): a single `update ... in (ids)` for the whole UPDATE set,
+ * a single batched `insert([...])` for the whole INSERT set. supabase-js
+ * has no cross-statement transaction here, so this isn't a true DB
+ * rollback — but collapsing N per-dose writes down to at most 2 shrinks
+ * the partial-failure window to nearly nothing, and the response always
+ * reports exactly what landed (`updated`/`inserted`/`failed`) rather
+ * than silently claiming success when one batch failed and the other
+ * didn't: any failure returns 500 with the real counts attached.
+ *
+ * Body: { vaccineIds: string[], matchLotNumber: string, lot_number:
+ * string, expiration: string, beyond_use_date?, note?, status? } —
+ * lot_number and expiration are REQUIRED here (unlike PATCH
+ * /api/lots/[id]'s partial-update shape) because either might need to
+ * become a brand-new row. `vaccineIds` is also validated server-side
+ * (validateOneProductGroup above) to all exist and resolve to one
+ * product before anything is written.
  */
 export async function PATCH(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -224,74 +282,105 @@ export async function PATCH(request: Request) {
     }
 
     const supabase = getSupabaseServerClient();
-    let beyondUseDateSupported = true;
+    const groupError = await validateOneProductGroup(supabase, vaccineIds);
+    if (groupError) return groupError;
 
+    const normalizedMatch = matchLotNumber.trim().toLowerCase();
+    const trimmedLotNumber = lot_number.trim();
+
+    const { data: existingLots, error: planError } = await supabase
+      .from("lot")
+      .select("id, vaccine_id, lot_number")
+      .in("vaccine_id", vaccineIds);
+
+    if (planError) {
+      console.error("PATCH /api/lots (fan-out plan): Supabase error", planError);
+      return NextResponse.json(
+        { error: "Failed to update lot.", updated: 0, inserted: 0, deleted: 0, failed: ["plan: " + planError.message] },
+        { status: 500 }
+      );
+    }
+
+    const rows = (existingLots ?? []) as { id: string; vaccine_id: string; lot_number: string }[];
+    const matchedIdByVaccineId = new Map<string, string>();
+    for (const row of rows) {
+      if (!matchedIdByVaccineId.has(row.vaccine_id) && row.lot_number.trim().toLowerCase() === normalizedMatch) {
+        matchedIdByVaccineId.set(row.vaccine_id, row.id);
+      }
+    }
+
+    const updateIds = [...matchedIdByVaccineId.values()];
+    const insertVaccineIds = (vaccineIds as string[]).filter((id) => !matchedIdByVaccineId.has(id));
+
+    let beyondUseDateSupported = true;
     const buildUpdatePayload = (): Record<string, unknown> => {
-      const payload: Record<string, unknown> = { lot_number, expiration };
+      const payload: Record<string, unknown> = { lot_number: trimmedLotNumber, expiration };
       if (status !== undefined) payload.status = status;
       if (note !== undefined) payload.note = note;
       if (beyond_use_date !== undefined && beyondUseDateSupported) payload.beyond_use_date = beyond_use_date;
       return payload;
     };
     const buildInsertPayload = (vaccineId: string): Record<string, unknown> => {
-      const payload: Record<string, unknown> = { vaccine_id: vaccineId, lot_number, expiration, status: status ?? "active", note };
+      const payload: Record<string, unknown> = {
+        vaccine_id: vaccineId,
+        lot_number: trimmedLotNumber,
+        expiration,
+        status: status ?? "active",
+        note,
+      };
       if (beyond_use_date !== undefined && beyondUseDateSupported) payload.beyond_use_date = beyond_use_date;
       return payload;
     };
 
-    const results: unknown[] = [];
+    const lots: unknown[] = [];
+    const failed: string[] = [];
+    let updated = 0;
+    let inserted = 0;
 
-    for (const vaccineId of vaccineIds as string[]) {
+    if (updateIds.length > 0) {
       let updatePayload = buildUpdatePayload();
-      let { data, error } = await supabase
-        .from("lot")
-        .update(updatePayload)
-        .eq("vaccine_id", vaccineId)
-        .eq("lot_number", matchLotNumber)
-        .select();
+      let { data, error } = await supabase.from("lot").update(updatePayload).in("id", updateIds).select();
 
       if (error && isMissingColumnError(error) && "beyond_use_date" in updatePayload) {
         beyondUseDateSupported = false;
         updatePayload = buildUpdatePayload();
-        ({ data, error } = await supabase
-          .from("lot")
-          .update(updatePayload)
-          .eq("vaccine_id", vaccineId)
-          .eq("lot_number", matchLotNumber)
-          .select());
+        ({ data, error } = await supabase.from("lot").update(updatePayload).in("id", updateIds).select());
       }
 
       if (error) {
-        console.error("PATCH /api/lots (fan-out): Supabase error", error);
-        return NextResponse.json({ error: "Failed to update lot." }, { status: 500 });
+        console.error("PATCH /api/lots (fan-out update): Supabase error", error);
+        failed.push(`update: ${error.message ?? "unknown error"}`);
+      } else {
+        updated = data?.length ?? 0;
+        lots.push(...(data ?? []));
       }
-
-      if (data && data.length > 0) {
-        results.push(...data);
-        continue;
-      }
-
-      // Upsert fallback: this dose's lot rows didn't include
-      // matchLotNumber — nothing to update, so insert a fresh lot on it
-      // with the new values rather than leaving it out of sync.
-      let insertPayload = buildInsertPayload(vaccineId);
-      let insertResult = await supabase.from("lot").insert(insertPayload).select().single();
-
-      if (insertResult.error && isMissingColumnError(insertResult.error) && "beyond_use_date" in insertPayload) {
-        beyondUseDateSupported = false;
-        insertPayload = buildInsertPayload(vaccineId);
-        insertResult = await supabase.from("lot").insert(insertPayload).select().single();
-      }
-
-      if (insertResult.error) {
-        console.error("PATCH /api/lots (fan-out upsert-insert): Supabase error", insertResult.error);
-        return NextResponse.json({ error: "Failed to update lot." }, { status: 500 });
-      }
-
-      results.push(insertResult.data);
     }
 
-    return NextResponse.json({ lots: results, beyondUseDateSupported });
+    if (insertVaccineIds.length > 0) {
+      let insertPayloads = insertVaccineIds.map(buildInsertPayload);
+      const insertHadBud = "beyond_use_date" in insertPayloads[0];
+      let { data, error } = await supabase.from("lot").insert(insertPayloads).select();
+
+      if (error && isMissingColumnError(error) && insertHadBud) {
+        beyondUseDateSupported = false;
+        insertPayloads = insertVaccineIds.map(buildInsertPayload);
+        ({ data, error } = await supabase.from("lot").insert(insertPayloads).select());
+      }
+
+      if (error) {
+        console.error("PATCH /api/lots (fan-out insert): Supabase error", error);
+        failed.push(`insert: ${error.message ?? "unknown error"}`);
+      } else {
+        inserted = data?.length ?? 0;
+        lots.push(...(data ?? []));
+      }
+    }
+
+    if (failed.length > 0) {
+      return NextResponse.json({ error: "Failed to update lot.", updated, inserted, deleted: 0, failed }, { status: 500 });
+    }
+
+    return NextResponse.json({ lots, updated, inserted, deleted: 0, beyondUseDateSupported });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },
@@ -301,10 +390,16 @@ export async function PATCH(request: Request) {
 }
 
 /**
- * V-T28 fan-out delete: removes whichever lot matches `lot_number` on
- * EVERY vaccine_id in `vaccineIds` — a product row's "Delete lot" clears
- * that lot from every dose at once. Body: { vaccineIds: string[],
- * lot_number: string }.
+ * V-T28 fan-out delete, batched (Will's review follow-up): removes
+ * whichever lot matches `lot_number` — trimmed + case-insensitively,
+ * same normalization PATCH above and lib/lots-grouping.ts's
+ * dedupeLotsByNumber use — on EVERY vaccine_id in `vaccineIds`, as a
+ * SINGLE `delete ... in (ids)` statement (planned via one read first)
+ * rather than one delete per dose, so it's already atomic at the
+ * database level (a single statement can't partially apply). Body:
+ * { vaccineIds: string[], lot_number: string }. `vaccineIds` is
+ * validated server-side (validateOneProductGroup above) to all exist
+ * and resolve to one product before anything is deleted.
  */
 export async function DELETE(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -322,15 +417,41 @@ export async function DELETE(request: Request) {
     }
 
     const supabase = getSupabaseServerClient();
-    for (const vaccineId of vaccineIds as string[]) {
-      const { error } = await supabase.from("lot").delete().eq("vaccine_id", vaccineId).eq("lot_number", lot_number);
-      if (error) {
-        console.error("DELETE /api/lots (fan-out): Supabase error", error);
-        return NextResponse.json({ error: "Failed to delete lot." }, { status: 500 });
-      }
+    const groupError = await validateOneProductGroup(supabase, vaccineIds);
+    if (groupError) return groupError;
+
+    const normalizedTarget = lot_number.trim().toLowerCase();
+
+    const { data: existingLots, error: planError } = await supabase
+      .from("lot")
+      .select("id, vaccine_id, lot_number")
+      .in("vaccine_id", vaccineIds);
+
+    if (planError) {
+      console.error("DELETE /api/lots (fan-out plan): Supabase error", planError);
+      return NextResponse.json(
+        { error: "Failed to delete lot.", updated: 0, inserted: 0, deleted: 0, failed: ["plan: " + planError.message] },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({ ok: true });
+    const rows = (existingLots ?? []) as { id: string; vaccine_id: string; lot_number: string }[];
+    const idsToDelete = rows.filter((r) => r.lot_number.trim().toLowerCase() === normalizedTarget).map((r) => r.id);
+
+    if (idsToDelete.length === 0) {
+      return NextResponse.json({ ok: true, deleted: 0 });
+    }
+
+    const { data, error } = await supabase.from("lot").delete().in("id", idsToDelete).select();
+    if (error) {
+      console.error("DELETE /api/lots (fan-out): Supabase error", error);
+      return NextResponse.json(
+        { error: "Failed to delete lot.", updated: 0, inserted: 0, deleted: 0, failed: [error.message ?? "unknown error"] },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, deleted: data?.length ?? idsToDelete.length });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },
