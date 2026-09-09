@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activeFilterChips,
+  addMonthsToDate,
   applyFilters,
   chunkDateRange,
   clearAllFilters,
@@ -385,7 +386,10 @@ describe("groupRows", () => {
     expect(totalMemberships).toBe(4);
   });
 
-  it("groups by test, double-membership across groups, a testless row bucketing under '(none)'", () => {
+  it("groups by test, double-membership across groups, a testless row EXCLUDED entirely (no '(none)' bucket)", () => {
+    // V-T28 (Will, 2026-09-09: "If I'm grouping by 'vaccine' you shouldn't
+    // show test appointments" — the mirror-image rule applies to "test"
+    // mode too, per lib/appointment-explorer.ts's groupRows doc comment).
     const testRows = [
       row({ testNames: ["COVID"] }),
       row({ testNames: ["COVID", "Strep Throat"] }),
@@ -395,24 +399,26 @@ describe("groupRows", () => {
     const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows]));
     expect(byGroup["COVID"]).toEqual([testRows[0], testRows[1]]);
     expect(byGroup["Strep Throat"]).toEqual([testRows[1]]);
-    expect(byGroup["(none)"]).toEqual([testRows[2]]);
+    expect(byGroup["(none)"]).toBeUndefined();
+    expect(groups.reduce((sum, g) => sum + g.rows.length, 0)).toBe(3); // 2+1, testRows[2] excluded
   });
 
-  // Mirrors the "(none)" bucket coverage above, but for vaccine-mode
-  // group-by (non-blocking review nit, 2026-09-09) — the `rows` fixture
-  // used by the vaccine test above never has an empty vaccineNames row, so
-  // it never exercised this bucket for "vaccine" mode specifically.
-  it("groups by vaccine, double-membership across groups, a vaccine-less row bucketing under '(none)'", () => {
+  it("groups by vaccine, double-membership across groups, a vaccine-less (test-only) row EXCLUDED entirely (no '(none)' bucket)", () => {
+    // V-T28 (Will, verbatim): "If I'm grouping by 'vaccine' you shouldn't
+    // show test appointments" — a point-of-care testing appointment has
+    // vaccineNames: [] by construction, so it must not surface at all in
+    // vaccine-mode group-by, not even under a placeholder bucket.
     const vaccineRows = [
       row({ vaccineNames: ["Flu"] }),
       row({ vaccineNames: ["Flu", "COVID-Pfizer"] }),
-      row({ vaccineNames: [] }),
+      row({ vaccineNames: [], testNames: ["COVID"] }),
     ];
     const groups = groupRows(vaccineRows, "vaccine");
     const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows]));
     expect(byGroup["Flu"]).toEqual([vaccineRows[0], vaccineRows[1]]);
     expect(byGroup["COVID-Pfizer"]).toEqual([vaccineRows[1]]);
-    expect(byGroup["(none)"]).toEqual([vaccineRows[2]]);
+    expect(byGroup["(none)"]).toBeUndefined();
+    expect(groups.some((g) => g.rows.includes(vaccineRows[2]))).toBe(false);
   });
 });
 
@@ -527,6 +533,27 @@ describe("chunkDateRange", () => {
   it("returns a single exact-fit chunk when the range is exactly maxDays", () => {
     const chunks = chunkDateRange("2026-08-01", "2026-08-31", 31);
     expect(chunks).toEqual([{ start: "2026-08-01", end: "2026-08-31" }]);
+  });
+});
+
+// V-T28 (Will, 2026-09-09 verbatim: "Make data explorer default to today
+// as the starting point and go forward 3 months.") — backs the explorer
+// page's defaultRangeDates.
+describe("addMonthsToDate", () => {
+  it("adds whole calendar months to a mid-month date", () => {
+    expect(addMonthsToDate("2026-09-09", 3)).toBe("2026-12-09");
+  });
+
+  it("clamps to the target month's own last day rather than spilling into the month after (Jan 31 + 1 month)", () => {
+    expect(addMonthsToDate("2026-01-31", 1)).toBe("2026-02-28"); // 2026 is not a leap year
+  });
+
+  it("clamps correctly across a leap-year February", () => {
+    expect(addMonthsToDate("2028-01-31", 1)).toBe("2028-02-29"); // 2028 IS a leap year
+  });
+
+  it("rolls over into the following year", () => {
+    expect(addMonthsToDate("2026-11-30", 3)).toBe("2027-02-28");
   });
 });
 

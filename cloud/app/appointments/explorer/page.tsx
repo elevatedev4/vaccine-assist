@@ -5,9 +5,10 @@ import { createPortal } from "react-dom";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
-import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
+import { todayInChicago } from "@/lib/chicago-date";
 import {
   activeFilterChips,
+  addMonthsToDate,
   applyFilters,
   chunkDateRange,
   clearAllFilters,
@@ -46,10 +47,13 @@ import {
 // chunkDateRange. Mirror the route's own value if it ever changes.
 const MAX_RANGE_DAYS_PER_REQUEST = 31;
 
-// Default range (Will's spec, verbatim): "28 days back through 91 days
-// forward."
-const DEFAULT_LOOKBACK_DAYS = 28;
-const DEFAULT_LOOKAHEAD_DAYS = 91;
+// Default range (V-T28, Will 2026-09-09 verbatim: "Make data explorer
+// default to today as the starting point and go forward 3 months.") —
+// supersedes the original 28-days-back/91-days-forward default. Range
+// basis (rangeBasis state below, unchanged by this) still governs which
+// date field the already-loaded rows are re-filtered against; this only
+// changes the initial fetch window/draft inputs.
+const DEFAULT_LOOKAHEAD_MONTHS = 3;
 
 // Renders up to this many (already filtered+sorted) rows before a "Show
 // more" button reveals the next batch — keeps a large range from
@@ -63,8 +67,8 @@ type RangeBasis = "appointment" | "booking";
 function defaultRangeDates(): { start: string; end: string } {
   const today = todayInChicago();
   return {
-    start: addDaysToChicagoDate(today, -DEFAULT_LOOKBACK_DAYS),
-    end: addDaysToChicagoDate(today, DEFAULT_LOOKAHEAD_DAYS),
+    start: today,
+    end: addMonthsToDate(today, DEFAULT_LOOKAHEAD_MONTHS),
   };
 }
 
