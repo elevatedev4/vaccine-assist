@@ -26,7 +26,7 @@
 
 const HEADER_BODY_SEPARATORS = ["\r\n\r\n", "\n\n"];
 
-function splitHeaderBody(raw: string): { headers: string; body: string } | null {
+export function splitHeaderBody(raw: string): { headers: string; body: string } | null {
   for (const sep of HEADER_BODY_SEPARATORS) {
     const idx = raw.indexOf(sep);
     if (idx !== -1) {
@@ -38,7 +38,7 @@ function splitHeaderBody(raw: string): { headers: string; body: string } | null 
 
 /** Reads a header value, unfolding RFC 2822 continuation lines (lines
  * starting with whitespace) into a single space-joined string. */
-function getHeader(headers: string, name: string): string | undefined {
+export function getHeader(headers: string, name: string): string | undefined {
   const pattern = new RegExp(`^${name}:\\s*([^\\r\\n]+(?:\\r?\\n[ \\t]+[^\\r\\n]+)*)`, "im");
   const match = headers.match(pattern);
   return match ? match[1].replace(/\s+/g, " ").trim() : undefined;
@@ -50,7 +50,7 @@ function decodeQuotedPrintable(text: string): string {
     .replace(/=([0-9A-F]{2})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 }
 
-function decodeByTransferEncoding(body: string, encoding: string): string {
+export function decodeByTransferEncoding(body: string, encoding: string): string {
   const enc = encoding.toLowerCase().trim();
   if (enc === "quoted-printable") return decodeQuotedPrintable(body);
   if (enc === "base64") {
@@ -68,16 +68,78 @@ function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function splitMultipartParts(body: string, boundary: string): string[] {
+export function splitMultipartParts(body: string, boundary: string): string[] {
   const escaped = escapeForRegExp(boundary);
   return body
     .split(new RegExp(`--${escaped}(?:--)?`))
     .filter((part) => part.trim().length > 0 && part.trim() !== "--");
 }
 
-function extractBoundary(contentTypeHeaderValue: string): string | undefined {
+export function extractBoundary(contentTypeHeaderValue: string): string | undefined {
   const match = contentTypeHeaderValue.match(/boundary="?([^";\r\n\s]+)"?/i);
   return match?.[1];
+}
+
+const XLSX_CONTENT_TYPE_PATTERN = /vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|vnd\.ms-excel/i;
+const XLSX_FILENAME_PATTERN = /\.xlsx$/i;
+const CSV_CONTENT_TYPE_PATTERN = /text\/csv/i;
+const CSV_FILENAME_PATTERN = /\.(csv|tsv)$/i;
+
+function getAttachmentFilename(headers: string): string {
+  const disposition = getHeader(headers, "Content-Disposition") ?? "";
+  const contentType = getHeader(headers, "Content-Type") ?? "";
+  const match = disposition.match(/filename="?([^";\r\n]+)"?/i) ?? contentType.match(/name="?([^";\r\n]+)"?/i);
+  return match?.[1] ?? "";
+}
+
+export type ExtractedAttachment = { kind: "xlsx"; buffer: Buffer } | { kind: "csv"; text: string };
+
+/**
+ * Scans a raw MIME email for an xlsx or csv/tsv ATTACHMENT part —
+ * Pioneer's emailed on-hand report is most likely the same table its
+ * manual export produces (V-ordering-targets, Will 2026-09-08), so the
+ * SES webhook tries this before falling back to extractTextFromRawMime's
+ * plain-text-part search. Only single-level multipart is handled, same
+ * depth limit as extractTextFromRawMime; returns null (never throws) for
+ * a non-multipart message or one with no recognizable xlsx/csv part, so
+ * callers fall back to the plain-text path.
+ */
+export function extractAttachmentFromRawMime(raw: string): ExtractedAttachment | null {
+  const top = splitHeaderBody(raw);
+  if (!top) return null;
+
+  const contentTypeRaw = getHeader(top.headers, "Content-Type") ?? "text/plain";
+  if (!contentTypeRaw.toLowerCase().includes("multipart")) return null;
+
+  const boundary = extractBoundary(contentTypeRaw);
+  if (!boundary) return null;
+
+  for (const part of splitMultipartParts(top.body, boundary)) {
+    const partSplit = splitHeaderBody(part);
+    if (!partSplit) continue;
+
+    const partContentType = getHeader(partSplit.headers, "Content-Type") ?? "";
+    const filename = getAttachmentFilename(partSplit.headers);
+    const encoding = getHeader(partSplit.headers, "Content-Transfer-Encoding") ?? "";
+
+    const isXlsx = XLSX_CONTENT_TYPE_PATTERN.test(partContentType) || XLSX_FILENAME_PATTERN.test(filename);
+    const isCsv = !isXlsx && (CSV_CONTENT_TYPE_PATTERN.test(partContentType) || CSV_FILENAME_PATTERN.test(filename));
+
+    if (isXlsx) {
+      try {
+        return { kind: "xlsx", buffer: Buffer.from(partSplit.body.replace(/\s/g, ""), "base64") };
+      } catch {
+        continue;
+      }
+    }
+
+    if (isCsv) {
+      const decoded = decodeByTransferEncoding(partSplit.body, encoding).replace(/\r\n/g, "\n").trim();
+      if (decoded) return { kind: "csv", text: decoded };
+    }
+  }
+
+  return null;
 }
 
 /**

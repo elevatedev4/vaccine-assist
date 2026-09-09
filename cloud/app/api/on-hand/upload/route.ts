@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { getOrCreateAddressForUser, touchLastReceived } from "@/lib/on-hand/address";
-import { extractUploadContent } from "@/lib/on-hand/upload";
-import { parseOnHandContent } from "@/lib/on-hand-parser";
+import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
+import { extractUploadPayload } from "@/lib/on-hand/upload";
+import { insertOnHandRows } from "@/lib/on-hand/insert";
+import { parseOnHandUpload } from "@/lib/on-hand/pioneer-boh";
 import { isMissingTableError } from "@/lib/schema-degradation";
 import type { CatalogVaccine } from "@/lib/vaccine-matching";
 
@@ -12,21 +13,32 @@ import type { CatalogVaccine } from "@/lib/vaccine-matching";
  * data set" (Will's brief, verbatim), for a user who hasn't received any
  * on-hand email yet. Accepts either a multipart/form-data upload (a
  * `file` field — what app/ordering/page.tsx's file input posts) or a raw
- * text/csv body, same on-hand-line format as the email path
- * (lib/on-hand-parser.ts, "VaccineName, Quantity" per line) — one shared
- * parser so email and upload never drift on what counts as valid input.
+ * text/csv body. Three input shapes, one shared entry point
+ * (lib/on-hand/pioneer-boh.ts's parseOnHandUpload):
+ *   - an xlsx file (Pioneer's real BOH export)
+ *   - a Pioneer-shaped csv/tsv (same columns as the xlsx)
+ *   - the original hand-typed "VaccineName, Quantity" lines
+ * so email and upload never drift on what counts as valid input.
  *
- * 200 KB cap (brief, see lib/on-hand/upload.ts's MAX_UPLOAD_BYTES)
- * applies to either shape: for multipart, the file's own size; for a raw
- * body, its UTF-8 byte length once read.
+ * 2 MB cap (V-ordering-targets, raised from 200 KB for xlsx — see
+ * lib/on-hand/upload.ts's MAX_UPLOAD_BYTES) applies to either shape.
+ *
+ * V-ordering-targets (Will 2026-09-08): this route now WORKS even when
+ * supabase/migrations/0010_inbound_email_address.sql hasn't been applied
+ * yet (previously a 503) — getOrCreateAddressForUser's "table doesn't
+ * exist" failure just means addressId stays null, and every inserted row
+ * falls back to the pre-0010 shape (no inbound_email_address_id/source),
+ * exactly like a legacy row. Only a genuine misconfiguration (Supabase
+ * itself unreachable) still 503s. This is what lets the Ordering tab's
+ * upload button work today, before either 0010 or 0011 has run.
  */
 export async function POST(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
 
-  let content: string;
+  let payload;
   try {
-    content = await extractUploadContent(request);
+    payload = await extractUploadPayload(request);
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Could not read the uploaded file." },
@@ -34,24 +46,24 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!content || content.trim().length === 0) {
+  if (payload.kind === "text" && (!payload.text || payload.text.trim().length === 0)) {
     return NextResponse.json({ error: "The uploaded file was empty." }, { status: 400 });
   }
 
-  let address;
+  let addressId: string | null = null;
   try {
-    address = await getOrCreateAddressForUser(auth.user.id);
+    addressId = (await getOrCreateAddressForUser(auth.user.id)).id;
   } catch (err) {
-    if (isMissingTableError(err)) {
+    if (!isMissingTableError(err)) {
       return NextResponse.json(
-        { error: "On-hand upload isn't available yet (pending database migration)." },
+        { error: err instanceof Error ? err.message : "Supabase is not configured." },
         { status: 503 }
       );
     }
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Supabase is not configured." },
-      { status: 503 }
-    );
+    // 0010 hasn't been applied to this environment yet — proceed
+    // unscoped, same "legacy, unattributed" posture as an on_hand_count
+    // row from before this feature existed.
+    addressId = null;
   }
 
   let supabase;
@@ -64,36 +76,35 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data: catalogData, error: catalogError } = await supabase.from("vaccine").select("id, name, short_code");
+  const { data: catalogData, error: catalogError } = await supabase
+    .from("vaccine")
+    .select("id, name, short_code, ndc");
   if (catalogError) {
     console.error("POST /api/on-hand/upload: failed to load vaccine catalog", catalogError);
     return NextResponse.json({ error: "Failed to load vaccine catalog." }, { status: 500 });
   }
 
   const catalog: CatalogVaccine[] = catalogData ?? [];
-  const parsed = parseOnHandContent(content, catalog);
+  const parsed = parseOnHandUpload(payload, catalog);
 
   if (parsed.length === 0) {
     return NextResponse.json({ inserted: 0, unmatched: [] });
   }
 
-  const rows = parsed.map((line) => ({
-    raw_line: line.rawLine,
-    vaccine_name_raw: line.vaccineNameRaw,
-    quantity: line.quantity,
-    vaccine_id: line.vaccineId,
-    matched: line.matched,
-    inbound_email_address_id: address.id,
-    source: "upload",
-  }));
-
-  const { error: insertError } = await supabase.from("on_hand_count").insert(rows);
+  const { error: insertError } = await insertOnHandRows(supabase, parsed, { addressId, source: "upload" });
   if (insertError) {
     console.error("POST /api/on-hand/upload: failed to insert on_hand_count rows", insertError);
     return NextResponse.json({ error: "Failed to store the uploaded on-hand counts." }, { status: 500 });
   }
 
-  await touchLastReceived(address.id);
+  // Deliberately does NOT call touchLastReceived here (V-ordering-targets
+  // review correction, Will's V-T25 answer): GET /api/on-hand/address's
+  // `lastReceivedAt` now drives whether the Ordering page's "set up your
+  // daily email" popup shows, and that decision must reflect an actual
+  // EMAIL received (see app/api/webhooks/ses/route.ts, the only other
+  // caller), never a manual upload — an account that's only ever
+  // uploaded a file should still see the popup nudging it toward the
+  // real automated path.
 
   const unmatched = parsed.filter((line) => !line.matched).map((line) => line.vaccineNameRaw);
   return NextResponse.json({ inserted: parsed.length, unmatched });

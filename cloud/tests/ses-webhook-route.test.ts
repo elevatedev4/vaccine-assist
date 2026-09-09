@@ -189,8 +189,8 @@ describe("POST /api/webhooks/ses", () => {
       const body = await response.json();
       expect(body).toEqual({ linesTotal: 2, matchedCount: 1, unmatchedCount: 1 });
       expect(insert).toHaveBeenCalledWith([
-        { raw_line: "Flu Quad 2025-26, 10", vaccine_name_raw: "Flu Quad 2025-26", quantity: 10, vaccine_id: "v-flu", matched: true },
-        { raw_line: "Unknown Vaccine, 3", vaccine_name_raw: "Unknown Vaccine", quantity: 3, vaccine_id: null, matched: false },
+        { raw_line: "Flu Quad 2025-26, 10", vaccine_name_raw: "Flu Quad 2025-26", quantity: 10, vaccine_id: "v-flu", matched: true, ndc: null, stock_size: null },
+        { raw_line: "Unknown Vaccine, 3", vaccine_name_raw: "Unknown Vaccine", quantity: 3, vaccine_id: null, matched: false, ndc: null, stock_size: null },
       ]);
     });
 
@@ -325,6 +325,8 @@ describe("POST /api/webhooks/ses", () => {
           vaccine_id: "v-flu",
           matched: true,
           inbound_email_address_id: "addr-1",
+          ndc: null,
+          stock_size: null,
         },
         {
           raw_line: "MMR, 15",
@@ -333,6 +335,8 @@ describe("POST /api/webhooks/ses", () => {
           vaccine_id: "v-mmr",
           matched: true,
           inbound_email_address_id: "addr-1",
+          ndc: null,
+          stock_size: null,
         },
       ]);
       expect(updateAddress).toHaveBeenCalledWith({ last_received_at: expect.any(String) });

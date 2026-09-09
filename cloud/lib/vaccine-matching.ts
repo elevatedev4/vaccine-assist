@@ -27,6 +27,11 @@ export type CatalogVaccine = {
   id: string;
   name: string;
   short_code?: string | null;
+  /** National Drug Code, dashed or undashed, or null — see lib/ndc.ts's
+   * normalizeNdc for the shared digits-only comparison form. Optional so
+   * every existing caller that never selected this column keeps working
+   * unchanged. */
+  ndc?: string | null;
 };
 
 /**
