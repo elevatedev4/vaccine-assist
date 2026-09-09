@@ -129,6 +129,10 @@ describe("POST /api/on-hand/upload", () => {
     // Ordering page's "set up your email" popup, and that decision must
     // reflect an actual EMAIL received, never a manual upload.
     expect(touchLastReceived).not.toHaveBeenCalled();
+    // One batch insert, not one per row (review fix follow-up sanity
+    // check) — the whole point of insertOnHandRows is a single
+    // batched call.
+    expect(insert).toHaveBeenCalledTimes(1);
   });
 
   it("accepts a multipart/form-data csv file upload the same way", async () => {

@@ -24,6 +24,8 @@
  *     (unmatched, ready for manual review) instead of vanishing.
  */
 
+import { MAX_UPLOAD_BYTES } from "@/lib/on-hand/upload";
+
 const HEADER_BODY_SEPARATORS = ["\r\n\r\n", "\n\n"];
 
 export function splitHeaderBody(raw: string): { headers: string; body: string } | null {
@@ -85,6 +87,24 @@ const XLSX_FILENAME_PATTERN = /\.xlsx$/i;
 const CSV_CONTENT_TYPE_PATTERN = /text\/csv/i;
 const CSV_FILENAME_PATTERN = /\.(csv|tsv)$/i;
 
+/**
+ * Upper bound on an attachment part's RAW (still-encoded) text length,
+ * checked BEFORE any decode/parse work — security review fix,
+ * V-ordering-targets (2026-09-08): this webhook is reachable by anyone
+ * who learns a per-account inbound address, and xlsx attachments are
+ * handed to SheetJS's read() (lib/on-hand/pioneer-boh.ts's
+ * parsePioneerBohXlsx), which as of xlsx@0.18.5 carries two open
+ * high-severity advisories (GHSA-4r6h-8v6p-xvw6 prototype pollution,
+ * GHSA-5pgg-2g8v-p4x9 ReDoS). Base64 encodes 3 bytes as 4 characters, so
+ * this is the base64-TEXT length equivalent to MAX_UPLOAD_BYTES decoded
+ * bytes — the same 2 MB cap the upload route enforces
+ * (lib/on-hand/upload.ts), applied here to both xlsx (base64) and csv/tsv
+ * (any encoding — a conservative-but-cheap single threshold covers
+ * quoted-printable/base64/plain alike, since none of those encodings
+ * shrink the raw part below its decoded size).
+ */
+export const MAX_ATTACHMENT_PART_CHARS = Math.ceil((MAX_UPLOAD_BYTES * 4) / 3);
+
 function getAttachmentFilename(headers: string): string {
   const disposition = getHeader(headers, "Content-Disposition") ?? "";
   const contentType = getHeader(headers, "Content-Type") ?? "";
@@ -124,6 +144,17 @@ export function extractAttachmentFromRawMime(raw: string): ExtractedAttachment |
 
     const isXlsx = XLSX_CONTENT_TYPE_PATTERN.test(partContentType) || XLSX_FILENAME_PATTERN.test(filename);
     const isCsv = !isXlsx && (CSV_CONTENT_TYPE_PATTERN.test(partContentType) || CSV_FILENAME_PATTERN.test(filename));
+
+    if ((isXlsx || isCsv) && partSplit.body.length > MAX_ATTACHMENT_PART_CHARS) {
+      // Oversized — skip WITHOUT decoding (never even reaches Buffer.from
+      // or SheetJS's read()). Caller falls back to extractTextFromRawMime's
+      // plain-text search; still a 200 response either way.
+      console.warn(
+        `extractAttachmentFromRawMime: skipping oversized ${isXlsx ? "xlsx" : "csv/tsv"} attachment part ` +
+          `(${partSplit.body.length} raw chars > ${MAX_ATTACHMENT_PART_CHARS} max) — falling back to plain-text`
+      );
+      continue;
+    }
 
     if (isXlsx) {
       try {

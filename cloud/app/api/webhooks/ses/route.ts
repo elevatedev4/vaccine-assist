@@ -6,6 +6,7 @@ import { extractAttachmentFromRawMime, extractTextFromRawMime } from "@/lib/ses-
 import { isAllowedSnsHost, verifySnsSignature } from "@/lib/sns-signature";
 import { findAddressByToken, parseToken, touchLastReceived, type InboundEmailAddress } from "@/lib/on-hand/address";
 import { insertOnHandRows } from "@/lib/on-hand/insert";
+import { MAX_UPLOAD_BYTES } from "@/lib/on-hand/upload";
 import {
   matchPioneerBohRows,
   parseOnHandUpload,
@@ -268,11 +269,34 @@ async function processOnHandContent(content: string, addressId?: string): Promis
  * attachment through the same lib/on-hand/pioneer-boh.ts matcher the
  * upload route uses (NDC first, name fallback), rather than
  * extractTextFromRawMime's plain-text search.
+ *
+ * Security review fix (2026-09-08): a decoded-byte-size gate BEFORE
+ * `parsePioneerBohXlsx` — defense in depth alongside
+ * lib/ses-mime.ts's own pre-decode base64-length gate
+ * (MAX_ATTACHMENT_PART_CHARS), which already stops an oversized
+ * attachment from ever reaching this function in the normal SNS webhook
+ * flow. This webhook is reachable by anyone who learns a per-account
+ * inbound address, and xlsx@0.18.5 (SheetJS, used by parsePioneerBohXlsx)
+ * carries two open high-severity advisories (GHSA-4r6h-8v6p-xvw6
+ * prototype pollution, GHSA-5pgg-2g8v-p4x9 ReDoS) — an oversized
+ * attachment is never handed to `read()`, full stop. `rawMimeForFallback`
+ * is only used on the oversize path, to fall back to the plain-text
+ * lines parser rather than dropping the email entirely.
  */
 async function processOnHandAttachment(
   attachment: { kind: "xlsx"; buffer: Buffer } | { kind: "csv"; text: string },
-  addressId: string | undefined
+  addressId: string | undefined,
+  rawMimeForFallback: string
 ): Promise<NextResponse> {
+  const sizeBytes = attachment.kind === "xlsx" ? attachment.buffer.length : Buffer.byteLength(attachment.text, "utf-8");
+  if (sizeBytes > MAX_UPLOAD_BYTES) {
+    console.warn(
+      `POST /api/webhooks/ses: skipping oversized ${attachment.kind} attachment (${sizeBytes} bytes > ${MAX_UPLOAD_BYTES} max) ` +
+        "before parsing — falling back to plain-text lines"
+    );
+    return processOnHandContent(extractTextFromRawMime(rawMimeForFallback), addressId);
+  }
+
   let supabase;
   try {
     supabase = getSupabaseServerClient();
@@ -430,7 +454,7 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
     // existing plain-text path unchanged.
     const attachment = extractAttachmentFromRawMime(rawMime);
     const response = attachment
-      ? await processOnHandAttachment(attachment, resolvedAddress.id)
+      ? await processOnHandAttachment(attachment, resolvedAddress.id, rawMime)
       : await processOnHandContent(extractTextFromRawMime(rawMime), resolvedAddress.id);
     if (response.status === 200) {
       await touchLastReceived(resolvedAddress.id);

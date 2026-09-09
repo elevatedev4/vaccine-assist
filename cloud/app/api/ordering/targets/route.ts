@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { isMissingTableError } from "@/lib/schema-degradation";
+import { normalizeNdc } from "@/lib/ndc";
 
 /**
  * GET/PUT /api/ordering/targets — staff-set target on-hand balances, by
@@ -19,8 +20,14 @@ import { isMissingTableError } from "@/lib/schema-degradation";
  *   PUT  body { scope: "ndc" | "group", key: string, targetOnHand: number | null }
  *        targetOnHand === null DELETES the override (falls back to the
  *        recommended target). A non-null value must be a non-negative
- *        integer.
- *        -> { scope, key, targetOnHand } (targetOnHand: null after a delete)
+ *        integer. `key` is normalized server-side before persisting —
+ *        for scope "ndc" via lib/ndc.ts's normalizeNdc (digits only, so
+ *        a dashed NDC from any client still lands on the SAME key the
+ *        recommendation route's ndcOverrides lookup uses; rejected as
+ *        400 if nothing digit-shaped remains), for scope "group" just
+ *        trimmed.
+ *        -> { scope, key, targetOnHand } (targetOnHand: null after a delete;
+ *           `key` echoed back NORMALIZED, not necessarily what was sent)
  *           or, before 0011 has run: { pending: true }
  */
 
@@ -92,6 +99,18 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "targetOnHand must be a non-negative integer, or null to clear it." }, { status: 400 });
   }
 
+  // Normalize `key` server-side (review fix, V-ordering-targets
+  // 2026-09-08) so a client can send a dashed NDC ("70461-0123-03") and
+  // still land under the SAME digits-only key the recommendation route
+  // looks up (lib/ndc.ts's normalizeNdc — every ndcOverrides[row.ndc]
+  // lookup there is keyed by the digits-only form). A group key is just
+  // trimmed — group names are exact display-name strings
+  // (lib/vaccine-group-catalog.ts), not NDCs.
+  const normalizedKey = scope === "ndc" ? normalizeNdc(key) : key.trim();
+  if (!normalizedKey) {
+    return NextResponse.json({ error: "key is not a valid NDC (no digits found)." }, { status: 400 });
+  }
+
   let supabase;
   try {
     supabase = getSupabaseServerClient();
@@ -103,7 +122,7 @@ export async function PUT(request: Request) {
   }
 
   if (targetOnHand === null) {
-    const { error } = await supabase.from("ordering_target").delete().eq("scope", scope).eq("key", key);
+    const { error } = await supabase.from("ordering_target").delete().eq("scope", scope).eq("key", normalizedKey);
     if (error) {
       if (isMissingTableError(error)) {
         return NextResponse.json({ pending: true });
@@ -111,12 +130,15 @@ export async function PUT(request: Request) {
       console.error("PUT /api/ordering/targets: failed to delete target", error);
       return NextResponse.json({ error: "Failed to clear the target." }, { status: 500 });
     }
-    return NextResponse.json({ scope, key, targetOnHand: null });
+    return NextResponse.json({ scope, key: normalizedKey, targetOnHand: null });
   }
 
   const { error } = await supabase
     .from("ordering_target")
-    .upsert({ scope, key, target_on_hand: targetOnHand, updated_at: new Date().toISOString() }, { onConflict: "scope,key" });
+    .upsert(
+      { scope, key: normalizedKey, target_on_hand: targetOnHand, updated_at: new Date().toISOString() },
+      { onConflict: "scope,key" }
+    );
 
   if (error) {
     if (isMissingTableError(error)) {
@@ -126,5 +148,5 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "Failed to save the target." }, { status: 500 });
   }
 
-  return NextResponse.json({ scope, key, targetOnHand });
+  return NextResponse.json({ scope, key: normalizedKey, targetOnHand });
 }

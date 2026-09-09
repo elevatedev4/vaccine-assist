@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { utils, write } from "xlsx";
 
 vi.mock("@/lib/supabase/server", () => ({
   getSupabaseServerClient: vi.fn(),
@@ -9,9 +10,22 @@ vi.mock("@/lib/sns-signature", () => ({
   isAllowedSnsHost: vi.fn((url: string) => /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com/i.test(url)),
 }));
 
+// Real implementation kept (so the multipart/attachment tests below still
+// work end to end) — only parsePioneerBohXlsx is wrapped in a spy so the
+// oversized-attachment test can assert it was NEVER called (review fix,
+// V-ordering-targets 2026-09-08: an oversized attachment must never
+// reach SheetJS's read(), which xlsx@0.18.5 has two open high-severity
+// advisories against).
+vi.mock("@/lib/on-hand/pioneer-boh", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/on-hand/pioneer-boh")>("@/lib/on-hand/pioneer-boh");
+  return { ...actual, parsePioneerBohXlsx: vi.fn(actual.parsePioneerBohXlsx) };
+});
+
 import { POST } from "@/app/api/webhooks/ses/route";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { verifySnsSignature } from "@/lib/sns-signature";
+import { parsePioneerBohXlsx } from "@/lib/on-hand/pioneer-boh";
+import { MAX_ATTACHMENT_PART_CHARS } from "@/lib/ses-mime";
 
 const CATALOG = [
   { id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad" },
@@ -140,6 +154,7 @@ describe("POST /api/webhooks/ses", () => {
     delete process.env.SES_SNS_TOPIC_ARN;
     vi.mocked(getSupabaseServerClient).mockReset();
     vi.mocked(verifySnsSignature).mockReset();
+    vi.mocked(parsePioneerBohXlsx).mockClear();
     vi.unstubAllGlobals();
   });
 
@@ -455,6 +470,96 @@ describe("POST /api/webhooks/ses", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body).toEqual({ linesTotal: 1, matchedCount: 1, unmatchedCount: 0 });
+    });
+
+    it("extracts and matches a Pioneer xlsx ATTACHMENT (not the email body) via the same NDC/name matcher the upload route uses", async () => {
+      const sheet = utils.aoa_to_sheet([
+        ["Item Name", "NDC/UPC", "Current BOH"],
+        [null, null, null, "Stock size"],
+        ["Flu Quad 2025-26", "", 10, 1],
+      ]);
+      const workbook = utils.book_new();
+      utils.book_append_sheet(workbook, sheet, "Sheet1");
+      const xlsxBuffer = write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+      const boundary = "BOUNDARY-XLSX";
+      const rawMime = [
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="boh.xlsx"',
+        'Content-Disposition: attachment; filename="boh.xlsx"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        xlsxBuffer.toString("base64"),
+        `--${boundary}--`,
+        "",
+      ].join(CRLF);
+
+      const insert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert) as never);
+
+      const response = await POST(
+        jsonRequest(snsNotificationBody({}, { content: Buffer.from(rawMime, "utf-8").toString("base64") }), {
+          "x-amz-sns-message-type": "Notification",
+        })
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ linesTotal: 1, matchedCount: 1, unmatchedCount: 0 });
+      expect(parsePioneerBohXlsx).toHaveBeenCalledTimes(1);
+      expect(insert).toHaveBeenCalledWith([
+        expect.objectContaining({ vaccine_id: "v-flu", quantity: 10, matched: true, ndc: null, stock_size: 1 }),
+      ]);
+    });
+
+    // Security review fix (V-ordering-targets, 2026-09-08): this webhook
+    // is reachable by anyone who learns a per-account inbound address,
+    // and xlsx@0.18.5 (SheetJS, used by parsePioneerBohXlsx) carries two
+    // open high-severity advisories (GHSA-4r6h-8v6p-xvw6 prototype
+    // pollution, GHSA-5pgg-2g8v-p4x9 ReDoS) — an oversized attachment
+    // must never reach it, decoded or not.
+    it("skips an oversized xlsx attachment WITHOUT ever calling parsePioneerBohXlsx, falling back to plain-text lines", async () => {
+      const boundary = "BOUNDARY-XLSX-BIG";
+      const oversizedBase64 = "A".repeat(MAX_ATTACHMENT_PART_CHARS + 1000);
+      const rawMime = [
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        "Content-Type: text/plain; charset=UTF-8",
+        "",
+        "# no plain-text summary",
+        `--${boundary}`,
+        'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="boh.xlsx"',
+        'Content-Disposition: attachment; filename="boh.xlsx"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        oversizedBase64,
+        `--${boundary}--`,
+        "",
+      ].join(CRLF);
+
+      const insert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert) as never);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const response = await POST(
+        jsonRequest(snsNotificationBody({}, { content: Buffer.from(rawMime, "utf-8").toString("base64") }), {
+          "x-amz-sns-message-type": "Notification",
+        })
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      // Falls all the way back to the text/plain part, a comment line
+      // that parses to zero rows — nothing from the (never-decoded)
+      // attachment lands anywhere.
+      expect(body).toEqual({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
+      expect(parsePioneerBohXlsx).not.toHaveBeenCalled();
+      expect(insert).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("skipping oversized xlsx attachment part"));
+      warnSpy.mockRestore();
     });
 
     it("rejects a bad secret on an SNS Notification post", async () => {

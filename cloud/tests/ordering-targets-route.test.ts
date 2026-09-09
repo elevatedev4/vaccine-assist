@@ -111,6 +111,36 @@ describe("PUT /api/ordering/targets", () => {
     );
   });
 
+  it("normalizes a dashed NDC key to digits-only before persisting (review fix)", async () => {
+    const upsert = vi.fn(async () => ({ error: null }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ upsert }) as never);
+
+    const response = await PUT(putRequest({ scope: "ndc", key: "70461-0123-03", targetOnHand: 20 }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // Echoed back normalized, not the dashed form that was sent — this is
+    // what makes the SAME key match lib/ordering-targets.ts's
+    // ndcOverrides[row.ndc] lookup, which is always digits-only.
+    expect(body).toEqual({ scope: "ndc", key: "70461012303", targetOnHand: 20 });
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "ndc", key: "70461012303", target_on_hand: 20 })
+    );
+  });
+
+  it("rejects an ndc-scoped key with no digits at all", async () => {
+    const response = await PUT(putRequest({ scope: "ndc", key: "n/a", targetOnHand: 20 }));
+    expect(response.status).toBe(400);
+  });
+
+  it("trims (but doesn't otherwise alter) a group-scoped key", async () => {
+    const upsert = vi.fn(async () => ({ error: null }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ upsert }) as never);
+
+    const response = await PUT(putRequest({ scope: "group", key: "  Flu  ", targetOnHand: 100 }));
+    const body = await response.json();
+    expect(body).toEqual({ scope: "group", key: "Flu", targetOnHand: 100 });
+  });
+
   it("deletes the override when targetOnHand is null", async () => {
     const del = vi.fn(async () => ({ error: null }));
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ del }) as never);
