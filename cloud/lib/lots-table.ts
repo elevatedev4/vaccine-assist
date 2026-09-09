@@ -45,6 +45,23 @@ export function isLotRowDue(lot: LotDueCheck, today: string): boolean {
   return false;
 }
 
+/**
+ * Which highlight a /lots row should get — INACTIVE wins over DUE
+ * (review follow-up, cosmetic live bug: an inactive product with an
+ * expired lot on file — Afluria MDV/PFS, Priorix, Pfizer 3-4 — was
+ * rendering with the red "due" background instead of the grey
+ * "inactive" style, making the active/inactive state unclear at a
+ * glance). An inactive product isn't in rotation, so whether its old lot
+ * happens to be expired is no longer actionable/urgent the way it is for
+ * an active product — the grey "this isn't active" signal should always
+ * win. "normal" means neither style applies.
+ */
+export function resolveLotRowHighlight(active: boolean, due: boolean): "inactive" | "due" | "normal" {
+  if (!active) return "inactive";
+  if (due) return "due";
+  return "normal";
+}
+
 export type ActiveFlagLike = { active: boolean };
 
 /**

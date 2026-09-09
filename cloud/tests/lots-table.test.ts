@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { isLotRowDue, partitionVaccinesByActive, pickCurrentActiveLot } from "@/lib/lots-table";
+import { isLotRowDue, partitionVaccinesByActive, pickCurrentActiveLot, resolveLotRowHighlight } from "@/lib/lots-table";
+
+describe("resolveLotRowHighlight", () => {
+  it("inactive wins over due — an inactive product's expired lot must NOT get the red 'due' style", () => {
+    expect(resolveLotRowHighlight(false, true)).toBe("inactive");
+  });
+
+  it("an inactive product with no due lot is still 'inactive' (greyed)", () => {
+    expect(resolveLotRowHighlight(false, false)).toBe("inactive");
+  });
+
+  it("an active product with a due lot is 'due' (red)", () => {
+    expect(resolveLotRowHighlight(true, true)).toBe("due");
+  });
+
+  it("an active product with no due lot is 'normal' (no highlight)", () => {
+    expect(resolveLotRowHighlight(true, false)).toBe("normal");
+  });
+});
 
 describe("partitionVaccinesByActive", () => {
   it("splits active and inactive vaccines, preserving each group's relative order", () => {

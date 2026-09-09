@@ -98,8 +98,8 @@ import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
  */
 
 /**
- * Composite-base -> catalog-name resolution for COVID appointment counts,
- * scoped to THIS route only (review fix, 2026-09-05 — see
+ * Composite-base -> catalog-name-PREFIX resolution for COVID appointment
+ * counts, scoped to THIS route only (review fix, 2026-09-05 — see
  * lib/vaccine-matching.ts's NAME_ALIASES comment for the full story). It
  * must NOT live in the shared NAME_ALIASES table: lib/on-hand-parser.ts
  * also calls matchVaccineName, for real free-text on-hand-count emails —
@@ -109,35 +109,46 @@ import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
  * whichever product this table happens to point at.
  *
  * Keys are the exact (lowercased) strings compositeNameToMatchableBase
- * (lib/appointment-table.ts) produces. "covid moderna" is a documented
- * judgment call: Moderna currently has TWO catalog products by age
- * (Spikevax for 3-11, mNEXSPIKE for 12+ — see 0005_seed_lots.sql's step 2
- * comment), and the age-stripped composite can't tell them apart —
- * pointed at mNEXSPIKE (Moderna's 12+ product) as the more common case; a
- * real Moderna 3-11 appointment's order count lands on the wrong SKU
- * until this is split by age again. "covid" (brandless — the patient
- * expressed no brand preference) has the same kind of ambiguity and is
- * pointed at Comirnaty (Pfizer) as a single, deterministic default rather
- * than splitting the count across products.
+ * (lib/appointment-table.ts) produces. Values are a case-insensitive
+ * NAME PREFIX, not an exact name — SEASON-AGNOSTIC on purpose (review
+ * follow-up, live bug: the lot-list apply renamed the on-file DB rows
+ * "Comirnaty 2025-26 12+" -> "Comirnaty 2026-27 12+" and "mNEXSPIKE" ->
+ * "mNEXSPIKE 2026-27" mid-season, which silently zeroed upcoming7d for
+ * BOTH COVID products under the old exact-string match). Same
+ * namePrefix tolerance lib/vaccine-product-catalog.ts's Comirnaty row
+ * already uses, for the same reason.
+ *
+ * "covid moderna" is a documented judgment call: Moderna currently has
+ * TWO catalog products by age (Spikevax for 3-11, mNEXSPIKE for 12+ —
+ * see 0005_seed_lots.sql's step 2 comment), and the age-stripped
+ * composite can't tell them apart — pointed at mNEXSPIKE (Moderna's
+ * 12+ product) as the more common case; a real Moderna 3-11
+ * appointment's order count lands on the wrong SKU until this is split
+ * by age again. "covid" (brandless — the patient expressed no brand
+ * preference) has the same kind of ambiguity and is pointed at
+ * Comirnaty (Pfizer) as a single, deterministic default rather than
+ * splitting the count across products. Neither of those RULES changed
+ * in this fix — only the name match itself became prefix-based.
  */
-const COMPOSITE_BASE_TO_CATALOG_NAME: Record<string, string> = {
-  "covid pfizer": "comirnaty 2025-26 12+",
+const COMPOSITE_BASE_TO_CATALOG_NAME_PREFIX: Record<string, string> = {
+  "covid pfizer": "comirnaty",
   "covid moderna": "mnexspike",
-  covid: "comirnaty 2025-26 12+",
+  covid: "comirnaty",
 };
 
 /**
  * Resolves an already-composite-stripped vaccineName (see
  * compositeNameToMatchableBase) against the catalog: a COVID brand/
- * brandless base first checks COMPOSITE_BASE_TO_CATALOG_NAME above by
- * exact catalog name, then falls back to the normal shared
- * matchVaccineName (which is all a non-composite name — Flu, or any other
- * canonical vaccine — ever needs).
+ * brandless base first checks COMPOSITE_BASE_TO_CATALOG_NAME_PREFIX
+ * above by case-insensitive name PREFIX (season-agnostic — see that
+ * table's doc comment), then falls back to the normal shared
+ * matchVaccineName (which is all a non-composite name — Flu, or any
+ * other canonical vaccine — ever needs).
  */
 function matchOrderingVaccineName(base: string, catalog: CatalogVaccine[]): CatalogVaccine | null {
-  const targetName = COMPOSITE_BASE_TO_CATALOG_NAME[base.trim().toLowerCase()];
-  if (targetName) {
-    const direct = catalog.find((vaccine) => vaccine.name.trim().toLowerCase() === targetName);
+  const targetPrefix = COMPOSITE_BASE_TO_CATALOG_NAME_PREFIX[base.trim().toLowerCase()];
+  if (targetPrefix) {
+    const direct = catalog.find((vaccine) => vaccine.name.trim().toLowerCase().startsWith(targetPrefix));
     if (direct) return direct;
   }
   return matchVaccineName(base, catalog);
@@ -228,6 +239,42 @@ export async function GET(request: Request) {
     // they vanish from the Ordering tab regardless of that column's
     // state (and regardless of any future re-seed that recreates them).
     const catalog: CatalogVaccine[] = (vaccinesData ?? []).filter((vaccine) => !isExcludedPfizerChildRow(vaccine.name));
+
+    // NDC collapse (Will msg 908): one row per product/NDC rather than
+    // one per catalog vaccine — a 3-dose series like Gardasil (3 catalog
+    // rows sharing one NDC) becomes ONE recommendation row. Computed
+    // HERE (before on-hand rows are processed below) because
+    // V-onhand-attribution's per-row product attribution needs
+    // vaccineIdToGroupKey/ndcToGroupKey, built from these groups, before
+    // it can bucket a single on-hand row.
+    const collapsibleCatalog: CollapsibleVaccine[] = catalog.map((vaccine) => ({
+      id: vaccine.id,
+      name: vaccine.name,
+      ndc: vaccine.ndc ?? null,
+      active: (vaccine as { active?: boolean }).active ?? true,
+    }));
+    const collapsedGroups = collapseVaccinesByNdc(collapsibleCatalog);
+
+    for (const group of collapsedGroups) {
+      if (group.vaccineIds.length > 1) {
+        console.log(
+          `GET /api/ordering/recommendation: collapsed ${group.vaccineIds.length} vaccine rows into 1 row — ` +
+            `ndc=${group.ndc ?? "(none)"} name="${group.vaccineName}" ids=[${group.vaccineIds.join(", ")}]`
+        );
+      }
+    }
+
+    // V-onhand-attribution (review follow-up, live bug after d7e123f):
+    // vaccine_id -> the product group that OWNS it, and (DB) ndc -> group
+    // key — used to attribute an on_hand_count row to the correct
+    // product below. See the on-hand loop's own doc comment for why this
+    // must be vaccine_id-first, not ndc-first.
+    const vaccineIdToGroupKey = new Map<string, string>();
+    const ndcToGroupKey = new Map<string, string>();
+    for (const group of collapsedGroups) {
+      for (const id of group.vaccineIds) vaccineIdToGroupKey.set(id, group.key);
+      if (group.ndc) ndcToGroupKey.set(group.ndc, group.key);
+    }
 
     // upcoming7d range: today through today+6 inclusive = 7 calendar days.
     const start = todayInChicago();
@@ -363,16 +410,16 @@ export async function GET(request: Request) {
     // 21:31:05.413 vs 21:31:05.457), not one shared `now()` value, so
     // that version silently kept only the single latest-ms row again.
     //
-    // A "batch" is now a TIME WINDOW, computed independently per product
-    // key (vaccine_id or ndc): among that key's own rows, take the
-    // newest `received_at`, then sum every row for that key within
-    // BATCH_WINDOW_MS of it AND sharing that newest row's `source`
-    // (email vs upload — see fetchOnHandRows) — a row older than the
-    // window, or from a different source, is excluded entirely (an older
-    // batch, or a same-day batch from the other ingestion path, never
-    // adds to the latest one). A product with no rows in whatever the
-    // GLOBAL latest batch happens to be still gets its own latest-batch
-    // total, computed the same way, independently.
+    // A "batch" is now a TIME WINDOW, computed independently per PRODUCT
+    // (not per raw key — see V-onhand-attribution below): among a
+    // product's own rows, take the newest `received_at`, then sum every
+    // row for that product within BATCH_WINDOW_MS of it AND sharing that
+    // newest row's `source` (email vs upload — see fetchOnHandRows) — a
+    // row older than the window, or from a different source, is excluded
+    // entirely (an older batch, or a same-day batch from the other
+    // ingestion path, never adds to the latest one). A product with no
+    // rows in whatever the GLOBAL latest batch happens to be still gets
+    // its own latest-batch total, computed the same way, independently.
     const BATCH_WINDOW_MS = 120_000; // 120 seconds
 
     type RawOnHandRow = { key: string; quantity: number | null; receivedAt: string; source: string };
@@ -405,9 +452,32 @@ export async function GET(request: Request) {
       return result;
     }
 
+    // V-onhand-attribution (review follow-up, live bug after d7e123f):
+    // a MATCHED on-hand row's `vaccine_id` is authoritative — it's the
+    // exact product lib/on-hand/pioneer-boh.ts's matcher already
+    // resolved this row to — and must win over the row's own `ndc`
+    // column, which can legitimately be Pioneer's PACKAGE NDC (e.g.
+    // Fluad "70461-0026-03") rather than the product's DB ndc
+    // ("70461-0123-03") — see lib/on-hand/pioneer-boh.ts's
+    // catalogPackageNdcForVaccine fallback, which matches a Pioneer line
+    // by EITHER value. Bucketing rows by their own raw ndc (the OLD
+    // behavior here) could split one product's several same-report lines
+    // across multiple unrelated ndc-keyed batches — or, worse, let a
+    // STALE delivery whose ndc happened to equal the DB ndc win over a
+    // FRESHER matched-by-vaccine_id delivery that used the package ndc
+    // instead (the exact bug: an 04:52Z xlsx upload's on-file-ndc-shaped
+    // row outranked a 4:31pm email's package-ndc-shaped row for Fluad).
+    //
+    // So attribution now happens per ROW, before batching: a row with
+    // `vaccine_id` set resolves to whichever product group OWNS that
+    // vaccine_id (vaccineIdToGroupKey, built above from collapsedGroups)
+    // — its own `ndc` is never consulted. ONLY a row with NO vaccine_id
+    // (unmatched) falls back to an ndc-based lookup (ndcToGroupKey, the
+    // product's own DB ndc). A row that resolves to neither (an orphaned
+    // vaccine_id, or an unmatched row whose ndc matches no product) isn't
+    // attributed to any row's on-hand total — same as before.
     let onHandLastReceivedAt: string | null = null;
-    const byVaccineIdRows: RawOnHandRow[] = [];
-    const byNdcRows: RawOnHandRow[] = [];
+    const productOnHandRows: RawOnHandRow[] = [];
     for (const row of onHandRows ?? []) {
       const receivedAt = row.received_at as string;
       const quantity = (row.quantity as number | null) ?? null;
@@ -419,46 +489,16 @@ export async function GET(request: Request) {
       if (onHandLastReceivedAt === null) onHandLastReceivedAt = receivedAt;
 
       const vaccineId = row.vaccine_id as string | null;
-      if (vaccineId) byVaccineIdRows.push({ key: vaccineId, quantity, receivedAt, source });
-
-      const rowNdc = normalizeNdc((row.ndc as string | null | undefined) ?? null);
-      if (rowNdc) byNdcRows.push({ key: rowNdc, quantity, receivedAt, source });
+      const groupKey = vaccineId
+        ? vaccineIdToGroupKey.get(vaccineId)
+        : ndcToGroupKey.get(normalizeNdc((row.ndc as string | null | undefined) ?? null) ?? "");
+      if (groupKey) productOnHandRows.push({ key: groupKey, quantity, receivedAt, source });
     }
 
-    const latestOnHandByVaccineId = computeLatestBatchOnHand(byVaccineIdRows);
-    const latestOnHandByNdc = computeLatestBatchOnHand(byNdcRows);
-
-    // NDC collapse (Will msg 908): one row per product/NDC rather than
-    // one per catalog vaccine — a 3-dose series like Gardasil (3 catalog
-    // rows sharing one NDC) becomes ONE recommendation row.
-    const collapsibleCatalog: CollapsibleVaccine[] = catalog.map((vaccine) => ({
-      id: vaccine.id,
-      name: vaccine.name,
-      ndc: vaccine.ndc ?? null,
-      active: (vaccine as { active?: boolean }).active ?? true,
-    }));
-    const collapsedGroups = collapseVaccinesByNdc(collapsibleCatalog);
-
-    for (const group of collapsedGroups) {
-      if (group.vaccineIds.length > 1) {
-        console.log(
-          `GET /api/ordering/recommendation: collapsed ${group.vaccineIds.length} vaccine rows into 1 row — ` +
-            `ndc=${group.ndc ?? "(none)"} name="${group.vaccineName}" ids=[${group.vaccineIds.join(", ")}]`
-        );
-      }
-    }
+    const latestOnHandByGroupKey = computeLatestBatchOnHand(productOnHandRows);
 
     function onHandFor(group: (typeof collapsedGroups)[number]): OnHandEntry | null {
-      if (group.ndc) {
-        const byNdc = latestOnHandByNdc.get(group.ndc);
-        if (byNdc) return byNdc;
-      }
-      let best: OnHandEntry | null = null;
-      for (const id of group.vaccineIds) {
-        const entry = latestOnHandByVaccineId.get(id);
-        if (entry && (!best || entry.receivedAt > best.receivedAt)) best = entry;
-      }
-      return best;
+      return latestOnHandByGroupKey.get(group.key) ?? null;
     }
 
     // Targets (Will msg 904): load overrides — degrades to

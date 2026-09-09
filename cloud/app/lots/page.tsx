@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type FormEvent } f
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
-import { isLotRowDue, pickCurrentActiveLot } from "@/lib/lots-table";
+import { isLotRowDue, pickCurrentActiveLot, resolveLotRowHighlight } from "@/lib/lots-table";
 import { dedupeLotsByNumber, formatNdcDisplay } from "@/lib/lots-grouping";
 import { buildProductViews, type ProductView } from "@/lib/product-view";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
@@ -533,7 +533,11 @@ export default function LotsPage() {
     const budBusy = budBusyKey === view.productKey;
     const budEnabledForThisProduct = budEnabledKeys.has(view.productKey);
 
-    const rowStyle = due ? styles.dueRow : view.active ? undefined : styles.inactiveRow;
+    // Inactive wins over due (review follow-up: an inactive product's
+    // expired lot must never mask the grey inactive style with the red
+    // due one) — lib/lots-table.ts's resolveLotRowHighlight.
+    const highlight = resolveLotRowHighlight(view.active, due);
+    const rowStyle = highlight === "inactive" ? styles.inactiveRow : highlight === "due" ? styles.dueRow : undefined;
 
     return (
       <tr key={view.productKey} style={rowStyle}>

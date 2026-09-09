@@ -350,6 +350,84 @@ describe("GET /api/ordering/recommendation", () => {
     expect(modernaRow.upcoming7d).toBe(1);
   });
 
+  // V-covid-season-agnostic-match (review follow-up, live bug after
+  // d7e123f): the lot-list apply renamed the on-file DB rows mid-season
+  // ("Comirnaty 2025-26 12+" -> "Comirnaty 2026-27 12+", "mNEXSPIKE" ->
+  // "mNEXSPIKE 2026-27"), which silently zeroed upcoming7d for BOTH
+  // COVID products under the old EXACT-string match in
+  // COMPOSITE_BASE_TO_CATALOG_NAME. Same scenario as the test above, but
+  // against the renamed catalog names.
+  it("still attributes COVID composite counts correctly after the DB rows are renamed with a season suffix", async () => {
+    const renamedCovidCatalog = [
+      { id: "v-comirnaty", name: "Comirnaty 2026-27 12+", short_code: "comirnaty12", ndc: null, active: true },
+      { id: "v-mnexspike", name: "mNEXSPIKE 2026-27", short_code: "mnexspike", ndc: null, active: true },
+    ];
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], renamedCovidCatalog) as never);
+    vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+    vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+    vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+      appointments: [
+        {
+          date: "2026-08-19",
+          appointmentTypeId: 1,
+          hourOfDay: 10,
+          vaccineNames: ["COVID-NEW Booster (age 12+ 2026-27 version)"],
+          testNames: [],
+          covidBrand: "pfizer",
+          covidAgeBucket: "65+",
+          fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
+        },
+        {
+          date: "2026-08-20",
+          appointmentTypeId: 1,
+          hourOfDay: 10,
+          vaccineNames: ["COVID-NEW Booster (age 12+ 2026-27 version)"],
+          testNames: [],
+          covidBrand: "pfizer",
+          covidAgeBucket: "12-64",
+          fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
+        },
+        {
+          date: "2026-08-20",
+          appointmentTypeId: 1,
+          hourOfDay: 10,
+          vaccineNames: ["COVID-NEW Booster (age 12+ 2026-27 version)"],
+          testNames: [],
+          covidBrand: "moderna",
+          covidAgeBucket: "12-64",
+          fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
+        },
+        {
+          date: "2026-08-20",
+          appointmentTypeId: 1,
+          hourOfDay: 10,
+          vaccineNames: ["COVID-NEW Booster (age 12+ 2026-27 version)"],
+          testNames: [],
+          covidBrand: "any",
+          covidAgeBucket: "12-64",
+          fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
+        },
+      ],
+      possiblyTruncated: false,
+    });
+
+    const response = await GET(authedRequest());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    // "any" merges into Pfizer (mergeAnyIntoPfizer in
+    // lib/appointment-table.ts) — so Comirnaty gets 3 (65+, 12-64, and
+    // the "any" one), Moderna gets 1.
+    const pfizerRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-comirnaty");
+    expect(pfizerRow.upcoming7d).toBe(3);
+    const modernaRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-mnexspike");
+    expect(modernaRow.upcoming7d).toBe(1);
+  });
+
   it("scopes on-hand rows to this user's inbound address plus legacy null-address rows (V-onhand-account-address)", async () => {
     const address: FakeAddress = {
       id: "addr-1",
@@ -791,6 +869,106 @@ describe("GET /api/ordering/recommendation", () => {
       expect(prevnarRow.onHand).toBe(8);
       const mnexspikeRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-mnexspike");
       expect(mnexspikeRow.onHand).toBe(1114);
+    });
+  });
+
+  // --- V-onhand-attribution additions (live bug after d7e123f) --------
+  describe("on-hand attribution: a MATCHED row's vaccine_id wins over its own (possibly foreign) ndc", () => {
+    it("an email row with vaccine_id set and an ndc that DIFFERS from the product's DB ndc still lands on the product", async () => {
+      const catalog = [{ id: "v-fluad", name: "Fluad", short_code: "fluad", ndc: "70461-0123-03", active: true }];
+      const onHandRows = [
+        // Pioneer's PACKAGE ndc (70461-0026-03), not the DB's own ndc
+        // (70461-0123-03) — matched to v-fluad by vaccine_id regardless.
+        {
+          vaccine_id: "v-fluad",
+          ndc: "70461002603",
+          quantity: 189,
+          received_at: "2026-09-09T21:31:05.413Z",
+          source: "email",
+        },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "70461012303");
+      expect(row.onHand).toBe(189);
+    });
+
+    it("the real Fluad regression: a STALE upload batch (ndc happens to match the DB ndc) at T0 is REPLACED by a FRESHER email batch (foreign package ndc) at T1 — 189, not 115", async () => {
+      const catalog = [{ id: "v-fluad", name: "Fluad", short_code: "fluad", ndc: "70461-0123-03", active: true }];
+      const onHandRows = [
+        // T1 (4:31pm) email batch, matched by vaccine_id — ndc is
+        // Pioneer's foreign package ndc, never equal to the DB ndc.
+        // 0/189/0 across three Pioneer lines, summed to 189.
+        {
+          vaccine_id: "v-fluad",
+          ndc: "70461002603",
+          quantity: 0,
+          received_at: "2026-09-09T16:31:05.413Z",
+          source: "email",
+        },
+        {
+          vaccine_id: "v-fluad",
+          ndc: "70461002603",
+          quantity: 189,
+          received_at: "2026-09-09T16:31:05.430Z",
+          source: "email",
+        },
+        {
+          vaccine_id: "v-fluad",
+          ndc: "70461002603",
+          quantity: 0,
+          received_at: "2026-09-09T16:31:05.457Z",
+          source: "email",
+        },
+        // T0 (04:52Z) STALE xlsx upload — its ndc happens to equal the
+        // DB ndc, which is exactly what let it win under the OLD
+        // (ndc-first) attribution logic despite being older.
+        {
+          vaccine_id: "v-fluad",
+          ndc: "70461012303",
+          quantity: 115,
+          received_at: "2026-09-09T04:52:00.000Z",
+          source: "upload",
+        },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "70461012303");
+      expect(row.onHand).toBe(189);
+    });
+
+    it("an UNMATCHED row (vaccine_id null) still falls back to matching by ndc against the product's DB ndc", async () => {
+      const catalog = [{ id: "v-fluad", name: "Fluad", short_code: "fluad", ndc: "70461-0123-03", active: true }];
+      const onHandRows = [
+        { vaccine_id: null, ndc: "70461012303", quantity: 42, received_at: "2026-09-09T21:31:05.413Z", source: "email" },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "70461012303");
+      expect(row.onHand).toBe(42);
+    });
+
+    it("an UNMATCHED row whose ndc matches no product's DB ndc is not attributed anywhere (never falls back to vaccine_id — it has none)", async () => {
+      const catalog = [{ id: "v-fluad", name: "Fluad", short_code: "fluad", ndc: "70461-0123-03", active: true }];
+      const onHandRows = [
+        { vaccine_id: null, ndc: "99999999999", quantity: 42, received_at: "2026-09-09T21:31:05.413Z", source: "email" },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "70461012303");
+      expect(row.onHand).toBeNull();
     });
   });
 
