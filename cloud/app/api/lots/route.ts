@@ -31,9 +31,12 @@ import { isMissingColumnError } from "@/lib/schema-degradation";
  *  - POST here also accepts `vaccine_ids: string[]` (plural) to insert
  *    the SAME new lot on every dose vaccine_id of a product at once,
  *    instead of the existing singular `vaccine_id` path.
- *  - PATCH (new) edits, on EVERY vaccine_id in `vaccineIds`, whichever
- *    lot currently has `matchLotNumber` — the product row's lot number
- *    as loaded, before this edit (which may itself change lot_number).
+ *  - PATCH (new) UPSERTS, on EVERY vaccine_id in `vaccineIds`: updates
+ *    whichever lot currently has `matchLotNumber` — the product row's
+ *    lot number as loaded, before this edit (which may itself change
+ *    lot_number) — or, if a dose has no lot with that number (already
+ *    drifted apart, or never had one), INSERTS a fresh one with the new
+ *    values instead, so dose rows can never drift apart after an edit.
  *  - DELETE (new) removes, on EVERY vaccine_id in `vaccineIds`, the lot
  *    whose lot_number is `lot_number`.
  * The existing per-lot GET/POST above and PATCH/DELETE at
@@ -174,14 +177,21 @@ export async function POST(request: Request) {
 }
 
 /**
- * V-T28 fan-out edit: a product row's Save edits whichever lot currently
- * matches `matchLotNumber` (the row's lot number as loaded, before this
- * edit) on EVERY vaccine_id in `vaccineIds` — so all dose rows of a
- * product keep an identical lot after a single save, same as the
- * lot-list apply script already does on create. Body:
- * { vaccineIds: string[], matchLotNumber: string, lot_number?,
- *   expiration?, beyond_use_date?, note?, status? } — at least one
- * editable field required, same validation as PATCH /api/lots/[id].
+ * V-T28 fan-out edit — UPSERT (Will, follow-up: "make the collection-
+ * level PATCH an upsert ... so the dose rows can never drift apart after
+ * an edit"): a product row's Save applies the new lot_number/expiration/
+ * beyond_use_date to EVERY vaccine_id in `vaccineIds`. For each
+ * vaccine_id, it first tries to UPDATE whichever lot currently matches
+ * `matchLotNumber` (the row's lot number as loaded, before this edit —
+ * needed since `lot_number` itself may be a rename in flight); if that
+ * dose has no lot with that number (already drifted apart, or simply
+ * never got one — see this route's earlier "known limitation" note),
+ * it INSERTS a fresh lot on that dose with the new values instead of
+ * silently leaving it behind. Body: { vaccineIds: string[],
+ * matchLotNumber: string, lot_number: string, expiration: string,
+ * beyond_use_date?, note?, status? } — lot_number and expiration are
+ * REQUIRED here (unlike PATCH /api/lots/[id]'s partial-update shape)
+ * because either one might need to become a brand-new row.
  */
 export async function PATCH(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -197,68 +207,55 @@ export async function PATCH(request: Request) {
     if (typeof matchLotNumber !== "string" || !matchLotNumber.trim()) {
       return NextResponse.json({ error: "matchLotNumber is required." }, { status: 400 });
     }
-
-    const update: Record<string, unknown> = {};
-    if (lot_number !== undefined) {
-      if (typeof lot_number !== "string" || !lot_number.trim()) {
-        return NextResponse.json({ error: "lot_number must be a non-empty string." }, { status: 400 });
-      }
-      update.lot_number = lot_number;
+    if (typeof lot_number !== "string" || !lot_number.trim()) {
+      return NextResponse.json({ error: "lot_number must be a non-empty string." }, { status: 400 });
     }
-    if (expiration !== undefined) {
-      if (typeof expiration !== "string" || !expiration) {
-        return NextResponse.json({ error: "expiration must be a date string." }, { status: 400 });
-      }
-      update.expiration = expiration;
+    if (typeof expiration !== "string" || !expiration) {
+      return NextResponse.json({ error: "expiration must be a date string." }, { status: 400 });
     }
-    if (beyond_use_date !== undefined) {
-      if (beyond_use_date !== null && typeof beyond_use_date !== "string") {
-        return NextResponse.json({ error: "beyond_use_date must be a date string or null." }, { status: 400 });
-      }
-      update.beyond_use_date = beyond_use_date;
+    if (beyond_use_date !== undefined && beyond_use_date !== null && typeof beyond_use_date !== "string") {
+      return NextResponse.json({ error: "beyond_use_date must be a date string or null." }, { status: 400 });
     }
-    if (note !== undefined) {
-      if (note !== null && typeof note !== "string") {
-        return NextResponse.json({ error: "note must be a string or null." }, { status: 400 });
-      }
-      update.note = note;
+    if (note !== undefined && note !== null && typeof note !== "string") {
+      return NextResponse.json({ error: "note must be a string or null." }, { status: 400 });
     }
-    if (status !== undefined) {
-      if (status !== "active" && status !== "depleted") {
-        return NextResponse.json({ error: "status must be 'active' or 'depleted'." }, { status: 400 });
-      }
-      update.status = status;
-    }
-    if (Object.keys(update).length === 0) {
-      return NextResponse.json({ error: "Nothing to update." }, { status: 400 });
+    if (status !== undefined && status !== "active" && status !== "depleted") {
+      return NextResponse.json({ error: "status must be 'active' or 'depleted'." }, { status: 400 });
     }
 
     const supabase = getSupabaseServerClient();
-    let workingUpdate = update;
     let beyondUseDateSupported = true;
+
+    const buildUpdatePayload = (): Record<string, unknown> => {
+      const payload: Record<string, unknown> = { lot_number, expiration };
+      if (status !== undefined) payload.status = status;
+      if (note !== undefined) payload.note = note;
+      if (beyond_use_date !== undefined && beyondUseDateSupported) payload.beyond_use_date = beyond_use_date;
+      return payload;
+    };
+    const buildInsertPayload = (vaccineId: string): Record<string, unknown> => {
+      const payload: Record<string, unknown> = { vaccine_id: vaccineId, lot_number, expiration, status: status ?? "active", note };
+      if (beyond_use_date !== undefined && beyondUseDateSupported) payload.beyond_use_date = beyond_use_date;
+      return payload;
+    };
+
     const results: unknown[] = [];
 
     for (const vaccineId of vaccineIds as string[]) {
+      let updatePayload = buildUpdatePayload();
       let { data, error } = await supabase
         .from("lot")
-        .update(workingUpdate)
+        .update(updatePayload)
         .eq("vaccine_id", vaccineId)
         .eq("lot_number", matchLotNumber)
         .select();
 
-      if (error && isMissingColumnError(error) && "beyond_use_date" in workingUpdate) {
+      if (error && isMissingColumnError(error) && "beyond_use_date" in updatePayload) {
         beyondUseDateSupported = false;
-        const { beyond_use_date: _bud, ...withoutBud } = workingUpdate;
-        workingUpdate = withoutBud;
-        if (Object.keys(workingUpdate).length === 0) {
-          return NextResponse.json(
-            { error: "beyond_use_date is not available yet — the migration hasn't run.", beyondUseDateSupported },
-            { status: 409 }
-          );
-        }
+        updatePayload = buildUpdatePayload();
         ({ data, error } = await supabase
           .from("lot")
-          .update(workingUpdate)
+          .update(updatePayload)
           .eq("vaccine_id", vaccineId)
           .eq("lot_number", matchLotNumber)
           .select());
@@ -269,7 +266,29 @@ export async function PATCH(request: Request) {
         return NextResponse.json({ error: "Failed to update lot." }, { status: 500 });
       }
 
-      results.push(...(data ?? []));
+      if (data && data.length > 0) {
+        results.push(...data);
+        continue;
+      }
+
+      // Upsert fallback: this dose's lot rows didn't include
+      // matchLotNumber — nothing to update, so insert a fresh lot on it
+      // with the new values rather than leaving it out of sync.
+      let insertPayload = buildInsertPayload(vaccineId);
+      let insertResult = await supabase.from("lot").insert(insertPayload).select().single();
+
+      if (insertResult.error && isMissingColumnError(insertResult.error) && "beyond_use_date" in insertPayload) {
+        beyondUseDateSupported = false;
+        insertPayload = buildInsertPayload(vaccineId);
+        insertResult = await supabase.from("lot").insert(insertPayload).select().single();
+      }
+
+      if (insertResult.error) {
+        console.error("PATCH /api/lots (fan-out upsert-insert): Supabase error", insertResult.error);
+        return NextResponse.json({ error: "Failed to update lot." }, { status: 500 });
+      }
+
+      results.push(insertResult.data);
     }
 
     return NextResponse.json({ lots: results, beyondUseDateSupported });

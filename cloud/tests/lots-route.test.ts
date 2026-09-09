@@ -409,7 +409,7 @@ describe("POST /api/lots — fan-out create (vaccine_ids)", () => {
   });
 });
 
-describe("PATCH /api/lots — fan-out edit (vaccineIds + matchLotNumber)", () => {
+describe("PATCH /api/lots — fan-out UPSERT edit (vaccineIds + matchLotNumber)", () => {
   afterEach(() => {
     vi.mocked(getSupabaseServerClient).mockReset();
   });
@@ -443,6 +443,7 @@ describe("PATCH /api/lots — fan-out edit (vaccineIds + matchLotNumber)", () =>
     const response = await fanOutPatchRequest({
       vaccineIds: ["v1", "v2"],
       matchLotNumber: "ABC",
+      lot_number: "ABC",
       expiration: "2027-06-01",
     });
 
@@ -458,18 +459,67 @@ describe("PATCH /api/lots — fan-out edit (vaccineIds + matchLotNumber)", () =>
     ]);
   });
 
+  // Will's follow-up: "make the collection-level PATCH an upsert ... so
+  // the dose rows can never drift apart after an edit."
+  it("inserts a fresh lot on a dose row that's missing the matched lot, instead of leaving it behind", async () => {
+    const update = vi.fn((_payload: Record<string, unknown>) => ({
+      eq: () => ({
+        eq: () =>
+          // v1 already has "ABC" and gets updated; v2 has no lot numbered
+          // "ABC" at all (already drifted, or never got one).
+          ({ select: vi.fn(async () => ({ data: [], error: null })) }),
+      }),
+    }));
+    const single = vi.fn(async () => ({
+      data: { id: "new-l2", vaccine_id: "v2", lot_number: "XYZ", expiration: "2027-06-01" },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const insert = vi.fn(() => ({ select }));
+    const from = vi.fn(() => ({ update, insert }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await fanOutPatchRequest({
+      vaccineIds: ["v2"],
+      matchLotNumber: "ABC",
+      lot_number: "XYZ",
+      expiration: "2027-06-01",
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.lots).toEqual([{ id: "new-l2", vaccine_id: "v2", lot_number: "XYZ", expiration: "2027-06-01" }]);
+    expect(insert).toHaveBeenCalledWith({
+      vaccine_id: "v2",
+      lot_number: "XYZ",
+      expiration: "2027-06-01",
+      status: "active",
+      note: undefined,
+    });
+  });
+
   it("rejects an empty vaccineIds array", async () => {
-    const response = await fanOutPatchRequest({ vaccineIds: [], matchLotNumber: "ABC", expiration: "2027-06-01" });
+    const response = await fanOutPatchRequest({
+      vaccineIds: [],
+      matchLotNumber: "ABC",
+      lot_number: "ABC",
+      expiration: "2027-06-01",
+    });
     expect(response.status).toBe(400);
   });
 
   it("requires matchLotNumber", async () => {
-    const response = await fanOutPatchRequest({ vaccineIds: ["v1"], expiration: "2027-06-01" });
+    const response = await fanOutPatchRequest({ vaccineIds: ["v1"], lot_number: "ABC", expiration: "2027-06-01" });
     expect(response.status).toBe(400);
   });
 
-  it("rejects an empty update body", async () => {
-    const response = await fanOutPatchRequest({ vaccineIds: ["v1"], matchLotNumber: "ABC" });
+  it("requires lot_number", async () => {
+    const response = await fanOutPatchRequest({ vaccineIds: ["v1"], matchLotNumber: "ABC", expiration: "2027-06-01" });
+    expect(response.status).toBe(400);
+  });
+
+  it("requires expiration", async () => {
+    const response = await fanOutPatchRequest({ vaccineIds: ["v1"], matchLotNumber: "ABC", lot_number: "ABC" });
     expect(response.status).toBe(400);
   });
 
@@ -480,7 +530,27 @@ describe("PATCH /api/lots — fan-out edit (vaccineIds + matchLotNumber)", () =>
     const from = vi.fn(() => ({ update }));
     vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
 
-    const response = await fanOutPatchRequest({ vaccineIds: ["v1"], matchLotNumber: "ABC", expiration: "2027-06-01" });
+    const response = await fanOutPatchRequest({
+      vaccineIds: ["v1"],
+      matchLotNumber: "ABC",
+      lot_number: "ABC",
+      expiration: "2027-06-01",
+    });
+    expect(response.status).toBe(500);
+  });
+
+  it("returns 500 when the upsert-insert fallback itself fails", async () => {
+    const update = vi.fn(() => ({ eq: () => ({ eq: () => ({ select: async () => ({ data: [], error: null }) }) }) }));
+    const insert = vi.fn(() => ({ select: () => ({ single: async () => ({ data: null, error: new Error("boom") }) }) }));
+    const from = vi.fn(() => ({ update, insert }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await fanOutPatchRequest({
+      vaccineIds: ["v1"],
+      matchLotNumber: "ABC",
+      lot_number: "XYZ",
+      expiration: "2027-06-01",
+    });
     expect(response.status).toBe(500);
   });
 });
