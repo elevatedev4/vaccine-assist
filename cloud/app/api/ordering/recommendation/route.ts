@@ -15,15 +15,17 @@ import { env } from "@/lib/env";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { normalizeNdc } from "@/lib/ndc";
 import { collapseVaccinesByNdc, type CollapsibleVaccine } from "@/lib/ordering-ndc-collapse";
-import { getVaccineGroup } from "@/lib/vaccine-group-catalog";
+import { getOrderingGroup } from "@/lib/ordering-group";
 import { computeEffectiveTargets, recommendedTarget, type TargetInput } from "@/lib/ordering-targets";
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
 import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradation";
+import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
 
 /**
  * Ordering tab recommendation endpoint (V-ordering, 2026-08-19/20;
  * NDC-collapse + targets + inactive section, V-ordering-targets
- * 2026-09-08).
+ * 2026-09-08; walk-up % setting + COVID/Flu/Other regrouping + Pfizer
+ * child-row exclusion, V-T26 2026-09-09).
  * GET, authed exactly like every other desktop-facing route
  * (requireAuthenticatedUser — see cloud/app/api/vaccines/route.ts).
  *
@@ -40,27 +42,46 @@ import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradat
  *     group's NDC (falling back to any of its collapsed vaccine_ids —
  *     Will's brief), or null/null if none exists yet.
  *   - recommendedTarget / targetOnHand / effectiveTarget / order: see
- *     lib/ordering-targets.ts. targetOnHand is this row's OWN NDC-scoped
- *     override (null if none set) — the group-level override (if any)
- *     lives in the response's `groupTargets` map instead, since it
- *     applies to every row in the group at once.
+ *     lib/ordering-targets.ts, computed with the EFFECTIVE walk-up rate
+ *     (walkInPct/100 — see lib/ordering-settings.ts) rather than the
+ *     hard-coded 25% default. targetOnHand is this row's OWN NDC-scoped
+ *     override (null if none set). Group-scoped overrides (scope='group'
+ *     rows in `ordering_target`, if any still exist from before V-T26)
+ *     are deliberately IGNORED here (Will 2026-09-09: "Remove group
+ *     target for now") — computeEffectiveTargets is called with an
+ *     empty group-overrides map, so a stale group row never apportions
+ *     across a group's rows; `groupTargets` stays in the response purely
+ *     because GET/PUT /api/ordering/targets' own scope='group' support
+ *     is left intact (Will's brief), not because the UI still uses it.
+ *   - PFIZER CHILD-ROW EXCLUSION (V-T26 item 8): any vaccine whose name
+ *     starts with "Pfizer 3-4" or "Pfizer 5-11" is dropped from the
+ *     catalog before anything else runs, so neither section (active or
+ *     inactive) can ever show them — Will is separately deactivating
+ *     these in the DB, but this filter makes them disappear regardless
+ *     of that column's state.
+ *   - group: COVID/Flu/Other only (lib/ordering-group.ts's
+ *     getOrderingGroup) — an Ordering-tab-only coarsening of
+ *     lib/vaccine-group-catalog.ts's fine-grained groups, which the
+ *     /data-entry guided flow and /physicians tab keep using unchanged.
  *
  * NO administered-doses field: there is no administration-tracking
  * table/endpoint anywhere in this schema — see lib/ordering-recommendation.ts.
  *
- * RESPONSE CONTRACT (V-ordering-targets — supersedes the prior flat
- * per-vaccine shape; the desktop app is not part of this change, only
- * cloud/app/ordering/page.tsx consumes this):
+ * RESPONSE CONTRACT (V-ordering-targets, updated V-T26 — supersedes the
+ * prior flat per-vaccine shape; the desktop app is not part of this
+ * change, only cloud/app/ordering/page.tsx consumes this):
  *   {
  *     "onHandLastReceivedAt": "2026-08-19T13:00:00.000Z" | null,
  *     "targetsPending": false,   // true before 0011 has been applied
- *     "groupTargets": { "Flu": 200 },  // group-scoped overrides present, by group display name
+ *     "walkInPct": 25,           // the effective walk-up % this response was computed with
+ *     "walkInPctPending": false, // true before 0012 has been applied (walkInPct is the default, 25)
+ *     "groupTargets": { "Flu": 200 },  // group-scoped overrides still on file, by group display name — NOT applied to any row below, see doc comment above
  *     "rows": [
  *       {
  *         "key": "00006412102",           // digits-only NDC, or "vaccine:<id>"
  *         "vaccineName": "Gardasil",
  *         "ndc": "00006412102" | null,
- *         "group": "HPV",
+ *         "group": "Other",               // "COVID" | "Flu" | "Other"
  *         "active": true,
  *         "upcoming7d": 12,
  *         "onHand": 8,
@@ -68,7 +89,7 @@ import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradat
  *         "recommendedTarget": 20,
  *         "targetOnHand": null,           // this row's own NDC override, or null
  *         "effectiveTarget": 20,
- *         "targetSource": "recommended",  // "ndc" | "group" | "recommended"
+ *         "targetSource": "recommended",  // "ndc" | "group" | "recommended" ("group" can no longer actually occur — group overrides are ignored — but the type is kept for API stability)
  *         "order": 12
  *       }
  *     ]
@@ -119,6 +140,22 @@ function matchOrderingVaccineName(base: string, catalog: CatalogVaccine[]): Cata
     if (direct) return direct;
   }
   return matchVaccineName(base, catalog);
+}
+
+// V-T26 item 8 (Will 2026-09-09, verbatim): "any vaccine whose name
+// starts with 'Pfizer 3-4' or 'Pfizer 5-11' must not appear in Ordering
+// at all (neither active list nor Inactive section)." These are the two
+// pediatric COVID catalog rows seeded by
+// supabase/migrations/0005_seed_lots.sql — see that file's step 1 (both
+// have ndc: null, so they were never collapsed with the adult Comirnaty
+// row; each shows up as its own uncategorized "Other"-group row today).
+// Case-insensitive prefix match, same posture as
+// lib/ordering-ndc-collapse.ts's other name-based checks.
+const EXCLUDED_PFIZER_CHILD_NAME_PREFIXES = ["Pfizer 3-4", "Pfizer 5-11"];
+
+function isExcludedPfizerChildRow(name: string): boolean {
+  const lower = name.trim().toLowerCase();
+  return EXCLUDED_PFIZER_CHILD_NAME_PREFIXES.some((prefix) => lower.startsWith(prefix.toLowerCase()));
 }
 
 type OnHandEntry = { quantity: number | null; receivedAt: string };
@@ -179,7 +216,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Failed to load vaccine catalog." }, { status: 500 });
     }
 
-    const catalog: CatalogVaccine[] = vaccinesData ?? [];
+    // V-T26 item 8 (Will 2026-09-09): drop the Pfizer pediatric "child"
+    // catalog rows entirely, active or inactive — Will is separately
+    // deactivating these in the DB, but filtering by name HERE too means
+    // they vanish from the Ordering tab regardless of that column's
+    // state (and regardless of any future re-seed that recreates them).
+    const catalog: CatalogVaccine[] = (vaccinesData ?? []).filter((vaccine) => !isExcludedPfizerChildRow(vaccine.name));
 
     // upcoming7d range: today through today+6 inclusive = 7 calendar days.
     const start = todayInChicago();
@@ -341,6 +383,24 @@ export async function GET(request: Request) {
       }
     }
 
+    // Walk-up % (V-T26 item 1, Will 2026-09-09): the effective rate
+    // every recommendedTarget/computeEffectiveTargets call below uses,
+    // replacing the previously hard-coded 25% — degrades to
+    // DEFAULT_WALK_IN_PCT (25) with walkInPctPending:true before 0012
+    // has been applied, never an error (same posture as targetsPending
+    // above).
+    let walkInPct: number;
+    let walkInPctPending: boolean;
+    try {
+      const result = await getWalkInPct(supabase);
+      walkInPct = result.pct;
+      walkInPctPending = result.pending;
+    } catch (err) {
+      console.error("GET /api/ordering/recommendation: failed to load ordering.walk_in_pct", err);
+      return NextResponse.json({ error: "Failed to load ordering settings." }, { status: 500 });
+    }
+    const walkInRate = walkInPctToRate(walkInPct);
+
     type BuiltRow = {
       key: string;
       vaccineName: string;
@@ -359,7 +419,10 @@ export async function GET(request: Request) {
         key: group.key,
         vaccineName: group.vaccineName,
         ndc: group.ndc,
-        group: getVaccineGroup(group.vaccineName),
+        // V-T26 item 5: COVID/Flu/Other only on the Ordering tab — see
+        // lib/ordering-group.ts's doc comment (this is also what fixes
+        // item 8's "Other renders twice" bug; see that file).
+        group: getOrderingGroup(group.vaccineName),
         active: group.active,
         upcoming7d,
         onHand: onHandEntry?.quantity ?? null,
@@ -370,11 +433,17 @@ export async function GET(request: Request) {
     // Group apportionment (lib/ordering-targets.ts) considers ONLY
     // active rows (Will's brief) — inactive rows still get a
     // recommended/order figure, just never participate in (or benefit
-    // from) a group-level split.
+    // from) a group-level split. V-T26 item 6 (Will 2026-09-09: "Remove
+    // group target for now"): group overrides are passed as an EMPTY
+    // map here, not `groupOverrides` — any scope='group' row still on
+    // file (see the targets fetch above) is loaded but deliberately
+    // never applied, so it can no longer affect any row's effective
+    // target/order (Will's brief: "ignore scope='group' rows in the
+    // effective-target computation; don't delete them").
     const activeTargetInputs: TargetInput[] = builtRows
       .filter((row) => row.active)
       .map((row) => ({ key: row.key, ndc: row.ndc, group: row.group, upcoming7d: row.upcoming7d, onHand: row.onHand }));
-    const activeResults = computeEffectiveTargets(activeTargetInputs, { ndc: ndcOverrides, group: groupOverrides });
+    const activeResults = computeEffectiveTargets(activeTargetInputs, { ndc: ndcOverrides, group: {} }, walkInRate);
     const activeResultByKey = new Map(activeResults.map((result) => [result.key, result]));
 
     const rows = builtRows.map((row) => {
@@ -401,7 +470,7 @@ export async function GET(request: Request) {
 
       // Inactive row (or, defensively, a missing active-result lookup):
       // NDC override only, no group apportionment.
-      const recommended = recommendedTarget(row.upcoming7d);
+      const recommended = recommendedTarget(row.upcoming7d, walkInRate);
       const ndcOverride = row.ndc ? ndcOverrides[row.ndc] : undefined;
       const effective = ndcOverride ?? recommended;
       return {
@@ -421,7 +490,14 @@ export async function GET(request: Request) {
       };
     });
 
-    return NextResponse.json({ onHandLastReceivedAt, targetsPending, groupTargets: groupOverrides, rows });
+    return NextResponse.json({
+      onHandLastReceivedAt,
+      targetsPending,
+      walkInPct,
+      walkInPctPending,
+      groupTargets: groupOverrides,
+      rows,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

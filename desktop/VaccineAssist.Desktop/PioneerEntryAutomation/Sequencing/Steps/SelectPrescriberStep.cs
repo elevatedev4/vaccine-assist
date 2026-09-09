@@ -43,19 +43,19 @@ public sealed class SelectPrescriberStep : IPioneerEntryStep
 
     public string Name => "Select prescriber";
 
-    public Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
+    public async Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
     {
         if (context.DryRun)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: true,
+            return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
                 $"Would type physician alternate ID \"{context.Payload.PhysicianAlternateId}\" into the prescriber field " +
-                $"(AutomationId '{PrescriberQuickSearchAutomationId}') and press ENTER twice (no PioneerRx call made)."));
+                $"(AutomationId '{PrescriberQuickSearchAutomationId}') and press ENTER twice (no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
         if (string.IsNullOrWhiteSpace(context.Payload.PhysicianAlternateId))
@@ -63,14 +63,14 @@ public sealed class SelectPrescriberStep : IPioneerEntryStep
             // Belt-and-suspenders: DataEntryPopupViewModel.BuildLivePayloadAsync
             // is supposed to block the whole entry before a payload with no
             // resolved physician ever reaches a live sequence run.
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "No protocol physician alternate ID on the payload — entry should have been blocked before this sequence ran."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                "No protocol physician alternate ID on the payload — entry should have been blocked before this sequence ran.");
         }
 
-        var outcome = QuickSearchFieldEntry.TypeAndConfirm(
+        var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
             context.AttachedWindow, PrescriberQuickSearchAutomationId, "prescriber",
-            context.Payload.PhysicianAlternateId, EnterPresses);
+            context.Payload.PhysicianAlternateId, EnterPresses, context.Log, cancellationToken);
 
-        return Task.FromResult(new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message));
+        return new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message);
     }
 }

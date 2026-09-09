@@ -61,11 +61,18 @@ type FakeTargetRow = { scope: string; key: string; target_on_hand: number };
 //
 // `targetRows: null` simulates ordering_target not existing yet (0011
 // pending) — the route must degrade to targetsPending:true, not error.
+//
+// `walkInPct` (V-T26 item 1) defaults to "missing-table" (0012 pending —
+// the route falls back to the default 25%/pending:true) so every
+// existing test below keeps passing unchanged; pass a number to
+// exercise a saved walk-up % setting, or "error" for a genuine
+// (non-missing-table) Supabase failure.
 function fakeSupabase(
   onHandRows: unknown[] = [],
   catalog: unknown[] = CATALOG,
   address: FakeAddress | "missing-table" | "error" = "missing-table",
-  targetRows: FakeTargetRow[] | null = []
+  targetRows: FakeTargetRow[] | null = [],
+  walkInPct: number | "missing-table" | "error" = "missing-table"
 ) {
   return {
     from: (table: string) => {
@@ -130,6 +137,23 @@ function fakeSupabase(
           };
         }
         return { select: async () => ({ data: targetRows, error: null }) };
+      }
+      if (table === "app_setting") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => {
+                if (walkInPct === "missing-table") {
+                  return { data: null, error: { code: "42P01", message: 'relation "app_setting" does not exist' } };
+                }
+                if (walkInPct === "error") {
+                  return { data: null, error: new Error("connection reset") };
+                }
+                return { data: { value: walkInPct }, error: null };
+              },
+            }),
+          }),
+        };
       }
       throw new Error(`unexpected table ${table}`);
     },
@@ -461,5 +485,164 @@ describe("GET /api/ordering/recommendation", () => {
 
     const response = await GET(authedRequest());
     expect(response.status).toBe(200);
+  });
+
+  // --- V-T26 additions (Will 2026-09-09) -----------------------------
+
+  describe("walk-up % setting (item 1)", () => {
+    it("defaults to 25% with walkInPctPending:true before 0012 has been applied", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], CATALOG) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      expect(body.walkInPct).toBe(25);
+      expect(body.walkInPctPending).toBe(true);
+    });
+
+    it("uses a saved walk-up % to compute recommendedTarget/order instead of the 25% default", async () => {
+      const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabase([], catalog, "missing-table", [], 50) as never
+      );
+      vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+      vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+      const appointment = (date: string) => ({
+        date,
+        appointmentTypeId: 1,
+        hourOfDay: 10,
+        vaccineNames: ["Flu Quad 2025-26"],
+        testNames: [],
+        covidBrand: "any" as const,
+        covidAgeBucket: "unknown" as const,
+        fluAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
+      });
+      vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+        appointments: [
+          appointment("2026-08-19"),
+          appointment("2026-08-19"),
+          appointment("2026-08-20"),
+          appointment("2026-08-20"),
+        ],
+        possiblyTruncated: false,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      expect(body.walkInPct).toBe(50);
+      expect(body.walkInPctPending).toBe(false);
+      // upcoming7d=4: at the 25% default, buffer=ceil(4*0.25)=1 ->
+      // recommendedTarget=5; at the saved 50%, buffer=ceil(4*0.5)=2 ->
+      // recommendedTarget=6 — this IS the divergence proving the route
+      // is actually using the saved pct, not silently keeping 25%.
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.upcoming7d).toBe(4);
+      expect(fluRow.recommendedTarget).toBe(6);
+      expect(fluRow.order).toBe(6);
+    });
+
+    it("returns 500 for a non-missing-table walk-in-pct Supabase error (never silently swallowed)", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabase([], CATALOG, "missing-table", [], "error") as never
+      );
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(500);
+    });
+  });
+
+  describe("COVID/Flu/Other regrouping (item 5) and the Pfizer child-row exclusion (item 8)", () => {
+    it("collapses fine-grained groups to COVID/Flu/Other only", async () => {
+      const catalog = [
+        { id: "v-comirnaty", name: "Comirnaty 2025-26 12+", short_code: "comirnaty12", ndc: null, active: true },
+        { id: "v-flu", name: "Fluzone PFS", short_code: "fluzonepfs", ndc: null, active: true },
+        { id: "v-hpv", name: "Gardasil", short_code: "gardasil1", ndc: null, active: true },
+        { id: "v-shingles", name: "Shingrix", short_code: "shingrix1", ndc: null, active: true },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const byName = new Map(body.rows.map((r: { vaccineName: string; group: string }) => [r.vaccineName, r.group]));
+      expect(byName.get("Comirnaty 2025-26 12+")).toBe("COVID");
+      expect(byName.get("Fluzone PFS")).toBe("Flu");
+      expect(byName.get("Gardasil")).toBe("Other"); // fine-grained "HPV" collapses to Other
+      expect(byName.get("Shingrix")).toBe("Other"); // fine-grained "Shingles" collapses to Other
+
+      // Every row's group is one of exactly the three buckets — no
+      // fine-grained name (HPV, Shingles, Pneumonia, ...) leaks through.
+      for (const row of body.rows) {
+        expect(["COVID", "Flu", "Other"]).toContain(row.group);
+      }
+    });
+
+    it("excludes 'Pfizer 3-4' and 'Pfizer 5-11' catalog rows entirely, active or inactive", async () => {
+      const catalog = [
+        { id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true },
+        { id: "v-pfizer34", name: "Pfizer 3-4", short_code: "pfizer34", ndc: null, active: true },
+        { id: "v-pfizer511", name: "Pfizer 5-11", short_code: "pfizer511", ndc: null, active: true },
+        { id: "v-pfizer34-inactive", name: "Pfizer 3-4 (old)", short_code: "pfizer34old", ndc: null, active: false },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const names = body.rows.map((r: { vaccineName: string }) => r.vaccineName);
+      expect(names).not.toContain("Pfizer 3-4");
+      expect(names).not.toContain("Pfizer 5-11");
+      expect(names).not.toContain("Pfizer 3-4 (old)");
+      expect(names).toContain("Flu Quad 2025-26");
+    });
+
+    it("the 'Other' group can never appear more than once worth of rows (regression guard for the double-render bug)", async () => {
+      // The bug lived in the OLD page.tsx's own group-display-order
+      // array ([...GROUP_DISPLAY_ORDER, OTHER_GROUP] double-counting
+      // OTHER_GROUP), not in this route — but this test locks down the
+      // route's `group` field shape (exactly one of COVID/Flu/Other per
+      // row, never a duplicate group STRING variant) so a future regression
+      // in getOrderingGroup can't reintroduce a similar bug here.
+      const catalog = [
+        { id: "v-pfizer34", name: "Pfizer 3-4", short_code: "pfizer34", ndc: null, active: true },
+        { id: "v-pfizer511", name: "Pfizer 5-11", short_code: "pfizer511", ndc: null, active: true },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      // Both Pfizer child rows are excluded (item 8), so no rows at all
+      // remain — and therefore no "Other" group section either.
+      expect(body.rows).toHaveLength(0);
+    });
+  });
+
+  describe("group targets are ignored in the effective-target computation (item 6)", () => {
+    it("a stale scope='group' override in ordering_target no longer apportions across the group's rows", async () => {
+      const catalog = [
+        { id: "v-flu1", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: "11111111111", active: true },
+        { id: "v-flu2", name: "Fluad", short_code: "fluad", ndc: "22222222222", active: true },
+      ];
+      // A group-scoped override for "Flu" — this table row is left on
+      // file (Will's brief: "don't delete them") but must have NO effect
+      // on any row's effectiveTarget/order below.
+      const targetRows: FakeTargetRow[] = [{ scope: "group", key: "Flu", target_on_hand: 500 }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog, "missing-table", targetRows) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      // groupTargets still reflects the DB row (API/lib left intact)...
+      expect(body.groupTargets).toEqual({ Flu: 500 });
+      // ...but neither Flu row's targetSource is "group", and neither
+      // row's effectiveTarget/order was apportioned from the 500 total —
+      // both fall back to their own plain recommendedTarget (0 upcoming
+      // -> recommendedTarget 0, not some slice of 500).
+      for (const row of body.rows) {
+        expect(row.targetSource).toBe("recommended");
+        expect(row.effectiveTarget).toBe(0);
+        expect(row.order).toBe(0);
+      }
+    });
   });
 });

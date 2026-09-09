@@ -37,7 +37,13 @@ public static class AppFileLog
 
     private static readonly object SyncRoot = new();
 
-    private static string LogFilePath
+    /// <summary>V-T28 item 3 (Will's brief): "the desktop log must name the
+    /// log file's full path at startup ... so Will can find them." Made
+    /// public (was private) purely so App.xaml.cs's OnStartup can log this
+    /// same path as its very first line — no other behavior change, still
+    /// %AppData%\VaccineAssist\logs\app.log (Environment.SpecialFolder.ApplicationData
+    /// is the ROAMING profile, i.e. %APPDATA%, not %LOCALAPPDATA%).</summary>
+    public static string LogFilePath
     {
         get
         {
