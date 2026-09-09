@@ -530,6 +530,117 @@ describe("fetchAppointmentsForRange", () => {
       expect(result.appointments[0].testNames).toEqual([]);
     });
 
+    // V-T27 (Will, 2026-09-09 verbatim: "Make sure the test appointment
+    // data is coming through (which test they want to receive from the
+    // intake questions)" — the Tests column was showing "COVID" for only
+    // SOME rows). The three fixtures below are the shapes that were being
+    // dropped before this round: a QUESTION-style field label (answer as
+    // the value), a checkbox field whose value comes back as an ARRAY
+    // instead of a joined string, and a test named directly in the
+    // appointment TYPE with no parenthetical breakdown at all.
+    it("extracts a test name from a QUESTION-style field label ('Which test would you like?') with the answer as the value", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Test appointment",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Which test would you like?", value: "COVID" }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["COVID"]);
+    });
+
+    it("extracts every test from a multi-select QUESTION-style field's comma-joined answer", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Test appointment",
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [{ fieldID: 9, name: "What tests would you like to receive?", value: "COVID, Strep" }],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["COVID", "Strep"]);
+    });
+
+    it("extracts every test from a checkbox field whose value is an ARRAY of selected options, not a joined string", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Test appointment",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: ["COVID", "Strep Throat"] }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["COVID", "Strep Throat"]);
+    });
+
+    it("ignores a checkbox array value with a non-string entry rather than guessing at it", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Flu Shot",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: ["COVID", { weird: true }] }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
+
+    it("extracts a single test name from a plain appointment TYPE name with no parenthetical ('COVID Test')", async () => {
+      const fixture = [acuityAppointmentFixture({ type: "COVID Test" })];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["COVID"]);
+    });
+
+    it("extracts a single test name from a plain appointment TYPE name ending in 'Testing'", async () => {
+      const fixture = [acuityAppointmentFixture({ type: "Strep Testing" })];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["Strep"]);
+    });
+
+    it("does NOT extract a test name from a vaccine type that merely mentions testing in passing ('COVID Vaccine + Test Visit')", async () => {
+      const fixture = [acuityAppointmentFixture({ type: "COVID Vaccine + Test Visit" })];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
+
+    it("still prefers a form field's testNames over the plain-type-name fallback when both are present", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "COVID Test",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: "Strep" }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["Strep"]);
+    });
+
     it("drops a value from a genuinely-named 'Select tests:' field when it's a long free-text answer instead of a short multi-select choice", async () => {
       // Well over the 40-char allowlist cap (lib/acuity-client.ts's
       // MAX_TEST_VALUE_LENGTH) — the exact length doesn't matter, only
@@ -579,7 +690,25 @@ describe("fetchAppointmentsForRange", () => {
     it("does not match a screening question that merely mentions 'test'", () => {
       expect(isTestFormFieldName("Have you had a positive COVID test recently?")).toBe(false);
       expect(isTestFormFieldName("Any test results we should know about?")).toBe(false);
-      expect(isTestFormFieldName("Which test would you like?")).toBe(false);
+    });
+
+    // V-T27 (Will, 2026-09-09): a real Acuity form can phrase the test
+    // selection as a QUESTION ("Which test would you like?") rather than
+    // the "Select tests:" label the original live probe found — this WAS
+    // dropped entirely (see the superseded assertion this replaces, git
+    // blame) until this round; now matched via
+    // TEST_SELECTION_QUESTION_PATTERN. isAllowedTestValue (see the
+    // "point-of-care test extraction" describe block above) is still the
+    // deciding second layer on the VALUE either way.
+    it("matches a forward-looking selection question ('which'/'what' + 'test(s)')", () => {
+      expect(isTestFormFieldName("Which test would you like?")).toBe(true);
+      expect(isTestFormFieldName("Which tests would you like to receive?")).toBe(true);
+      expect(isTestFormFieldName("What test are you here for?")).toBe(true);
+    });
+
+    it("still does not match an unrelated 'which' question that never mentions test(s)", () => {
+      expect(isTestFormFieldName("Which vaccine(s) are you receiving?")).toBe(false);
+      expect(isTestFormFieldName("Which location would you like?")).toBe(false);
     });
   });
 

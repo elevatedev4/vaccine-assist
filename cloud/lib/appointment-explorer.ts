@@ -315,96 +315,129 @@ export type GroupByMode =
   | "covidAge"
   | "fluAge";
 
-export type GroupSummaryRow = {
+/**
+ * One group-by bucket, carrying its own full ExplorerRow list (V-T27,
+ * Will 2026-09-09 verbatim: "Group by should make groups and display the
+ * data in a table under each group. The current functionality is
+ * summing." — replaces the old count-only GroupSummaryRow/computeGroups
+ * pair). `rows` is UNSORTED here — same "options describe the loaded
+ * range" convention as filterOptions in the page: the caller sorts each
+ * group's own rows (sortRows) with whatever column sort is currently
+ * active, exactly like the ungrouped table does, so a grouped view is
+ * never out of sync with the flat one.
+ */
+export type ExplorerRowGroup = {
   group: string;
-  appointments: number;
-  vaccines: number;
-  /** 0-100, out of the TOTAL appointment count in the input set (not the
-   * sum of every group's appointments) — see the "vaccine" mode note
-   * below for why that denominator can make percentages exceed 100%. */
-  pctOfAppointments: number;
+  rows: ExplorerRow[];
 };
 
+// Buckets used to put "day" groups in calendar-week order (Sun..Sat)
+// rather than alphabetical (which would wrongly sort "Fri" before "Mon").
+const DAY_ORDER_FOR_GROUPS: readonly string[] = DAY_LABELS;
+
 /**
- * Buckets the filtered rows by `mode` and computes appointments/vaccines/
- * percentage per bucket. "none" returns [] (no summary table to render).
- *
- * "vaccine" and "test" modes are the deliberately double-counting buckets
- * (per the explorer's spec): a row with 2 vaccineNames (or 2 testNames) is
- * bumped once per name, so both `appointments` and `vaccines` in each
- * group row count every OCCURRENCE of that name, not distinct
- * appointments — an appointment appearing in two different vaccine/test
- * groups is not a bug.
- * Every other mode buckets each row exactly once, and `vaccines` there is
- * still each bucketed row's own vaccineNames.length (same rule as
- * computeSums), so those groups' `vaccines` and `appointments` numbers
- * can differ (an appointment with 2 vaccines contributes 2 to `vaccines`
- * but 1 to `appointments` in, say, the "day of week" grouping).
- *
- * Groups are sorted by descending appointment count, ties broken
- * alphabetically by group label, for a stable, skimmable summary table.
+ * Sort key for one group, per mode — backs the "sensible order" rule in
+ * groupRows's doc comment: date-keyed modes sort chronologically (a plain
+ * ascending string compare already achieves that, since every date group
+ * key is "YYYY-MM-DD" and the "Unknown" fallback bucket, used only when a
+ * row's date/createdDate is unparseable, sorts after every real date —
+ * digits precede "U" in ASCII); "day" sorts calendar-week order via
+ * DAY_ORDER_FOR_GROUPS (its own "Unknown" fallback sorts last); "hour"
+ * sorts by the underlying 0-23 hour value rather than its "9 AM"/"1 PM"
+ * label (every row in an hour group shares the same hourOfDay by
+ * construction, so reading it off the first row is exact, not a
+ * heuristic); every other mode (vaccine/test/appointmentType/
+ * covidBrand/covidAge/fluAge) sorts alphabetically by group label.
  */
-export function computeGroups(rows: ExplorerRow[], mode: GroupByMode): GroupSummaryRow[] {
+function groupSortKey(mode: GroupByMode, group: string, rows: ExplorerRow[]): string | number {
+  if (mode === "day") {
+    const index = DAY_ORDER_FOR_GROUPS.indexOf(group);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  }
+  if (mode === "hour") {
+    return rows[0]?.hourOfDay ?? 0;
+  }
+  return group;
+}
+
+function compareGroups(a: ExplorerRowGroup, b: ExplorerRowGroup, mode: GroupByMode): number {
+  const keyA = groupSortKey(mode, a.group, a.rows);
+  const keyB = groupSortKey(mode, b.group, b.rows);
+  if (typeof keyA === "number" && typeof keyB === "number") return keyA - keyB;
+  return String(keyA).localeCompare(String(keyB));
+}
+
+/**
+ * Buckets the filtered rows by `mode`, keeping every member row (not just
+ * a count) in each bucket — "none" returns [] (no grouped tables to
+ * render; the page falls back to its single flat table).
+ *
+ * "vaccine" and "test" modes are the deliberately double-membership
+ * buckets (per the explorer's spec, unchanged from the old
+ * count-only computeGroups): a row with 2 vaccineNames (or 2 testNames)
+ * appears once under EACH name's group — an appointment showing up under
+ * two different vaccine/test groups is not a bug, it's Will's own
+ * "Rows that belong to multiple groups ... appear under each" spec
+ * (V-T27). A row with no vaccineNames/testNames in that mode goes to a
+ * "(none)" bucket rather than being dropped. Every other mode buckets
+ * each row into exactly ONE group.
+ *
+ * See groupSortKey/compareGroups above for the per-mode "sensible order"
+ * groups are returned in.
+ */
+export function groupRows(rows: ExplorerRow[], mode: GroupByMode): ExplorerRowGroup[] {
   if (mode === "none") return [];
 
-  const totalAppointments = rows.length;
-  const groups = new Map<string, { appointments: number; vaccines: number }>();
+  const groups = new Map<string, ExplorerRow[]>();
 
-  function bump(key: string, vaccineDelta: number) {
-    const existing = groups.get(key) ?? { appointments: 0, vaccines: 0 };
-    existing.appointments += 1;
-    existing.vaccines += vaccineDelta;
-    groups.set(key, existing);
+  function addTo(key: string, row: ExplorerRow) {
+    const existing = groups.get(key);
+    if (existing) existing.push(row);
+    else groups.set(key, [row]);
   }
 
   for (const row of rows) {
-    const vaccineCount = row.vaccineNames.length;
     switch (mode) {
       case "apptDate":
-        bump(row.date, vaccineCount);
+        addTo(row.date, row);
         break;
       case "bookedOn":
-        bump(row.createdDate || "Unknown", vaccineCount);
+        addTo(row.createdDate || "Unknown", row);
         break;
       case "day":
-        bump(dayOfWeekLabel(row.date) || "Unknown", vaccineCount);
+        addTo(dayOfWeekLabel(row.date) || "Unknown", row);
         break;
       case "hour":
-        bump(formatHourLabel(row.hourOfDay), vaccineCount);
+        addTo(formatHourLabel(row.hourOfDay), row);
         break;
       case "appointmentType":
-        bump(row.appointmentTypeName, vaccineCount);
+        addTo(row.appointmentTypeName, row);
         break;
       case "covidBrand":
-        bump(row.covidBrand, vaccineCount);
+        addTo(row.covidBrand, row);
         break;
       case "covidAge":
-        bump(row.covidAgeBucket, vaccineCount);
+        addTo(row.covidAgeBucket, row);
         break;
       case "fluAge":
-        bump(row.fluAgeBucket, vaccineCount);
+        addTo(row.fluAgeBucket, row);
         break;
       case "vaccine": {
         const names = row.vaccineNames.length > 0 ? row.vaccineNames : ["(none)"];
-        for (const name of names) bump(name, 1);
+        for (const name of names) addTo(name, row);
         break;
       }
       case "test": {
         const names = row.testNames.length > 0 ? row.testNames : ["(none)"];
-        for (const name of names) bump(name, 1);
+        for (const name of names) addTo(name, row);
         break;
       }
     }
   }
 
   return Array.from(groups.entries())
-    .map(([group, { appointments, vaccines }]) => ({
-      group,
-      appointments,
-      vaccines,
-      pctOfAppointments: totalAppointments === 0 ? 0 : (appointments / totalAppointments) * 100,
-    }))
-    .sort((a, b) => b.appointments - a.appointments || a.group.localeCompare(b.group));
+    .map(([group, groupedRows]) => ({ group, rows: groupedRows }))
+    .sort((a, b) => compareGroups(a, b, mode));
 }
 
 const CSV_HEADERS = [
@@ -432,6 +465,27 @@ function csvField(value: string): string {
   return value;
 }
 
+/** One row's worth of CSV_HEADERS-ordered field values, shared by
+ * rowsToCsv and groupedRowsToCsv below so the two never drift out of sync
+ * on column order/formatting. */
+function rowToCsvFields(row: ExplorerRow): string[] {
+  const lead = computeLeadDays(row);
+  return [
+    row.date,
+    dayOfWeekLabel(row.date),
+    formatHourLabel(row.hourOfDay),
+    row.createdDate,
+    lead === null ? "" : String(lead),
+    row.appointmentTypeName,
+    row.vaccineNames.join(", "),
+    row.testNames.join(", "),
+    String(row.vaccineNames.length),
+    row.covidBrand,
+    row.covidAgeBucket,
+    row.fluAgeBucket,
+  ];
+}
+
 /** Client-side CSV serialization of the filtered rows, same columns as
  * the on-screen table — the caller (the explorer page) turns this into a
  * Blob download. De-identified data only, per this feature's PHI rule, so
@@ -439,22 +493,25 @@ function csvField(value: string): string {
 export function rowsToCsv(rows: ExplorerRow[]): string {
   const lines = [CSV_HEADERS.join(",")];
   for (const row of rows) {
-    const lead = computeLeadDays(row);
-    const fields = [
-      row.date,
-      dayOfWeekLabel(row.date),
-      formatHourLabel(row.hourOfDay),
-      row.createdDate,
-      lead === null ? "" : String(lead),
-      row.appointmentTypeName,
-      row.vaccineNames.join(", "),
-      row.testNames.join(", "),
-      String(row.vaccineNames.length),
-      row.covidBrand,
-      row.covidAgeBucket,
-      row.fluAgeBucket,
-    ];
-    lines.push(fields.map(csvField).join(","));
+    lines.push(rowToCsvFields(row).map(csvField).join(","));
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Grouped-mode CSV export (V-T27, Will 2026-09-09: "CSV export in
+ * group-by mode should include a leading 'Group' column") — same columns/
+ * row shape as rowsToCsv, with one extra leading "Group" column carrying
+ * each row's own group label. A row that belongs to multiple groups (the
+ * "vaccine"/"test" double-membership modes) appears once per group it's
+ * in, same as the on-screen grouped tables.
+ */
+export function groupedRowsToCsv(groups: ExplorerRowGroup[]): string {
+  const lines = [["Group", ...CSV_HEADERS].join(",")];
+  for (const { group, rows } of groups) {
+    for (const row of rows) {
+      lines.push([group, ...rowToCsvFields(row)].map(csvField).join(","));
+    }
   }
   return lines.join("\n");
 }

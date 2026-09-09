@@ -5,12 +5,13 @@ import {
   chunkDateRange,
   clearAllFilters,
   clearFilterKey,
-  computeGroups,
   computeLeadDays,
   computeSums,
   dayOfWeekLabel,
   EMPTY_EXPLORER_FILTERS,
   formatHourLabel,
+  groupedRowsToCsv,
+  groupRows,
   matchesSearch,
   rowsToCsv,
   sortRows,
@@ -279,7 +280,14 @@ describe("computeSums", () => {
   });
 });
 
-describe("computeGroups", () => {
+// V-T27 (Will, verbatim, 2026-09-09): "Group by should make groups and
+// display the data in a table under each group. The current functionality
+// is summing." — groupRows replaces the old count-only computeGroups: each
+// group now carries its own full ExplorerRow list (rendered as a full rows
+// table under the group's heading), with a "sensible order" per mode
+// (dates ascending, names alphabetical) instead of the old
+// descending-count sort.
+describe("groupRows", () => {
   const rows = [
     row({ date: "2026-09-10", vaccineNames: ["Flu"], appointmentTypeName: "A", covidBrand: "any", covidAgeBucket: "unknown", fluAgeBucket: "3-64" }),
     row({ date: "2026-09-10", vaccineNames: ["Flu", "COVID-Pfizer"], appointmentTypeName: "A", covidBrand: "pfizer", covidAgeBucket: "12-64", fluAgeBucket: "3-64" }),
@@ -287,111 +295,137 @@ describe("computeGroups", () => {
   ];
 
   it("returns [] for 'none'", () => {
-    expect(computeGroups(rows, "none")).toEqual([]);
+    expect(groupRows(rows, "none")).toEqual([]);
   });
 
-  it("groups by appointment date", () => {
-    const groups = computeGroups(rows, "apptDate");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["2026-09-10"].appointments).toBe(2);
-    expect(byGroup["2026-09-10"].vaccines).toBe(3); // 1 + 2
-    expect(byGroup["2026-09-11"].appointments).toBe(1);
-    expect(byGroup["2026-09-11"].pctOfAppointments).toBeCloseTo((1 / 3) * 100);
+  it("groups by appointment date, each group carrying its own full row list, ordered chronologically", () => {
+    const groups = groupRows(rows, "apptDate");
+    expect(groups.map((g) => g.group)).toEqual(["2026-09-10", "2026-09-11"]);
+    expect(groups[0].rows).toHaveLength(2);
+    expect(groups[0].rows).toEqual([rows[0], rows[1]]);
+    expect(groups[1].rows).toEqual([rows[2]]);
   });
 
-  it("groups by booking date", () => {
-    const groups = computeGroups(
-      [row({ createdDate: "2026-09-01" }), row({ createdDate: "2026-09-01" }), row({ createdDate: "2026-09-02" })],
+  it("groups by booking date, 'Unknown' sorting after every real date", () => {
+    const groups = groupRows(
+      [
+        row({ createdDate: "2026-09-02" }),
+        row({ createdDate: "" }),
+        row({ createdDate: "2026-09-01" }),
+        row({ createdDate: "2026-09-01" }),
+      ],
       "bookedOn"
     );
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["2026-09-01"].appointments).toBe(2);
-    expect(byGroup["2026-09-02"].appointments).toBe(1);
+    expect(groups.map((g) => g.group)).toEqual(["2026-09-01", "2026-09-02", "Unknown"]);
+    expect(groups[0].rows).toHaveLength(2);
   });
 
-  it("groups by day of week", () => {
-    // 2026-09-10 Thu, 2026-09-11 Fri
-    const groups = computeGroups(rows, "day");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["Thu"].appointments).toBe(2);
-    expect(byGroup["Fri"].appointments).toBe(1);
+  it("groups by day of week in calendar-week order (Sun..Sat), not alphabetical", () => {
+    // 2026-09-10 is Thu, 2026-09-11 is Fri — alphabetically "Fri" < "Thu",
+    // but calendar order puts Thu first.
+    const groups = groupRows(rows, "day");
+    expect(groups.map((g) => g.group)).toEqual(["Thu", "Fri"]);
+    expect(groups[0].rows).toHaveLength(2);
+    expect(groups[1].rows).toHaveLength(1);
   });
 
-  it("groups by hour", () => {
-    const groups = computeGroups([row({ hourOfDay: 9 }), row({ hourOfDay: 9 }), row({ hourOfDay: 13 })], "hour");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["9 AM"].appointments).toBe(2);
-    expect(byGroup["1 PM"].appointments).toBe(1);
+  it("groups by hour, ordered by the underlying hour value (not the label's own alphabetical order)", () => {
+    // "1 PM" would sort before "9 AM" alphabetically — the real order (9
+    // AM before 1 PM) requires reading the underlying hourOfDay.
+    const groups = groupRows([row({ hourOfDay: 13 }), row({ hourOfDay: 9 }), row({ hourOfDay: 9 })], "hour");
+    expect(groups.map((g) => g.group)).toEqual(["9 AM", "1 PM"]);
+    expect(groups[0].rows).toHaveLength(2);
+    expect(groups[1].rows).toHaveLength(1);
   });
 
-  it("groups by appointment type", () => {
-    const groups = computeGroups(rows, "appointmentType");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["A"].appointments).toBe(2);
-    expect(byGroup["B"].appointments).toBe(1);
+  it("groups by appointment type, alphabetically", () => {
+    const groups = groupRows(
+      [row({ appointmentTypeName: "Z" }), row({ appointmentTypeName: "A" }), row({ appointmentTypeName: "A" })],
+      "appointmentType"
+    );
+    expect(groups.map((g) => g.group)).toEqual(["A", "Z"]);
+    expect(groups[0].rows).toHaveLength(2);
   });
 
   it("groups by COVID brand", () => {
-    const groups = computeGroups(rows, "covidBrand");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["any"].appointments).toBe(1);
-    expect(byGroup["pfizer"].appointments).toBe(1);
-    expect(byGroup["moderna"].appointments).toBe(1);
+    const groups = groupRows(rows, "covidBrand");
+    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows.length]));
+    expect(byGroup["any"]).toBe(1);
+    expect(byGroup["pfizer"]).toBe(1);
+    expect(byGroup["moderna"]).toBe(1);
   });
 
   it("groups by COVID age bucket", () => {
-    const groups = computeGroups(rows, "covidAge");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["unknown"].appointments).toBe(1);
-    expect(byGroup["12-64"].appointments).toBe(1);
-    expect(byGroup["65+"].appointments).toBe(1);
+    const groups = groupRows(rows, "covidAge");
+    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows.length]));
+    expect(byGroup["unknown"]).toBe(1);
+    expect(byGroup["12-64"]).toBe(1);
+    expect(byGroup["65+"]).toBe(1);
   });
 
   it("groups by Flu age bucket", () => {
-    const groups = computeGroups(rows, "fluAge");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    expect(byGroup["3-64"].appointments).toBe(2);
-    expect(byGroup["unknown"].appointments).toBe(1);
+    const groups = groupRows(rows, "fluAge");
+    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows.length]));
+    expect(byGroup["3-64"]).toBe(2);
+    expect(byGroup["unknown"]).toBe(1);
   });
 
-  it("groups by vaccine, double-counting a multi-vaccine appointment across both groups", () => {
-    const groups = computeGroups(rows, "vaccine");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    // "Flu" appears in rows 1 and 2 -> 2 occurrences.
-    expect(byGroup["Flu"].appointments).toBe(2);
-    expect(byGroup["Flu"].vaccines).toBe(2);
-    // "COVID-Pfizer" appears once (row 2, which also counted toward Flu).
-    expect(byGroup["COVID-Pfizer"].appointments).toBe(1);
-    // "COVID-Moderna" appears once (row 3).
-    expect(byGroup["COVID-Moderna"].appointments).toBe(1);
-    // Total occurrences across groups (2 + 1 + 1 = 4) exceeds the 3 total
-    // appointments — the double-count is intentional, per the spec.
-    const totalOccurrences = groups.reduce((sum, g) => sum + g.appointments, 0);
-    expect(totalOccurrences).toBe(4);
+  it("groups by vaccine, a multi-vaccine appointment's row appearing under EACH of its vaccine groups (multi-membership)", () => {
+    const groups = groupRows(rows, "vaccine");
+    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows]));
+    // "Flu" appears in rows[0] and rows[1] -> both under "Flu".
+    expect(byGroup["Flu"]).toEqual([rows[0], rows[1]]);
+    // rows[1] (Flu + COVID-Pfizer) ALSO appears under "COVID-Pfizer" — the
+    // exact same row object, present in two different groups at once.
+    expect(byGroup["COVID-Pfizer"]).toEqual([rows[1]]);
+    expect(byGroup["COVID-Moderna"]).toEqual([rows[2]]);
+    // Total row-memberships across groups (2 + 1 + 1 = 4) exceeds the 3
+    // distinct appointments — the double-membership is intentional.
+    const totalMemberships = groups.reduce((sum, g) => sum + g.rows.length, 0);
+    expect(totalMemberships).toBe(4);
   });
 
-  it("groups by test, double-counting a multi-test appointment across both groups", () => {
+  it("groups by test, double-membership across groups, a testless row bucketing under '(none)'", () => {
     const testRows = [
       row({ testNames: ["COVID"] }),
       row({ testNames: ["COVID", "Strep Throat"] }),
       row({ testNames: [] }),
     ];
-    const groups = computeGroups(testRows, "test");
-    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
-    // "COVID" appears in rows 1 and 2 -> 2 occurrences.
-    expect(byGroup["COVID"].appointments).toBe(2);
-    // "Strep Throat" appears once (row 2).
-    expect(byGroup["Strep Throat"].appointments).toBe(1);
-    // A row with no test names buckets under "(none)".
-    expect(byGroup["(none)"].appointments).toBe(1);
+    const groups = groupRows(testRows, "test");
+    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows]));
+    expect(byGroup["COVID"]).toEqual([testRows[0], testRows[1]]);
+    expect(byGroup["Strep Throat"]).toEqual([testRows[1]]);
+    expect(byGroup["(none)"]).toEqual([testRows[2]]);
+  });
+});
+
+describe("groupedRowsToCsv", () => {
+  it("includes a leading 'Group' column before the normal headers", () => {
+    const groups = groupRows([row({ date: "2026-09-10" })], "apptDate");
+    const csv = groupedRowsToCsv(groups);
+    const lines = csv.split("\n");
+    expect(lines[0]).toBe(
+      "Group,Appt date,Day,Hour,Booked on,Lead days,Appointment type,Vaccines,Tests,# vaccines,COVID brand,COVID age,Flu age"
+    );
   });
 
-  it("sorts groups by descending appointment count, ties broken alphabetically", () => {
-    const groups = computeGroups(
-      [row({ appointmentTypeName: "Z" }), row({ appointmentTypeName: "A" }), row({ appointmentTypeName: "A" })],
-      "appointmentType"
-    );
-    expect(groups.map((g) => g.group)).toEqual(["A", "Z"]);
+  it("writes one data row per (group, row) pair, group value first", () => {
+    const groups = groupRows([row({ date: "2026-09-10" }), row({ date: "2026-09-11" })], "apptDate");
+    const csv = groupedRowsToCsv(groups);
+    const lines = csv.split("\n");
+    expect(lines).toHaveLength(3); // header + 2 groups of 1 row each
+    expect(lines[1].startsWith("2026-09-10,2026-09-10,")).toBe(true);
+    expect(lines[2].startsWith("2026-09-11,2026-09-11,")).toBe(true);
+  });
+
+  it("writes a multi-membership row once per group it belongs to, each line carrying that group's own label", () => {
+    const multiVaccineRow = row({ vaccineNames: ["Flu", "COVID-Pfizer"] });
+    const groups = groupRows([multiVaccineRow], "vaccine");
+    const csv = groupedRowsToCsv(groups);
+    const lines = csv.split("\n").slice(1); // drop header
+    expect(lines).toHaveLength(2);
+    expect(lines.some((line) => line.startsWith("Flu,"))).toBe(true);
+    expect(lines.some((line) => line.startsWith("COVID-Pfizer,"))).toBe(true);
   });
 });
 
