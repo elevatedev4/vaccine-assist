@@ -228,4 +228,118 @@ public class SendF3AndDismissPreEntryDialogsStepTests
             SendF3AndDismissPreEntryDialogsStep.DismissPendingDialogsAsync(
                 new[] { "Priority" }, maxEmptyTicks: 5, _ => false, NoOpWait, cts.Token));
     }
+
+    // --- MSG893 item 2 rework: PreEntryDialogTitles.MatchesWithAliases ---
+
+    [Theory]
+    [InlineData("Priority", "Priority", true)]
+    [InlineData("Patient on Cycle Fill", "Patient on Cycle Fill", true)]
+    [InlineData("Cycle Fill Warning", "Patient on Cycle Fill", true)] // the new alias
+    [InlineData("cycle fill", "Patient on Cycle Fill", true)]
+    [InlineData("Scan Hard Copy", "Priority", false)]
+    [InlineData("Cycle Fill Warning", "Priority", false)] // alias is scoped to PatientOnCycleFill only
+    public void MatchesWithAliasesAcceptsTheShorterCycleFillAliasOnlyForThatDialog(string windowTitle, string dialogTitleSubstring, bool expected)
+    {
+        Assert.Equal(expected, PreEntryDialogTitles.MatchesWithAliases(windowTitle, dialogTitleSubstring));
+    }
+
+    // --- MSG893 item 2: DismissAllStrayWindowsAsync (pure polling primitive) ---
+
+    [Fact]
+    public async Task DismissAllStrayWindowsAsyncDismissesEveryStrayWindowInSequenceThenStops()
+    {
+        var toDismiss = new Queue<string>(new[] { "Unexpected 1", "Unexpected 2" });
+        string? TryDismissNext() => toDismiss.Count > 0 ? toDismiss.Dequeue() : null;
+
+        var dismissed = await SendF3AndDismissPreEntryDialogsStep.DismissAllStrayWindowsAsync(
+            TryDismissNext, maxEmptyTicks: 3, NoOpWait);
+
+        Assert.Equal(new[] { "Unexpected 1", "Unexpected 2" }, dismissed);
+    }
+
+    [Fact]
+    public async Task DismissAllStrayWindowsAsyncReturnsEmptyWhenNothingEverAppears()
+    {
+        var dismissed = await SendF3AndDismissPreEntryDialogsStep.DismissAllStrayWindowsAsync(
+            () => null, maxEmptyTicks: 2, NoOpWait);
+
+        Assert.Empty(dismissed);
+    }
+
+    [Fact]
+    public async Task DismissAllStrayWindowsAsyncRespectsAnAlreadyCancelledToken()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            SendF3AndDismissPreEntryDialogsStep.DismissAllStrayWindowsAsync(
+                () => null, maxEmptyTicks: 5, NoOpWait, cts.Token));
+    }
+
+    // --- MSG893 item 2: WaitForAsync (pure "either signal" polling primitive) ---
+
+    [Fact]
+    public async Task WaitForAsyncReturnsImmediatelyWhenThePrimarySignalAlreadyMatches()
+    {
+        var fallbackCalled = false;
+        var result = await SendF3AndDismissPreEntryDialogsStep.WaitForAsync<string>(
+            () => "found-by-title",
+            () => { fallbackCalled = true; return null; },
+            maxEmptyTicks: 3, NoOpWait);
+
+        Assert.Equal("found-by-title", result);
+        Assert.False(fallbackCalled); // ?? short-circuits — the fallback signal is never even checked
+    }
+
+    [Fact]
+    public async Task WaitForAsyncFallsBackToTheSecondSignalWhenThePrimaryNeverMatches()
+    {
+        var result = await SendF3AndDismissPreEntryDialogsStep.WaitForAsync<string>(
+            () => null,
+            () => "found-by-field",
+            maxEmptyTicks: 3, NoOpWait);
+
+        Assert.Equal("found-by-field", result);
+    }
+
+    [Fact]
+    public async Task WaitForAsyncFindsAMatchOnALaterTickAfterInitialEmptyTicks()
+    {
+        var attempt = 0;
+        string? TryPrimary()
+        {
+            attempt++;
+            return attempt >= 3 ? "found-on-third-try" : null;
+        }
+
+        var result = await SendF3AndDismissPreEntryDialogsStep.WaitForAsync<string>(
+            TryPrimary, () => null, maxEmptyTicks: 5, NoOpWait);
+
+        Assert.Equal("found-on-third-try", result);
+    }
+
+    [Fact]
+    public async Task WaitForAsyncReturnsNullWhenNeitherSignalEverMatches()
+    {
+        var waitTickCallCount = 0;
+        Task CountingWait() { waitTickCallCount++; return Task.CompletedTask; }
+
+        var result = await SendF3AndDismissPreEntryDialogsStep.WaitForAsync<string>(
+            () => null, () => null, maxEmptyTicks: 2, CountingWait);
+
+        Assert.Null(result);
+        Assert.Equal(3, waitTickCallCount); // maxEmptyTicks (2) + 1, per the loop's own >= bound
+    }
+
+    [Fact]
+    public async Task WaitForAsyncRespectsAnAlreadyCancelledToken()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            SendF3AndDismissPreEntryDialogsStep.WaitForAsync<string>(
+                () => null, () => null, maxEmptyTicks: 5, NoOpWait, cts.Token));
+    }
 }

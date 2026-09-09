@@ -53,3 +53,53 @@ export function availableGroupsFor(names: ReadonlyArray<string | null | undefine
   const present = new Set(names.map(getVaccineGroup));
   return GROUP_DISPLAY_ORDER.filter((group) => present.has(group));
 }
+
+/**
+ * ADDITIVE — Physicians-tab-only grouping (V-T21 item 7, Will 2026-09-08,
+ * verbatim): "On physicians tab, group 'Flu vaccines' and 'COVID
+ * vaccines' and everything else goes into 'Other vaccines'." A coarser
+ * 3-bucket scheme layered on top of the fine-grained groups above (which
+ * the /data-entry guided flow still uses UNCHANGED — see getVaccineGroup/
+ * GROUP_DISPLAY_ORDER/availableGroupsFor above, none of which are
+ * modified here) — reuses getVaccineGroup's own Flu/COVID detection
+ * rather than a second name-prefix list, mirrored 1:1 with the desktop
+ * app's additive VaccineGroupCatalog.GetPhysiciansGroup (Models/
+ * VaccineGroupCatalog.cs).
+ */
+export const PHYSICIANS_FLU_GROUP = "Flu vaccines";
+export const PHYSICIANS_COVID_GROUP = "COVID vaccines";
+export const PHYSICIANS_OTHER_GROUP = "Other vaccines";
+
+export const PHYSICIANS_GROUP_DISPLAY_ORDER: readonly string[] = [
+  PHYSICIANS_FLU_GROUP,
+  PHYSICIANS_COVID_GROUP,
+  PHYSICIANS_OTHER_GROUP,
+];
+
+export function getPhysiciansGroup(name: string | null | undefined): string {
+  const fineGroup = getVaccineGroup(name);
+  if (fineGroup === "Flu") return PHYSICIANS_FLU_GROUP;
+  if (fineGroup === "COVID") return PHYSICIANS_COVID_GROUP;
+  return PHYSICIANS_OTHER_GROUP;
+}
+
+/** Every physicians-tab group present among `names`, in
+ * PHYSICIANS_GROUP_DISPLAY_ORDER's order — mirrors availableGroupsFor
+ * above, just over the coarser 3-bucket scheme. */
+export function availablePhysiciansGroupsFor(names: ReadonlyArray<string | null | undefined>): string[] {
+  const present = new Set(names.map(getPhysiciansGroup));
+  return PHYSICIANS_GROUP_DISPLAY_ORDER.filter((group) => present.has(group));
+}
+
+/** Maps a physicians-tab display group back to the persisted
+ * PhysicianRule.vaccine_group value ("Flu"/"COVID", the same fine-grained
+ * group name the schema/physician-resolution logic already expects — see
+ * supabase/migrations/0009_lots_bud_vaccine_defaults.sql) — or null for
+ * the catch-all "Other vaccines" group, which has no wildcard rule
+ * option (Will's brief: "the 'All <group> vaccines' rule options only for
+ * Flu and COVID"). */
+export function persistedGroupForPhysiciansGroup(group: string): string | null {
+  if (group === PHYSICIANS_FLU_GROUP) return "Flu";
+  if (group === PHYSICIANS_COVID_GROUP) return "COVID";
+  return null;
+}

@@ -44,3 +44,24 @@ export function isLotRowDue(lot: LotDueCheck, today: string): boolean {
   if (lot.beyond_use_date && lot.beyond_use_date <= today) return true;
   return false;
 }
+
+export type ActiveFlagLike = { active: boolean };
+
+/**
+ * V-T21 item 4 (Will, 2026-09-08): splits the /lots page's vaccine list
+ * into `active` (shown in the main table, on top) and `inactive` (shown
+ * in a collapsed "Inactive vaccines (N)" section below) — order within
+ * each group is preserved from the input. Pure/order-stable so the page
+ * component just filters twice with a single helper instead of inlining
+ * the same predicate in two places.
+ */
+export function partitionVaccinesByActive<T extends ActiveFlagLike>(
+  vaccines: readonly T[]
+): { active: T[]; inactive: T[] } {
+  const active: T[] = [];
+  const inactive: T[] = [];
+  for (const vaccine of vaccines) {
+    (vaccine.active ? active : inactive).push(vaccine);
+  }
+  return { active, inactive };
+}

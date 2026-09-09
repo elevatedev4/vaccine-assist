@@ -145,6 +145,11 @@ public class DataEntryPopupViewModelBeyondUseDateGateTests
         await Settle(viewModel);
         Assert.True(viewModel.IsLotExpiredOrMissing); // earliest-expiration lot (BUDPAST) is past BUD
 
+        // V-T21 item 6: SelectedVaccineActiveLot (BUDPAST) is itself past
+        // its beyond-use date, so the modal VAR-update confirmation gate
+        // applies here too — not what THIS test is about (FEFO lot
+        // selection in BuildPayloadAsync), so just confirm it.
+        viewModel.ConfirmVarUpdateRequested = _ => true;
         viewModel.SkipLotAndExpirationCommand.Execute(null);
         viewModel.EnterIntoPioneerCommand.Execute(null);
         await Settle(viewModel);

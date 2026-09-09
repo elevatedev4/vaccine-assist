@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
-import { availableGroupsFor, getVaccineGroup } from "@/lib/vaccine-group-catalog";
+import { availablePhysiciansGroupsFor, getPhysiciansGroup, persistedGroupForPhysiciansGroup } from "@/lib/vaccine-group-catalog";
 import { parseRuleTargetValue } from "@/lib/physician-rule-target";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
@@ -18,17 +18,27 @@ import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
  * instead of showing raw GUIDs in the rules list.
  *
  * V-cloud-tabs (Will, 2026-09-05/07, rule #5): the vaccine dropdown is
- * now grouped by catalog TYPE (flu, COVID, Tdap, pneumonia, ... — see
- * lib/vaccine-group-catalog.ts), with an "All <group> vaccines" option at
- * the top of each optgroup so a rule can target the whole group instead
- * of one product. The dropdown's single value is either
- * `group:<GroupName>` or `id:<vaccineId>` (parseRuleTargetValue below);
- * the "All <group> vaccines" options are hidden (with a "pending
- * migration" note) when the backend reports vaccine_group isn't
- * supported yet (physician_rule.vaccine_group, an additive column — see
+ * grouped by catalog TYPE, with an "All <group> vaccines" option at the
+ * top of each optgroup so a rule can target the whole group instead of
+ * one product. The dropdown's single value is either `group:<GroupName>`
+ * or `id:<vaccineId>` (parseRuleTargetValue below); the "All <group>
+ * vaccines" options are hidden (with a "pending migration" note) when the
+ * backend reports vaccine_group isn't supported yet
+ * (physician_rule.vaccine_group, an additive column — see
  * supabase/migrations/0009_lots_bud_vaccine_defaults.sql and
  * lib/schema-degradation.ts) — display grouping itself has no schema
  * dependency and always works.
+ *
+ * V-T21 item 7 (Will, 2026-09-08, verbatim): "On physicians tab, group
+ * 'Flu vaccines' and 'COVID vaccines' and everything else goes into
+ * 'Other vaccines'." Replaces the old fine-grained (flu/COVID/Tdap/
+ * pneumonia/...) grouping on THIS page only with exactly those 3 buckets,
+ * in that order — see lib/vaccine-group-catalog.ts's additive
+ * getPhysiciansGroup/availablePhysiciansGroupsFor/
+ * persistedGroupForPhysiciansGroup (the /data-entry guided flow keeps the
+ * original fine-grained groups, untouched). The wildcard "All <group>
+ * vaccines" option only exists for Flu/COVID (persistedGroupForPhysiciansGroup
+ * returns null for "Other vaccines", so that optgroup never gets one).
  */
 
 type Vaccine = { id: string; name: string };
@@ -461,18 +471,23 @@ export default function PhysiciansPage() {
               onChange={(e) => setNewRuleTargetValue(e.target.value)}
               disabled={newRuleIsAnyVaccine}
             >
-              {availableGroupsFor(vaccines.map((v) => v.name)).map((group) => (
-                <optgroup key={group} label={group}>
-                  {vaccineGroupSupported && <option value={`group:${group}`}>All {group} vaccines</option>}
-                  {vaccines
-                    .filter((v) => getVaccineGroup(v.name) === group)
-                    .map((v) => (
-                      <option key={v.id} value={`id:${v.id}`}>
-                        {v.name}
-                      </option>
-                    ))}
-                </optgroup>
-              ))}
+              {availablePhysiciansGroupsFor(vaccines.map((v) => v.name)).map((group) => {
+                const persistedGroup = persistedGroupForPhysiciansGroup(group);
+                return (
+                  <optgroup key={group} label={group}>
+                    {vaccineGroupSupported && persistedGroup && (
+                      <option value={`group:${persistedGroup}`}>All {group}</option>
+                    )}
+                    {vaccines
+                      .filter((v) => getPhysiciansGroup(v.name) === group)
+                      .map((v) => (
+                        <option key={v.id} value={`id:${v.id}`}>
+                          {v.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                );
+              })}
             </select>
             {!vaccineGroupSupported && (
               <span style={styles.muted}>&quot;All &lt;type&gt; vaccines&quot; rules pending migration.</span>

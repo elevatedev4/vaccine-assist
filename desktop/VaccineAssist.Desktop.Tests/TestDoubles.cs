@@ -124,6 +124,12 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     public List<(Guid Id, string LotNumber, DateOnly Expiration, DateOnly? BeyondUseDate, string? Note)> UpdatedLots { get; } = new();
     public Exception? UpdateLotException { get; set; }
 
+    /// <summary>Records every DeleteLotAsync call (V-T21 item 5: "Update
+    /// current lots to this lot" deletes the vaccine's other lots). Set
+    /// DeleteLotException to make the next call(s) throw.</summary>
+    public List<Guid> DeletedLotIds { get; } = new();
+    public Exception? DeleteLotException { get; set; }
+
     /// <summary>
     /// Defaults to a resolved physician so every EXISTING test that
     /// exercises BuildPayloadAsync/EnterIntoPioneerAsync (written before
@@ -222,6 +228,18 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         }
 
         return Task.FromResult(new Lot { Id = id, LotNumber = lotNumber, Expiration = expiration, BeyondUseDate = beyondUseDate, Note = note, Status = "active" });
+    }
+
+    public Task DeleteLotAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        if (DeleteLotException is not null) throw DeleteLotException;
+
+        DeletedLotIds.Add(id);
+        foreach (var list in LotsByVaccineId.Values)
+        {
+            list.RemoveAll(l => l.Id == id);
+        }
+        return Task.CompletedTask;
     }
 
     public Task<EligibilityResult> EvaluateEligibilityAsync(Guid vaccineId, int ageYears, bool? isPregnant = null, CancellationToken cancellationToken = default)

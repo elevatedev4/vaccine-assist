@@ -9,7 +9,7 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 import { GET, POST } from "@/app/api/lots/route";
-import { PATCH } from "@/app/api/lots/[id]/route";
+import { DELETE, PATCH } from "@/app/api/lots/[id]/route";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 function authedRequest(path: string, init?: RequestInit) {
@@ -288,5 +288,42 @@ describe("PATCH /api/lots/[id]", () => {
     expect(response.status).toBe(409);
     const body = await response.json();
     expect(body.beyondUseDateSupported).toBe(false);
+  });
+});
+
+// V-T21 item 5: the data-entry popup's "Update current lots to this lot"
+// checkbox deletes every OTHER lot for a vaccine after saving the new one.
+describe("DELETE /api/lots/[id]", () => {
+  afterEach(() => {
+    vi.mocked(getSupabaseServerClient).mockReset();
+  });
+
+  function deleteRequest(id: string) {
+    return DELETE(authedRequest(`/api/lots/${id}`, { method: "DELETE" }), { params: Promise.resolve({ id }) });
+  }
+
+  it("deletes the lot and returns ok: true", async () => {
+    const eq = vi.fn(async () => ({ error: null }));
+    const del = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ delete: del }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await deleteRequest("l1");
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    expect(from).toHaveBeenCalledWith("lot");
+    expect(eq).toHaveBeenCalledWith("id", "l1");
+  });
+
+  it("returns 500 on a Supabase error", async () => {
+    const eq = vi.fn(async () => ({ error: new Error("boom") }));
+    const del = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ delete: del }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await deleteRequest("l1");
+    expect(response.status).toBe(500);
   });
 });

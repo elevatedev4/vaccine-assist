@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using FlaUI.Core.AutomationElements;
+using FlaUI.Core.Conditions;
+using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
@@ -21,60 +24,74 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// FROM the Rx Profile (where FocusPioneerWindowStep attaches) TO the
 /// "Add New Rx" screen the rest of the sequence already assumes.
 ///
+/// MSG893 item 2 REWORK (Will, 2026-09-08) — real-world log: "FAILED —
+/// F3 was sent, but couldn't find a distinct 'Add New Rx' window to
+/// re-attach to ... 'Priority', 'Scan Hard Copy', 'Patient on Cycle Fill'
+/// dialog(s) did not appear/dismiss within 8s." Likely truth (per Will's
+/// own brief): PioneerRx is a single-window app — "Add New Rx" is a
+/// SCREEN inside the same top-level window, not a separately titled
+/// window, and the pre-entry dialogs may be UIA child Windows/Panes
+/// inside it (or a top-level window that just doesn't carry a title this
+/// code recognized) rather than distinctly-titled top-level windows. This
+/// rework:
+///   (a) Dialog dismissal now scans BOTH top-level windows OWNED BY THE
+///       PIONEER PROCESS (not just any desktop window — see
+///       FindTopLevelPioneerWindowByTitle) AND UIA descendants of the
+///       attached window with ControlType Window/Pane/Custom (see
+///       FindDialogDescendant), matching via
+///       PreEntryDialogTitles.MatchesWithAliases (also matches "Cycle
+///       Fill" alone). It additionally sweeps for ANY top-level Pioneer
+///       window that appeared after F3 and isn't the main window,
+///       ESCing it even with no recognized title (DismissAllStrayWindowsAsync
+///       / TryDismissNextStrayPioneerWindow) — logged so an
+///       unrecognized dialog is at least visible in the step log instead
+///       of silently stalling the whole sequence.
+///   (b) Re-attaching to "Add New Rx" no longer requires a DISTINCT
+///       window handle: WaitForAsync below accepts EITHER (i) a
+///       top-level Pioneer window whose title contains "New Rx" (same as
+///       before, excluding the pre-F3 window) OR (ii) the SAME window
+///       (by handle) now exposing the prescriber/NDC quick-search field
+///       the very next two steps already search for (reusing their exact
+///       AutomationIds — see HasNextStepField) — matching this being a
+///       single-window app where the title may never actually change.
+///       Only fails if NEITHER shows up inside AddNewRxWaitTimeout, and a
+///       failure now automatically writes a UIA tree dump (reusing
+///       UiaTreeDumper — the same "Dump Pioneer UIA tree" button uses)
+///       and includes its path in the failure message.
+///   Combined dialog-dismissal timeout raised from 8s to 12s
+///   (CombinedDialogsTimeout) per Will's brief; the two new phases (stray
+///   window sweep, Add-New-Rx wait) each get their OWN separate, smaller
+///   budget (StrayWindowSweepTimeout / AddNewRxWaitTimeout) rather than
+///   sharing/extending that one number — Will's brief only specified the
+///   known-dialog number, so this keeps every phase independently
+///   bounded and logged rather than guessing how to split a single
+///   number three ways.
+///
 /// SEQUENCE: (1) send F3 to the attached window; (2) run
 /// DismissPendingDialogsAsync against a SINGLE SHARED tick budget
 /// (CombinedDialogsTimeout / PollInterval) to ESC whichever of
-/// "Priority"/"Scan Hard Copy" shows up, in whatever order, rescanning
-/// immediately after each dismissal; (3) re-attach to the resulting
-/// "Add New Rx" window specifically (NOT just re-running
-/// PioneerRxAttachment.TryAttach(), which could hand back the SAME stale
-/// Rx Profile window — see the REVIEWER FIX note below) and overwrite
-/// context.AttachedWindow with it.
+/// "Priority"/"Scan Hard Copy"/"Patient on Cycle Fill" shows up, in
+/// whatever order, rescanning immediately after each dismissal; (2b)
+/// sweep for any other unexpected Pioneer window and ESC it too; (3)
+/// wait for and re-attach to the "Add New Rx" screen per (b) above and
+/// overwrite context.AttachedWindow with it.
 ///
 /// REVIEWER FIX (request-changes round, 2026-09-07) — dialog polling: the
 /// original version ran two INDEPENDENT waits, each with its own
 /// per-dialog timeout, checking "Priority" to completion before ever
-/// checking "Scan Hard Copy" at all. That's wrong two ways: (a) if
-/// "Priority" never appears (configured off on this machine), the WHOLE
-/// timeout burns before "Scan Hard Copy" — which may already be sitting
-/// there — is even looked for; (b) if the two dialogs are SEQUENTIAL/modal
-/// (the second only appears once the first is dismissed), a fixed
-/// first-then-second order can miss "Scan Hard Copy" entirely if it
-/// appears while the loop is still (uselessly) waiting out the rest of
-/// "Priority"'s slice, or never appears if the dialogs come in the
-/// opposite order to whatever's hardcoded. Fixed by DismissPendingDialogsAsync
+/// checking "Scan Hard Copy" at all. Fixed by DismissPendingDialogsAsync
 /// below: a SINGLE shared budget, scanning for ANY pending title on every
 /// tick and removing each the moment it's dismissed, rescanning
 /// IMMEDIATELY (no wait) right after a dismissal — order-agnostic, and
-/// correct for the sequential-appearance case since a dialog that only
-/// appears once the first is gone is caught on the very next check, not
-/// after waiting out an unrelated timer. Extracted as its own PUBLIC
-/// static method (this repo has no InternalsVisibleTo wired up — same
-/// "pure logic split out as a public static method for testability"
+/// correct for the sequential-appearance case too. Extracted as its own
+/// PUBLIC static method (this repo has no InternalsVisibleTo wired up —
+/// same "pure logic split out as a public static method for testability"
 /// pattern as Uia/UiaTreeDumper.TruncateValue and
 /// Uia/PioneerRxPresenceDecision) so xUnit can drive it with fake
 /// tryDismissIfShowing/waitTick delegates instead of real UIA/wall-clock
-/// waits — see SendF3AndDismissPreEntryDialogsStepTests.cs for the
-/// either-order and sequential-appearance cases this specifically proves.
-///
-/// REVIEWER FIX (request-changes round, 2026-09-07) — re-attach target:
-/// the original version called PioneerRxAttachment.TryAttach() again,
-/// unchanged — but that method matches ANY PioneerRxTitles prefix
-/// ("Rx Profile" AND "New Rx" both qualify) and returns the FIRST
-/// candidate found with no ordering guarantee, so if the Rx Profile
-/// window is still open behind Add New Rx (or the UIA desktop-children
-/// enumeration order simply differs from expectation), the "re-attach"
-/// could silently hand back the SAME stale Rx Profile window instead of
-/// the new Add New Rx one — every field step after this one would then
-/// search the wrong window and fail confusingly. Fixed by a dedicated,
-/// narrower lookup (TryAttachToAddNewRxWindow below) used ONLY by this
-/// step: title must specifically contain "New Rx" (matches both
-/// "New Rx" and "Add New Rx" — the same prefix PioneerRxTitles.cs already
-/// lists), and the window handle captured before F3 was sent
-/// (previousHandle) is explicitly excluded. No process-name fallback here
-/// (unlike PioneerRxAttachment) — if nothing distinct matches, this step
-/// FAILS LOUD rather than silently continuing against a wrong/stale
-/// window.
+/// waits — see SendF3AndDismissPreEntryDialogsStepTests.cs. UNCHANGED by
+/// the MSG893 item 2 rework above — only the live delegate passed into it
+/// (TryDismissIfShowing) changed what it scans.
 ///
 /// TIME-BOXED, NOT BLOCKING: Will's brief explicitly allows for these
 /// dialogs to be "configured off on some machines" — on a shared-budget
@@ -84,21 +101,39 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// NOT CONFIRMED against a live UIA dump — see PreEntryDialogTitles.cs's
 /// own doc comment for exactly what's unconfirmed and why. This step's
 /// pure decision logic (dry-run description, guard clauses, title
-/// matching via PreEntryDialogTitles.Matches, and the
-/// DismissPendingDialogsAsync polling algorithm itself) is covered by
-/// SendF3AndDismissPreEntryDialogsStepTests.cs; the live FlaUI/UIA calls
-/// below (like every other step's live branch in this sequence) can only
-/// be proven against a real Pioneer install on Windows.
+/// matching, the DismissPendingDialogsAsync polling algorithm, and the
+/// new WaitForAsync/DismissAllStrayWindowsAsync polling primitives) is
+/// covered by SendF3AndDismissPreEntryDialogsStepTests.cs; the live
+/// FlaUI/UIA calls below (like every other step's live branch in this
+/// sequence) can only be proven against a real Pioneer install on
+/// Windows.
 /// </summary>
 public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 {
-    /// <summary>Shared budget for BOTH dialogs combined, not per-dialog —
-    /// see the REVIEWER FIX note above for why a per-dialog timeout was
-    /// wrong. Converted to a tick count (via PollInterval) for
-    /// DismissPendingDialogsAsync, which is deadline-agnostic/pure — it
-    /// counts consecutive empty ticks rather than reading the wall
-    /// clock, so it's drivable by a test with no real waiting at all.</summary>
-    public static readonly TimeSpan CombinedDialogsTimeout = TimeSpan.FromSeconds(8);
+    /// <summary>Shared budget for the KNOWN dialogs (Priority/Scan Hard
+    /// Copy/Patient on Cycle Fill) combined, not per-dialog — see the
+    /// REVIEWER FIX note above. Raised from 8s to 12s (MSG893 item 2,
+    /// Will's brief, verbatim). Converted to a tick count (via
+    /// PollInterval) for DismissPendingDialogsAsync, which is
+    /// deadline-agnostic/pure — it counts consecutive empty ticks rather
+    /// than reading the wall clock, so it's drivable by a test with no
+    /// real waiting at all.</summary>
+    public static readonly TimeSpan CombinedDialogsTimeout = TimeSpan.FromSeconds(12);
+
+    /// <summary>MSG893 item 2: separate, smaller budget for the
+    /// "ESC any OTHER unexpected Pioneer window" sweep that runs after the
+    /// known-dialog loop above — see DismissAllStrayWindowsAsync. Kept
+    /// short and independent so a machine with no such extra window pays
+    /// only a couple of quick empty scans, never a share of the 12s
+    /// budget above.</summary>
+    private static readonly TimeSpan StrayWindowSweepTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>MSG893 item 2: separate budget for waiting on the
+    /// Add-New-Rx screen to appear (by title OR by its fields showing up
+    /// on the original window) once the dialogs above are clear — see
+    /// WaitForAsync.</summary>
+    private static readonly TimeSpan AddNewRxWaitTimeout = TimeSpan.FromSeconds(5);
+
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(200);
 
     public string Name => "Start Add New Rx (F3) and dismiss pre-entry dialogs";
@@ -123,11 +158,13 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
-        var previousHandle = SafeNativeHandle(context.AttachedWindow);
+        var attachedWindow = context.AttachedWindow;
+        var previousHandle = SafeNativeHandle(attachedWindow);
+        var baselineHandles = SnapshotPioneerWindowHandles();
 
         try
         {
-            context.AttachedWindow.FocusNative();
+            attachedWindow.FocusNative();
             Keyboard.Type(VirtualKeyShort.F3);
         }
         catch (Exception ex)
@@ -136,15 +173,16 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 $"Couldn't send F3 to the Rx Profile window: {ex.Message}");
         }
 
-        var maxEmptyTicks = (int)Math.Ceiling(CombinedDialogsTimeout.TotalMilliseconds / PollInterval.TotalMilliseconds);
+        Task WaitTick() => Task.Delay(PollInterval, cancellationToken);
+
         IReadOnlySet<string> pending;
         try
         {
             pending = await DismissPendingDialogsAsync(
                 PreEntryDialogTitles.All,
-                maxEmptyTicks,
-                TryDismissIfShowing,
-                () => Task.Delay(PollInterval, cancellationToken),
+                TicksFor(CombinedDialogsTimeout),
+                titleSubstring => TryDismissIfShowing(attachedWindow, titleSubstring),
+                WaitTick,
                 cancellationToken);
         }
         catch (Exception ex)
@@ -162,15 +200,46 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 "continuing (may be configured off on this machine, or its title doesn't match PreEntryDialogTitles yet).");
         }
 
-        // The window PioneerRx now shows is "Add New Rx" (see
-        // PioneerRxTitles.cs's own doc comment) — re-attach to THAT window
-        // specifically, not just any PioneerRxTitles-matching window (see
-        // this class's own REVIEWER FIX note on why a plain
-        // PioneerRxAttachment.TryAttach() re-run is unsafe here).
+        // MSG893 item 2: PioneerRx can also throw up a modal we don't have
+        // a known title for at all — rather than hang or silently continue
+        // past it, ESC any OTHER top-level window that belongs to the
+        // Pioneer process, wasn't open before F3, and isn't the main
+        // window itself.
+        var strayAttempts = new Dictionary<IntPtr, int>();
+        IReadOnlyList<string> strayDismissed;
+        try
+        {
+            strayDismissed = await DismissAllStrayWindowsAsync(
+                () => TryDismissNextStrayPioneerWindow(baselineHandles, previousHandle, strayAttempts),
+                TicksFor(StrayWindowSweepTimeout),
+                WaitTick,
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                $"Error while checking for unexpected PioneerRx windows: {ex.Message}");
+        }
+        foreach (var title in strayDismissed)
+        {
+            context.Log($"[{Name}] Dismissed an unexpected PioneerRx window (\"{title}\") that appeared after F3.");
+        }
+
+        // Re-attach: MSG893 item 2 rework — no longer requires a
+        // DISTINCTLY titled window (see class doc comment, part (b)).
         AutomationElement? addNewRxWindow;
         try
         {
-            addNewRxWindow = TryAttachToAddNewRxWindow(previousHandle);
+            addNewRxWindow = await WaitForAsync<AutomationElement>(
+                () => FindTopLevelPioneerWindowByTitle(name => name.Contains("New Rx", StringComparison.OrdinalIgnoreCase), previousHandle),
+                () =>
+                {
+                    var current = TryGetElementFromHandle(previousHandle);
+                    return current is not null && HasNextStepField(current) ? current : null;
+                },
+                TicksFor(AddNewRxWaitTimeout),
+                WaitTick,
+                cancellationToken);
         }
         catch (Exception ex)
         {
@@ -180,15 +249,24 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         if (addNewRxWindow is null)
         {
-            var reason = "F3 was sent, but couldn't find a distinct \"Add New Rx\" window to re-attach to " +
-                "(failing loud rather than risking a silent re-attach to the stale Rx Profile window).";
-            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                warnings.Count > 0 ? reason + " " + string.Join(" ", warnings) : reason);
+            var dump = SafeDumpUiaTree();
+            var reason = "F3 was sent, but couldn't find the \"Add New Rx\" screen — no distinctly-titled " +
+                "\"New Rx\" window appeared, and the prescriber/NDC fields never showed up on the original " +
+                "window either (failing loud rather than guessing).";
+            reason += dump.Success && dump.FilePath is not null
+                ? $" UIA tree dump written to {dump.FilePath} for troubleshooting."
+                : $" (Also tried to write a UIA tree dump for troubleshooting: {dump.Message})";
+            if (warnings.Count > 0) reason += " " + string.Join(" ", warnings);
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false, reason);
         }
 
         context.AttachedWindow = addNewRxWindow;
 
         var message = "Sent F3 and dismissed any pre-entry dialogs.";
+        if (strayDismissed.Count > 0)
+        {
+            message += $" Also dismissed {strayDismissed.Count} unexpected window(s): {string.Join(", ", strayDismissed)}.";
+        }
         if (warnings.Count > 0)
         {
             message += " " + string.Join(" ", warnings);
@@ -196,21 +274,23 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         return new PioneerEntryStepResult(Name, Success: true, DryRun: false, message);
     }
 
+    private static int TicksFor(TimeSpan timeout) =>
+        (int)Math.Ceiling(timeout.TotalMilliseconds / PollInterval.TotalMilliseconds);
+
     /// <summary>
     /// PURE polling algorithm (no UIA/FlaUI dependency of its own — see
-    /// this class's own REVIEWER FIX note for why this was extracted).
-    /// Repeatedly scans `titles` for whichever is CURRENTLY showing (via
-    /// tryDismissIfShowing, which both checks AND dismisses in one call —
-    /// so a caller never dismisses the same one twice) and removes each as
-    /// it's dismissed, immediately trying again with no wait (a dismissal
-    /// may reveal the next dialog right away — the sequential/modal case
-    /// this whole rewrite exists for). Only waits (via waitTick) after a
-    /// tick where NOTHING was dismissed, and gives up once
-    /// maxEmptyTicks such empty ticks have passed in a row. Returns
-    /// whatever's LEFT in the pending set (empty = everything got
-    /// dismissed) — the caller turns a non-empty result into a warning,
-    /// never a hard failure (Will's brief: dialogs may be "configured off
-    /// on some machines").
+    /// this class's own REVIEWER FIX note). Repeatedly scans `titles` for
+    /// whichever is CURRENTLY showing (via tryDismissIfShowing, which both
+    /// checks AND dismisses in one call — so a caller never dismisses the
+    /// same one twice) and removes each as it's dismissed, immediately
+    /// trying again with no wait (a dismissal may reveal the next dialog
+    /// right away — the sequential/modal case this whole rewrite exists
+    /// for). Only waits (via waitTick) after a tick where NOTHING was
+    /// dismissed, and gives up once maxEmptyTicks such empty ticks have
+    /// passed in a row. Returns whatever's LEFT in the pending set (empty =
+    /// everything got dismissed) — the caller turns a non-empty result
+    /// into a warning, never a hard failure (Will's brief: dialogs may be
+    /// "configured off on some machines").
     /// </summary>
     public static async Task<IReadOnlySet<string>> DismissPendingDialogsAsync(
         IEnumerable<string> titles,
@@ -241,16 +321,303 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         return pending;
     }
 
-    /// <summary>Finds a top-level window titled like titleSubstring and
-    /// ESCs it, in one call, so DismissPendingDialogsAsync never has to
-    /// find-then-separately-dismiss the same window twice. Returns false
-    /// (never throws) both when nothing matches yet and when a match was
-    /// found but couldn't be dismissed — either way, the caller just
-    /// treats it as "not this tick" and keeps polling.</summary>
-    private static bool TryDismissIfShowing(string titleSubstring)
+    /// <summary>
+    /// MSG893 item 2: PURE polling primitive for "keep ESCing whatever
+    /// unexpected window shows up until nothing new appears for a while."
+    /// tryDismissNextStray does the live scan+ESC and returns the
+    /// dismissed window's title, or null if nothing was found this tick —
+    /// same "one delegate call does find-and-dismiss together" shape as
+    /// DismissPendingDialogsAsync's tryDismissIfShowing, and testable the
+    /// same way (fake delegate, no real UIA/wall-clock wait).
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> DismissAllStrayWindowsAsync(
+        Func<string?> tryDismissNextStray,
+        int maxEmptyTicks,
+        Func<Task> waitTick,
+        CancellationToken cancellationToken = default)
     {
-        var window = FindTopLevelWindowByTitle(titleSubstring);
-        return window is not null && TryDismiss(window);
+        var dismissed = new List<string>();
+        var emptyTicks = 0;
+
+        while (emptyTicks <= maxEmptyTicks)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var title = tryDismissNextStray();
+            if (title is not null)
+            {
+                dismissed.Add(title);
+                emptyTicks = 0;
+                continue;
+            }
+
+            emptyTicks++;
+            await waitTick();
+        }
+
+        return dismissed;
+    }
+
+    /// <summary>
+    /// MSG893 item 2: PURE polling primitive for "wait until EITHER of two
+    /// independent signals finds something" — used for the Add-New-Rx
+    /// re-attach (title match OR field match; see class doc comment, part
+    /// (b)). Checks tryFindByPrimarySignal first, then
+    /// tryFindByFallbackSignal, every tick; returns the first non-null
+    /// result from either, or null once maxEmptyTicks empty ticks have
+    /// passed. Generic (not AutomationElement-specific) so it's directly
+    /// unit-testable with plain string/fake delegates — see
+    /// SendF3AndDismissPreEntryDialogsStepTests.cs.
+    /// </summary>
+    public static async Task<T?> WaitForAsync<T>(
+        Func<T?> tryFindByPrimarySignal,
+        Func<T?> tryFindByFallbackSignal,
+        int maxEmptyTicks,
+        Func<Task> waitTick,
+        CancellationToken cancellationToken = default)
+        where T : class
+    {
+        var tick = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var found = tryFindByPrimarySignal() ?? tryFindByFallbackSignal();
+            if (found is not null) return found;
+
+            if (tick >= maxEmptyTicks) return null;
+            tick++;
+            await waitTick();
+        }
+    }
+
+    /// <summary>
+    /// MSG893 item 2: scans BOTH top-level windows owned by the Pioneer
+    /// process AND UIA descendants of the attached window (ControlType
+    /// Window/Pane/Custom) for a title matching `titleSubstring` (via
+    /// PreEntryDialogTitles.MatchesWithAliases) — see class doc comment,
+    /// part (a).
+    /// </summary>
+    private static bool TryDismissIfShowing(AutomationElement attachedWindow, string titleSubstring)
+    {
+        var topLevel = FindTopLevelPioneerWindowByTitle(name => PreEntryDialogTitles.MatchesWithAliases(name, titleSubstring));
+        if (topLevel is not null) return TryDismiss(topLevel);
+
+        var descendant = FindDialogDescendant(attachedWindow, titleSubstring);
+        return descendant is not null && TryDismiss(descendant);
+    }
+
+    /// <summary>MSG893 item 2: live scan+ESC for one stray (unrecognized,
+    /// non-baseline, non-main) Pioneer top-level window — see
+    /// DismissAllStrayWindowsAsync. `attempts` caps retries per handle
+    /// (maxAttemptsPerWindow) so a window whose ESC never actually closes
+    /// it can't spin this loop forever on the same stubborn window
+    /// instead of eventually giving up and letting the step continue.</summary>
+    private static string? TryDismissNextStrayPioneerWindow(
+        IReadOnlySet<IntPtr> baselineHandles, IntPtr excludeHandle, Dictionary<IntPtr, int> attempts)
+    {
+        const int maxAttemptsPerWindow = 3;
+        try
+        {
+            using var automation = new UIA3Automation();
+            var desktop = automation.GetDesktop();
+            foreach (var window in desktop.FindAllChildren())
+            {
+                if (!IsPioneerProcessWindow(window)) continue;
+
+                var handle = SafeNativeHandle(window);
+                if (handle == IntPtr.Zero || handle == excludeHandle) continue;
+                if (baselineHandles.Contains(handle)) continue;
+                attempts.TryGetValue(handle, out var count);
+                if (count >= maxAttemptsPerWindow) continue;
+
+                var title = SafeName(window);
+                attempts[handle] = count + 1;
+                if (TryDismiss(window)) return title;
+            }
+        }
+        catch
+        {
+            // Treated as "nothing to dismiss this tick," same posture as
+            // every other UIA scan in this file.
+        }
+        return null;
+    }
+
+    /// <summary>Every top-level window currently owned by the Pioneer
+    /// process, taken right before F3 is sent — lets the stray-window
+    /// sweep tell "a window that appeared because of F3" apart from
+    /// "a window that was already open" (e.g. some other unrelated
+    /// PioneerRx screen the pharmacist had open). Best-effort/never
+    /// throws — an empty snapshot just means the stray sweep treats every
+    /// Pioneer window it later sees as new, which is still safe (ESCing
+    /// an already-legitimate window is a no-op if it isn't actually a
+    /// dismissible dialog).</summary>
+    private static HashSet<IntPtr> SnapshotPioneerWindowHandles()
+    {
+        var handles = new HashSet<IntPtr>();
+        try
+        {
+            using var automation = new UIA3Automation();
+            var desktop = automation.GetDesktop();
+            foreach (var window in desktop.FindAllChildren())
+            {
+                if (!IsPioneerProcessWindow(window)) continue;
+                var handle = SafeNativeHandle(window);
+                if (handle != IntPtr.Zero) handles.Add(handle);
+            }
+        }
+        catch
+        {
+            // Best-effort baseline only — see doc comment above.
+        }
+        return handles;
+    }
+
+    /// <summary>Scans top-level desktop windows for one belonging to the
+    /// Pioneer process whose title satisfies `titleMatches`, optionally
+    /// excluding one handle. Never throws — treated as "not found," same
+    /// posture as PioneerRxAttachment.TryAttach.</summary>
+    private static AutomationElement? FindTopLevelPioneerWindowByTitle(Func<string, bool> titleMatches, IntPtr excludeHandle = default)
+    {
+        try
+        {
+            using var automation = new UIA3Automation();
+            var desktop = automation.GetDesktop();
+            foreach (var window in desktop.FindAllChildren())
+            {
+                string? name;
+                try { name = window.Name; } catch { continue; }
+                if (string.IsNullOrEmpty(name)) continue;
+                if (!IsPioneerProcessWindow(window)) continue;
+
+                var handle = SafeNativeHandle(window);
+                if (excludeHandle != IntPtr.Zero && handle == excludeHandle) continue;
+
+                if (titleMatches(name)) return window;
+            }
+        }
+        catch
+        {
+            // Treated as "not found," same posture as PioneerRxAttachment.TryAttach.
+        }
+        return null;
+    }
+
+    /// <summary>MSG893 item 2, part (a): the pre-entry dialogs may be UIA
+    /// child Windows/Panes/Custom elements INSIDE the attached window
+    /// rather than separate top-level windows — scans for one whose Name
+    /// matches `titleSubstring` (via MatchesWithAliases). Never throws —
+    /// treated as "not found."</summary>
+    private static AutomationElement? FindDialogDescendant(AutomationElement window, string titleSubstring)
+    {
+        try
+        {
+            var condition = new OrCondition(new ConditionBase[]
+            {
+                window.ConditionFactory.ByControlType(ControlType.Window),
+                window.ConditionFactory.ByControlType(ControlType.Pane),
+                window.ConditionFactory.ByControlType(ControlType.Custom),
+            });
+
+            foreach (var descendant in window.FindAllDescendants(condition))
+            {
+                string? name;
+                try { name = descendant.Name; } catch { continue; }
+                if (!string.IsNullOrEmpty(name) && PreEntryDialogTitles.MatchesWithAliases(name, titleSubstring))
+                {
+                    return descendant;
+                }
+            }
+        }
+        catch
+        {
+            // Treated as "not found," same posture as the rest of this file's UIA scans.
+        }
+        return null;
+    }
+
+    /// <summary>MSG893 item 2, part (b): does `window` already expose the
+    /// prescriber quick-search or drug/NDC quick-search field — the SAME
+    /// AutomationIds SelectPrescriberStep/InputVaccineCodeStep already
+    /// search for — meaning this window is (or already looks like) the
+    /// "Add New Rx" screen even if its title never changed. Never
+    /// throws.</summary>
+    private static bool HasNextStepField(AutomationElement window)
+    {
+        try
+        {
+            var prescriberField = window.FindFirstDescendant(cf => cf.ByAutomationId(SelectPrescriberStep.PrescriberQuickSearchAutomationId));
+            if (prescriberField is not null) return true;
+
+            var ndcField = window.FindFirstDescendant(cf => cf.ByAutomationId(InputVaccineCodeStep.PrescribedItemQuickSearchAutomationId));
+            return ndcField is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Wraps a known window handle back into an AutomationElement
+    /// (AutomationBase.FromHandle) without a fresh desktop scan — used to
+    /// re-check the SAME window (by handle) for HasNextStepField above.
+    /// Never throws; returns null for IntPtr.Zero or any UIA failure
+    /// (e.g. the window has since closed).</summary>
+    private static AutomationElement? TryGetElementFromHandle(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero) return null;
+        try
+        {
+            using var automation = new UIA3Automation();
+            return automation.FromHandle(handle);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsPioneerProcessWindow(AutomationElement window)
+    {
+        var processName = TryGetProcessName(window);
+        return processName is not null &&
+            PioneerRxTitles.TargetProcessNames.Any(target => string.Equals(target, processName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Same pattern as PioneerRxAttachment's own process-name
+    /// lookup — reads the owning process's name via the element's UIA
+    /// ProcessId, returning null (never throwing) if it can't be read.</summary>
+    private static string? TryGetProcessName(AutomationElement window)
+    {
+        try
+        {
+            var pid = window.FrameworkAutomationElement.ProcessId;
+            if (pid <= 0) return null;
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>MSG893 item 2: best-effort UIA tree dump on a final
+    /// re-attach failure, reusing UiaTreeDumper (the same "Dump Pioneer
+    /// UIA tree" button uses) — see class doc comment, part (b). Never
+    /// throws: a failure here is reported via the returned DumpOutcome's
+    /// own Message, not an exception.</summary>
+    private static UiaTreeDumper.DumpOutcome SafeDumpUiaTree()
+    {
+        try
+        {
+            return UiaTreeDumper.DumpAttachedPioneerWindow();
+        }
+        catch (Exception ex)
+        {
+            return new UiaTreeDumper.DumpOutcome(false, null, null, $"Dump threw: {ex.Message}");
+        }
     }
 
     private static bool TryDismiss(AutomationElement dialog)
@@ -267,69 +634,9 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
     }
 
-    /// <summary>Never throws — a UIA session failure here is treated the
-    /// same as "not found yet," matching PioneerRxAttachment.TryAttach's
-    /// own posture.</summary>
-    private static AutomationElement? FindTopLevelWindowByTitle(string titleSubstring)
+    private static string SafeName(AutomationElement element)
     {
-        try
-        {
-            using var automation = new UIA3Automation();
-            var desktop = automation.GetDesktop();
-            foreach (var window in desktop.FindAllChildren())
-            {
-                string? name;
-                try { name = window.Name; }
-                catch { continue; }
-
-                if (name is not null && PreEntryDialogTitles.Matches(name, titleSubstring))
-                {
-                    return window;
-                }
-            }
-        }
-        catch
-        {
-            // No live UIA session available — treated as "not found yet,"
-            // same posture as PioneerRxAttachment.TryAttach.
-        }
-        return null;
-    }
-
-    /// <summary>Finds a top-level window titled like "Add New Rx"/"New Rx"
-    /// (Contains "New Rx" covers both — the same prefix PioneerRxTitles.cs
-    /// already lists) that is NOT the window identified by excludeHandle —
-    /// see this class's own REVIEWER FIX note for why a plain
-    /// PioneerRxAttachment.TryAttach() re-run isn't safe for this specific
-    /// re-attach. Deliberately no process-name fallback (unlike
-    /// PioneerRxAttachment) — returns null (never throws for an expected
-    /// "not found" case) so the caller can fail loud instead of guessing.</summary>
-    private static AutomationElement? TryAttachToAddNewRxWindow(IntPtr excludeHandle)
-    {
-        try
-        {
-            using var automation = new UIA3Automation();
-            var desktop = automation.GetDesktop();
-            foreach (var window in desktop.FindAllChildren())
-            {
-                string? name;
-                try { name = window.Name; }
-                catch { continue; }
-
-                if (string.IsNullOrEmpty(name)) continue;
-                if (!name.Contains("New Rx", StringComparison.OrdinalIgnoreCase)) continue;
-
-                var handle = SafeNativeHandle(window);
-                if (excludeHandle != IntPtr.Zero && handle == excludeHandle) continue;
-
-                return window;
-            }
-        }
-        catch
-        {
-            // Treated as "not found," same posture as PioneerRxAttachment.TryAttach.
-        }
-        return null;
+        try { return element.Name ?? ""; } catch { return ""; }
     }
 
     /// <summary>Same pattern as rx-verify's PioneerRxWindow.SafeNativeHandle

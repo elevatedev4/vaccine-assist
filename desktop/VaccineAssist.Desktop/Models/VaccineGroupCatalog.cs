@@ -73,4 +73,48 @@ public static class VaccineGroupCatalog
         }
         return OtherGroup;
     }
+
+    // -----------------------------------------------------------------
+    // ADDITIVE — Physicians-tab-only grouping (V-T21 item 7, Will
+    // 2026-09-08, verbatim): "On physicians tab, group 'Flu vaccines' and
+    // 'COVID vaccines' and everything else goes into 'Other vaccines'."
+    // A coarser 3-bucket scheme layered on top of the fine-grained groups
+    // above (which the data-entry guided flow keeps using UNCHANGED — see
+    // GetGroup/DisplayOrder above, neither modified here) — reuses
+    // GetGroup's own Flu/COVID detection rather than a second name-prefix
+    // list. Mirrored 1:1 in cloud/lib/vaccine-group-catalog.ts's own
+    // additive getPhysiciansGroup/PHYSICIANS_GROUP_DISPLAY_ORDER/
+    // persistedGroupForPhysiciansGroup for the web /physicians page.
+    // -----------------------------------------------------------------
+
+    public const string PhysiciansFluGroup = "Flu vaccines";
+    public const string PhysiciansCovidGroup = "COVID vaccines";
+    public const string PhysiciansOtherGroup = "Other vaccines";
+
+    /// <summary>Exactly the 3 buckets, in the order Will's brief lists
+    /// them — PhysiciansViewModel.BuildVaccineOptions iterates this
+    /// instead of DisplayOrder above.</summary>
+    public static readonly IReadOnlyList<string> PhysiciansDisplayOrder =
+        new[] { PhysiciansFluGroup, PhysiciansCovidGroup, PhysiciansOtherGroup };
+
+    public static string GetPhysiciansGroup(Vaccine vaccine) => GetGroup(vaccine) switch
+    {
+        "Flu" => PhysiciansFluGroup,
+        "COVID" => PhysiciansCovidGroup,
+        _ => PhysiciansOtherGroup,
+    };
+
+    /// <summary>Maps a physicians-tab display group back to the persisted
+    /// PhysicianRule.VaccineGroup value ("Flu"/"COVID" — the same
+    /// fine-grained group name physician-resolution already expects, see
+    /// supabase/migrations/0009_lots_bud_vaccine_defaults.sql), or null
+    /// for the catch-all "Other vaccines" group, which has no wildcard
+    /// rule option (Will's brief: "the 'All &lt;group&gt; vaccines' rule
+    /// options only for Flu and COVID").</summary>
+    public static string? PersistedGroupForPhysiciansGroup(string physiciansGroup) => physiciansGroup switch
+    {
+        PhysiciansFluGroup => "Flu",
+        PhysiciansCovidGroup => "COVID",
+        _ => null,
+    };
 }

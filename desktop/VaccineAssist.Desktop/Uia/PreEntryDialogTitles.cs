@@ -42,4 +42,23 @@ public static class PreEntryDialogTitles
 
     public static bool Matches(string windowTitle, string dialogTitleSubstring) =>
         windowTitle.Contains(dialogTitleSubstring, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// MSG893 item 2 rework (Will, 2026-09-08): the pre-entry dialogs may
+    /// actually be UIA child Windows/Panes inside the main PioneerRx
+    /// window rather than separately titled top-level windows — and a
+    /// child pane's Name might omit the leading "Patient on" (e.g. just
+    /// "Cycle Fill Warning"). Same Contains/case-insensitive match as
+    /// <see cref="Matches"/>, PLUS: for <see cref="PatientOnCycleFill"/>
+    /// specifically, also matches the shorter "Cycle Fill" alone. Only
+    /// PatientOnCycleFill gets this alias — Priority/ScanHardCopy are
+    /// short enough already that a further-shortened alias risks false
+    /// positives against unrelated windows.
+    /// </summary>
+    public static bool MatchesWithAliases(string windowTitle, string dialogTitleSubstring)
+    {
+        if (Matches(windowTitle, dialogTitleSubstring)) return true;
+        return dialogTitleSubstring == PatientOnCycleFill &&
+            windowTitle.Contains("Cycle Fill", StringComparison.OrdinalIgnoreCase);
+    }
 }

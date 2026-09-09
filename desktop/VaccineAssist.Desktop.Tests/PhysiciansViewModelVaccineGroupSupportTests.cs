@@ -46,7 +46,7 @@ public class PhysiciansViewModelVaccineGroupSupportTests
         await viewModel.LoadAsync();
 
         Assert.True(viewModel.VaccineGroupSupported);
-        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID" && o.IsGroupWildcard);
+        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
     }
 
     [Fact]
@@ -63,8 +63,10 @@ public class PhysiciansViewModelVaccineGroupSupportTests
         Assert.DoesNotContain(viewModel.VaccineOptions, o => o.IsGroupWildcard);
         // Specific vaccines must still be selectable — only the group
         // ("All ... vaccines") option is gated, not the whole feature.
-        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID" && o.DisplayText == "Comirnaty 2025-26 12+");
-        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "Tetanus/whooping cough" && o.DisplayText == "Boostrix");
+        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID vaccines" && o.DisplayText == "Comirnaty 2025-26 12+");
+        // V-T21 item 7: Boostrix (fine-grained "Tetanus/whooping cough")
+        // buckets into the physicians-tab catch-all "Other vaccines".
+        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "Other vaccines" && o.DisplayText == "Boostrix");
     }
 
     [Fact]
@@ -81,7 +83,7 @@ public class PhysiciansViewModelVaccineGroupSupportTests
         apiService.PhysicianRows.Add(physician);
         await viewModel.LoadAsync();
 
-        var staleGroupOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID" && o.IsGroupWildcard);
+        var staleGroupOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
 
         // Flag flips false (e.g. a concurrent reload elsewhere) without a
         // fresh LoadAsync happening on THIS view model instance yet.
@@ -112,6 +114,6 @@ public class PhysiciansViewModelVaccineGroupSupportTests
         await viewModel.LoadAsync();
 
         Assert.True(viewModel.VaccineGroupSupported);
-        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID" && o.IsGroupWildcard);
+        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
     }
 }

@@ -80,6 +80,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     private VaccineProductOption? _selectedProduct;
     private Lot? _selectedVaccineActiveLot;
     private bool _skipLotAndExpiration;
+    private bool _updateCurrentLotToThis;
     private string _newLotNumber = "";
     private DateTime _newLotExpiration = DateTime.Today.AddYears(1);
     private string? _newLotNote;
@@ -131,7 +132,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         ContinueFromAgeCommand = new AsyncRelayCommand(ContinueFromAgeAsync, () => !IsBusy && PatientAgeYears is not null);
         BackCommand = new RelayCommand(GoBack, () => !IsBusy && CurrentStage != Stage.Age);
         ValidateCommand = new AsyncRelayCommand(ValidateAsync, () => !IsBusy && SelectedVaccine is not null && PatientAgeYears is not null);
-        EnterIntoPioneerCommand = new AsyncRelayCommand(EnterIntoPioneerAsync, () => !IsBusy && Gate.CanEnterIntoPioneer && (!IsLotExpiredOrMissing || SkipLotAndExpiration));
+        EnterIntoPioneerCommand = new AsyncRelayCommand(EnterIntoPioneerAsync, () => !IsBusy && Gate.CanEnterIntoPioneer && (!IsLotExpiredOrMissing || SkipLotAndExpiration || CanUpdateCurrentLotToThis));
         CopyToClipboardCommand = new AsyncRelayCommand(CopyToClipboardAsync, () => !IsBusy && SelectedVaccine is not null);
         CopyLogsCommand = new RelayCommand(CopyLogsToClipboard);
         DumpUiaTreeCommand = new AsyncRelayCommand(DumpUiaTreeAsync, () => !IsBusy);
@@ -214,6 +215,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
                 EligibilityResult = null;
                 StepLog.Clear();
                 SkipLotAndExpiration = false;
+                UpdateCurrentLotToThis = false;
                 NewLotNumber = "";
                 NewLotNote = null;
                 SelectedVaccineActiveLot = null;
@@ -363,16 +365,90 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         }
     }
 
-    /// <summary>Set by SkipLotAndExpirationCommand — see VaccineEntryPayload.SkipLotAndExpiration's
-    /// doc comment for how this reaches the Pioneer entry sequence. Reset to
-    /// false every time SelectedVaccine changes (a fresh product/dose
-    /// selection must not silently inherit a previous one's "proceed
-    /// without a lot" choice).</summary>
+    /// <summary>
+    /// V-T21 item 5 (Will, 2026-09-08): "replace the skip button with two
+    /// checkboxes" — this is the second one, "Leave lot/expiration blank
+    /// and proceed" (Views/DataEntryPopupWindow.xaml's CheckBox binds
+    /// IsChecked here TwoWay; SkipLotAndExpirationCommand is kept as an
+    /// alternate way to set it, e.g. for any other caller/test, but the
+    /// checkbox binding is the primary path now — this setter is public
+    /// for exactly that binding). Checking it also unchecks
+    /// UpdateCurrentLotToThis (the two are mutually exclusive: either
+    /// enter a lot to save, or explicitly proceed without one — never
+    /// both at once). Reset to false every time SelectedVaccine changes
+    /// (a fresh product/dose selection must not silently inherit a
+    /// previous one's "proceed without a lot" choice). See
+    /// VaccineEntryPayload.SkipLotAndExpiration's doc comment for how this
+    /// reaches the Pioneer entry sequence.
+    /// </summary>
     public bool SkipLotAndExpiration
     {
         get => _skipLotAndExpiration;
-        private set => SetProperty(ref _skipLotAndExpiration, value);
+        set
+        {
+            if (SetProperty(ref _skipLotAndExpiration, value) && value)
+            {
+                UpdateCurrentLotToThis = false;
+            }
+        }
     }
+
+    /// <summary>
+    /// V-T21 item 5: the FIRST of the two checkboxes, "Update current
+    /// lots to this lot" — when checked (and NewLotNumber is non-blank),
+    /// EnterIntoPioneerAsync saves the typed lot number/expiration via the
+    /// lots API as this vaccine's current lot AND deletes every other lot
+    /// on file for it (see ApplyUpdateCurrentLotToThisAsync), THEN
+    /// proceeds with entry — deferred to "on proceed" rather than an
+    /// immediate separate save, per the brief. Checking it also unchecks
+    /// SkipLotAndExpiration (mutually exclusive — see that property's own
+    /// doc comment). Reset to false on SelectedVaccine change and again
+    /// once ApplyUpdateCurrentLotToThisAsync succeeds.
+    /// </summary>
+    public bool UpdateCurrentLotToThis
+    {
+        get => _updateCurrentLotToThis;
+        set
+        {
+            if (SetProperty(ref _updateCurrentLotToThis, value) && value)
+            {
+                SkipLotAndExpiration = false;
+            }
+        }
+    }
+
+    /// <summary>True when UpdateCurrentLotToThis is checked AND a lot
+    /// number has actually been typed — the same "can this checkbox
+    /// stand in for a real lot on file" gate EnterIntoPioneerCommand's
+    /// CanExecute and EnterIntoPioneerAsync's guard both use.</summary>
+    private bool CanUpdateCurrentLotToThis => UpdateCurrentLotToThis && !string.IsNullOrWhiteSpace(NewLotNumber);
+
+    /// <summary>
+    /// V-T21 item 6 (Will, 2026-09-08, verbatim): "The pharmacist update
+    /// VAR prompt needs to be a popup not just a little text prompt."
+    /// True only for the two "was fine, now isn't" LotGateMessage cases —
+    /// an expired or past-beyond-use-date active lot — NOT the "no lot on
+    /// file at all" case, which has no VAR entry yet to update (see
+    /// LotGateMessage's own doc comment on that distinction). Drives
+    /// whether EnterIntoPioneerAsync must get an affirmative
+    /// ConfirmVarUpdateRequested response before it will actually proceed.
+    /// </summary>
+    public bool RequiresVarUpdateConfirmation =>
+        SelectedVaccineActiveLot is Lot lot && (lot.IsExpired || lot.IsPastBeyondUseDate);
+
+    /// <summary>
+    /// Set by DataEntryPopupWindow (the View) to show the real modal
+    /// dialog — a message, a checkbox ("I have asked the pharmacist to
+    /// update the VAR"), and OK (enabled only once checked)/Cancel. Takes
+    /// the current LotGateMessage text to show; returns true only when the
+    /// user checked the box and clicked OK. FAILS CLOSED when nothing is
+    /// wired (null): this is a safety gate, so a missing hookup must never
+    /// silently let entry through — the real popup path (DataEntryPopupWindow's
+    /// constructor) always sets this, and tests that need to get past this
+    /// gate wire a fake delegate explicitly, which keeps every such test
+    /// honest about exercising it.
+    /// </summary>
+    public Func<string, bool>? ConfirmVarUpdateRequested { get; set; }
 
     /// <summary>Inline "add a lot" mini-form (Views/DataEntryPopupWindow.xaml's
     /// expiration-gate block) — same required fields LotsViewModel's own
@@ -787,16 +863,86 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// V-T21 item 5: applies the "Update current lots to this lot"
+    /// checkbox — saves NewLotNumber/NewLotExpiration via CreateLotAsync,
+    /// then DELETES every OTHER lot on file for SelectedVaccine (via the
+    /// new DeleteLotAsync — see IVaccineApiService's own doc comment) so
+    /// the freshly typed lot genuinely becomes "the vaccine's current
+    /// lot," not just one of several. Called from EnterIntoPioneerAsync
+    /// before the VAR-confirmation gate/payload build — see that method's
+    /// doc comment for why this must run first. Returns false (having
+    /// already set ErrorMessage) on any failure, same "never build an
+    /// unsafe payload" posture as BuildPayloadAsync/BuildLivePayloadAsync.
+    /// </summary>
+    private async Task<bool> ApplyUpdateCurrentLotToThisAsync()
+    {
+        if (SelectedVaccine is null || string.IsNullOrWhiteSpace(NewLotNumber))
+        {
+            ErrorMessage = "Enter a lot number first.";
+            return false;
+        }
+
+        try
+        {
+            var expiration = DateOnly.FromDateTime(NewLotExpiration);
+            var created = await _apiService.CreateLotAsync(SelectedVaccine.Id, NewLotNumber.Trim(), expiration, note: NewLotNote);
+
+            var existingLots = await _apiService.GetLotsAsync(SelectedVaccine.Id);
+            foreach (var lot in existingLots.Where(l => l.Id != created.Id))
+            {
+                await _apiService.DeleteLotAsync(lot.Id);
+            }
+
+            UpdateCurrentLotToThis = false;
+            NewLotNumber = "";
+            NewLotNote = null;
+            await RefreshSelectedVaccineActiveLotAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Couldn't update the current lot: {ex.Message}";
+            return false;
+        }
+    }
+
     private async Task EnterIntoPioneerAsync()
     {
         if (!Gate.CanEnterIntoPioneer || SelectedVaccine is null) return;
-        if (IsLotExpiredOrMissing && !SkipLotAndExpiration) return;
+        if (IsLotExpiredOrMissing && !SkipLotAndExpiration && !CanUpdateCurrentLotToThis) return;
 
         IsBusy = true;
         ErrorMessage = null;
         StepLog.Clear();
         try
         {
+            // V-T21 item 5: "Update current lots to this lot" is applied
+            // FIRST, before anything else — once this succeeds,
+            // SelectedVaccineActiveLot reflects the fresh lot, so the VAR
+            // gate right below naturally won't fire for a lot that was
+            // JUST fixed (only for one that's still sitting
+            // expired/BUD-past because staff chose to skip it instead).
+            if (CanUpdateCurrentLotToThis)
+            {
+                var updated = await ApplyUpdateCurrentLotToThisAsync();
+                if (!updated) return; // ApplyUpdateCurrentLotToThisAsync already set ErrorMessage
+            }
+
+            // V-T21 item 6: modal VAR-update confirmation — see
+            // RequiresVarUpdateConfirmation/ConfirmVarUpdateRequested's own
+            // doc comments.
+            if (RequiresVarUpdateConfirmation)
+            {
+                var confirmed = ConfirmVarUpdateRequested?.Invoke(LotGateMessage) ?? false;
+                if (!confirmed)
+                {
+                    StatusMessage = null;
+                    ErrorMessage = "Entry cancelled — confirm the pharmacist has updated the VAR before proceeding.";
+                    return;
+                }
+            }
+
             var payload = await BuildLivePayloadAsync();
             if (payload is null) return; // BuildLivePayloadAsync already set ErrorMessage
 

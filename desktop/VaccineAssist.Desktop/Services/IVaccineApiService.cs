@@ -66,6 +66,15 @@ public interface IVaccineApiService
         string? note,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Calls DELETE /api/lots/{id}. V-T21 item 5 (Will, 2026-09-08): the
+    /// data-entry popup's "Update current lots to this lot" checkbox
+    /// saves a new lot then deletes every OTHER lot on file for that
+    /// vaccine via this — see
+    /// DataEntryPopupViewModel.ApplyUpdateCurrentLotToThisAsync.
+    /// </summary>
+    Task DeleteLotAsync(Guid id, CancellationToken cancellationToken = default);
+
     Task<EligibilityResult> EvaluateEligibilityAsync(
         Guid vaccineId,
         int ageYears,

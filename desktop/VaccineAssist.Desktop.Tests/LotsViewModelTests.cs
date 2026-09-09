@@ -190,6 +190,77 @@ public class LotsViewModelTests
     }
 
     [Fact]
+    public async Task LoadPartitionsRowsIntoActiveAndInactiveLotsByTheJoinedVaccinesActiveFlag()
+    {
+        // V-T21 item 4: ActiveLots/InactiveLots split the same rows Lots
+        // holds, by LotRowViewModel.IsVaccineActive (joined from
+        // GetAllVaccinesAsync's Vaccine.Active — see LoadAsync).
+        var apiService = new FakeVaccineApiService();
+        var activeVaccine = MakeVaccine("MMR-II", active: true);
+        var inactiveVaccine = MakeVaccine("Old Formulation", active: false);
+        apiService.AllVaccines.Add(activeVaccine);
+        apiService.AllVaccines.Add(inactiveVaccine);
+        apiService.LotsByVaccineId[activeVaccine.Id] = new()
+        {
+            new Lot { Id = Guid.NewGuid(), VaccineId = activeVaccine.Id, LotNumber = "ACTIVELOT", Expiration = DateOnly.FromDateTime(DateTime.Today.AddYears(1)), Status = "active" },
+        };
+        apiService.LotsByVaccineId[inactiveVaccine.Id] = new()
+        {
+            new Lot { Id = Guid.NewGuid(), VaccineId = inactiveVaccine.Id, LotNumber = "INACTIVELOT", Expiration = DateOnly.FromDateTime(DateTime.Today.AddYears(1)), Status = "active" },
+        };
+        var viewModel = new LotsViewModel(apiService);
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(2, viewModel.Lots.Count);
+        var activeRow = Assert.Single(viewModel.ActiveLots);
+        Assert.Equal("ACTIVELOT", activeRow.LotNumber);
+        Assert.True(activeRow.IsVaccineActive);
+        var inactiveRow = Assert.Single(viewModel.InactiveLots);
+        Assert.Equal("INACTIVELOT", inactiveRow.LotNumber);
+        Assert.False(inactiveRow.IsVaccineActive);
+    }
+
+    [Fact]
+    public async Task LoadTreatsAnOrphanLotWithNoMatchingVaccineRowAsActive()
+    {
+        var apiService = new FakeVaccineApiService();
+        var orphanVaccineId = Guid.NewGuid();
+        apiService.LotsByVaccineId[orphanVaccineId] = new()
+        {
+            new Lot { Id = Guid.NewGuid(), VaccineId = orphanVaccineId, LotNumber = "ORPHANLOT", Expiration = DateOnly.FromDateTime(DateTime.Today.AddYears(1)), Status = "active" },
+        };
+        var viewModel = new LotsViewModel(apiService);
+
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.ActiveLots);
+        Assert.Equal("ORPHANLOT", row.LotNumber);
+        Assert.Empty(viewModel.InactiveLots);
+    }
+
+    [Fact]
+    public async Task AddLotCommandAddsTheNewRowToActiveLots()
+    {
+        var apiService = new FakeVaccineApiService();
+        var vaccine = MakeVaccine("Boostrix", "12345-6789-01");
+        apiService.Vaccines.Add(vaccine);
+        apiService.AllVaccines.Add(vaccine);
+        var viewModel = new LotsViewModel(apiService);
+        await viewModel.LoadAsync();
+
+        viewModel.NewLotVaccine = vaccine;
+        viewModel.NewLotNumber = "SHIP1";
+        viewModel.NewLotExpiration = DateTime.Today.AddYears(1);
+        viewModel.AddLotCommand.Execute(null);
+        await Task.Delay(20);
+
+        var row = Assert.Single(viewModel.ActiveLots);
+        Assert.Equal("SHIP1", row.LotNumber);
+        Assert.Empty(viewModel.InactiveLots);
+    }
+
+    [Fact]
     public async Task ReloadingDetachesOldRowsSoTheyNoLongerAutosave()
     {
         // If LoadAsync didn't unsubscribe EditCommitted from the previous

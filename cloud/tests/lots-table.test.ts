@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { isLotRowDue, pickCurrentActiveLot } from "@/lib/lots-table";
+import { isLotRowDue, partitionVaccinesByActive, pickCurrentActiveLot } from "@/lib/lots-table";
+
+describe("partitionVaccinesByActive", () => {
+  it("splits active and inactive vaccines, preserving each group's relative order", () => {
+    const vaccines = [
+      { id: "1", active: true },
+      { id: "2", active: false },
+      { id: "3", active: true },
+      { id: "4", active: false },
+    ];
+
+    const { active, inactive } = partitionVaccinesByActive(vaccines);
+
+    expect(active.map((v) => v.id)).toEqual(["1", "3"]);
+    expect(inactive.map((v) => v.id)).toEqual(["2", "4"]);
+  });
+
+  it("returns empty arrays for an empty input", () => {
+    expect(partitionVaccinesByActive([])).toEqual({ active: [], inactive: [] });
+  });
+
+  it("puts everything in inactive when nothing is active", () => {
+    const vaccines = [{ id: "1", active: false }];
+    expect(partitionVaccinesByActive(vaccines)).toEqual({ active: [], inactive: vaccines });
+  });
+});
 
 describe("isLotRowDue", () => {
   const today = "2026-09-07";

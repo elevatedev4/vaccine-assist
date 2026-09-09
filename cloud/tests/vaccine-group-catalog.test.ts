@@ -2,8 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   GROUP_DISPLAY_ORDER,
   OTHER_GROUP,
+  PHYSICIANS_COVID_GROUP,
+  PHYSICIANS_FLU_GROUP,
+  PHYSICIANS_GROUP_DISPLAY_ORDER,
+  PHYSICIANS_OTHER_GROUP,
   availableGroupsFor,
+  availablePhysiciansGroupsFor,
+  getPhysiciansGroup,
   getVaccineGroup,
+  persistedGroupForPhysiciansGroup,
 } from "@/lib/vaccine-group-catalog";
 
 describe("getVaccineGroup", () => {
@@ -56,5 +63,60 @@ describe("availableGroupsFor", () => {
     for (const group of availableGroupsFor(names)) {
       expect(GROUP_DISPLAY_ORDER).toContain(group);
     }
+  });
+});
+
+// V-T21 item 7: the Physicians-tab-only 3-bucket grouping layered
+// additively on top of the fine-grained groups above (which stay
+// untouched — see the describe blocks above, still passing unmodified).
+describe("getPhysiciansGroup", () => {
+  it("buckets Flu-group vaccines into 'Flu vaccines'", () => {
+    expect(getPhysiciansGroup("Fluzone HD")).toBe(PHYSICIANS_FLU_GROUP);
+    expect(getPhysiciansGroup("FluMist (age 2-49)")).toBe(PHYSICIANS_FLU_GROUP);
+  });
+
+  it("buckets COVID-group vaccines into 'COVID vaccines'", () => {
+    expect(getPhysiciansGroup("Comirnaty 2025-26 12+")).toBe(PHYSICIANS_COVID_GROUP);
+    expect(getPhysiciansGroup("mnexspike")).toBe(PHYSICIANS_COVID_GROUP);
+  });
+
+  it("buckets every other group (including the fine-grained Other) into 'Other vaccines'", () => {
+    expect(getPhysiciansGroup("Boostrix")).toBe(PHYSICIANS_OTHER_GROUP); // Tetanus/whooping cough
+    expect(getPhysiciansGroup("Shingrix")).toBe(PHYSICIANS_OTHER_GROUP); // Shingles
+    expect(getPhysiciansGroup("Gardasil 9")).toBe(PHYSICIANS_OTHER_GROUP); // HPV
+    expect(getPhysiciansGroup("Some New Vaccine")).toBe(PHYSICIANS_OTHER_GROUP); // fine-grained Other
+    expect(getPhysiciansGroup(null)).toBe(PHYSICIANS_OTHER_GROUP);
+  });
+});
+
+describe("availablePhysiciansGroupsFor", () => {
+  it("returns only the 3 buckets present, in Flu/COVID/Other order regardless of input order", () => {
+    const names = ["Boostrix", "Comirnaty 2025-26 12+", "Fluzone HD"];
+    expect(availablePhysiciansGroupsFor(names)).toEqual([
+      PHYSICIANS_FLU_GROUP,
+      PHYSICIANS_COVID_GROUP,
+      PHYSICIANS_OTHER_GROUP,
+    ]);
+  });
+
+  it("omits a bucket with nothing in it", () => {
+    expect(availablePhysiciansGroupsFor(["Boostrix", "Shingrix"])).toEqual([PHYSICIANS_OTHER_GROUP]);
+  });
+
+  it("never returns a group not in PHYSICIANS_GROUP_DISPLAY_ORDER", () => {
+    for (const group of availablePhysiciansGroupsFor(["Comirnaty", "Fluzone", "Gardasil"])) {
+      expect(PHYSICIANS_GROUP_DISPLAY_ORDER).toContain(group);
+    }
+  });
+});
+
+describe("persistedGroupForPhysiciansGroup", () => {
+  it("maps Flu/COVID display groups back to the fine-grained persisted value", () => {
+    expect(persistedGroupForPhysiciansGroup(PHYSICIANS_FLU_GROUP)).toBe("Flu");
+    expect(persistedGroupForPhysiciansGroup(PHYSICIANS_COVID_GROUP)).toBe("COVID");
+  });
+
+  it("returns null for 'Other vaccines' — no wildcard rule option for that bucket", () => {
+    expect(persistedGroupForPhysiciansGroup(PHYSICIANS_OTHER_GROUP)).toBeNull();
   });
 });

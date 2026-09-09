@@ -51,4 +51,43 @@ public class VaccineGroupCatalogTests
         Assert.Contains("COVID", VaccineGroupCatalog.DisplayOrder);
         Assert.Contains("HPV", VaccineGroupCatalog.DisplayOrder);
     }
+
+    // V-T21 item 7 (Will, 2026-09-08): the Physicians-tab-only 3-bucket
+    // grouping, additive on top of GetGroup/DisplayOrder above (both still
+    // covered, unmodified, by the tests above).
+
+    [Theory]
+    [InlineData("Afluria MDV", VaccineGroupCatalog.PhysiciansFluGroup)]
+    [InlineData("FluMist (age 2-49)", VaccineGroupCatalog.PhysiciansFluGroup)]
+    [InlineData("Comirnaty 2025-26 12+", VaccineGroupCatalog.PhysiciansCovidGroup)]
+    [InlineData("mNEXSPIKE", VaccineGroupCatalog.PhysiciansCovidGroup)]
+    [InlineData("Boostrix", VaccineGroupCatalog.PhysiciansOtherGroup)] // fine-grained Tetanus/whooping cough
+    [InlineData("Shingrix", VaccineGroupCatalog.PhysiciansOtherGroup)] // fine-grained Shingles
+    [InlineData("Gardasil", VaccineGroupCatalog.PhysiciansOtherGroup)] // fine-grained HPV
+    [InlineData("Some Future Vaccine", VaccineGroupCatalog.PhysiciansOtherGroup)] // fine-grained Other
+    public void GetPhysiciansGroupBucketsIntoExactlyThreeGroups(string name, string expectedGroup)
+    {
+        Assert.Equal(expectedGroup, VaccineGroupCatalog.GetPhysiciansGroup(Named(name)));
+    }
+
+    [Fact]
+    public void PhysiciansDisplayOrderIsExactlyFluCovidOther()
+    {
+        Assert.Equal(
+            new[] { VaccineGroupCatalog.PhysiciansFluGroup, VaccineGroupCatalog.PhysiciansCovidGroup, VaccineGroupCatalog.PhysiciansOtherGroup },
+            VaccineGroupCatalog.PhysiciansDisplayOrder);
+    }
+
+    [Fact]
+    public void PersistedGroupForPhysiciansGroupMapsFluAndCovidBackToTheFineGrainedValue()
+    {
+        Assert.Equal("Flu", VaccineGroupCatalog.PersistedGroupForPhysiciansGroup(VaccineGroupCatalog.PhysiciansFluGroup));
+        Assert.Equal("COVID", VaccineGroupCatalog.PersistedGroupForPhysiciansGroup(VaccineGroupCatalog.PhysiciansCovidGroup));
+    }
+
+    [Fact]
+    public void PersistedGroupForPhysiciansGroupReturnsNullForOtherVaccines()
+    {
+        Assert.Null(VaccineGroupCatalog.PersistedGroupForPhysiciansGroup(VaccineGroupCatalog.PhysiciansOtherGroup));
+    }
 }

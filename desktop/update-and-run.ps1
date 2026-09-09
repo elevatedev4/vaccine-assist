@@ -72,6 +72,14 @@ function Write-ErrorBlock {
     Write-Host $Message -ForegroundColor Red
 }
 
+# V-T21 item 8 (Will, 2026-09-08): a visible "Updating..." line the
+# instant the shortcut/one-liner runs, before anything else (repo-root
+# lookup, git, dotnet build) even starts — so a double-click clearly shows
+# "something happened" right away, distinct from Write-Step's own
+# "Syncing to latest from GitHub..." a moment later. No other behavior in
+# this script changes.
+Write-Host 'Updating Vaccine Assist...' -ForegroundColor Cyan
+
 function Stop-WithMessage {
     param([string]$Message)
     Write-ErrorBlock $Message

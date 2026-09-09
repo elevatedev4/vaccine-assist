@@ -92,6 +92,12 @@ public sealed class VaccineApiService : IVaccineApiService
         return result.Lot;
     }
 
+    public async Task DeleteLotAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Delete, $"/api/lots/{id}");
+        await SendAsync<OkResponse>(request, cancellationToken);
+    }
+
     public async Task<EligibilityResult> EvaluateEligibilityAsync(
         Guid vaccineId,
         int ageYears,
