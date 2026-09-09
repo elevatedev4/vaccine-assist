@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
 import { isLotRowDue, partitionVaccinesByActive, pickCurrentActiveLot } from "@/lib/lots-table";
+import { dedupeLotsByNumber, formatNdcDisplay, groupVaccinesIntoProducts, type LotsProductGroup } from "@/lib/lots-grouping";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**
@@ -13,29 +14,42 @@ import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
  * expiration / beyond use date (optional) within the table. The row
  * should highlight if expired or beyond use date is met."
  *
- * ONE row per vaccine (from GET /api/vaccines?includeInactive=true — the
- * admin/full list, same one the desktop Active-vaccines tab uses). Each
- * row shows/edits that vaccine's CURRENT active lot (lib/lots-table.ts's
- * pickCurrentActiveLot) inline: lot number, expiration, and an optional
- * beyond-use date. A per-row "Save" button (JUDGMENT CALL: explicit
- * button over save-on-blur — blur is easy to trigger accidentally while
- * tabbing between fields, and an explicit button gives a clear "did this
- * save" moment plus somewhere to show a per-row error) PATCHes the
- * vaccine's existing lot, or POSTs a new one if it doesn't have one yet.
+ * V-T28 (Will 2026-09-09 verbatim: "Website lots, the app still shows
+ * multiple lines for each vaccine (ex: Engerix-B, Gardasil). Similar to
+ * the ordering logic, there should be one row per item and the NDC
+ * should be displayed too."): rows are now one per PRODUCT, not one per
+ * per-dose vaccine row — lib/lots-grouping.ts's groupVaccinesIntoProducts
+ * collapses e.g. Gardasil's three dose rows into a single row keyed by
+ * their shared NDC (or, for a dose with no NDC of its own like Vaqta's
+ * second dose, by matching name). Each product row still edits ONE
+ * current lot inline (lot number/expiration/beyond-use date, same
+ * columns as before) — computed via pickCurrentActiveLot over the
+ * group's lots deduped by lot_number (dedupeLotsByNumber), since the
+ * lot-list apply script inserts the identical lot on every dose row and
+ * this collapses those copies back to the one value being shown/edited.
+ * Saving/deleting a product row's lot fans out server-side to every dose
+ * vaccine_id in the group (POST/PATCH/DELETE /api/lots, vaccine_ids /
+ * vaccineIds — see that route's own doc comment) rather than touching
+ * only one dose, so the desktop guided data-entry flow (which still
+ * reads per-dose lot rows) keeps seeing consistent data across doses.
+ * The vaccine list itself (GET /api/vaccines?includeInactive=true) is
+ * untouched — grouping is purely a display-layer computation over it.
  *
- * V-T21 item 4 (Will, 2026-09-08): active vaccines are listed first;
- * inactive vaccines get their own collapsed "Inactive vaccines (N)"
+ * V-T21 item 4 (Will, 2026-09-08): active PRODUCTS are listed first;
+ * inactive products get their own collapsed "Inactive vaccines (N)"
  * section BELOW (a native <details>, closed by default) so an inactive
  * product's row isn't just missing without explanation — and each row
  * (both sections) gets an Active checkbox (PATCH /api/vaccines/{id}
- * {active}, already used by the desktop Active-vaccines tab) so Will can
+ * {active} for every dose vaccine_id in the product, looped client-side —
+ * that per-vaccine endpoint already existed for the desktop
+ * Active-vaccines tab, so no server change needed) so Will can
  * re-activate one later without leaving this page. Verified separately:
  * GET /api/eligibility/for-age (the data-entry popup's vaccine list) is
  * already `.eq("active", true)` — inactive vaccines already never show up
  * there, no fix needed on that side.
  */
 
-type VaccineOption = { id: string; name: string; active: boolean };
+type VaccineOption = { id: string; name: string; active: boolean; ndc: string | null };
 
 type LotRow = {
   id: string;
@@ -47,8 +61,17 @@ type LotRow = {
   beyond_use_date?: string | null;
 };
 
-/** Per-row draft state — separate from the loaded LotRow so in-progress edits don't get clobbered by a background refresh, and so a brand-new (no lot yet) row has somewhere to hold its inputs before the first save. */
-type RowDraft = { lotId: string | null; lotNumber: string; expiration: string; beyondUseDate: string };
+/**
+ * Per-PRODUCT draft state — separate from the loaded LotRow so
+ * in-progress edits don't get clobbered by a background refresh, and so
+ * a brand-new (no lot yet) row has somewhere to hold its inputs before
+ * the first save. `matchLotNumber` is the lot number as LOADED (before
+ * any in-progress edit) — null means the product has no current lot yet
+ * (Save will create one); non-null is what a Save/Delete's fan-out
+ * request matches against on every dose vaccine_id, since the edited
+ * `lotNumber` field itself may be a rename in flight.
+ */
+type RowDraft = { matchLotNumber: string | null; lotNumber: string; expiration: string; beyondUseDate: string };
 
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 960 },
@@ -81,7 +104,7 @@ export default function LotsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [beyondUseDateSupported, setBeyondUseDateSupported] = useState(true);
 
-  const [savingVaccineId, setSavingVaccineId] = useState<string | null>(null);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [rowSaved, setRowSaved] = useState<Record<string, boolean>>({});
 
@@ -94,7 +117,7 @@ export default function LotsPage() {
     setLots([]);
     setDrafts({});
     setLoadError(null);
-    setActiveErrorById({});
+    setActiveErrorByKey({});
   }
 
   useEffect(() => {
@@ -114,13 +137,22 @@ export default function LotsPage() {
     };
   }, []);
 
-  function draftsFromLots(vaccineList: VaccineOption[], lotList: LotRow[]): Record<string, RowDraft> {
+  /**
+   * V-T28: one draft per PRODUCT group, not per vaccine. The group's
+   * "current" lot is pickCurrentActiveLot over its lots deduped by
+   * lot_number (dedupeLotsByNumber) — the union of every dose
+   * vaccine_id's lots, collapsed back to the single value that's
+   * actually shown/edited, so N identical dose-row copies (or, rarely, a
+   * pre-fan-out drift between them) don't change which lot is picked.
+   */
+  function draftsFromProducts(groups: LotsProductGroup[], lotList: LotRow[]): Record<string, RowDraft> {
     const next: Record<string, RowDraft> = {};
-    for (const vaccine of vaccineList) {
-      const vaccineLots = lotList.filter((l) => l.vaccine_id === vaccine.id);
-      const current = pickCurrentActiveLot(vaccineLots);
-      next[vaccine.id] = {
-        lotId: current?.id ?? null,
+    for (const group of groups) {
+      const groupVaccineIds = new Set(group.vaccineIds);
+      const groupLots = lotList.filter((l) => groupVaccineIds.has(l.vaccine_id));
+      const current = pickCurrentActiveLot(dedupeLotsByNumber(groupLots));
+      next[group.key] = {
+        matchLotNumber: current?.lot_number ?? null,
         lotNumber: current?.lot_number ?? "",
         expiration: current?.expiration ?? "",
         beyondUseDate: current?.beyond_use_date ?? "",
@@ -129,8 +161,16 @@ export default function LotsPage() {
     return next;
   }
 
-  const [activeBusyId, setActiveBusyId] = useState<string | null>(null);
-  const [activeErrorById, setActiveErrorById] = useState<Record<string, string>>({});
+  const [activeBusyKey, setActiveBusyKey] = useState<string | null>(null);
+  const [activeErrorByKey, setActiveErrorByKey] = useState<Record<string, string>>({});
+
+  /** V-T28: vaccines grouped into one row per product, sorted by display
+   * name — recomputed whenever `vaccines` changes (e.g. after an Active
+   * toggle) rather than kept as separate state, so it can never drift
+   * out of sync with the vaccine list it's derived from. */
+  const productGroups = useMemo(() => {
+    return [...groupVaccinesIntoProducts(vaccines)].sort((a, b) => a.name.localeCompare(b.name));
+  }, [vaccines]);
 
   const loadAll = useCallback(async (token: string) => {
     setLoading(true);
@@ -152,14 +192,20 @@ export default function LotsPage() {
         return;
       }
 
-      const loadedVaccines: VaccineOption[] = (vaccinesData.vaccines ?? [])
-        .map((v: { id: string; name: string; active: boolean }) => ({ id: v.id, name: v.name, active: v.active }))
-        .sort((a: VaccineOption, b: VaccineOption) => a.name.localeCompare(b.name));
+      const loadedVaccines: VaccineOption[] = (vaccinesData.vaccines ?? []).map(
+        (v: { id: string; name: string; active: boolean; ndc: string | null }) => ({
+          id: v.id,
+          name: v.name,
+          active: v.active,
+          ndc: v.ndc ?? null,
+        })
+      );
       const loadedLots: LotRow[] = lotsData.lots ?? [];
+      const loadedGroups = groupVaccinesIntoProducts(loadedVaccines);
 
       setVaccines(loadedVaccines);
       setLots(loadedLots);
-      setDrafts(draftsFromLots(loadedVaccines, loadedLots));
+      setDrafts(draftsFromProducts(loadedGroups, loadedLots));
       setBeyondUseDateSupported(lotsData.beyondUseDateSupported !== false);
       setRowErrors({});
       setRowSaved({});
@@ -197,96 +243,158 @@ export default function LotsPage() {
   }
 
 
-  function updateDraft(vaccineId: string, patch: Partial<RowDraft>) {
-    setDrafts((prev) => ({ ...prev, [vaccineId]: { ...prev[vaccineId], ...patch } }));
-    setRowSaved((prev) => ({ ...prev, [vaccineId]: false }));
+  function updateDraft(key: string, patch: Partial<RowDraft>) {
+    setDrafts((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
+    setRowSaved((prev) => ({ ...prev, [key]: false }));
   }
 
-  async function handleSaveRow(vaccineId: string) {
+  /**
+   * V-T28: saves a product row's lot fields across EVERY dose vaccine_id
+   * in the group, server-side (POST/PATCH /api/lots — see that route's
+   * doc comment). No current lot yet (matchLotNumber null) creates one
+   * on every vaccine_id at once; an existing lot is edited by matching
+   * its OLD lot_number (draft.matchLotNumber, from before this edit) on
+   * every vaccine_id, so a lot_number rename still finds the right row
+   * on each dose.
+   */
+  async function handleSaveRow(group: LotsProductGroup) {
     if (!session) return;
-    const draft = drafts[vaccineId];
+    const draft = drafts[group.key];
     if (!draft || !draft.lotNumber.trim() || !draft.expiration) {
-      setRowErrors((prev) => ({ ...prev, [vaccineId]: "Lot number and expiration are required." }));
+      setRowErrors((prev) => ({ ...prev, [group.key]: "Lot number and expiration are required." }));
       return;
     }
 
-    setSavingVaccineId(vaccineId);
-    setRowErrors((prev) => ({ ...prev, [vaccineId]: "" }));
-    setRowSaved((prev) => ({ ...prev, [vaccineId]: false }));
+    setSavingKey(group.key);
+    setRowErrors((prev) => ({ ...prev, [group.key]: "" }));
+    setRowSaved((prev) => ({ ...prev, [group.key]: false }));
     try {
-      const payload: Record<string, unknown> = {
-        lot_number: draft.lotNumber.trim(),
-        expiration: draft.expiration,
-        beyond_use_date: draft.beyondUseDate || null,
-      };
-
-      const response = await fetch(
-        draft.lotId ? `/api/lots/${draft.lotId}` : "/api/lots",
-        draft.lotId
-          ? {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-              body: JSON.stringify(payload),
-            }
-          : {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-              body: JSON.stringify({ vaccine_id: vaccineId, ...payload }),
-            }
-      );
+      const lotNumber = draft.lotNumber.trim();
+      const response = await fetch("/api/lots", {
+        method: draft.matchLotNumber ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+        body: JSON.stringify(
+          draft.matchLotNumber
+            ? {
+                vaccineIds: group.vaccineIds,
+                matchLotNumber: draft.matchLotNumber,
+                lot_number: lotNumber,
+                expiration: draft.expiration,
+                beyond_use_date: draft.beyondUseDate || null,
+              }
+            : {
+                vaccine_ids: group.vaccineIds,
+                lot_number: lotNumber,
+                expiration: draft.expiration,
+                beyond_use_date: draft.beyondUseDate || null,
+              }
+        ),
+      });
       const data = await response.json();
       if (!response.ok) {
-        setRowErrors((prev) => ({ ...prev, [vaccineId]: data.error ?? "Failed to save lot." }));
+        setRowErrors((prev) => ({ ...prev, [group.key]: data.error ?? "Failed to save lot." }));
         return;
       }
 
       if (data.beyondUseDateSupported === false) setBeyondUseDateSupported(false);
 
-      const savedLot: LotRow = data.lot;
+      const savedLots: LotRow[] = data.lots ?? [];
+      const groupVaccineIds = new Set(group.vaccineIds);
+      const oldLotNumber = draft.matchLotNumber;
       setLots((prev) => {
-        const withoutOld = draft.lotId ? prev.filter((l) => l.id !== draft.lotId) : prev;
-        return [...withoutOld, savedLot];
+        const withoutOld = oldLotNumber
+          ? prev.filter((l) => !(groupVaccineIds.has(l.vaccine_id) && l.lot_number === oldLotNumber))
+          : prev;
+        return [...withoutOld, ...savedLots];
       });
       setDrafts((prev) => ({
         ...prev,
-        [vaccineId]: {
-          lotId: savedLot.id,
-          lotNumber: savedLot.lot_number,
-          expiration: savedLot.expiration,
-          beyondUseDate: savedLot.beyond_use_date ?? "",
+        [group.key]: {
+          matchLotNumber: lotNumber,
+          lotNumber,
+          expiration: draft.expiration,
+          beyondUseDate: draft.beyondUseDate,
         },
       }));
-      setRowSaved((prev) => ({ ...prev, [vaccineId]: true }));
+      setRowSaved((prev) => ({ ...prev, [group.key]: true }));
     } catch (err) {
-      setRowErrors((prev) => ({ ...prev, [vaccineId]: err instanceof Error ? err.message : "Failed to save lot." }));
+      setRowErrors((prev) => ({ ...prev, [group.key]: err instanceof Error ? err.message : "Failed to save lot." }));
     } finally {
-      setSavingVaccineId(null);
+      setSavingKey(null);
     }
   }
 
-  /** V-T21 item 4: PATCH /api/vaccines/{id} {active} — same write path the
-   * desktop Active-vaccines tab already uses. Optimistic local update with
-   * revert-on-failure, matching handleSaveRow's own busy/error pattern. */
-  async function handleToggleActive(vaccineId: string, nextActive: boolean) {
+  /** V-T28: deletes a product row's current lot across every dose
+   * vaccine_id at once (DELETE /api/lots, vaccineIds + lot_number). Only
+   * ever called when draft.matchLotNumber is set (button is disabled
+   * otherwise) — nothing to delete for a product with no lot yet. */
+  async function handleDeleteRow(group: LotsProductGroup) {
     if (!session) return;
-    setActiveBusyId(vaccineId);
-    setActiveErrorById((prev) => ({ ...prev, [vaccineId]: "" }));
+    const draft = drafts[group.key];
+    if (!draft?.matchLotNumber) return;
+
+    setSavingKey(group.key);
+    setRowErrors((prev) => ({ ...prev, [group.key]: "" }));
+    setRowSaved((prev) => ({ ...prev, [group.key]: false }));
     try {
-      const response = await fetch(`/api/vaccines/${vaccineId}`, {
-        method: "PATCH",
+      const response = await fetch("/api/lots", {
+        method: "DELETE",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-        body: JSON.stringify({ active: nextActive }),
+        body: JSON.stringify({ vaccineIds: group.vaccineIds, lot_number: draft.matchLotNumber }),
       });
       const data = await response.json();
       if (!response.ok) {
-        setActiveErrorById((prev) => ({ ...prev, [vaccineId]: data.error ?? "Failed to update." }));
+        setRowErrors((prev) => ({ ...prev, [group.key]: data.error ?? "Failed to delete lot." }));
         return;
       }
-      setVaccines((prev) => prev.map((v) => (v.id === vaccineId ? { ...v, active: nextActive } : v)));
+
+      const groupVaccineIds = new Set(group.vaccineIds);
+      const deletedLotNumber = draft.matchLotNumber;
+      setLots((prev) => prev.filter((l) => !(groupVaccineIds.has(l.vaccine_id) && l.lot_number === deletedLotNumber)));
+      setDrafts((prev) => ({
+        ...prev,
+        [group.key]: { matchLotNumber: null, lotNumber: "", expiration: "", beyondUseDate: "" },
+      }));
     } catch (err) {
-      setActiveErrorById((prev) => ({ ...prev, [vaccineId]: err instanceof Error ? err.message : "Failed to update." }));
+      setRowErrors((prev) => ({ ...prev, [group.key]: err instanceof Error ? err.message : "Failed to delete lot." }));
     } finally {
-      setActiveBusyId(null);
+      setSavingKey(null);
+    }
+  }
+
+  /** V-T21 item 4 / V-T28: PATCH /api/vaccines/{id} {active} on EVERY dose
+   * vaccine_id in the product — same per-vaccine endpoint the desktop
+   * Active-vaccines tab already uses, just looped client-side rather
+   * than fanned out server-side (unlike the lot writes above, there's no
+   * shared "match by value" ambiguity here — every id in the group gets
+   * set to the same nextActive). Optimistic local update with
+   * revert-on-failure, matching handleSaveRow's own busy/error pattern.
+   */
+  async function handleToggleActive(group: LotsProductGroup, nextActive: boolean) {
+    if (!session) return;
+    setActiveBusyKey(group.key);
+    setActiveErrorByKey((prev) => ({ ...prev, [group.key]: "" }));
+    try {
+      const responses = await Promise.all(
+        group.vaccineIds.map((vaccineId) =>
+          fetch(`/api/vaccines/${vaccineId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+            body: JSON.stringify({ active: nextActive }),
+          }).then(async (response) => ({ response, data: await response.json() }))
+        )
+      );
+      const failed = responses.find(({ response }) => !response.ok);
+      if (failed) {
+        setActiveErrorByKey((prev) => ({ ...prev, [group.key]: failed.data.error ?? "Failed to update." }));
+        return;
+      }
+      const groupVaccineIds = new Set(group.vaccineIds);
+      setVaccines((prev) => prev.map((v) => (groupVaccineIds.has(v.id) ? { ...v, active: nextActive } : v)));
+    } catch (err) {
+      setActiveErrorByKey((prev) => ({ ...prev, [group.key]: err instanceof Error ? err.message : "Failed to update." }));
+    } finally {
+      setActiveBusyKey(null);
     }
   }
 
@@ -310,42 +418,44 @@ export default function LotsPage() {
   }
 
   const today = todayInChicago();
-  const { active: activeVaccines, inactive: inactiveVaccines } = partitionVaccinesByActive(vaccines);
+  const { active: activeProducts, inactive: inactiveProducts } = partitionVaccinesByActive(productGroups);
 
-  /** V-T21 item 4: shared row renderer for both the active table and the
-   * collapsed inactive section below — identical columns/behavior in
-   * both, plus the Active checkbox every row now gets. */
-  function renderVaccineRow(vaccine: VaccineOption) {
-    const draft = drafts[vaccine.id] ?? { lotId: null, lotNumber: "", expiration: "", beyondUseDate: "" };
+  /** V-T21 item 4 / V-T28: shared row renderer for both the active table
+   * and the collapsed inactive section below — identical columns/
+   * behavior in both. One row per PRODUCT group now (not per vaccine),
+   * with an NDC column and a Delete-lot button alongside Save. */
+  function renderProductRow(group: LotsProductGroup) {
+    const draft = drafts[group.key] ?? { matchLotNumber: null, lotNumber: "", expiration: "", beyondUseDate: "" };
     const due = isLotRowDue(
       { expiration: draft.expiration || null, beyond_use_date: draft.beyondUseDate || null },
       today
     );
-    const rowError = rowErrors[vaccine.id];
-    const saved = rowSaved[vaccine.id];
-    const saving = savingVaccineId === vaccine.id;
-    const activeError = activeErrorById[vaccine.id];
-    const activeBusy = activeBusyId === vaccine.id;
+    const rowError = rowErrors[group.key];
+    const saved = rowSaved[group.key];
+    const saving = savingKey === group.key;
+    const activeError = activeErrorByKey[group.key];
+    const activeBusy = activeBusyKey === group.key;
 
     return (
-      <tr key={vaccine.id} style={due ? styles.dueRow : undefined}>
-        <td style={styles.td}>{vaccine.name}</td>
+      <tr key={group.key} style={due ? styles.dueRow : undefined}>
+        <td style={styles.td}>{group.name}</td>
+        <td style={styles.td}>{formatNdcDisplay(group.ndc)}</td>
         <td style={styles.td}>
           <input
             style={styles.input}
             type="text"
-            aria-label={`${vaccine.name} lot number`}
+            aria-label={`${group.name} lot number`}
             value={draft.lotNumber}
-            onChange={(e) => updateDraft(vaccine.id, { lotNumber: e.target.value })}
+            onChange={(e) => updateDraft(group.key, { lotNumber: e.target.value })}
           />
         </td>
         <td style={styles.td}>
           <input
             style={styles.input}
             type="date"
-            aria-label={`${vaccine.name} expiration`}
+            aria-label={`${group.name} expiration`}
             value={draft.expiration}
-            onChange={(e) => updateDraft(vaccine.id, { expiration: e.target.value })}
+            onChange={(e) => updateDraft(group.key, { expiration: e.target.value })}
           />
         </td>
         {beyondUseDateSupported && (
@@ -353,9 +463,9 @@ export default function LotsPage() {
             <input
               style={styles.input}
               type="date"
-              aria-label={`${vaccine.name} beyond-use date`}
+              aria-label={`${group.name} beyond-use date`}
               value={draft.beyondUseDate}
-              onChange={(e) => updateDraft(vaccine.id, { beyondUseDate: e.target.value })}
+              onChange={(e) => updateDraft(group.key, { beyondUseDate: e.target.value })}
             />
           </td>
         )}
@@ -363,18 +473,26 @@ export default function LotsPage() {
           <label>
             <input
               type="checkbox"
-              aria-label={`${vaccine.name} active`}
-              checked={vaccine.active}
+              aria-label={`${group.name} active`}
+              checked={group.active}
               disabled={activeBusy}
-              onChange={(e) => void handleToggleActive(vaccine.id, e.target.checked)}
+              onChange={(e) => void handleToggleActive(group, e.target.checked)}
             />{" "}
             Active
           </label>
           {activeError && <div style={styles.error}>{activeError}</div>}
         </td>
         <td style={styles.td}>
-          <button style={styles.button} type="button" onClick={() => void handleSaveRow(vaccine.id)} disabled={saving}>
+          <button style={styles.button} type="button" onClick={() => void handleSaveRow(group)} disabled={saving}>
             {saving ? "Saving…" : "Save"}
+          </button>{" "}
+          <button
+            style={styles.button}
+            type="button"
+            onClick={() => void handleDeleteRow(group)}
+            disabled={saving || !draft.matchLotNumber}
+          >
+            Delete lot
           </button>
           {rowError && <div style={styles.error}>{rowError}</div>}
           {saved && !rowError && <div style={styles.success}>Saved.</div>}
@@ -387,6 +505,7 @@ export default function LotsPage() {
     <thead>
       <tr>
         <th style={styles.th}>Vaccine</th>
+        <th style={styles.th}>NDC</th>
         <th style={styles.th}>Lot number</th>
         <th style={styles.th}>Expiration</th>
         {beyondUseDateSupported && <th style={styles.th}>Beyond-use date (optional)</th>}
@@ -400,9 +519,11 @@ export default function LotsPage() {
     <main style={styles.main}>
       <h1>Lots</h1>
       <p style={styles.muted}>
-        One row per vaccine. Edit the lot number, expiration, and (optional) beyond-use date, then Save. A row
-        highlights when its expiration or beyond-use date is today or already past. Uncheck Active to hide a vaccine
-        from data entry without losing its lot history; inactive vaccines are listed below.
+        One row per product (a multi-dose series like Gardasil or Engerix collapses its dose rows into one, matched
+        by NDC). Edit the lot number, expiration, and (optional) beyond-use date, then Save — the change applies to
+        every dose of that product. A row highlights when its expiration or beyond-use date is today or already
+        past. Uncheck Active to hide a product from data entry without losing its lot history; inactive products are
+        listed below.
       </p>
       {!beyondUseDateSupported && (
         <p style={styles.note}>Beyond-use date isn&apos;t available yet on this environment (pending migration).</p>
@@ -418,17 +539,17 @@ export default function LotsPage() {
 
       <table style={styles.table}>
         {tableHead}
-        <tbody>{activeVaccines.map(renderVaccineRow)}</tbody>
+        <tbody>{activeProducts.map(renderProductRow)}</tbody>
       </table>
 
       <details style={{ marginTop: "1.5rem" }}>
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Inactive vaccines ({inactiveVaccines.length})</summary>
-        {inactiveVaccines.length === 0 ? (
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Inactive vaccines ({inactiveProducts.length})</summary>
+        {inactiveProducts.length === 0 ? (
           <p style={styles.muted}>None.</p>
         ) : (
           <table style={{ ...styles.table, marginTop: "0.5rem" }}>
             {tableHead}
-            <tbody>{inactiveVaccines.map(renderVaccineRow)}</tbody>
+            <tbody>{inactiveProducts.map(renderProductRow)}</tbody>
           </table>
         )}
       </details>
