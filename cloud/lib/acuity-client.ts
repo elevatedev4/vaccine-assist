@@ -488,23 +488,84 @@ function extractFormFieldAnswer(forms: unknown, matcher: (name: string) => boole
 }
 
 /**
- * Matches an Acuity intake-form field's `name` against a "does this look
- * like the point-of-care test-selection question" heuristic (V-T-poc-
- * testing, Will 2026-09-08): case-insensitive substring match on "test" —
- * mirrors isVaccineFormFieldName's own "small, separately-exported,
- * separately-tested heuristic" rationale. Live-probed (2026-09-08,
- * read-only GET against the production account, appointment type "Test
- * appointment (Flu, COVID, Strep)"): the real field name is exactly
- * "Select tests:", which this substring match catches. Observed answer
- * values (not PHI — a test TYPE, same category as a vaccine name):
- * "COVID (free)", "COVID", "Strep Throat" — no "Flu" answer happened to be
- * in the sampled window, but the field is a multi-select ("Select
- * test*s*:"), so extractTestNamesFromForms below splits on the same
- * comma/pipe/newline delimiters extractVaccineNamesFromForms uses, ready
- * for a multi-value answer.
+ * PHI BOUNDARY, tightened per security review (2026-09-08, REQUEST_CHANGES
+ * — blocking): a bare case-insensitive substring match on "test" would
+ * also match a genuine SCREENING question, e.g. "Have you had a positive
+ * COVID test recently?" or "Any test results we should know about?" —
+ * both real intake-form questions whose free-text ANSWER could be actual
+ * patient health information, not a test-type selection. That answer
+ * would have flowed straight through extractTestNamesFromForms below into
+ * testNames -> the point-of-care test table -> a `tests_` cache row and
+ * onto the rendered page as a column header, i.e. a genuine PHI leak.
+ *
+ * Fixed to an ALLOWLIST match against the one field name actually
+ * observed live (2026-09-08 probe, production account, appointment type
+ * "Test appointment (Flu, COVID, Strep)"): the real field is exactly
+ * "Select tests:". Normalizes `name` (lowercase, trim, strip a trailing
+ * ":") and requires the result to be EXACTLY TEST_FIELD_EXACT_NAME or to
+ * START WITH TEST_FIELD_NAME_PREFIX (covers a plausible singular-vs-plural
+ * rename, "Select test:", without falling back to a bare substring match)
+ * — both small, exported-in-spirit constants right below so a future
+ * rename on Will's Acuity account is a one-line change here, not a
+ * loosened heuristic. A screening question like the ones above normalizes
+ * to e.g. "have you had a positive covid test recently" — neither equals
+ * nor starts with the allowlisted prefix, so it's correctly rejected.
  */
+const TEST_FIELD_EXACT_NAME = "select tests";
+const TEST_FIELD_NAME_PREFIX = "select test";
+
+function normalizeFieldName(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/\s*:\s*$/, "")
+    .trim();
+}
+
 export function isTestFormFieldName(name: string): boolean {
-  return typeof name === "string" && name.toLowerCase().includes("test");
+  if (typeof name !== "string") return false;
+  const normalized = normalizeFieldName(name);
+  return normalized === TEST_FIELD_EXACT_NAME || normalized.startsWith(TEST_FIELD_NAME_PREFIX);
+}
+
+/**
+ * SECOND layer of the same PHI boundary (defense in depth, security
+ * review 2026-09-08): even with isTestFormFieldName's tightened name
+ * match above, this ALSO validates every extracted VALUE before it's
+ * allowed to become a testName — an allowlist of known test-type tokens
+ * (lowercased substring match) the live probe actually observed or that
+ * are obviously the same category (blood-panel/screening test names), AND
+ * a length cap. A free-text answer that happens to land on a field this
+ * module misidentifies (or a field that's legitimately named "Select
+ * tests:" but whose answer was, for whatever reason, typed as free text)
+ * is dropped here rather than stored — NEVER logged (a dropped value is,
+ * by definition, off this module's own allowlist, so logging it would
+ * defeat the whole point of dropping it).
+ */
+const TEST_VALUE_TOKEN_ALLOWLIST = [
+  "covid",
+  "flu",
+  "influenza",
+  "strep",
+  "rsv",
+  "a1c",
+  "glucose",
+  "cholesterol",
+  "lipid",
+  "hiv",
+  "hep",
+] as const;
+
+/** A real test-type answer ("COVID", "Strep Throat", "COVID (free)") is
+ * always short — this is generous headroom above the longest real value
+ * observed live, not a tight fit, so it only ever rejects something that
+ * has stopped looking like a short multi-select answer at all. */
+const MAX_TEST_VALUE_LENGTH = 40;
+
+function isAllowedTestValue(value: string): boolean {
+  if (value.length === 0 || value.length > MAX_TEST_VALUE_LENGTH) return false;
+  const lower = value.toLowerCase();
+  return TEST_VALUE_TOKEN_ALLOWLIST.some((token) => lower.includes(token));
 }
 
 /**
@@ -531,10 +592,14 @@ function stripPriceQualifier(name: string): string {
  * matches isTestFormFieldName and splits its answer into individual test
  * names — same comma/pipe/newline split, trim, drop-empty, "first match
  * wins" shape as extractVaccineNamesFromForms, plus stripPriceQualifier's
- * "(free)"-style normalization on each token. Returns [] if no matching
- * field is found or its value is blank — callers fall back to parsing the
- * appointment type's own name (see parseTestNamesFromAppointmentTypeName)
- * only when this comes back empty, exactly as the brief specifies.
+ * "(free)"-style normalization AND isAllowedTestValue's token/length
+ * allowlist on each token (security review 2026-09-08 — see both
+ * functions' own doc comments) — a token that fails the allowlist is
+ * dropped, never returned, never logged. Returns [] if no matching field
+ * is found, its value is blank, or every extracted token was dropped by
+ * the allowlist — callers fall back to parsing the appointment type's own
+ * name (see parseTestNamesFromAppointmentTypeName) only when this comes
+ * back empty, exactly as the brief specifies.
  */
 function extractTestNamesFromForms(forms: unknown): string[] {
   if (!Array.isArray(forms)) return [];
@@ -554,7 +619,7 @@ function extractTestNamesFromForms(forms: unknown): string[] {
       const names = fieldValue
         .split(/[,|\n]/)
         .map((name) => stripPriceQualifier(name.trim()))
-        .filter((name) => name.length > 0);
+        .filter((name) => name.length > 0 && isAllowedTestValue(name));
       if (names.length > 0) return names;
     }
   }
@@ -1027,18 +1092,35 @@ export type VaccineCount = {
 
 /**
  * True when an appointment TYPE's own name looks like a point-of-care
- * testing type — case-insensitive substring match on "test", same simple
- * heuristic style as isCovidVaccineName/isFluVaccineName below (and
- * isTestFormFieldName above, for the analogous FORM FIELD check). Used
+ * testing type. Tightened per security review (2026-09-08, REQUEST_CHANGES
+ * — same pass that tightened isTestFormFieldName above): a bare substring
+ * match on "test" would also match a genuine VACCINE appointment type
+ * whose name just happens to mention testing/screening in passing (e.g. a
+ * hypothetical "COVID Vaccine + Test Visit") and, more subtly, is simply
+ * the wrong shape of heuristic for a business-configured label — staff
+ * name appointment types deliberately and predictably, unlike a patient's
+ * free-text form answer, so this matches the two patterns actually
+ * observed/plausible for a testing type: starts with "test appointment"
+ * (the live-probed real name, "Test appointment (Flu, COVID, Strep)") or
+ * mentions "point of care" / the "poc" abbreviation as its own word (not a
+ * substring of an unrelated word — see the \bpoc\b comment below). Used
  * ONLY by aggregateAppointmentCounts's type-name-fallback guard (see its
  * doc comment) to stop a point-of-care testing appointment's own type name
- * — e.g. "Test appointment (Flu, COVID, Strep)" — from being
- * misinterpreted as a vaccine appointment (that exact name contains
- * "covid" as a substring, so isCovidVaccineName would otherwise happily
- * rewrite it into a bogus "COVID · ..." vaccine-table entry).
+ * from being misinterpreted as a vaccine appointment (the real name above
+ * contains "covid" as a substring, so isCovidVaccineName would otherwise
+ * happily rewrite it into a bogus "COVID · ..." vaccine-table entry). A
+ * genuine vaccine type name like "Latest vaccines (fall)" matches none of
+ * these and is correctly left alone.
  */
 function isTestAppointmentTypeName(name: string): boolean {
-  return typeof name === "string" && name.toLowerCase().includes("test");
+  if (typeof name !== "string") return false;
+  const lower = name.toLowerCase().trim();
+  if (lower.startsWith("test appointment")) return true;
+  if (lower.includes("point of care")) return true;
+  // \bpoc\b, not a bare .includes("poc") — "poc" is a real substring of
+  // ordinary unrelated words (e.g. "epoch"), which a plain substring match
+  // would misclassify as a testing type.
+  return /\bpoc\b/.test(lower);
 }
 
 /**

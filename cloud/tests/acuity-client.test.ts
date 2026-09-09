@@ -501,19 +501,85 @@ describe("fetchAppointmentsForRange", () => {
       expect(Object.prototype.hasOwnProperty.call(result.appointments[0], "type")).toBe(false);
       expect(result.appointments[0].testNames).toEqual(["Flu", "COVID", "Strep"]);
     });
+
+    // Security review (2026-09-08, REQUEST_CHANGES — blocking, adversarial
+    // cases): a genuine SCREENING question's free-text answer must NEVER
+    // become a testName, even end-to-end through fetchAppointmentsForRange
+    // — this is the exact PHI-leak scenario the review flagged (a
+    // screening answer riding into testNames -> the point-of-care test
+    // table -> a cache row -> a rendered column header).
+    it("never extracts a screening question's free-text answer as a testName", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Flu Shot",
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [
+                { fieldID: 9, name: "Have you had a positive COVID test recently?", value: "yes, last week at home" },
+              ],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
+
+    it("drops a value from a genuinely-named 'Select tests:' field when it's a long free-text answer instead of a short multi-select choice", async () => {
+      // Well over the 40-char allowlist cap (lib/acuity-client.ts's
+      // MAX_TEST_VALUE_LENGTH) — the exact length doesn't matter, only
+      // that it's unambiguously too long to be a real multi-select answer.
+      const longFreeTextAnswer =
+        "I went to urgent care last Tuesday and they said it might be strep but the rapid test was inconclusive so they sent a culture.";
+      expect(longFreeTextAnswer.length).toBeGreaterThan(40);
+      const fixture = [
+        acuityAppointmentFixture({
+          // Deliberately NO parenthetical on the type name (unlike the
+          // other tests in this block) — this isolates the assertion to
+          // "the over-length value itself was dropped," rather than
+          // letting the type-name-parenthetical fallback (which fires
+          // whenever the form-field path finds nothing at all) mask a
+          // regression by recovering testNames a different way.
+          type: "Test appointment",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: longFreeTextAnswer }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
   });
 
   describe("isTestFormFieldName", () => {
-    it("matches the real Acuity field name, case-insensitively", () => {
+    it("matches the real Acuity field name, case-insensitively, regardless of the trailing colon", () => {
       expect(isTestFormFieldName("Select tests:")).toBe(true);
       expect(isTestFormFieldName("select TESTS:")).toBe(true);
-      expect(isTestFormFieldName("Which test would you like?")).toBe(true);
+      expect(isTestFormFieldName("Select tests")).toBe(true);
+      expect(isTestFormFieldName("Select test:")).toBe(true);
     });
 
     it("does not match unrelated field names", () => {
       expect(isTestFormFieldName("Which vaccine(s) are you receiving?")).toBe(false);
       expect(isTestFormFieldName("Insurance provider")).toBe(false);
       expect(isTestFormFieldName("")).toBe(false);
+    });
+
+    // Security review (2026-09-08, REQUEST_CHANGES — blocking): the OLD
+    // bare .includes("test") heuristic also matched genuine SCREENING
+    // questions, whose free-text ANSWER could be real patient health
+    // information — this must be false now that the match is an
+    // allowlist, not a substring.
+    it("does not match a screening question that merely mentions 'test'", () => {
+      expect(isTestFormFieldName("Have you had a positive COVID test recently?")).toBe(false);
+      expect(isTestFormFieldName("Any test results we should know about?")).toBe(false);
+      expect(isTestFormFieldName("Which test would you like?")).toBe(false);
     });
   });
 
@@ -1109,7 +1175,7 @@ describe("aggregateAppointmentCounts", () => {
       expect(result).toEqual([]);
     });
 
-    it("excludes an appointment whose type name looks test-ish even when testNames itself is empty (no parenthetical, no matching form field)", () => {
+    it("excludes an appointment whose type name looks test-ish (starts with 'test appointment') even when testNames itself is empty (no parenthetical, no matching form field)", () => {
       const appointments: CountableAppointment[] = [
         {
           date: "2026-08-17",
@@ -1120,11 +1186,63 @@ describe("aggregateAppointmentCounts", () => {
           testNames: [],
         },
       ];
-      const names = new Map([[90788212, "COVID Test Visit"]]);
+      // Security review (2026-09-08): isTestAppointmentTypeName is
+      // ALLOWLIST-tightened, not a bare "test" substring match — a name
+      // like the OLD test fixture's "COVID Test Visit" no longer matches
+      // (see that function's own doc comment for why), so this uses a
+      // name that actually satisfies the tightened rule (starts with
+      // "test appointment") but has NO parenthetical for
+      // parseTestNamesFromAppointmentTypeName to parse — the exact
+      // "neither signal fired a testNames value, but the type name alone
+      // still says testing" case this test targets.
+      const names = new Map([[90788212, "Test Appointment - Walk-in"]]);
 
       const result = aggregateAppointmentCounts(appointments, names);
 
       expect(result).toEqual([]);
+    });
+
+    it("does NOT exclude a vaccine appointment whose type name merely mentions 'test' in passing (tightened isTestAppointmentTypeName, security review 2026-09-08)", () => {
+      // The OLD bare-substring heuristic would have wrongly excluded this
+      // — a real vaccine appointment must never be silently dropped from
+      // its own table just because its name contains the word "test".
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 333,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      const names = new Map([[333, "COVID Test Visit"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "COVID · Any · Unknown", count: 1 }]);
+    });
+
+    it("does NOT treat a vaccine type named with a parenthetical, e.g. 'Latest vaccines (fall)', as a test type", () => {
+      // Adversarial case (security review, 2026-09-08): a parenthetical
+      // alone must not be confused with a testing type — only the
+      // "starts with 'test appointment'"/"point of care"/"poc" patterns
+      // do.
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 444,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      const names = new Map([[444, "Latest vaccines (fall)"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "Latest vaccines (fall)", count: 1 }]);
     });
 
     it("still falls back to the type name normally for a genuine vaccine-type appointment (regression guard)", () => {
