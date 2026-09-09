@@ -12,15 +12,17 @@ import {
   chunkDateRange,
   clearAllFilters,
   clearFilterKey,
-  computeGroups,
   computeLeadDays,
   computeSums,
   dayOfWeekLabel,
   formatHourLabel,
+  groupedRowsToCsv,
+  groupRows,
   rowsToCsv,
   sortRows,
   type ExplorerFilters,
   type ExplorerRow,
+  type ExplorerRowGroup,
   type FilterChip,
   type GroupByMode,
   type SortDirection,
@@ -118,7 +120,14 @@ const styles = {
   sumStat: { display: "flex", flexDirection: "column" as const },
   sumStatLabel: { fontSize: "0.62rem", color: "#666", textTransform: "uppercase" as const, letterSpacing: "0.03em" },
   sumStatValue: { fontSize: "1.1rem", fontWeight: 700 },
-  groupTableWrap: { marginTop: "0.6rem", overflowX: "auto" as const },
+  // V-T27 rebuild (Will, verbatim 2026-09-09: "Group by should make groups
+  // and display the data in a table under each group. The current
+  // functionality is summing."): one of these per group value — a heading
+  // ("<group> — N appointments") followed by that group's own full rows
+  // table (renderRowsTable, which reuses styles.tableWrap below), stacked
+  // top to bottom.
+  groupSection: { marginTop: "1.1rem" },
+  groupHeading: { fontSize: "0.85rem", fontWeight: 700, margin: "0 0 0.35rem" },
   // Explorer table overflow fix (Will, 2026-09-08 follow-up): the table
   // wrapper below is the ONLY element allowed to scroll horizontally — the
   // page body itself must never scroll sideways. `maxWidth: "100%"`
@@ -733,8 +742,24 @@ export default function AppointmentExplorerPage() {
   const filteredRows = useMemo(() => applyFilters(basisFilteredRows, filters), [basisFilteredRows, filters]);
   const sortedRows = useMemo(() => sortRows(filteredRows, sortKey, sortDirection), [filteredRows, sortKey, sortDirection]);
   const sums = useMemo(() => computeSums(filteredRows), [filteredRows]);
-  const groups = useMemo(() => computeGroups(filteredRows, groupBy), [filteredRows, groupBy]);
   const visibleRows = sortedRows.slice(0, visibleCount);
+
+  // V-T27 rebuild (Will, verbatim: "Group by should make groups and
+  // display the data in a table under each group. The current
+  // functionality is summing."): group the FILTERED (not yet sorted) rows
+  // into their "sensible order" buckets (see groupRows's own doc comment
+  // for what that means per mode), then sort each group's own row list
+  // with the SAME sortKey/sortDirection the flat table uses — a grouped
+  // table is never out of sync with the ungrouped one's own sort. Not
+  // sliced to PAGE_SIZE/visibleCount: unlike the single flat table, a
+  // grouped view's rows are already split across multiple, typically much
+  // smaller tables, so the "thousands of <tr>s in one table" problem
+  // visibleCount exists for doesn't apply the same way here (JUDGMENT
+  // CALL — no per-group "Show more" in this round).
+  const groupedTables: ExplorerRowGroup[] = useMemo(() => {
+    if (groupBy === "none") return [];
+    return groupRows(filteredRows, groupBy).map((g) => ({ group: g.group, rows: sortRows(g.rows, sortKey, sortDirection) }));
+  }, [filteredRows, groupBy, sortKey, sortDirection]);
 
   // V-T24 rebuild: the active-filter chip row above the table.
   const filterChips: FilterChip[] = useMemo(() => activeFilterChips(filters), [filters]);
@@ -758,8 +783,105 @@ export default function AppointmentExplorerPage() {
     return sortDirection === "asc" ? " ▲" : " ▼";
   }
 
+  // V-T27 rebuild: the header row is now shared by the single flat table
+  // ("None" group-by) AND every per-group table — same columns, same
+  // click-to-sort/filter-icon behavior in every case, since sort/filter
+  // state (sortKey/sortDirection/filters/openFilter) all live above the
+  // group-by split and apply identically to every group.
+  function renderColumnHeaderRow() {
+    return (
+      <tr>
+        {COLUMNS.map((column) => {
+          const filterKind = FILTER_KIND_BY_COLUMN[column.key];
+          const isActive = filterKind ? isColumnFilterActive(filters, filterKind) : false;
+          return (
+            <th
+              key={column.key}
+              style={{
+                ...styles.th,
+                ...COLUMN_DIVIDER,
+                ...(column.headerBackground ? { background: column.headerBackground } : {}),
+              }}
+            >
+              <span style={styles.thLabel}>
+                <span onClick={() => handleHeaderClick(column.key)}>
+                  {column.label}
+                  {sortIndicator(column.key)}
+                </span>
+                {filterKind && (
+                  <button
+                    type="button"
+                    style={isActive ? styles.filterIconButtonActive : styles.filterIconButton}
+                    aria-label={`Filter ${column.label}`}
+                    aria-pressed={isActive}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setOpenFilter((current) => (current?.key === column.key ? null : { key: column.key, rect }));
+                    }}
+                  >
+                    ⌄
+                  </button>
+                )}
+              </span>
+            </th>
+          );
+        })}
+      </tr>
+    );
+  }
+
+  function renderDataRow(row: ExplorerRow, key: string) {
+    const leadDaysValue = computeLeadDays(row);
+    const leadDays = leadDaysValue === null ? "—" : String(leadDaysValue);
+    return (
+      <tr key={key}>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.date}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{dayOfWeekLabel(row.date)}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{formatHourLabel(row.hourOfDay)}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.createdDate || "—"}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{leadDays}</td>
+        <td style={{ ...styles.tdAppointmentType, ...COLUMN_DIVIDER }}>{row.appointmentTypeName}</td>
+        <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.vaccineNames.join(", ") || "—"}</td>
+        <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.testNames.join(", ") || "—"}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.vaccineNames.length}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>{row.covidBrand}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>
+          {row.covidAgeBucket}
+        </td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.flu }}>{row.fluAgeBucket}</td>
+      </tr>
+    );
+  }
+
+  /** Same full rows table (same columns, sort, filters) rendered inside
+   * its own horizontal-scroll wrapper — used for the flat "None" table AND
+   * for every per-group table (V-T27: "the SAME full rows table"). `keyPrefix`
+   * keeps row keys unique per table when the same appointment legitimately
+   * renders in more than one group's table (the vaccine/test double-
+   * membership modes) — React only needs uniqueness WITHIN one table's own
+   * sibling list, but a shared prefix keeps that obviously true rather than
+   * relying on it by accident. */
+  function renderRowsTable(rows: ExplorerRow[], keyPrefix: string) {
+    return (
+      <div style={styles.tableWrap}>
+        <table style={styles.table}>
+          <thead>{renderColumnHeaderRow()}</thead>
+          <tbody>
+            {rows.map((row, index) =>
+              renderDataRow(row, `${keyPrefix}-${row.date}-${row.hourOfDay}-${row.appointmentTypeId}-${index}`)
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   function handleDownloadCsv() {
-    const csv = rowsToCsv(filteredRows);
+    // V-T27: grouped mode exports with a leading "Group" column (same
+    // group/row membership as the on-screen grouped tables); "None" stays
+    // the original single-table export, unchanged.
+    const csv = groupBy === "none" ? rowsToCsv(filteredRows) : groupedRowsToCsv(groupedTables);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -925,31 +1047,6 @@ export default function AppointmentExplorerPage() {
             </div>
           </div>
 
-          {groupBy !== "none" && (
-            <div style={styles.groupTableWrap}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Group</th>
-                    <th style={styles.th}>Appointments</th>
-                    <th style={styles.th}>Vaccines</th>
-                    <th style={styles.th}>% of appointments</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groups.map((groupRow) => (
-                    <tr key={groupRow.group}>
-                      <td style={styles.td}>{groupRow.group}</td>
-                      <td style={styles.td}>{groupRow.appointments}</td>
-                      <td style={styles.td}>{groupRow.vaccines}</td>
-                      <td style={styles.td}>{groupRow.pctOfAppointments.toFixed(1)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
           {/* V-T24 rebuild (Will, verbatim: "The filtering option needs to
               be more refined, it's very clunky right now and I don't see a
               way to clear the filters"): the active-filter chip row lives
@@ -978,87 +1075,38 @@ export default function AppointmentExplorerPage() {
             </div>
           )}
 
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  {COLUMNS.map((column) => {
-                    const filterKind = FILTER_KIND_BY_COLUMN[column.key];
-                    const isActive = filterKind ? isColumnFilterActive(filters, filterKind) : false;
-                    return (
-                      <th
-                        key={column.key}
-                        style={{
-                          ...styles.th,
-                          ...COLUMN_DIVIDER,
-                          ...(column.headerBackground ? { background: column.headerBackground } : {}),
-                        }}
-                      >
-                        <span style={styles.thLabel}>
-                          <span onClick={() => handleHeaderClick(column.key)}>
-                            {column.label}
-                            {sortIndicator(column.key)}
-                          </span>
-                          {filterKind && (
-                            <button
-                              type="button"
-                              style={isActive ? styles.filterIconButtonActive : styles.filterIconButton}
-                              aria-label={`Filter ${column.label}`}
-                              aria-pressed={isActive}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                const rect = event.currentTarget.getBoundingClientRect();
-                                setOpenFilter((current) =>
-                                  current?.key === column.key ? null : { key: column.key, rect }
-                                );
-                              }}
-                            >
-                              ⌄
-                            </button>
-                          )}
-                        </span>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((row, index) => {
-                  const leadDaysValue = computeLeadDays(row);
-                  const leadDays = leadDaysValue === null ? "—" : String(leadDaysValue);
-                  return (
-                    <tr key={`${row.date}-${row.hourOfDay}-${row.appointmentTypeId}-${index}`}>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.date}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{dayOfWeekLabel(row.date)}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{formatHourLabel(row.hourOfDay)}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.createdDate || "—"}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{leadDays}</td>
-                      <td style={{ ...styles.tdAppointmentType, ...COLUMN_DIVIDER }}>{row.appointmentTypeName}</td>
-                      <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.vaccineNames.join(", ") || "—"}</td>
-                      <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.testNames.join(", ") || "—"}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.vaccineNames.length}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>
-                        {row.covidBrand}
-                      </td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>
-                        {row.covidAgeBucket}
-                      </td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.flu }}>
-                        {row.fluAgeBucket}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          {/* V-T27 rebuild (Will, verbatim: "Group by should make groups
+              and display the data in a table under each group. The
+              current functionality is summing."): "None" renders today's
+              single flat table (with its own "Show more" paging); any
+              other group-by renders one heading + full rows table PER
+              group, in the group's own "sensible order" — see
+              groupedTables/renderRowsTable above. */}
+          {groupBy === "none" ? (
+            <>
+              {renderRowsTable(visibleRows, "flat")}
 
-          {visibleCount < sortedRows.length && (
-            <p>
-              <button type="button" style={styles.button} onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}>
-                Show more ({sortedRows.length - visibleCount} more)
-              </button>
-            </p>
+              {visibleCount < sortedRows.length && (
+                <p>
+                  <button
+                    type="button"
+                    style={styles.button}
+                    onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+                  >
+                    Show more ({sortedRows.length - visibleCount} more)
+                  </button>
+                </p>
+              )}
+            </>
+          ) : (
+            groupedTables.map((groupTable) => (
+              <div key={groupTable.group} style={styles.groupSection}>
+                <h2 style={styles.groupHeading}>
+                  {groupTable.group} — {groupTable.rows.length} appointment{groupTable.rows.length === 1 ? "" : "s"}
+                </h2>
+                {renderRowsTable(groupTable.rows, groupTable.group)}
+              </div>
+            ))
           )}
 
           {/* V-T24 rebuild: the one open column-filter popover, if any —

@@ -510,9 +510,75 @@ function extractFormFieldAnswer(forms: unknown, matcher: (name: string) => boole
  * loosened heuristic. A screening question like the ones above normalizes
  * to e.g. "have you had a positive covid test recently" — neither equals
  * nor starts with the allowlisted prefix, so it's correctly rejected.
+ *
+ * V-T27 follow-up (Will, 2026-09-09 verbatim: "Make sure the test
+ * appointment data is coming through (which test they want to receive
+ * from the intake questions)" — the Tests column was showing "COVID" for
+ * only SOME rows): a real Acuity form can also phrase the same selection
+ * as a QUESTION rather than a "Select tests:" label — e.g. "Which test
+ * would you like?" — which the allowlist above didn't match at all, so
+ * that appointment's testNames came back empty.
+ *
+ * SECURITY REVIEW FOLLOW-UP (2026-09-09, REQUEST_CHANGES — blocking,
+ * BLOCKED feat/explorer-group-tables): the first cut of this question-
+ * shape match (a bare "starts with which/what AND mentions test(s)"
+ * regex) was too broad — it also matched genuine SCREENING/history
+ * questions phrased as a question, e.g. "What test result did you have
+ * last time?" or "Which tests are you currently taking (medications)?",
+ * both of which are backward-looking and could carry real patient health
+ * information in their free-text answer. Fixed by isTestSelectionQuestion
+ * below to a two-sided check on the normalized name: it must contain at
+ * least one FORWARD-LOOKING selection phrase
+ * (TEST_SELECTION_QUESTION_REQUIRED_PHRASES — "would you like", "to
+ * receive", "select", "choose", etc.) AND must NOT contain any
+ * BACKWARD-LOOKING/screening word (TEST_SELECTION_QUESTION_EXCLUDED_WORDS
+ * — "result", "positive", "taking", "history", "symptom", etc.), on top of
+ * the original which/what + test(s) gate. "Which test would you like?"
+ * passes (has "would you like", no excluded word); "What test result did
+ * you have last time?" is rejected (has "result" AND "last", both
+ * excluded) even though it starts with "what" and mentions "test".
+ * isAllowedTestValue below is STILL the deciding second layer regardless
+ * of which name pattern matched — this name-side fix closes the gap where
+ * a screening question could reach that second layer at all with a
+ * value that might otherwise slip past a looser check.
  */
 const TEST_FIELD_EXACT_NAME = "select tests";
 const TEST_FIELD_NAME_PREFIX = "select test";
+
+/** Forward-looking selection phrases — a name must contain at least ONE
+ * of these (in addition to starting with which/what and mentioning
+ * test(s)) to be treated as a test-selection question. */
+const TEST_SELECTION_QUESTION_REQUIRED_PHRASES = [
+  "would you like",
+  "do you want",
+  "are you here for",
+  "to receive",
+  "to schedule",
+  "are you scheduling",
+  "to be tested for",
+  "select",
+  "choose",
+] as const;
+
+/** Backward-looking/screening words — a name containing ANY of these is
+ * NEVER a selection question, regardless of the required-phrase check
+ * above (a screening question can coincidentally reuse a phrase like
+ * "select" in an unrelated sense, so this exclusion list is checked
+ * first and wins outright). */
+const TEST_SELECTION_QUESTION_EXCLUDED_WORDS = [
+  "result",
+  "results",
+  "positive",
+  "negative",
+  "taking",
+  "medication",
+  "medicine",
+  "last",
+  "previous",
+  "prior",
+  "history",
+  "symptom",
+] as const;
 
 function normalizeFieldName(name: string): string {
   return name
@@ -522,31 +588,69 @@ function normalizeFieldName(name: string): string {
     .trim();
 }
 
+/** See the isTestFormFieldName doc comment above for the full rationale —
+ * `normalized` is already lowercase/trimmed (normalizeFieldName's output). */
+function isTestSelectionQuestion(normalized: string): boolean {
+  if (!/^(which|what)\b/.test(normalized)) return false;
+  if (!/\btests?\b/.test(normalized)) return false;
+  if (TEST_SELECTION_QUESTION_EXCLUDED_WORDS.some((word) => normalized.includes(word))) return false;
+  return TEST_SELECTION_QUESTION_REQUIRED_PHRASES.some((phrase) => normalized.includes(phrase));
+}
+
 export function isTestFormFieldName(name: string): boolean {
   if (typeof name !== "string") return false;
   const normalized = normalizeFieldName(name);
-  return normalized === TEST_FIELD_EXACT_NAME || normalized.startsWith(TEST_FIELD_NAME_PREFIX);
+  if (normalized === TEST_FIELD_EXACT_NAME || normalized.startsWith(TEST_FIELD_NAME_PREFIX)) return true;
+  return isTestSelectionQuestion(normalized);
 }
 
 /**
  * SECOND layer of the same PHI boundary (defense in depth, security
- * review 2026-09-08): even with isTestFormFieldName's tightened name
- * match above, this ALSO validates every extracted VALUE before it's
- * allowed to become a testName — an allowlist of known test-type tokens
- * (lowercased substring match) the live probe actually observed or that
- * are obviously the same category (blood-panel/screening test names), AND
- * a length cap. A free-text answer that happens to land on a field this
- * module misidentifies (or a field that's legitimately named "Select
- * tests:" but whose answer was, for whatever reason, typed as free text)
- * is dropped here rather than stored — NEVER logged (a dropped value is,
- * by definition, off this module's own allowlist, so logging it would
- * defeat the whole point of dropping it).
+ * review 2026-09-08, TIGHTENED FURTHER 2026-09-09 — REQUEST_CHANGES,
+ * blocking, BLOCKED feat/explorer-group-tables): even with
+ * isTestFormFieldName's tightened name match above, this ALSO validates
+ * every extracted VALUE before it's allowed to become a testName.
+ *
+ * ORIGINAL (2026-09-08) design used a per-token SUBSTRING match
+ * (`lower.includes(token)`) — that let a value like "Positive for flu" or
+ * "Truvada for HIV" through, since both CONTAIN an allowlisted substring
+ * ("flu", "hiv") inside an otherwise free-text sentence that could be
+ * real patient health information (a screening answer or a medication
+ * name), i.e. exactly the PHI leak this boundary exists to prevent.
+ *
+ * FIXED to WHOLE-VALUE, EXACT-TOKEN matching: the raw answer is split into
+ * tokens on [",", ";", "/", "&", " and ", "+"] (splitTestValueTokens) —
+ * covering every multi-select join style actually seen ("COVID, Strep")
+ * plus the plausible ones a free-text or differently-configured field
+ * might use ("COVID/Strep", "COVID & Strep", "COVID and Strep"). Each
+ * token is normalized (normalizeTestToken: strip a trailing price
+ * qualifier, strip a trailing "test"/"tests"/"testing" word, lowercase,
+ * collapse whitespace) and must be an EXACT member of
+ * TEST_VALUE_TOKEN_ALLOWLIST below — not merely contain one. If ANY
+ * resulting token fails that exact check, the ENTIRE value is rejected
+ * (isAllowedTestValue returns false for the whole string) — there is no
+ * partial acceptance of "the good half" of a mixed answer. "Positive for
+ * flu" is ONE token (no separator present) that normalizes to "positive
+ * for flu", which is not an exact allowlist member — rejected outright,
+ * unlike the old substring match. "COVID, Strep" splits into two tokens
+ * that both normalize to exact allowlist members — accepted, and used
+ * as-is as the two returned test names. A free-text answer that happens
+ * to land on a field this module misidentifies (or a field that's
+ * legitimately named "Select tests:" but whose answer was, for whatever
+ * reason, typed as free text) is dropped here rather than stored — NEVER
+ * logged (a dropped value is, by definition, off this module's own
+ * allowlist, so logging it would defeat the whole point of dropping it).
  */
 const TEST_VALUE_TOKEN_ALLOWLIST = [
   "covid",
   "flu",
   "influenza",
   "strep",
+  // "Strep Throat" (not just bare "Strep") is a real live-probed value
+  // (see isTestFormFieldName's doc comment history) — kept as its own
+  // exact-match entry, alongside "strep", now that matching is
+  // whole-token/exact rather than substring.
+  "strep throat",
   "rsv",
   "a1c",
   "glucose",
@@ -556,16 +660,36 @@ const TEST_VALUE_TOKEN_ALLOWLIST = [
   "hep",
 ] as const;
 
-/** A real test-type answer ("COVID", "Strep Throat", "COVID (free)") is
- * always short — this is generous headroom above the longest real value
- * observed live, not a tight fit, so it only ever rejects something that
- * has stopped looking like a short multi-select answer at all. */
-const MAX_TEST_VALUE_LENGTH = 40;
+/** Separators splitTestValueTokens recognizes between individual test
+ * names in one raw answer — covers the comma/pipe/newline join style the
+ * live probe found plus the other plausible multi-item separators
+ * (semicolon, slash, ampersand, "and", plus) a differently-configured or
+ * free-text answer might use. Order matters only in that " and " (with
+ * surrounding spaces, case-insensitive) must not also eat the "and" inside
+ * an unrelated word — the surrounding spaces in the pattern prevent that. */
+const TEST_VALUE_SEPARATOR_PATTERN = /,|\||\n|;|\/|&|\+| and /gi;
 
-function isAllowedTestValue(value: string): boolean {
-  if (value.length === 0 || value.length > MAX_TEST_VALUE_LENGTH) return false;
-  const lower = value.toLowerCase();
-  return TEST_VALUE_TOKEN_ALLOWLIST.some((token) => lower.includes(token));
+/** Splits one raw answer into trimmed, non-empty tokens on
+ * TEST_VALUE_SEPARATOR_PATTERN — shared by isAllowedTestValue (validation)
+ * and extractTestNamesFromForms (the actual returned display names), so
+ * the two can never disagree on what counts as "one test name" within a
+ * multi-value answer. */
+function splitTestValueTokens(value: string): string[] {
+  return value
+    .split(TEST_VALUE_SEPARATOR_PATTERN)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+}
+
+/** Strips a trailing "test"/"tests"/"testing" word from an already-
+ * trimmed name — e.g. "COVID test" -> "COVID" — so a plain-language
+ * answer like "COVID test" still resolves to the SAME test name as a
+ * bare "COVID" answer. A name that's ENTIRELY that word (rare/malformed)
+ * is left as-is rather than stripped to "" (same "don't strip to empty"
+ * rule stripPriceQualifier below already uses). */
+function stripTrailingTestWord(name: string): string {
+  const stripped = name.replace(/\s*\b(?:tests?|testing)\s*$/i, "").trim();
+  return stripped.length > 0 ? stripped : name;
 }
 
 /**
@@ -586,18 +710,87 @@ function stripPriceQualifier(name: string): string {
   return stripped.length > 0 ? stripped : name;
 }
 
+/** Normalizes one already-split token for the EXACT allowlist comparison
+ * (see isAllowedTestValue's doc comment): strip a trailing price
+ * qualifier and a trailing "test"/"testing" word (same two
+ * normalizations the DISPLAY name gets — see extractTestNamesFromForms —
+ * so validation and display can never disagree on what a token
+ * "means"), then lowercase and collapse whitespace. */
+function normalizeTestToken(token: string): string {
+  return stripTrailingTestWord(stripPriceQualifier(token.trim()))
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** A real test-type answer ("COVID", "Strep Throat", "COVID (free)") is
+ * always short — this is generous headroom above the longest real value
+ * observed live, not a tight fit, so it only ever rejects something that
+ * has stopped looking like a short multi-select answer at all. Applied to
+ * the WHOLE raw value (before splitting) — a value already this long is
+ * free text regardless of how many tokens it would split into. */
+const MAX_TEST_VALUE_LENGTH = 40;
+
+/**
+ * WHOLE-VALUE gate (security review 2026-09-09 — see the doc comment on
+ * TEST_VALUE_TOKEN_ALLOWLIST above for the full before/after rationale):
+ * splits `value` into tokens (splitTestValueTokens), and returns true only
+ * if EVERY resulting token, once normalized (normalizeTestToken), is an
+ * EXACT member of TEST_VALUE_TOKEN_ALLOWLIST. A single non-allowlisted
+ * token anywhere in the value fails the WHOLE thing — there is no partial
+ * acceptance. An empty value, a value with no tokens after splitting, or
+ * one over MAX_TEST_VALUE_LENGTH is rejected outright.
+ */
+export function isAllowedTestValue(value: string): boolean {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_TEST_VALUE_LENGTH) return false;
+
+  const tokens = splitTestValueTokens(trimmed);
+  if (tokens.length === 0) return false;
+
+  return tokens.every((token) => (TEST_VALUE_TOKEN_ALLOWLIST as readonly string[]).includes(normalizeTestToken(token)));
+}
+
+/**
+ * V-T27 follow-up (Will, 2026-09-09): Acuity represents a checkbox/
+ * multi-select answer as a comma/pipe/newline-joined STRING in the common
+ * case (what every test above this point assumed) — but a real form's
+ * checkbox field can instead come back with `value` as an ARRAY of the
+ * individually-checked option strings. Joining that array with a comma
+ * feeds it through the exact same split/strip/allowlist pipeline
+ * extractTestNamesFromForms already uses for the string shape, so both
+ * shapes are handled identically from this point on. Returns null (not [])
+ * for anything that's neither a plain string nor an all-string array — a
+ * mixed/object-bearing array isn't a shape this module knows how to parse
+ * safely, so the whole field is skipped rather than guessed at (same
+ * fail-closed rule as every other PHI-boundary check in this file).
+ */
+function coerceFormFieldValueToString(fieldValue: unknown): string | null {
+  if (typeof fieldValue === "string") return fieldValue;
+  if (Array.isArray(fieldValue) && fieldValue.every((entry) => typeof entry === "string")) {
+    return (fieldValue as string[]).join(",");
+  }
+  return null;
+}
+
 /**
  * PHI boundary, same rule as extractVaccineNamesFromForms: must only ever
  * be called with `entry.forms`. Finds the first form field whose name
- * matches isTestFormFieldName and splits its answer into individual test
- * names — same comma/pipe/newline split, trim, drop-empty, "first match
- * wins" shape as extractVaccineNamesFromForms, plus stripPriceQualifier's
- * "(free)"-style normalization AND isAllowedTestValue's token/length
- * allowlist on each token (security review 2026-09-08 — see both
- * functions' own doc comments) — a token that fails the allowlist is
- * dropped, never returned, never logged. Returns [] if no matching field
- * is found, its value is blank, or every extracted token was dropped by
- * the allowlist — callers fall back to parsing the appointment type's own
+ * matches isTestFormFieldName and, ONLY when isAllowedTestValue accepts
+ * the field's WHOLE raw answer (security review 2026-09-09 — see that
+ * function's own doc comment for why this is now a whole-value gate, not
+ * a per-token filter), splits that answer into individual display names
+ * via the SAME splitTestValueTokens tokenizer the validation step used —
+ * so a rejected value never partially leaks a "good half" through a
+ * different split, and an accepted value's returned names are exactly the
+ * tokens that were validated. Each display name still gets
+ * stripPriceQualifier's "(free)"-style normalization and
+ * stripTrailingTestWord's "COVID test" -> "COVID" normalization (the same
+ * two normalizations normalizeTestToken applies for validation — kept in
+ * sync deliberately). Returns [] if no matching field is found, its value
+ * is blank/unparseable, or isAllowedTestValue rejected every matching
+ * field's value — callers fall back to parsing the appointment type's own
  * name (see parseTestNamesFromAppointmentTypeName) only when this comes
  * back empty, exactly as the brief specifies.
  */
@@ -612,14 +805,17 @@ function extractTestNamesFromForms(forms: unknown): string[] {
     for (const field of values) {
       if (typeof field !== "object" || field === null) continue;
       const fieldName = (field as Record<string, unknown>).name;
-      const fieldValue = (field as Record<string, unknown>).value;
       if (typeof fieldName !== "string" || !isTestFormFieldName(fieldName)) continue;
-      if (typeof fieldValue !== "string") continue;
+      const rawValue = coerceFormFieldValueToString((field as Record<string, unknown>).value);
+      if (rawValue === null) continue;
+      // Whole-value gate — see isAllowedTestValue's doc comment: any
+      // non-allowlisted token anywhere in this answer drops the ENTIRE
+      // value, never just the offending piece.
+      if (!isAllowedTestValue(rawValue)) continue;
 
-      const names = fieldValue
-        .split(/[,|\n]/)
-        .map((name) => stripPriceQualifier(name.trim()))
-        .filter((name) => name.length > 0 && isAllowedTestValue(name));
+      const names = splitTestValueTokens(rawValue)
+        .map((name) => stripTrailingTestWord(stripPriceQualifier(name)))
+        .filter((name) => name.length > 0);
       if (names.length > 0) return names;
     }
   }
@@ -641,17 +837,81 @@ function extractTestNamesFromForms(forms: unknown): string[] {
  * appointmentTypeNames map, since it falls back to the WHOLE type name as
  * one name, not a parsed list). Extracts the LAST parenthesized group's
  * comma-separated contents, e.g. "Test appointment (Flu, COVID, Strep)" ->
- * ["Flu", "COVID", "Strep"]; returns [] if the name has no parenthetical
- * or every parsed segment is blank.
+ * ["Flu", "COVID", "Strep"]. When there's no parenthetical at all, falls
+ * through to parseTestNameFromPlainTypeName below (V-T27 follow-up) for a
+ * type configured as a single plain name like "COVID Test" rather than a
+ * "Test appointment (...)" list. Returns [] only when NEITHER shape
+ * matches or every parsed segment is blank.
  */
 function parseTestNamesFromAppointmentTypeName(typeName: unknown): string[] {
   if (typeof typeName !== "string") return [];
-  const match = /\(([^)]*)\)\s*$/.exec(typeName.trim());
-  if (!match) return [];
-  return match[1]
-    .split(",")
-    .map((name) => name.trim())
-    .filter((name) => name.length > 0);
+  const trimmed = typeName.trim();
+
+  const match = /\(([^)]*)\)\s*$/.exec(trimmed);
+  if (match) {
+    const names = match[1]
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+    if (names.length > 0) return names;
+  }
+
+  return parseTestNameFromPlainTypeName(trimmed);
+}
+
+/** Display label for each TEST_VALUE_TOKEN_ALLOWLIST token, used only by
+ * parseTestNameFromPlainTypeName below — the allowlist itself stays
+ * lowercase (it's matched case-insensitively against both form answers and
+ * type names), this is purely presentation for the ONE path that has no
+ * real patient-typed casing to preserve (a business-configured type name,
+ * not a form answer). */
+const TEST_VALUE_TOKEN_LABELS: Record<(typeof TEST_VALUE_TOKEN_ALLOWLIST)[number], string> = {
+  covid: "COVID",
+  flu: "Flu",
+  influenza: "Influenza",
+  strep: "Strep",
+  "strep throat": "Strep Throat",
+  rsv: "RSV",
+  a1c: "A1C",
+  glucose: "Glucose",
+  cholesterol: "Cholesterol",
+  lipid: "Lipid",
+  hiv: "HIV",
+  hep: "Hep",
+};
+
+/**
+ * SECOND type-name fallback layer (V-T27, Will 2026-09-09 verbatim: "the
+ * test named in the appointment TYPE instead of a form" was one of the
+ * shapes the Tests column was dropping) — for a type with NO parenthetical
+ * breakdown at all, e.g. a type literally named "COVID Test" or "Strep
+ * Testing" rather than "Test appointment (Flu, COVID, Strep)". Only fires
+ * when the type name's own LAST WORD is "test"/"tests"/"testing" —
+ * deliberately narrower than a bare "mentions test somewhere" match, same
+ * rationale isTestAppointmentTypeName's own doc comment gives for its
+ * "COVID Vaccine + Test Visit" counter-example: a business-configured
+ * label that plainly NAMES ITSELF a testing appointment, not a vaccine
+ * visit that merely mentions testing in passing. Reuses the SAME
+ * TEST_VALUE_TOKEN_ALLOWLIST form answers are checked against (via
+ * isAllowedTestValue) rather than a second copy, so the two paths can
+ * never drift out of sync on which test types are recognized — every
+ * allowlisted token found anywhere in the name is returned (deduped),
+ * labeled via TEST_VALUE_TOKEN_LABELS. Returns [] when the name doesn't
+ * end in a "test"-family word, or ends in one but matches no allowlisted
+ * token (e.g. "Insurance Verification Test" — not a real case, but this
+ * function still correctly finds nothing to extract).
+ */
+function parseTestNameFromPlainTypeName(typeName: string): string[] {
+  if (!/\b(?:test|tests|testing)$/i.test(typeName)) return [];
+
+  const lower = typeName.toLowerCase();
+  const names: string[] = [];
+  for (const token of TEST_VALUE_TOKEN_ALLOWLIST) {
+    if (lower.includes(token) && !names.includes(TEST_VALUE_TOKEN_LABELS[token])) {
+      names.push(TEST_VALUE_TOKEN_LABELS[token]);
+    }
+  }
+  return names;
 }
 
 /**

@@ -39,7 +39,7 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
 
     public string Name => "Enter lot and expiration";
 
-    public Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
+    public async Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
     {
         // V-... Part C (expiration gate): staff explicitly chose "Leave
         // lot/expiration blank and proceed" on the popup because no
@@ -49,47 +49,49 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
         // attached, same as every other step's dry-run-first check.
         if (context.Payload.SkipLotAndExpiration)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: context.DryRun,
-                "Skipped — lot/expiration intentionally left blank (no unexpired lot was on file; staff chose to proceed without one)."));
+            return new PioneerEntryStepResult(Name, Success: true, DryRun: context.DryRun,
+                "Skipped — lot/expiration intentionally left blank (no unexpired lot was on file; staff chose to proceed without one).");
         }
 
         if (context.DryRun)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: true,
+            return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
                 $"Would type lot \"{context.Payload.LotNumber}\" into '{LotNumberAutomationId}' and expiration " +
-                $"\"{context.Payload.ExpirationMacroFormat}\" into '{LotExpirationAutomationId}' (no PioneerRx call made)."));
+                $"\"{context.Payload.ExpirationMacroFormat}\" into '{LotExpirationAutomationId}' (no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
-        var lotOutcome = QuickSearchFieldEntry.TypeAndConfirm(
-            context.AttachedWindow, LotNumberAutomationId, "lot number", context.Payload.LotNumber, enterPresses: 0);
+        var lotOutcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
+            context.AttachedWindow, LotNumberAutomationId, "lot number", context.Payload.LotNumber, enterPresses: 0,
+            log: context.Log, cancellationToken: cancellationToken);
         if (!lotOutcome.Success)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false, lotOutcome.Message));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false, lotOutcome.Message);
         }
 
         var pioneerExpiration = ToPioneerDateFormat(context.Payload.ExpirationMacroFormat);
         if (pioneerExpiration is null)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                $"Lot number entered, but couldn't parse expiration \"{context.Payload.ExpirationMacroFormat}\" as MMDDYYYY — not typed into '{LotExpirationAutomationId}'."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                $"Lot number entered, but couldn't parse expiration \"{context.Payload.ExpirationMacroFormat}\" as MMDDYYYY — not typed into '{LotExpirationAutomationId}'.");
         }
 
-        var expirationOutcome = QuickSearchFieldEntry.TypeAndConfirm(
-            context.AttachedWindow, LotExpirationAutomationId, "expiration date", pioneerExpiration, enterPresses: 0);
+        var expirationOutcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
+            context.AttachedWindow, LotExpirationAutomationId, "expiration date", pioneerExpiration, enterPresses: 0,
+            log: context.Log, cancellationToken: cancellationToken);
         if (!expirationOutcome.Success)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                $"Lot number entered, but expiration failed: {expirationOutcome.Message}"));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                $"Lot number entered, but expiration failed: {expirationOutcome.Message}");
         }
 
-        return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: false,
-            $"Entered lot \"{context.Payload.LotNumber}\" and expiration \"{pioneerExpiration}\"."));
+        return new PioneerEntryStepResult(Name, Success: true, DryRun: false,
+            $"Entered lot \"{context.Payload.LotNumber}\" and expiration \"{pioneerExpiration}\".");
     }
 
     /// <summary>MMDDYYYY (Models.Lot.ExpirationMacroFormat) -> PioneerRx's

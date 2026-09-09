@@ -162,18 +162,45 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         var previousHandle = SafeNativeHandle(attachedWindow);
         var baselineHandles = SnapshotPioneerWindowHandles();
 
+        Task WaitTick() => Task.Delay(PollInterval, cancellationToken);
+
+        // V-T28 (Will, 2026-09-09): "Made it to the start of data entry
+        // into Pioneer, then error: Unexpected error during auto-watch:
+        // Operation timed out. (0x80131505)" — this F3 send used to be a
+        // single, unretried attempt: PioneerRx being busy for even one UIA
+        // call at exactly this moment (right after the pharmacist switched
+        // to the Rx Profile screen — plausibly still rendering) failed the
+        // whole step, and the whole entry, immediately. Now retries a
+        // recoverable (timeout-shaped — see AutoWatchErrorClassifier)
+        // failure for up to AutoWatchRetry.DefaultOverallBudget before
+        // giving up; a non-recoverable exception still fails immediately,
+        // unchanged from before.
         try
         {
-            attachedWindow.FocusNative();
-            Keyboard.Type(VirtualKeyShort.F3);
+            await AutoWatchRetry.RunAsync(
+                attempt: () =>
+                {
+                    attachedWindow.FocusNative();
+                    Keyboard.Type(VirtualKeyShort.F3);
+                    return true;
+                },
+                overallBudget: AutoWatchRetry.DefaultOverallBudget,
+                now: () => DateTime.UtcNow,
+                onRecoverableWait: async (ex, elapsed) =>
+                {
+                    context.Log($"[{Name}] Still waiting to send F3 to the Rx Profile window after " +
+                        $"{elapsed.TotalSeconds:0.0}s — {ex.GetType().Name}: {ex.Message}. PioneerRx may be busy; retrying...");
+                    await WaitTick();
+                },
+                cancellationToken: cancellationToken);
         }
         catch (Exception ex)
         {
-            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                $"Couldn't send F3 to the Rx Profile window: {ex.Message}");
+            return AutoWatchErrorClassifier.IsRecoverable(ex)
+                ? BuildStalledResult("sending F3 to the Rx Profile window", ex)
+                : new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                    $"Couldn't send F3 to the Rx Profile window: {ex.Message}");
         }
-
-        Task WaitTick() => Task.Delay(PollInterval, cancellationToken);
 
         IReadOnlySet<string> pending;
         try
@@ -187,8 +214,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
         catch (Exception ex)
         {
-            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                $"Error while dismissing pre-entry dialogs: {ex.Message}");
+            return AutoWatchErrorClassifier.IsRecoverable(ex)
+                ? BuildStalledResult("dismissing pre-entry dialogs (Priority / Scan Hard Copy / Patient on Cycle Fill)", ex)
+                : new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                    $"Error while dismissing pre-entry dialogs: {ex.Message}");
         }
 
         var warnings = new List<string>();
@@ -217,8 +246,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
         catch (Exception ex)
         {
-            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                $"Error while checking for unexpected PioneerRx windows: {ex.Message}");
+            return AutoWatchErrorClassifier.IsRecoverable(ex)
+                ? BuildStalledResult("checking for unexpected PioneerRx windows", ex)
+                : new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                    $"Error while checking for unexpected PioneerRx windows: {ex.Message}");
         }
         foreach (var title in strayDismissed)
         {
@@ -243,8 +274,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
         catch (Exception ex)
         {
-            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                $"F3 was sent, but re-attaching to the resulting \"Add New Rx\" window failed: {ex.Message}");
+            return AutoWatchErrorClassifier.IsRecoverable(ex)
+                ? BuildStalledResult("re-attaching to the resulting \"Add New Rx\" window", ex)
+                : new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                    $"F3 was sent, but re-attaching to the resulting \"Add New Rx\" window failed: {ex.Message}");
         }
 
         if (addNewRxWindow is null)
@@ -253,6 +286,8 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             var reason = "F3 was sent, but couldn't find the \"Add New Rx\" screen — no distinctly-titled " +
                 "\"New Rx\" window appeared, and the prescriber/NDC fields never showed up on the original " +
                 "window either (failing loud rather than guessing).";
+            var lastSeen = DescribeAnyPioneerWindowForLog();
+            reason += lastSeen is not null ? $" Last PioneerRx window seen: {lastSeen}." : " No PioneerRx window was observed at all.";
             reason += dump.Success && dump.FilePath is not null
                 ? $" UIA tree dump written to {dump.FilePath} for troubleshooting."
                 : $" (Also tried to write a UIA tree dump for troubleshooting: {dump.Message})";
@@ -272,6 +307,72 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             message += " " + string.Join(" ", warnings);
         }
         return new PioneerEntryStepResult(Name, Success: true, DryRun: false, message);
+    }
+
+    /// <summary>
+    /// V-T28: the "never 'Unexpected error' — surface a friendly stalled
+    /// message instead" half of the fix. Called only once a RECOVERABLE
+    /// (timeout-shaped) exception has survived AutoWatchRetry's whole
+    /// overall budget — i.e. this step has been genuinely stuck on `what`
+    /// for AutoWatchRetry.DefaultOverallBudget, not just a one-tick hiccup.
+    /// Names the last PioneerRx window actually seen (title/class/automation
+    /// id — Will's brief, verbatim) and writes a UIA tree dump the same way
+    /// the "couldn't find Add New Rx" branch below already does, so Will has
+    /// something concrete to troubleshoot from instead of a bare exception
+    /// message.</summary>
+    private PioneerEntryStepResult BuildStalledResult(string what, Exception ex)
+    {
+        var lastSeen = DescribeAnyPioneerWindowForLog();
+        var dump = SafeDumpUiaTree();
+
+        var reason = $"Stalled while {what} — PioneerRx kept timing out responding to UI Automation " +
+            $"({ex.GetType().Name}: {ex.Message}) for longer than {AutoWatchRetry.DefaultOverallBudget.TotalSeconds:0}s " +
+            "(likely busy, or showing a modal this step doesn't poll for).";
+        reason += lastSeen is not null ? $" Last PioneerRx window seen: {lastSeen}." : " No PioneerRx window was observed during the wait.";
+        reason += dump.Success && dump.FilePath is not null
+            ? $" UIA tree dump written to {dump.FilePath} for troubleshooting."
+            : $" (Also tried to write a UIA tree dump for troubleshooting: {dump.Message})";
+
+        return new PioneerEntryStepResult(Name, Success: false, DryRun: false, reason);
+    }
+
+    /// <summary>Best-effort, NO-PHI snapshot of whichever top-level window
+    /// belonging to the PioneerRx process is currently on top — used by
+    /// BuildStalledResult and the "couldn't find Add New Rx" branch above so
+    /// a stall/failure message can name what was actually visible instead of
+    /// just "not found." Title is truncated to the portion before the first
+    /// " - " (same convention as PioneerRxAttachment.TryAttach's own
+    /// DescribeForLog — never a patient name, which some PioneerRx window
+    /// titles carry after that delimiter). Never throws — returns null on
+    /// any UIA failure or if no Pioneer window is currently visible at
+    /// all.</summary>
+    private static string? DescribeAnyPioneerWindowForLog()
+    {
+        try
+        {
+            using var automation = new UIA3Automation();
+            var desktop = automation.GetDesktop();
+            foreach (var window in desktop.FindAllChildren())
+            {
+                if (!IsPioneerProcessWindow(window)) continue;
+
+                var name = SafeName(window);
+                var screenNameOnly = name.Split(new[] { " - " }, 2, StringSplitOptions.None)[0];
+
+                string className;
+                try { className = window.ClassName ?? "<null>"; } catch { className = "<unknown>"; }
+
+                string automationId;
+                try { automationId = window.AutomationId ?? "<null>"; } catch { automationId = "<unknown>"; }
+
+                return $"\"{screenNameOnly}\" (class '{className}', automationId '{automationId}')";
+            }
+        }
+        catch
+        {
+            // Best-effort only — see doc comment.
+        }
+        return null;
     }
 
     private static int TicksFor(TimeSpan timeout) =>

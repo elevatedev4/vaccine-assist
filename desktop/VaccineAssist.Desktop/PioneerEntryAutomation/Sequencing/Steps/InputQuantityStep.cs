@@ -44,31 +44,32 @@ public sealed class InputQuantityStep : IPioneerEntryStep
 
     public string Name => "Enter quantity";
 
-    public Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
+    public async Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(context.Payload.Quantity))
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: context.DryRun,
-                "Skipped — no quantity on file for this vaccine (Models.Vaccine.Quantity is null/blank). Nothing typed into Pioneer."));
+            return new PioneerEntryStepResult(Name, Success: true, DryRun: context.DryRun,
+                "Skipped — no quantity on file for this vaccine (Models.Vaccine.Quantity is null/blank). Nothing typed into Pioneer.");
         }
 
         var quantityText = context.Payload.Quantity;
 
         if (context.DryRun)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: true,
-                $"Would type quantity \"{quantityText}\" into '{QuantityAutomationId}' (no PioneerRx call made)."));
+            return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
+                $"Would type quantity \"{quantityText}\" into '{QuantityAutomationId}' (no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
-        var outcome = QuickSearchFieldEntry.TypeAndConfirm(
-            context.AttachedWindow, QuantityAutomationId, "quantity", quantityText, enterPresses: 0);
+        var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
+            context.AttachedWindow, QuantityAutomationId, "quantity", quantityText, enterPresses: 0,
+            log: context.Log, cancellationToken: cancellationToken);
 
-        return Task.FromResult(new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message));
+        return new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message);
     }
 }
