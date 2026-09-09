@@ -137,7 +137,7 @@ describe("parsePioneerBohPdf", () => {
     expect(result?.rows[0]).toMatchObject({ vaccineNameRaw: "Vaxchora Vial", quantityRaw: 100, stockSize: 5, doses: 20 });
   });
 
-  it("returns null (and logs only the exception class) for a non-PDF buffer", async () => {
+  it("returns null (and never echoes the input bytes) for a non-PDF buffer", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = await parsePioneerBohPdf(Buffer.from("this is definitely not a pdf file"));
     expect(result).toBeNull();
@@ -147,6 +147,19 @@ describe("parsePioneerBohPdf", () => {
         expect(String(arg)).not.toContain("definitely not a pdf");
       }
     }
+    warnSpy.mockRestore();
+  });
+
+  it("logs the document-load error's constructor name AND message (2026-09-09 Vercel incident: bare '(Error)' with no message gave no signal)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await parsePioneerBohPdf(Buffer.from("this is definitely not a pdf file"));
+    // pdfjs's own document-load error for malformed input — a fixed,
+    // generic message describing pdfjs's own parsing state, never
+    // attacker-controlled bytes (see the module doc comment's guard
+    // list and errorMessage()'s doc comment for why this ONE call site
+    // is safe to log .message on).
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("InvalidPDFException"));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/InvalidPDFException\):.+\S/));
     warnSpy.mockRestore();
   });
 

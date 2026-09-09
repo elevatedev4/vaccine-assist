@@ -65,6 +65,27 @@ describe("parsePioneerBohPdf timeout guard", () => {
     expect(mockDestroy).toHaveBeenCalledTimes(1);
   });
 
+  it("truncates a document-load error message to 160 chars in the log (2026-09-09 Vercel fix)", async () => {
+    const longMessage = "x".repeat(300);
+    mockGetDocument.mockReturnValueOnce({
+      promise: Promise.reject(new Error(longMessage)),
+      destroy: vi.fn(async () => {}),
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await parsePioneerBohPdf(Buffer.from("%PDF-1.4 fake, rejects with a long message"));
+
+    expect(result).toBeNull();
+    const call = warnSpy.mock.calls.find((c) => String(c[0]).includes("failed to load the document"));
+    expect(call).toBeDefined();
+    const logged = String(call![0]);
+    // "x" * 160 plus the truncation ellipsis, never the full 300.
+    expect(logged).toContain("x".repeat(160) + "…");
+    expect(logged).not.toContain("x".repeat(161));
+
+    warnSpy.mockRestore();
+  });
+
   it("does not fire the timeout warning for a parse that would finish well within budget", async () => {
     // A separate, quickly-resolving loadingTask for this one test only.
     const quickDestroy = vi.fn(async () => {});

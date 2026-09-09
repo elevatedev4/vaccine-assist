@@ -88,6 +88,33 @@
  *     version (6.x) removed the eval-based code-generation path
  *     entirely upstream, so the option no longer exists on
  *     `DocumentInitParameters` — there's nothing left to disable.
+ *
+ * Vercel serverless fix (2026-09-09, prod incident): on Node, pdfjs
+ * never spins up a real worker thread — it always runs its "fake
+ * worker" in-process, which loads the worker's message-handler code via
+ * a runtime `import(GlobalWorkerOptions.workerSrc)`, defaulting to the
+ * RELATIVE specifier `"./pdf.worker.mjs"`. That default is resolved
+ * against whatever module happens to be executing the import at
+ * runtime — fine when pdf.mjs runs from its own real
+ * node_modules/pdfjs-dist/legacy/build/ directory, but broken once
+ * Next's default webpack build inlined pdf.mjs into a server chunk
+ * (confirmed locally pre-fix: the built chunk contained
+ * `import(this.workerSrc)` plus pdfjs-dist's full source, and zero of
+ * pdfjs-dist's own files appeared in the route's file-tracing manifest)
+ * — the relative path then resolved against the CHUNK's location,
+ * which has no pdf.worker.mjs sibling, so the import 404s and
+ * getDocument's promise rejects with the exact "Cannot find module"
+ * shape from the incident's runtime log. Fixed entirely in
+ * `next.config.ts`: `serverExternalPackages: ["pdfjs-dist"]` keeps
+ * pdf.mjs OUT of the webpack bundle (Next emits a genuine
+ * `import("pdfjs-dist/legacy/build/pdf.mjs")` instead — confirmed by
+ * re-inspecting the built chunk), so it runs from its real on-disk
+ * location and its own relative `import("./pdf.worker.mjs")` resolves
+ * correctly again; `outputFileTracingIncludes` is the belt-and-suspenders
+ * half — it guarantees `pdf.worker.mjs` itself is copied into the
+ * deployed function's file set even if @vercel/nft's static analysis
+ * can't see pdfjs's own runtime-computed import (nft can't trace a
+ * dynamic `import(variable)` any more than webpack could).
  * `null` in every case means "give up cleanly" — the caller
  * (app/api/webhooks/ses/route.ts's processOnHandAttachment) falls back
  * to the plain-text body path exactly as it already does for an
@@ -266,6 +293,28 @@ function errorClassName(err: unknown): string {
   return typeof err;
 }
 
+/** How many characters of a document-load error's `.message` to log —
+ * enough to distinguish "Setting up fake worker failed: Cannot find
+ * module ..." from an actual malformed-PDF error, short enough to bound
+ * log size. */
+const ERROR_MESSAGE_LOG_LIMIT = 160;
+
+/** Returns an exception's `.message`, truncated to
+ * ERROR_MESSAGE_LOG_LIMIT chars. ONLY safe to call on a document-LOAD
+ * failure (worker/module setup, `getDocument`'s own promise) — that
+ * error's message describes pdfjs's own environment/module resolution,
+ * never attacker-controlled PDF byte content. The per-page
+ * text-EXTRACTION catch below stays constructor-name-only (see the
+ * module doc comment's guard list): that error occurs while pdfjs is
+ * actively walking arbitrary PDF object/content-stream bytes, so its
+ * message could echo them back. */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error && typeof err.message === "string") {
+    return err.message.length > ERROR_MESSAGE_LOG_LIMIT ? `${err.message.slice(0, ERROR_MESSAGE_LOG_LIMIT)}…` : err.message;
+  }
+  return String(err);
+}
+
 type LoadingTask = ReturnType<typeof getDocument>;
 
 /** A timeout promise that resolves (never rejects) to null after `ms`
@@ -298,7 +347,7 @@ async function runParse(loadingTask: LoadingTask): Promise<PioneerBohPdfResult |
     numPages = pdf.numPages;
     getPage = (pageNumber: number) => pdf.getPage(pageNumber) as unknown as Promise<{ getTextContent: () => Promise<{ items: unknown[] }> }>;
   } catch (err) {
-    console.warn(`parsePioneerBohPdf: pdfjs failed to load the document (${errorClassName(err)})`);
+    console.warn(`parsePioneerBohPdf: pdfjs failed to load the document (${errorClassName(err)}): ${errorMessage(err)}`);
     return null;
   }
 

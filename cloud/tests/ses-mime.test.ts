@@ -412,6 +412,51 @@ describe("extractAttachmentFromRawMime", () => {
     expect(result?.kind).toBe("pdf");
     expect((result as { kind: "pdf"; buffer: Buffer }).buffer.equals(pdfBytes)).toBe(true);
   });
+
+  // The prod incident's actual attachment was 7952 base64 chars — a real
+  // SES/SMTP body that size arrives CRLF-line-wrapped (76 chars/line,
+  // RFC 2045), not as one giant line like the fixture above. Confirms
+  // extractAttachmentFromRawMime's `body.replace(/\s/g, "")` strips the
+  // embedded CRLFs correctly and the decoded buffer both round-trips
+  // byte-for-byte AND starts with the `%PDF-` magic bytes pdfjs expects.
+  it("decodes a realistic multi-line, CRLF-wrapped base64 pdf attachment (starts with %PDF-)", () => {
+    const boundary = "BOUNDARY-PIONEER-BOH-WRAPPED";
+    // A few hundred bytes of "PDF-shaped" content is enough to force
+    // multiple wrapped base64 lines while staying a fast, synthetic
+    // (non-PHI) fixture — the real incident's PDF bytes are never
+    // reproduced here.
+    const pdfBytes = Buffer.from(`%PDF-1.4\n${"Fluad Syringe 57.5 0.5 | ".repeat(60)}\n%%EOF`);
+    const base64 = pdfBytes.toString("base64");
+    const wrappedLines: string[] = [];
+    for (let i = 0; i < base64.length; i += 76) {
+      wrappedLines.push(base64.slice(i, i + 76));
+    }
+    expect(wrappedLines.length).toBeGreaterThan(1); // actually multi-line, not a fluke
+
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "",
+      "Automatic delivery from scheduled saved search: AppExport - Vaccine BOH",
+      `--${boundary}`,
+      "Content-Type: application/octet-stream",
+      'Content-Disposition: attachment; filename="_AppExport_Vaccine-BOH.pdf"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      ...wrappedLines,
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("pdf");
+    const buffer = (result as { kind: "pdf"; buffer: Buffer }).buffer;
+    expect(buffer.equals(pdfBytes)).toBe(true);
+    expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  });
 });
 
 describe("describeMimeStructure", () => {
