@@ -4,19 +4,29 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type ChangeEvent, 
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
-import { GROUP_DISPLAY_ORDER, OTHER_GROUP } from "@/lib/vaccine-group-catalog";
+import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
+import { computeOrderPackages, displayNameFor, lookupProduct } from "@/lib/vaccine-product-catalog";
 
 /**
  * Web edition of the desktop app's Ordering tab
  * (desktop/VaccineAssist.Desktop/Views/OrderingView.xaml +
  * ViewModels/OrderingViewModel.cs), rebuilt for V-ordering-targets
- * (Will 2026-09-08, msgs 904/908/909 + the V-T25 popup refinement):
+ * (Will 2026-09-08, msgs 904/908/909 + the V-T25 popup refinement) and
+ * V-T26 (Will 2026-09-09):
  *   - one row per PRODUCT/NDC (a multi-dose series like Gardasil no
  *     longer shows 3 times — see GET /api/ordering/recommendation's NDC
  *     collapse)
- *   - rows grouped by vaccine group, with a group header row + editable
- *     group-level target
- *   - a per-row "Your target" override, autosaving on blur/Enter
+ *   - rows grouped COVID / Flu / Other only (lib/ordering-group.ts —
+ *     Ordering-tab-only coarsening; V-T26 item 5), bold group total rows
+ *   - a per-row "Your target" override, autosaving on blur/Enter — the
+ *     GROUP-level target input is REMOVED (V-T26 item 6: "Remove group
+ *     target for now"; the API/lib behind it are untouched, just unused
+ *     here) and a "Copy recommended → Your target" button batch-fills
+ *     every active row's override from its recommended target (item 2)
+ *   - a shared "Walk-up %" setting (V-T26 item 1) that adjusts the
+ *     walk-in buffer baked into recommendedTarget/order server-side
+ *   - Doses/pkg, Order (doses), Order (pkg) columns sourced from the
+ *     static lib/vaccine-product-catalog.ts lookup (V-T26 item 7)
  *   - inactive vaccines collapsed into their own section below
  *   - a modal nudging staff to set up the daily on-hand EMAIL (shown
  *     until one has actually arrived — a manual upload doesn't count,
@@ -43,6 +53,15 @@ type RecommendationRow = {
 type RecommendationResponse = {
   onHandLastReceivedAt: string | null;
   targetsPending: boolean;
+  // V-T26 item 1: the effective walk-up % this response was computed
+  // with, and whether that's still just the default (0012 pending).
+  walkInPct: number;
+  walkInPctPending: boolean;
+  // Still returned by the API (GET/PUT /api/ordering/targets and
+  // lib/ordering-targets.ts are left intact per Will's brief), but this
+  // page no longer reads or renders it — group-scoped overrides are
+  // ignored server-side too (V-T26 item 6: "Remove group target for
+  // now").
   groupTargets: Record<string, number>;
   rows: RecommendationRow[];
 };
@@ -68,13 +87,19 @@ const styles = {
   error: { color: "#b00020" },
   success: { color: "#0a7d27" },
   muted: { color: "#555", fontSize: "0.875rem" },
-  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "0.85rem", marginTop: "1rem" },
-  th: { textAlign: "left" as const, padding: "0.35rem 0.5rem", borderBottom: "2px solid #ccc" },
-  thRight: { textAlign: "right" as const, padding: "0.35rem 0.5rem", borderBottom: "2px solid #ccc" },
-  td: { textAlign: "left" as const, padding: "0.3rem 0.5rem", borderBottom: "1px solid #eee" },
-  tdRight: { textAlign: "right" as const, padding: "0.3rem 0.5rem", borderBottom: "1px solid #eee" },
+  // Compact, spreadsheet-like table (V-T26 item 4, Will 2026-09-09):
+  // tight cell padding, small font, tight line-height, thin 1px borders
+  // throughout (no more 2px header rule), no extra row spacing.
+  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "13px", lineHeight: 1.2, marginTop: "0.75rem" },
+  th: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
+  thRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
+  td: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
+  tdRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
   groupRow: { background: "#f4f6f8", fontWeight: 600 },
-  targetInput: { width: "4.5rem", padding: "0.2rem 0.35rem", boxSizing: "border-box" as const },
+  // Inputs sized to fit inside a compact cell — fixed ~64px width, thin
+  // 1px border, no tall padding.
+  targetInput: { width: 64, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   saveStatus: { fontSize: "0.7rem", marginLeft: "0.35rem" },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
   modalOverlay: {
@@ -108,12 +133,12 @@ const styles = {
   },
 } as const;
 
-function onHandDisplay(value: number | null, asOf: string | null): string {
+// V-T26 item 3 (Will 2026-09-09): the per-cell "(as of <date>)" suffix
+// is gone — the page-level "On-hand data last received" line
+// (onHandStatusMessage below) already says when data arrived, so each
+// cell just shows the number (or "no data yet").
+function onHandDisplay(value: number | null): string {
   if (value === null) return "no data yet";
-  if (asOf) {
-    const date = new Date(asOf);
-    return `${value} (as of ${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
-  }
   return String(value);
 }
 
@@ -123,10 +148,11 @@ function onHandStatusMessage(lastReceivedAt: string | null): string {
     : "On-hand data last received: never";
 }
 
-/** A single "target on-hand" cell — used for both a row's own NDC-scoped
- * override and a group header's group-scoped override. Local editable
- * text, autosaving on blur/Enter; an empty value on save clears the
- * override (PUT targetOnHand: null). */
+/** A single "target on-hand" cell — a row's own NDC-scoped override
+ * (V-T26 item 6 removed the group-header version of this control; the
+ * group-header cell is now a plain "—" placeholder, see the render
+ * below). Local editable text, autosaving on blur/Enter; an empty value
+ * on save clears the override (PUT targetOnHand: null). */
 function TargetInput({
   value,
   disabled,
@@ -198,6 +224,34 @@ function sortRows(rows: RecommendationRow[]): RecommendationRow[] {
   });
 }
 
+type EnrichedRow = RecommendationRow & {
+  /** productName + (ageRange) when the static catalog
+   * (lib/vaccine-product-catalog.ts) knows both, productName alone when
+   * it knows the product but not its age range, else today's plain
+   * vaccine name (V-T26 item 7). */
+  displayName: string;
+  /** Doses per package, or null when the catalog has no row for this
+   * product yet ("—" in the table). */
+  dosesPerPackage: number | null;
+  /** ceil(order / dosesPerPackage), or null when dosesPerPackage is
+   * unknown ("—" in the table). */
+  orderPackages: number | null;
+};
+
+/** Adds the Doses/pkg + Order (pkg) + display-name fields (V-T26 item 7)
+ * to a recommendation row, via the static lib/vaccine-product-catalog.ts
+ * lookup — pure/no I/O, so this can run per-row at render time. */
+function enrichRow(row: RecommendationRow): EnrichedRow {
+  const product = lookupProduct({ name: row.vaccineName, ndc: row.ndc });
+  const dosesPerPackage = product?.dosesPerPackage ?? null;
+  return {
+    ...row,
+    displayName: displayNameFor(row.vaccineName, row.ndc),
+    dosesPerPackage,
+    orderPackages: computeOrderPackages(row.order, dosesPerPackage),
+  };
+}
+
 export default function OrderingPage() {
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -216,11 +270,26 @@ export default function OrderingPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
-  const [uploadAsOf, setUploadAsOf] = useState<Date | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
 
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
+
+  // V-T26 item 1: the "Walk-up %" input's local editable text + save
+  // status, same shape as TargetInput's own local state below but kept
+  // inline here since it's a single page-level setting, not a per-row
+  // control.
+  const [walkInPctText, setWalkInPctText] = useState("");
+  const [walkInPctStatus, setWalkInPctStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  // V-T26 item 2: "Copy recommended → Your target" — a two-step
+  // confirm (Will's brief: "small 'Overwrite existing Your targets?'
+  // text with Yes/Cancel") since it overwrites every active NDC row's
+  // override at once.
+  const [copyConfirming, setCopyConfirming] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [copyResult, setCopyResult] = useState<{ count: number } | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   function resetAfterSignOut() {
     setData(null);
@@ -230,10 +299,15 @@ export default function OrderingPage() {
     setUploading(false);
     setUploadError(null);
     setUploadResult(null);
-    setUploadAsOf(null);
     setAddressCopied(false);
     setShowEmailModal(false);
     setInactiveExpanded(false);
+    setWalkInPctText("");
+    setWalkInPctStatus("idle");
+    setCopyConfirming(false);
+    setCopying(false);
+    setCopyResult(null);
+    setCopyError(null);
   }
 
   useEffect(() => {
@@ -276,6 +350,15 @@ export default function OrderingPage() {
   useEffect(() => {
     if (session) void loadRecommendation(session.accessToken);
   }, [session, loadRecommendation]);
+
+  // V-T26 item 1: keep the Walk-up % input's local text in sync with
+  // the server's effective value whenever a fresh recommendation loads
+  // (e.g. right after this or another browser tab saves a new value) —
+  // same "sync local editable text from the prop" pattern as
+  // TargetInput's own effect above, just inlined for this single field.
+  useEffect(() => {
+    if (data) setWalkInPctText(String(data.walkInPct));
+  }, [data?.walkInPct]);
 
   const loadAddressStatus = useCallback(async (token: string) => {
     setAddressStatusError(null);
@@ -348,7 +431,6 @@ export default function OrderingPage() {
         return;
       }
       setUploadResult(body as UploadResult);
-      setUploadAsOf(new Date());
       await Promise.all([loadAddressStatus(session.accessToken), loadRecommendation(session.accessToken)]);
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Could not upload the file.");
@@ -368,24 +450,105 @@ export default function OrderingPage() {
     }
   }
 
+  // Raw PUT /api/ordering/targets call with NO reload afterward — split
+  // out from saveTarget below so handleCopyRecommended (V-T26 item 2)
+  // can fire one PUT per row in a loop and reload the recommendation
+  // ONCE at the end, instead of once per row.
+  async function putTargetRequest(
+    token: string,
+    scope: "ndc" | "group",
+    key: string,
+    targetOnHand: number | null
+  ): Promise<boolean> {
+    try {
+      const response = await fetch("/api/ordering/targets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ scope, key, targetOnHand }),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
   const saveTarget = useCallback(
     async (scope: "ndc" | "group", key: string, targetOnHand: number | null): Promise<boolean> => {
       if (!session) return false;
-      try {
-        const response = await fetch("/api/ordering/targets", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-          body: JSON.stringify({ scope, key, targetOnHand }),
-        });
-        if (!response.ok) return false;
-        await loadRecommendation(session.accessToken);
-        return true;
-      } catch {
-        return false;
-      }
+      const ok = await putTargetRequest(session.accessToken, scope, key, targetOnHand);
+      if (ok) await loadRecommendation(session.accessToken);
+      return ok;
     },
     [session, loadRecommendation]
   );
+
+  // V-T26 item 2: "Copy recommended → Your target" — sets every ACTIVE
+  // product row's NDC-scoped override to its own recommendedTarget via
+  // the existing PUT targets API (no batch endpoint exists, so this is
+  // sequential — see putTargetRequest above). A row with no NDC has
+  // nothing to save an override under (same rule TargetInput's own
+  // `disabled={!row.ndc}` already enforces), so it's skipped, not
+  // counted as a failure.
+  async function handleCopyRecommended() {
+    if (!session || !data) return;
+    setCopying(true);
+    setCopyError(null);
+    setCopyResult(null);
+    try {
+      const activeRowsWithNdc = data.rows.filter((row) => row.active && row.ndc);
+      let count = 0;
+      for (const row of activeRowsWithNdc) {
+        const ok = await putTargetRequest(session.accessToken, "ndc", row.ndc as string, row.recommendedTarget);
+        if (ok) count += 1;
+      }
+      await loadRecommendation(session.accessToken);
+      setCopyResult({ count });
+    } catch (err) {
+      setCopyError(err instanceof Error ? err.message : "Could not copy targets.");
+    } finally {
+      setCopying(false);
+      setCopyConfirming(false);
+    }
+  }
+
+  // V-T26 item 1: save the Walk-up % setting on blur/Enter, same
+  // autosave shape as TargetInput's own commit() below.
+  async function handleSaveWalkInPct() {
+    if (!session) return;
+    const trimmed = walkInPctText.trim();
+    const parsed = Number(trimmed);
+    if (trimmed === "" || !Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+      setWalkInPctStatus("error");
+      return;
+    }
+    if (data && parsed === data.walkInPct) {
+      setWalkInPctStatus("idle");
+      return;
+    }
+    setWalkInPctStatus("saving");
+    try {
+      const response = await fetch("/api/ordering/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+        body: JSON.stringify({ walkInPct: parsed }),
+      });
+      if (!response.ok) {
+        setWalkInPctStatus("error");
+        return;
+      }
+      setWalkInPctStatus("saved");
+      setTimeout(() => setWalkInPctStatus((current) => (current === "saved" ? "idle" : current)), 2000);
+      await loadRecommendation(session.accessToken);
+    } catch {
+      setWalkInPctStatus("error");
+    }
+  }
+
+  function handleWalkInPctKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+    }
+  }
 
   async function handleSignIn(event: FormEvent) {
     event.preventDefault();
@@ -409,6 +572,15 @@ export default function OrderingPage() {
     }
   }
 
+  // V-T26 item 5 (Will 2026-09-09): COVID/Flu/Other only — the route
+  // already emits `row.group` as one of exactly those three names
+  // (lib/ordering-group.ts's getOrderingGroup), so this display order is
+  // just those three, each appearing exactly once. This also fixes item
+  // 8's "Other renders twice" bug: the OLD version of this array was
+  // `[...GROUP_DISPLAY_ORDER, OTHER_GROUP]`, but GROUP_DISPLAY_ORDER
+  // (lib/vaccine-group-catalog.ts) already ENDS with OTHER_GROUP, so
+  // "Other" appeared twice in that array and its entire section
+  // (including "Pfizer 3-4"/"Pfizer 5-11") rendered twice.
   const groupedActiveRows = useMemo(() => {
     if (!data) return [];
     const activeRows = data.rows.filter((row) => row.active);
@@ -418,9 +590,10 @@ export default function OrderingPage() {
       if (list) list.push(row);
       else byGroup.set(row.group, [row]);
     }
-    const order = [...GROUP_DISPLAY_ORDER, OTHER_GROUP].filter((group) => byGroup.has(group));
-    // Any group name not in the known display order (shouldn't happen,
-    // but defensive) still gets shown, appended at the end.
+    const order = ORDERING_GROUP_DISPLAY_ORDER.filter((group) => byGroup.has(group));
+    // Any group name not in the known display order (shouldn't happen —
+    // the route only ever emits COVID/Flu/Other — but defensive) still
+    // gets shown, appended at the end, at most once.
     for (const group of byGroup.keys()) {
       if (!order.includes(group)) order.push(group);
     }
@@ -480,6 +653,47 @@ export default function OrderingPage() {
           {loading ? "Refreshing…" : "Refresh"}
         </button>
         {uploadControl}
+        {!copyConfirming ? (
+          <button
+            style={styles.button}
+            type="button"
+            onClick={() => setCopyConfirming(true)}
+            disabled={!data || targetsPending}
+          >
+            Copy recommended → Your target
+          </button>
+        ) : (
+          <span style={styles.muted}>
+            Overwrite existing Your targets?{" "}
+            <button style={styles.button} type="button" onClick={() => void handleCopyRecommended()} disabled={copying}>
+              {copying ? "Copying…" : "Yes"}
+            </button>{" "}
+            <button style={styles.button} type="button" onClick={() => setCopyConfirming(false)} disabled={copying}>
+              Cancel
+            </button>
+          </span>
+        )}
+        <span style={styles.muted}>
+          <label htmlFor="walk-in-pct">Walk-up %</label>{" "}
+          <input
+            id="walk-in-pct"
+            type="number"
+            min={0}
+            max={100}
+            step={1}
+            style={styles.walkInInput}
+            value={walkInPctText}
+            disabled={data?.walkInPctPending}
+            title={data?.walkInPctPending ? "saves after a 1-minute database step" : undefined}
+            onChange={(e) => setWalkInPctText(e.target.value)}
+            onBlur={() => void handleSaveWalkInPct()}
+            onKeyDown={handleWalkInPctKeyDown}
+          />
+          {walkInPctStatus === "saving" && <span style={styles.saveStatus}>saving…</span>}
+          {walkInPctStatus === "saved" && <span style={{ ...styles.saveStatus, color: "#0a7d27" }}>saved</span>}
+          {walkInPctStatus === "error" && <span style={{ ...styles.saveStatus, color: "#b00020" }}>error</span>}
+          {data?.walkInPctPending && <span style={styles.saveStatus}>saves after a 1-minute database step</span>}
+        </span>
         {showEmailSetupLink && (
           <a href="#" style={styles.link} onClick={(e) => { e.preventDefault(); setShowEmailModal(true); }}>
             Email-in setup
@@ -490,11 +704,16 @@ export default function OrderingPage() {
       {loadError && <p style={styles.error}>{loadError}</p>}
       {addressStatusError && <p style={styles.error}>{addressStatusError}</p>}
       {uploadError && <p style={styles.error}>{uploadError}</p>}
+      {copyError && <p style={styles.error}>{copyError}</p>}
+      {copyResult && (
+        <p style={styles.success}>
+          Copied {copyResult.count} target{copyResult.count === 1 ? "" : "s"}.
+        </p>
+      )}
       {uploadResult && (
         <p style={styles.success}>
           Imported {uploadResult.inserted} row{uploadResult.inserted === 1 ? "" : "s"} (
-          {uploadResult.inserted - uploadResult.unmatched.length} matched)
-          {uploadAsOf ? ` — as of ${uploadAsOf.toLocaleString()}` : ""}.
+          {uploadResult.inserted - uploadResult.unmatched.length} matched).
           {uploadResult.unmatched.length > 0 ? ` Unmatched: ${uploadResult.unmatched.join(", ")}.` : ""}
         </p>
       )}
@@ -510,21 +729,27 @@ export default function OrderingPage() {
             <th style={styles.th}>On hand</th>
             <th style={styles.thRight}>Recommended target</th>
             <th style={styles.th}>Your target</th>
-            <th style={styles.thRight}>Order</th>
+            <th style={styles.thRight}>Doses/pkg</th>
+            <th style={styles.thRight}>Order (doses)</th>
+            <th style={styles.thRight}>Order (pkg)</th>
           </tr>
         </thead>
         <tbody>
           {groupedActiveRows.map(({ group, rows }) => {
-            const totals = rows.reduce(
+            const enrichedRows = rows.map(enrichRow);
+            const totals = enrichedRows.reduce(
               (acc, row) => ({
                 upcoming7d: acc.upcoming7d + row.upcoming7d,
                 onHand: acc.onHand + (row.onHand ?? 0),
                 recommendedTarget: acc.recommendedTarget + row.recommendedTarget,
                 order: acc.order + row.order,
+                // Group total pkg = sum of per-row pkg (Will's brief:
+                // "it's what he'd order"), not "—" and not a re-derived
+                // package count from the summed doses.
+                orderPackages: acc.orderPackages + (row.orderPackages ?? 0),
               }),
-              { upcoming7d: 0, onHand: 0, recommendedTarget: 0, order: 0 }
+              { upcoming7d: 0, onHand: 0, recommendedTarget: 0, order: 0, orderPackages: 0 }
             );
-            const groupTargetValue = data?.groupTargets[group] ?? null;
 
             return (
               <Fragment key={group}>
@@ -534,22 +759,21 @@ export default function OrderingPage() {
                   <td style={styles.tdRight}>{totals.upcoming7d}</td>
                   <td style={styles.td}>{totals.onHand}</td>
                   <td style={styles.tdRight}>{totals.recommendedTarget}</td>
-                  <td style={styles.td}>
-                    <TargetInput
-                      value={groupTargetValue}
-                      disabled={targetsPending}
-                      disabledTitle="activates after the database step"
-                      onSave={(value) => saveTarget("group", group, value)}
-                    />
-                  </td>
+                  {/* V-T26 item 6 (Will 2026-09-09: "Remove group target
+                      for now") — the group-level target input/apportioning
+                      UI is gone; this cell is just a placeholder so the
+                      column still lines up with the row cells below. */}
+                  <td style={styles.td}>—</td>
+                  <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>{totals.order}</td>
+                  <td style={styles.tdRight}>{totals.orderPackages}</td>
                 </tr>
-                {rows.map((row) => (
+                {enrichedRows.map((row) => (
                   <tr key={row.key}>
-                    <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.vaccineName}</td>
+                    <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
                     <td style={styles.td}>{row.ndc ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
-                    <td style={styles.td}>{onHandDisplay(row.onHand, row.onHandAsOf)}</td>
+                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>
                     <td style={styles.td}>
                       <TargetInput
@@ -559,7 +783,9 @@ export default function OrderingPage() {
                         onSave={(value) => (row.ndc ? saveTarget("ndc", row.ndc, value) : Promise.resolve(false))}
                       />
                     </td>
+                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.order}</td>
+                    <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
                   </tr>
                 ))}
               </Fragment>
@@ -582,18 +808,22 @@ export default function OrderingPage() {
                   <th style={styles.thRight}>Upcoming 7d</th>
                   <th style={styles.th}>On hand</th>
                   <th style={styles.thRight}>Recommended target</th>
-                  <th style={styles.thRight}>Order</th>
+                  <th style={styles.thRight}>Doses/pkg</th>
+                  <th style={styles.thRight}>Order (doses)</th>
+                  <th style={styles.thRight}>Order (pkg)</th>
                 </tr>
               </thead>
               <tbody>
-                {inactiveRows.map((row) => (
+                {inactiveRows.map(enrichRow).map((row) => (
                   <tr key={row.key}>
-                    <td style={styles.td}>{row.vaccineName}</td>
+                    <td style={styles.td}>{row.displayName}</td>
                     <td style={styles.td}>{row.ndc ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
-                    <td style={styles.td}>{onHandDisplay(row.onHand, row.onHandAsOf)}</td>
+                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>
+                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.order}</td>
+                    <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

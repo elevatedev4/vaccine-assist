@@ -15,7 +15,7 @@
  * on-hand is not a negative order.
  */
 
-import { walkInBuffer } from "@/lib/ordering-recommendation";
+import { WALK_IN_BUFFER_RATE, walkInBuffer } from "@/lib/ordering-recommendation";
 
 /** Same "upcoming + 25%-buffer" shape as computeRecommendedOrder
  * (lib/ordering-recommendation.ts), but as a TARGET balance rather than
@@ -26,8 +26,8 @@ import { walkInBuffer } from "@/lib/ordering-recommendation";
  * though the arithmetic coincides. upcoming7d=0 -> 0 (walkInBuffer(0) is
  * already 0, so no special case needed).
  */
-export function recommendedTarget(upcoming7d: number): number {
-  return upcoming7d + walkInBuffer(upcoming7d);
+export function recommendedTarget(upcoming7d: number, rate: number = WALK_IN_BUFFER_RATE): number {
+  return upcoming7d + walkInBuffer(upcoming7d, rate);
 }
 
 /**
@@ -105,8 +105,15 @@ export type TargetResult = {
  * own recommendedTarget (largest-remainder rounding — see
  * apportionGroupTarget). If every remaining row's recommendedTarget is
  * 0, the remainder splits equally instead.
+ *
+ * `rate` (V-T26 item 1): the effective walk-up % passed through to every
+ * recommendedTarget() call below — see that function's doc comment.
  */
-export function computeEffectiveTargets(rows: TargetInput[], overrides: OrderingTargetOverrides): TargetResult[] {
+export function computeEffectiveTargets(
+  rows: TargetInput[],
+  overrides: OrderingTargetOverrides,
+  rate: number = WALK_IN_BUFFER_RATE
+): TargetResult[] {
   const byGroup = new Map<string, TargetInput[]>();
   for (const row of rows) {
     const list = byGroup.get(row.group);
@@ -127,13 +134,13 @@ export function computeEffectiveTargets(rows: TargetInput[], overrides: Ordering
     const overrideSum = withNdcOverride.reduce((sum, row) => sum + overrides.ndc[row.ndc as string], 0);
     const remaining = Math.max(0, groupTarget - overrideSum);
 
-    const weights = withoutNdcOverride.map((row) => recommendedTarget(row.upcoming7d));
+    const weights = withoutNdcOverride.map((row) => recommendedTarget(row.upcoming7d, rate));
     const apportioned = apportionGroupTarget(remaining, weights);
     withoutNdcOverride.forEach((row, index) => apportionedByKey.set(row.key, apportioned[index]));
   }
 
   return rows.map((row) => {
-    const recommended = recommendedTarget(row.upcoming7d);
+    const recommended = recommendedTarget(row.upcoming7d, rate);
     const ndcOverride = row.ndc !== null ? overrides.ndc[row.ndc] : undefined;
 
     let effective = recommended;
