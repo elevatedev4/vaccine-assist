@@ -397,6 +397,23 @@ describe("groupRows", () => {
     expect(byGroup["Strep Throat"]).toEqual([testRows[1]]);
     expect(byGroup["(none)"]).toEqual([testRows[2]]);
   });
+
+  // Mirrors the "(none)" bucket coverage above, but for vaccine-mode
+  // group-by (non-blocking review nit, 2026-09-09) — the `rows` fixture
+  // used by the vaccine test above never has an empty vaccineNames row, so
+  // it never exercised this bucket for "vaccine" mode specifically.
+  it("groups by vaccine, double-membership across groups, a vaccine-less row bucketing under '(none)'", () => {
+    const vaccineRows = [
+      row({ vaccineNames: ["Flu"] }),
+      row({ vaccineNames: ["Flu", "COVID-Pfizer"] }),
+      row({ vaccineNames: [] }),
+    ];
+    const groups = groupRows(vaccineRows, "vaccine");
+    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g.rows]));
+    expect(byGroup["Flu"]).toEqual([vaccineRows[0], vaccineRows[1]]);
+    expect(byGroup["COVID-Pfizer"]).toEqual([vaccineRows[1]]);
+    expect(byGroup["(none)"]).toEqual([vaccineRows[2]]);
+  });
 });
 
 describe("groupedRowsToCsv", () => {

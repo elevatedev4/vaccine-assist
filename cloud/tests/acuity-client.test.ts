@@ -6,6 +6,7 @@ import {
   fetchAppointmentsForRange,
   fetchAppointmentTypes,
   isAgeFormFieldName,
+  isAllowedTestValue,
   isCovidBrandFormFieldName,
   isTestFormFieldName,
   isVaccineFormFieldName,
@@ -530,6 +531,39 @@ describe("fetchAppointmentsForRange", () => {
       expect(result.appointments[0].testNames).toEqual([]);
     });
 
+    // Security review follow-up (2026-09-09, REQUEST_CHANGES — blocking,
+    // BLOCKED feat/explorer-group-tables): a screening question phrased as
+    // a "which"/"what" question ("What test result did you have last
+    // time?") must ALSO never leak its free-text answer, end-to-end — this
+    // is the exact gap the first cut of the question-shape name match left
+    // open (it would have matched the field name, then relied entirely on
+    // isAllowedTestValue's value check).
+    it("never extracts a backward-looking screening question's free-text answer as a testName, even when phrased as a 'what'/'which' question", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Flu Shot",
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [
+                {
+                  fieldID: 9,
+                  name: "What test result did you have last time?",
+                  value: "I tested positive for flu at urgent care",
+                },
+              ],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
+
     // V-T27 (Will, 2026-09-09 verbatim: "Make sure the test appointment
     // data is coming through (which test they want to receive from the
     // intake questions)" — the Tests column was showing "COVID" for only
@@ -696,11 +730,11 @@ describe("fetchAppointmentsForRange", () => {
     // selection as a QUESTION ("Which test would you like?") rather than
     // the "Select tests:" label the original live probe found — this WAS
     // dropped entirely (see the superseded assertion this replaces, git
-    // blame) until this round; now matched via
-    // TEST_SELECTION_QUESTION_PATTERN. isAllowedTestValue (see the
-    // "point-of-care test extraction" describe block above) is still the
-    // deciding second layer on the VALUE either way.
-    it("matches a forward-looking selection question ('which'/'what' + 'test(s)')", () => {
+    // blame) until this round; now matched via isTestSelectionQuestion.
+    // isAllowedTestValue (see the "point-of-care test extraction" describe
+    // block above) is still the deciding second layer on the VALUE either
+    // way.
+    it("matches a forward-looking selection question ('which'/'what' + 'test(s)' + a selection phrase)", () => {
       expect(isTestFormFieldName("Which test would you like?")).toBe(true);
       expect(isTestFormFieldName("Which tests would you like to receive?")).toBe(true);
       expect(isTestFormFieldName("What test are you here for?")).toBe(true);
@@ -709,6 +743,54 @@ describe("fetchAppointmentsForRange", () => {
     it("still does not match an unrelated 'which' question that never mentions test(s)", () => {
       expect(isTestFormFieldName("Which vaccine(s) are you receiving?")).toBe(false);
       expect(isTestFormFieldName("Which location would you like?")).toBe(false);
+    });
+
+    // Security review follow-up (2026-09-09, REQUEST_CHANGES — blocking,
+    // BLOCKED feat/explorer-group-tables): the first cut of the
+    // question-shape match was too broad — it matched any "which"/"what" +
+    // "test(s)" name, including backward-looking SCREENING/history
+    // questions phrased as a question. Fixed via
+    // TEST_SELECTION_QUESTION_REQUIRED_PHRASES (must contain one) and
+    // TEST_SELECTION_QUESTION_EXCLUDED_WORDS (must contain none) — exact
+    // reviewer-provided adversarial cases below.
+    it("does NOT match a backward-looking screening/history question phrased as a 'which'/'what' + test(s) question", () => {
+      expect(isTestFormFieldName("What test result did you have last time?")).toBe(false);
+      expect(isTestFormFieldName("Which tests are you currently taking (medications)?")).toBe(false);
+    });
+
+    it("still matches the canonical selection question after the tightening", () => {
+      expect(isTestFormFieldName("Which test would you like?")).toBe(true);
+    });
+  });
+
+  // Security review follow-up (2026-09-09, REQUEST_CHANGES — blocking,
+  // BLOCKED feat/explorer-group-tables): isAllowedTestValue moved from a
+  // per-token SUBSTRING match to a whole-value, EXACT-token match — a
+  // value containing even one non-allowlisted token (after normalization)
+  // is rejected in full, never partially accepted. Exact reviewer-provided
+  // cases below.
+  describe("isAllowedTestValue", () => {
+    it("rejects a free-text sentence that merely CONTAINS an allowlisted substring ('flu')", () => {
+      expect(isAllowedTestValue("Positive for flu")).toBe(false);
+    });
+
+    it("rejects a medication name that merely CONTAINS an allowlisted substring ('HIV')", () => {
+      expect(isAllowedTestValue("Truvada for HIV")).toBe(false);
+    });
+
+    it("accepts a genuine comma-separated multi-select answer whose every token is an exact allowlist member", () => {
+      expect(isAllowedTestValue("COVID, Strep")).toBe(true);
+    });
+
+    it("accepts a single token with a trailing 'test' word stripped before the exact-match check", () => {
+      expect(isAllowedTestValue("COVID test")).toBe(true);
+    });
+
+    it("rejects the value entirely when ANY one token (of several) fails the exact-match check", () => {
+      // "COVID" alone would pass — but paired with a free-text token in
+      // the SAME answer, the whole value must be rejected, not just the
+      // bad half.
+      expect(isAllowedTestValue("COVID, patient reports mild symptoms")).toBe(false);
     });
   });
 
