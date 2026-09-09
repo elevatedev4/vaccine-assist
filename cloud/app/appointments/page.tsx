@@ -19,6 +19,7 @@ import {
   type HourlyMetric,
   type VaccineCount,
 } from "@/lib/appointment-table";
+import { buildPocTestTable, computePocTestHeatmapMaxes, type PocTestTable, type TestCount } from "@/lib/poc-test-table";
 
 // Re-poll cadence while the page is open and signed in (Will, 2026-08-16:
 // "a reasonable refresh rate, maybe every 15 minutes"). Comfortably above
@@ -42,6 +43,12 @@ type PollResponse = {
   // self-heal: `poll?.hourlyCounts ?? []` below covers both "field genuinely
   // absent" and "present but empty" the same way.
   hourlyCounts?: HourlyCount[];
+  // ADDITIVE (V-T-poc-testing, 2026-09-08) — see route.ts's doc comment.
+  // `testTable` is rebuilt client-side from `testCounts` (same
+  // `poll?.testCounts ?? []` self-heal pattern as hourlyCounts) rather than
+  // trusted as-is, so this page never depends on the server having sent a
+  // pre-built table shape.
+  testCounts?: TestCount[];
 };
 
 // Reliability fix (2026-09-05): the "After today" summary comes from a
@@ -199,6 +206,15 @@ const styles = {
   // table already fits, only kicks in a scrollbar if a viewport is truly
   // narrower than the table (e.g. a small laptop screen).
   tableWrap: { overflowX: "auto", marginTop: "0.4rem" },
+  // Point-of-care testing table (V-T-poc-testing, Will 2026-09-08): "Add
+  // it below to the right of the vaccine appointment table" — a flex row
+  // holding both tables' wrappers, wrapping the POC table below the
+  // vaccine table once the viewport is too narrow to fit both
+  // side-by-side. `alignItems: "flex-start"` keeps the shorter table
+  // pinned to the top rather than vertically centered against the taller
+  // one.
+  twoTableRow: { display: "flex", flexWrap: "wrap", gap: "1.5rem", alignItems: "flex-start" },
+  twoTableCol: { minWidth: 0 },
   // Hourly table (V-T-hourly-table, Will 2026-09-05) — "match the main
   // table exactly" for cells/borders/width, but a PLAIN header (no
   // per-group color) since every column is just an hour, not a vaccine
@@ -804,6 +820,17 @@ export default function AppointmentsPage() {
   // buildHourlyBreakdownTable's doc comment.
   const hourlyTable = buildHourlyBreakdownTable(poll?.hourlyCounts ?? [], days, hourlyMetric);
 
+  // Point-of-care testing table (V-T-poc-testing, Will 2026-09-08) — same
+  // `days` as the main vaccine table above, rebuilt client-side from
+  // `poll?.testCounts` the same way `table` above is rebuilt from
+  // `poll?.counts` rather than trusting the server's own pre-built
+  // `table`/`testTable` fields (those exist for the desktop Scheduling
+  // tab's contract, not this page). Self-heals to an empty table shell
+  // when `testCounts` is missing (unconfigured/stale-cache/not-yet-
+  // loaded), same pattern as buildHourlyBreakdownTable above.
+  const testTable: PocTestTable = buildPocTestTable(poll?.testCounts ?? [], days);
+  const testHeatmapMaxes = computePocTestHeatmapMaxes(testTable);
+
   // Scheduling activity (V-T-booking-activity) — only ever built once
   // `activity` has actually loaded (the section is collapsed, and its
   // fetch hasn't fired, until the very first expand — see
@@ -816,16 +843,6 @@ export default function AppointmentsPage() {
   return (
     <main style={styles.mainWide}>
       <h1 style={styles.heading}>Upcoming appointments</h1>
-
-      {/* V-data-explorer (Will, 2026-09-08): "a data explorer page for me
-          to see all the data and search and filter and perform sum
-          functions on it" — a link into the new explorer, not a new top
-          tab (see lib/nav-config.ts's doc comment on what stays a tab). */}
-      <p style={{ margin: "0 0 0.5rem" }}>
-        <a href="/appointments/explorer" style={{ fontSize: "0.8rem" }}>
-          Data explorer →
-        </a>
-      </p>
 
       <p style={styles.actionsRow}>
         <button
@@ -924,6 +941,13 @@ export default function AppointmentsPage() {
         // larger magnitude class (up to ~13 weeks of appointments summed),
         // so folding them into totalsScaleMax would crush the daily-totals
         // gradient the same way mixing per-vaccine and total counts would.
+        //
+        // V-T-poc-testing (Will, 2026-09-08): the point-of-care testing
+        // table renders to the RIGHT of this vaccine table (a flex row,
+        // wrapping below on narrow screens — styles.twoTableRow) — see the
+        // sibling <div> after this one's closing tags.
+        <div style={styles.twoTableRow}>
+        <div style={styles.twoTableCol}>
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <colgroup>
@@ -1028,6 +1052,73 @@ export default function AppointmentsPage() {
             </tbody>
           </table>
         </div>
+        </div>
+
+        {/* Point-of-care testing table (V-T-poc-testing, Will 2026-09-08):
+            "Add a point of care testing appointment table too that shows
+            daily totals for each type of test that is scheduled. Add it
+            below to the right of the vaccine appointment table." Same
+            fonts/borders/heatmap conventions as the vaccine table above
+            (styles.table/thType/thLeaf/td/totalCell, dataCellStyle,
+            heatmapCellBackground) but with a dynamic (not fixed) column
+            set — one per test type actually seen (lib/poc-test-table.ts's
+            buildPocTestTable) — and no per-group header coloring, since
+            there's no vaccine grouping here, only test types. Refreshed by
+            the same Refresh button and auto-refresh interval as every
+            other table on this page (it's rebuilt from `poll.testCounts`,
+            which the SAME loadCounts fetch above already populates). An
+            empty testCounts (no point-of-care testing appointments in
+            range) still renders the table shell — just a Total column,
+            all zero — rather than disappearing, matching the main table's
+            "always render, even at zero" convention. */}
+        <div style={styles.twoTableCol}>
+          <h2 style={styles.hourlyHeading}>Point-of-care tests</h2>
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <colgroup>
+                <col />
+                <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
+                {testTable.columns.map((column) => (
+                  <col key={column.testName} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
+                ))}
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style={styles.thType}>Scheduled date</th>
+                  <th style={styles.thLeaf}>Total</th>
+                  {testTable.columns.map((column) => (
+                    <th key={column.testName} style={{ ...styles.thLeaf, ...COLUMN_DIVIDER }}>
+                      {column.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {testTable.days.map((day) => (
+                  <tr key={day}>
+                    <td style={styles.tdType}>{formatDayLabel(day)}</td>
+                    <td
+                      style={totalCellStyle(
+                        styles.totalCell,
+                        heatmapCellBackground(testTable.dailyTotals[day], testHeatmapMaxes.totalScaleMax)
+                      )}
+                    >
+                      {testTable.dailyTotals[day]}
+                    </td>
+                    {testTable.columns.map((column, index) =>
+                      renderCount(
+                        { vaccineName: column.testName, group: "Other", subgroup: null, label: column.label },
+                        testTable.rows[index].countsByDay[day],
+                        testHeatmapMaxes.dataScaleMax
+                      )
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        </div>
       )}
 
       {poll && poll.configured && (
@@ -1115,11 +1206,20 @@ export default function AppointmentsPage() {
       {/* V-T-booking-activity (Will, 2026-09-05/07): "collapsed by default
           behind a visually de-emphasized link at the BOTTOM of the page."
           The fetch itself only fires on this link's FIRST click (see
-          handleToggleActivity) — never on page load, collapsed or not. */}
+          handleToggleActivity) — never on page load, collapsed or not.
+          V-data-explorer link (Will, 2026-09-08 follow-up): "Move the data
+          explorer link to the bottom with the scheduling activity link and
+          de-emphasize it" — same muted activityToggleLink styling, right
+          next to the activity toggle: "Show scheduling activity ▸ · Data
+          explorer →". */}
       <div style={styles.activityLinkRow}>
         <button type="button" style={styles.activityToggleLink} onClick={handleToggleActivity}>
           {activityExpanded ? "Hide scheduling activity ▾" : "Show scheduling activity ▸"}
         </button>
+        {" · "}
+        <a href="/appointments/explorer" style={styles.activityToggleLink}>
+          Data explorer →
+        </a>
       </div>
 
       {activityExpanded && (

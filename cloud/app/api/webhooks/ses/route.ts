@@ -2,10 +2,18 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { parseOnHandContent } from "@/lib/on-hand-parser";
-import { extractTextFromRawMime } from "@/lib/ses-mime";
+import { extractAttachmentFromRawMime, extractTextFromRawMime } from "@/lib/ses-mime";
 import { isAllowedSnsHost, verifySnsSignature } from "@/lib/sns-signature";
 import { findAddressByToken, parseToken, touchLastReceived, type InboundEmailAddress } from "@/lib/on-hand/address";
+import { insertOnHandRows } from "@/lib/on-hand/insert";
+import { MAX_UPLOAD_BYTES } from "@/lib/on-hand/upload";
+import {
+  matchPioneerBohRows,
+  parseOnHandUpload,
+  parsePioneerBohDelimited,
+  parsePioneerBohXlsx,
+  type MatchedOnHandRow,
+} from "@/lib/on-hand/pioneer-boh";
 import type { CatalogVaccine } from "@/lib/vaccine-matching";
 
 /**
@@ -161,9 +169,28 @@ async function extractLegacyContent(request: Request): Promise<string> {
 }
 
 /**
- * Shared tail end of both entry shapes: run `content` through the
- * on-hand parser against the live vaccine catalog and batch-insert every
- * line (matched or not) into on_hand_count.
+ * Loads the live vaccine catalog (including `ndc`, for Pioneer-table NDC
+ * matching — lib/on-hand/pioneer-boh.ts) or returns a ready-to-send error
+ * response, same "return the response, not the data" convention as
+ * requireAuthenticatedUser.
+ */
+async function loadCatalogOrError(
+  supabase: ReturnType<typeof getSupabaseServerClient>
+): Promise<{ catalog: CatalogVaccine[] } | { error: NextResponse }> {
+  const { data, error } = await supabase.from("vaccine").select("id, name, short_code, ndc");
+  if (error) {
+    console.error("POST /api/webhooks/ses: failed to load vaccine catalog", error);
+    return { error: NextResponse.json({ error: "Failed to load vaccine catalog." }, { status: 500 }) };
+  }
+  return { catalog: data ?? [] };
+}
+
+/**
+ * Shared tail end of every entry shape (legacy text lines, a Pioneer
+ * xlsx/csv attachment): batch-insert already-matched rows into
+ * on_hand_count (lib/on-hand/insert.ts — degrades gracefully before
+ * supabase/migrations/0011 has added ndc/stock_size) and return the
+ * linesTotal/matchedCount/unmatchedCount summary.
  *
  * `addressId`, when given, is stamped onto every inserted row as
  * inbound_email_address_id (the resolved recipient's account — see the
@@ -172,6 +199,39 @@ async function extractLegacyContent(request: Request): Promise<string> {
  * simple-contract callers keep inserting the exact same row shape as
  * before this feature existed — inbound_email_address_id then falls back
  * to the column's DB default (NULL, treated as "legacy/unattributed").
+ * `source` is deliberately NOT set here (unlike the upload route) — the
+ * column's own DB default, 'email', is exactly right for this path.
+ */
+async function insertAndSummarize(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  rows: MatchedOnHandRow[],
+  addressId: string | undefined
+): Promise<NextResponse> {
+  if (rows.length === 0) {
+    console.log("POST /api/webhooks/ses: parse outcome — 0 lines");
+    return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
+  }
+
+  const { error: insertError } = await insertOnHandRows(supabase, rows, { addressId });
+  if (insertError) {
+    console.error("POST /api/webhooks/ses: failed to insert on_hand_count rows", insertError);
+    return NextResponse.json({ error: "Failed to store on-hand counts." }, { status: 500 });
+  }
+
+  const matchedCount = rows.filter((row) => row.matched).length;
+  console.log(
+    `POST /api/webhooks/ses: parse outcome — linesTotal=${rows.length} matchedCount=${matchedCount} unmatchedCount=${rows.length - matchedCount}`
+  );
+  return NextResponse.json({
+    linesTotal: rows.length,
+    matchedCount,
+    unmatchedCount: rows.length - matchedCount,
+  });
+}
+
+/**
+ * Legacy simple-contract path (and the SNS text/plain fallback): run
+ * `content` through the original "VaccineName, Quantity" line parser.
  */
 async function processOnHandContent(content: string, addressId?: string): Promise<NextResponse> {
   if (!content || content.trim().length === 0) {
@@ -189,50 +249,74 @@ async function processOnHandContent(content: string, addressId?: string): Promis
     );
   }
 
-  const { data: catalogData, error: catalogError } = await supabase
-    .from("vaccine")
-    .select("id, name, short_code");
+  const catalogResult = await loadCatalogOrError(supabase);
+  if ("error" in catalogResult) return catalogResult.error;
 
-  if (catalogError) {
-    console.error("POST /api/webhooks/ses: failed to load vaccine catalog", catalogError);
-    return NextResponse.json({ error: "Failed to load vaccine catalog." }, { status: 500 });
+  // parseOnHandUpload also recognizes a Pioneer-table PASTED into the
+  // email body as plain text (not an attachment) via its own header
+  // detection — same dispatch the upload route uses, so a body that
+  // happens to be the table still gets NDC-matched instead of being
+  // treated as garbled "VaccineName, Quantity" lines.
+  const rows = parseOnHandUpload({ kind: "text", text: content }, catalogResult.catalog);
+  return insertAndSummarize(supabase, rows, addressId);
+}
+
+/**
+ * V-ordering-targets (Will 2026-09-08): Pioneer's real emailed on-hand
+ * report is most likely the SAME table its manual export produces, sent
+ * as an xlsx/csv attachment rather than typed into the email body — see
+ * lib/ses-mime.ts's extractAttachmentFromRawMime. This path parses that
+ * attachment through the same lib/on-hand/pioneer-boh.ts matcher the
+ * upload route uses (NDC first, name fallback), rather than
+ * extractTextFromRawMime's plain-text search.
+ *
+ * Security review fix (2026-09-08): a decoded-byte-size gate BEFORE
+ * `parsePioneerBohXlsx` — defense in depth alongside
+ * lib/ses-mime.ts's own pre-decode base64-length gate
+ * (MAX_ATTACHMENT_PART_CHARS), which already stops an oversized
+ * attachment from ever reaching this function in the normal SNS webhook
+ * flow. This webhook is reachable by anyone who learns a per-account
+ * inbound address, and xlsx@0.18.5 (SheetJS, used by parsePioneerBohXlsx)
+ * carries two open high-severity advisories (GHSA-4r6h-8v6p-xvw6
+ * prototype pollution, GHSA-5pgg-2g8v-p4x9 ReDoS) — an oversized
+ * attachment is never handed to `read()`, full stop. `rawMimeForFallback`
+ * is only used on the oversize path, to fall back to the plain-text
+ * lines parser rather than dropping the email entirely.
+ */
+async function processOnHandAttachment(
+  attachment: { kind: "xlsx"; buffer: Buffer } | { kind: "csv"; text: string },
+  addressId: string | undefined,
+  rawMimeForFallback: string
+): Promise<NextResponse> {
+  const sizeBytes = attachment.kind === "xlsx" ? attachment.buffer.length : Buffer.byteLength(attachment.text, "utf-8");
+  if (sizeBytes > MAX_UPLOAD_BYTES) {
+    console.warn(
+      `POST /api/webhooks/ses: skipping oversized ${attachment.kind} attachment (${sizeBytes} bytes > ${MAX_UPLOAD_BYTES} max) ` +
+        "before parsing — falling back to plain-text lines"
+    );
+    return processOnHandContent(extractTextFromRawMime(rawMimeForFallback), addressId);
   }
 
-  const catalog: CatalogVaccine[] = catalogData ?? [];
-  const parsed = parseOnHandContent(content, catalog);
-
-  if (parsed.length === 0) {
-    console.log("POST /api/webhooks/ses: parse outcome — 0 lines");
-    return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
+  let supabase;
+  try {
+    supabase = getSupabaseServerClient();
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Supabase is not configured." },
+      { status: 503 }
+    );
   }
 
-  const rows = parsed.map((line) => {
-    const row: Record<string, unknown> = {
-      raw_line: line.rawLine,
-      vaccine_name_raw: line.vaccineNameRaw,
-      quantity: line.quantity,
-      vaccine_id: line.vaccineId,
-      matched: line.matched,
-    };
-    if (addressId) row.inbound_email_address_id = addressId;
-    return row;
-  });
+  const catalogResult = await loadCatalogOrError(supabase);
+  if ("error" in catalogResult) return catalogResult.error;
+  const { catalog } = catalogResult;
 
-  const { error: insertError } = await supabase.from("on_hand_count").insert(rows);
-  if (insertError) {
-    console.error("POST /api/webhooks/ses: failed to insert on_hand_count rows", insertError);
-    return NextResponse.json({ error: "Failed to store on-hand counts." }, { status: 500 });
-  }
+  const rows =
+    attachment.kind === "xlsx"
+      ? matchPioneerBohRows(parsePioneerBohXlsx(attachment.buffer), catalog)
+      : matchPioneerBohRows(parsePioneerBohDelimited(attachment.text, attachment.text.includes("\t") ? "\t" : ","), catalog);
 
-  const matchedCount = parsed.filter((line) => line.matched).length;
-  console.log(
-    `POST /api/webhooks/ses: parse outcome — linesTotal=${parsed.length} matchedCount=${matchedCount} unmatchedCount=${parsed.length - matchedCount}`
-  );
-  return NextResponse.json({
-    linesTotal: parsed.length,
-    matchedCount,
-    unmatchedCount: parsed.length - matchedCount,
-  });
+  return insertAndSummarize(supabase, rows, addressId);
 }
 
 /**
@@ -362,8 +446,16 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
       return NextResponse.json({ ignored: "unknown-recipient" });
     }
 
-    const content = extractTextFromRawMime(rawMime);
-    const response = await processOnHandContent(content, resolvedAddress.id);
+    // V-ordering-targets: try an xlsx/csv ATTACHMENT first (Pioneer's
+    // real emailed report is most likely this same table its manual
+    // export produces) — extractAttachmentFromRawMime returns null for
+    // any message that isn't multipart or has no recognizable xlsx/csv
+    // part, so a plain-text on-hand email falls straight through to the
+    // existing plain-text path unchanged.
+    const attachment = extractAttachmentFromRawMime(rawMime);
+    const response = attachment
+      ? await processOnHandAttachment(attachment, resolvedAddress.id, rawMime)
+      : await processOnHandContent(extractTextFromRawMime(rawMime), resolvedAddress.id);
     if (response.status === 200) {
       await touchLastReceived(resolvedAddress.id);
     }

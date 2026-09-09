@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractTextFromRawMime } from "@/lib/ses-mime";
+import { extractAttachmentFromRawMime, extractTextFromRawMime, MAX_ATTACHMENT_PART_CHARS } from "@/lib/ses-mime";
 
 const CRLF = "\r\n";
 
@@ -128,5 +128,103 @@ describe("extractTextFromRawMime", () => {
     const result = extractTextFromRawMime(raw);
     expect(result.length).toBeGreaterThan(0);
     expect(result).toContain("multipart/alternative");
+  });
+});
+
+describe("extractAttachmentFromRawMime", () => {
+  it("extracts a base64 xlsx attachment by content-type", () => {
+    const boundary = "BOUNDARY-XLSX";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="boh.xlsx"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("fake xlsx bytes").toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("xlsx");
+    expect((result as { kind: "xlsx"; buffer: Buffer }).buffer.toString("utf-8")).toBe("fake xlsx bytes");
+  });
+
+  it("extracts a csv attachment by filename when content-type is generic", () => {
+    const boundary = "BOUNDARY-CSV";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: application/octet-stream",
+      'Content-Disposition: attachment; filename="boh.csv"',
+      "",
+      "Item Name,NDC/UPC,Current BOH,Stock size",
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).toEqual({ kind: "csv", text: "Item Name,NDC/UPC,Current BOH,Stock size" });
+  });
+
+  it("returns null for a non-multipart message", () => {
+    expect(extractAttachmentFromRawMime(["Content-Type: text/plain", "", "hello"].join(CRLF))).toBeNull();
+  });
+
+  it("returns null when no part looks like an xlsx/csv attachment", () => {
+    const boundary = "TEXTONLY";
+    const raw = [
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain",
+      "",
+      "Flu Quad 2025-26, 40",
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+    expect(extractAttachmentFromRawMime(raw)).toBeNull();
+  });
+
+  // Security review fix (V-ordering-targets, 2026-09-08): reject an
+  // oversized part BEFORE any decode, since xlsx@0.18.5 (fed by this
+  // path) carries two open high-severity advisories.
+  it("returns null for an oversized xlsx attachment part WITHOUT decoding it", () => {
+    const boundary = "BOUNDARY-BIG";
+    const oversized = "A".repeat(MAX_ATTACHMENT_PART_CHARS + 1);
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="boh.xlsx"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      oversized,
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    expect(extractAttachmentFromRawMime(raw)).toBeNull();
+  });
+
+  it("still extracts a normal-size xlsx part comfortably under the size limit", () => {
+    const boundary = "BOUNDARY-UNDER-LIMIT";
+    const underLimit = "A".repeat(MAX_ATTACHMENT_PART_CHARS - 1000);
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="boh.xlsx"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      underLimit,
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    expect(extractAttachmentFromRawMime(raw)).not.toBeNull();
   });
 });

@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   aggregateAppointmentCounts,
   aggregateHourlyCounts,
+  aggregateTestCounts,
   fetchAppointmentsForRange,
   fetchAppointmentTypes,
   isAgeFormFieldName,
   isCovidBrandFormFieldName,
+  isTestFormFieldName,
   isVaccineFormFieldName,
   testAcuityConnection,
+  ACUITY_APPOINTMENTS_MAX,
   REQUESTS_PER_RANGE_BUDGET,
   type CountableAppointment,
 } from "@/lib/acuity-client";
@@ -110,6 +113,12 @@ const DEFAULT_BUCKETS = {
   covidAgeBucket: "unknown",
   fluAgeBucket: "unknown",
   createdDate: "2026-08-10",
+  // V-T-poc-testing: every fixture below uses acuityAppointmentFixture()'s
+  // default (no `type` field, no "Select tests:" form field), so
+  // testNames is always [] unless a test explicitly overrides forms/type
+  // to exercise the point-of-care testing extraction itself (see the
+  // "point-of-care test extraction" describe block further down).
+  testNames: [] as string[],
 } as const;
 
 describe("fetchAppointmentsForRange", () => {
@@ -170,6 +179,7 @@ describe("fetchAppointmentsForRange", () => {
           "date",
           "fluAgeBucket",
           "hourOfDay",
+          "testNames",
           "vaccineNames",
         ].sort()
       );
@@ -416,6 +426,163 @@ describe("fetchAppointmentsForRange", () => {
     });
   });
 
+  // V-T-poc-testing (Will, 2026-09-08): point-of-care test names, mirroring
+  // the vaccine name extraction tests above — form-field extraction is the
+  // primary path, the appointment TYPE name's own parenthetical is the
+  // fallback ONLY when no form field matches. Field name/values ("Select
+  // tests:" / "COVID (free)" / "Strep Throat") are exactly what the
+  // live-probe evidence (2026-09-08) found — see isTestFormFieldName's doc
+  // comment in lib/acuity-client.ts.
+  describe("point-of-care test extraction", () => {
+    it("extracts test names from a form field matching 'test' (case-insensitive), stripping a trailing price qualifier", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Test appointment (Flu, COVID, Strep)",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: "COVID (free)" }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["COVID"]);
+    });
+
+    it("splits a comma-separated multi-test answer into individual trimmed, qualifier-stripped names", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Test appointment (Flu, COVID, Strep)",
+          forms: [
+            { id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: "COVID (free), Strep Throat" }] },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["COVID", "Strep Throat"]);
+    });
+
+    it("falls back to parsing the appointment type name's parenthetical when no form field matches", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Test appointment (Flu, COVID, Strep)",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Insurance provider", value: "Acme Health" }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual(["Flu", "COVID", "Strep"]);
+    });
+
+    it("falls back to an empty testNames list when neither a form field nor a parenthetical type name is present", async () => {
+      const fixture = [acuityAppointmentFixture({ type: "Flu Shot" })];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
+
+    it("never lets a form field's raw answer text leak — only the extracted/bucketed testNames survive", async () => {
+      // Same PHI-boundary proof style as the "no PHI keys survive" test
+      // above: a vaccine appointment's OWN unrelated fields (name/email)
+      // must never appear, and the appointment TYPE's raw `type` string
+      // itself (read only as the fallback SOURCE, never stored) must not
+      // survive onto the returned appointment either.
+      const fixture = [acuityAppointmentFixture({ type: "Test appointment (Flu, COVID, Strep)" })];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(Object.prototype.hasOwnProperty.call(result.appointments[0], "type")).toBe(false);
+      expect(result.appointments[0].testNames).toEqual(["Flu", "COVID", "Strep"]);
+    });
+
+    // Security review (2026-09-08, REQUEST_CHANGES — blocking, adversarial
+    // cases): a genuine SCREENING question's free-text answer must NEVER
+    // become a testName, even end-to-end through fetchAppointmentsForRange
+    // — this is the exact PHI-leak scenario the review flagged (a
+    // screening answer riding into testNames -> the point-of-care test
+    // table -> a cache row -> a rendered column header).
+    it("never extracts a screening question's free-text answer as a testName", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          type: "Flu Shot",
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [
+                { fieldID: 9, name: "Have you had a positive COVID test recently?", value: "yes, last week at home" },
+              ],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
+
+    it("drops a value from a genuinely-named 'Select tests:' field when it's a long free-text answer instead of a short multi-select choice", async () => {
+      // Well over the 40-char allowlist cap (lib/acuity-client.ts's
+      // MAX_TEST_VALUE_LENGTH) — the exact length doesn't matter, only
+      // that it's unambiguously too long to be a real multi-select answer.
+      const longFreeTextAnswer =
+        "I went to urgent care last Tuesday and they said it might be strep but the rapid test was inconclusive so they sent a culture.";
+      expect(longFreeTextAnswer.length).toBeGreaterThan(40);
+      const fixture = [
+        acuityAppointmentFixture({
+          // Deliberately NO parenthetical on the type name (unlike the
+          // other tests in this block) — this isolates the assertion to
+          // "the over-length value itself was dropped," rather than
+          // letting the type-name-parenthetical fallback (which fires
+          // whenever the form-field path finds nothing at all) mask a
+          // regression by recovering testNames a different way.
+          type: "Test appointment",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: longFreeTextAnswer }] }],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments[0].testNames).toEqual([]);
+    });
+  });
+
+  describe("isTestFormFieldName", () => {
+    it("matches the real Acuity field name, case-insensitively, regardless of the trailing colon", () => {
+      expect(isTestFormFieldName("Select tests:")).toBe(true);
+      expect(isTestFormFieldName("select TESTS:")).toBe(true);
+      expect(isTestFormFieldName("Select tests")).toBe(true);
+      expect(isTestFormFieldName("Select test:")).toBe(true);
+    });
+
+    it("does not match unrelated field names", () => {
+      expect(isTestFormFieldName("Which vaccine(s) are you receiving?")).toBe(false);
+      expect(isTestFormFieldName("Insurance provider")).toBe(false);
+      expect(isTestFormFieldName("")).toBe(false);
+    });
+
+    // Security review (2026-09-08, REQUEST_CHANGES — blocking): the OLD
+    // bare .includes("test") heuristic also matched genuine SCREENING
+    // questions, whose free-text ANSWER could be real patient health
+    // information — this must be false now that the match is an
+    // allowlist, not a substring.
+    it("does not match a screening question that merely mentions 'test'", () => {
+      expect(isTestFormFieldName("Have you had a positive COVID test recently?")).toBe(false);
+      expect(isTestFormFieldName("Any test results we should know about?")).toBe(false);
+      expect(isTestFormFieldName("Which test would you like?")).toBe(false);
+    });
+  });
+
   // V-T-schedule-table (Will, 2026-09-04/05): covidBrand/covidAgeBucket/
   // fluAgeBucket are BUCKETED-only derived fields — see
   // CountableAppointment's doc comment. These tests go through the full
@@ -611,6 +778,7 @@ describe("fetchAppointmentsForRange", () => {
           "date",
           "fluAgeBucket",
           "hourOfDay",
+          "testNames",
           "vaccineNames",
         ].sort()
       );
@@ -721,25 +889,47 @@ describe("fetchAppointmentsForRange", () => {
   // and, more immediately, can't: a mocked Response's body can only be
   // read once, so a second `fetch` call reusing the same mockResolvedValue
   // Response would throw.
-  it("flags possiblyTruncated when a single day's response hits the 100-row max cap", async () => {
-    const fixture = Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+  it("flags possiblyTruncated when a single day's response hits the max cap", async () => {
+    const fixture = Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) => acuityAppointmentFixture({ id: i }));
     const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-17");
 
     expect(result.possiblyTruncated).toBe(true);
-    expect(result.appointments).toHaveLength(100);
+    expect(result.appointments).toHaveLength(ACUITY_APPOINTMENTS_MAX);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("does not flag possiblyTruncated when the response is under the cap", async () => {
-    const fixture = Array.from({ length: 99 }, (_, i) => acuityAppointmentFixture({ id: i }));
+    const fixture = Array.from({ length: ACUITY_APPOINTMENTS_MAX - 1 }, (_, i) => acuityAppointmentFixture({ id: i }));
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
 
     const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
 
     expect(result.possiblyTruncated).toBe(false);
+  });
+
+  // V-T23 (Will, verbatim): "A single day can absolutely have more than
+  // 100 appointments. You'll have to figure out a solution that works for
+  // that too." Proves the shipped fix (raising ACUITY_APPOINTMENTS_MAX,
+  // see that constant's doc comment for the live-probe evidence) actually
+  // resolves the reported case: a single day with MORE than the OLD
+  // 100-row cap now fetches complete and unflagged in exactly one
+  // request, because the real request now asks for up to
+  // ACUITY_APPOINTMENTS_MAX (1000) rows, not 100.
+  it("fetches a single day with more than 100 appointments complete and unflagged (V-T23)", async () => {
+    const fixture = Array.from({ length: 350 }, (_, i) => acuityAppointmentFixture({ id: i }));
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-17");
+
+    expect(result.possiblyTruncated).toBe(false);
+    expect(result.appointments).toHaveLength(350);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const requestedUrl = new URL(fetchSpy.mock.calls[0][0] as string | URL);
+    expect(requestedUrl.searchParams.get("max")).toBe(String(ACUITY_APPOINTMENTS_MAX));
   });
 
   it("throws AcuityApiError on a non-ok response without leaking the key", async () => {
@@ -803,7 +993,7 @@ describe("fetchAppointmentsForRange", () => {
           // Top-level probe: saturated — triggers a split. This batch is
           // discarded once the children resolve (see the doc comment on
           // why), so its content doesn't matter, only its length.
-          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+          return Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) => acuityAppointmentFixture({ id: i }));
         }
         if (minDate === "2026-08-01" && maxDate === "2026-08-07") {
           return Array.from({ length: 60 }, (_, i) => acuityAppointmentFixture({ id: i }));
@@ -825,12 +1015,12 @@ describe("fetchAppointmentsForRange", () => {
     it("floors recursion at a single day, flagging possiblyTruncated only for that day when it alone still saturates", async () => {
       const fetchSpy = fakeAcuityServer((minDate, maxDate) => {
         if (minDate === "2026-08-01" && maxDate === "2026-08-02") {
-          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+          return Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) => acuityAppointmentFixture({ id: i }));
         }
         if (minDate === "2026-08-01" && maxDate === "2026-08-01") {
           // The single saturated day — recursion floor, can't split
           // further, so this IS the residual "may be incomplete" case.
-          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+          return Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) => acuityAppointmentFixture({ id: i }));
         }
         if (minDate === "2026-08-02" && maxDate === "2026-08-02") {
           // The other day resolves cleanly, under the cap.
@@ -844,13 +1034,13 @@ describe("fetchAppointmentsForRange", () => {
 
       expect(fetchSpy).toHaveBeenCalledTimes(3); // parent probe + 2 single-day halves
       expect(result.possiblyTruncated).toBe(true); // the one saturated day taints the whole result
-      expect(result.appointments).toHaveLength(110); // 100 (saturated day, kept anyway) + 10 (complete day)
+      expect(result.appointments).toHaveLength(ACUITY_APPOINTMENTS_MAX + 10); // saturated day, kept anyway + 10 (complete day)
     });
 
     it("dedupes an appointment id that appears in both halves at a shared window boundary", async () => {
       const fetchSpy = fakeAcuityServer((minDate, maxDate) => {
         if (minDate === "2026-08-01" && maxDate === "2026-08-04") {
-          return Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
+          return Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) => acuityAppointmentFixture({ id: i }));
         }
         if (minDate === "2026-08-01" && maxDate === "2026-08-02") {
           return [
@@ -884,7 +1074,9 @@ describe("fetchAppointmentsForRange", () => {
       // windows, so an UNBOUNDED recursion here would issue far more
       // than REQUESTS_PER_RANGE_BUDGET requests — the budget, not the
       // date range, is what has to stop it.
-      const fetchSpy = fakeAcuityServer(() => Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i })));
+      const fetchSpy = fakeAcuityServer(() =>
+        Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) => acuityAppointmentFixture({ id: i }))
+      );
       vi.stubGlobal("fetch", fetchSpy);
 
       const start = "2026-08-01";
@@ -923,7 +1115,7 @@ describe("fetchAppointmentTypes", () => {
 
 describe("aggregateAppointmentCounts", () => {
   it("falls back to the appointment type's name, grouped by date + name, when vaccineNames is empty", () => {
-    const appointments = [
+    const appointments: CountableAppointment[] = [
       { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
       { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
       { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 222, vaccineNames: [], ...DEFAULT_BUCKETS },
@@ -951,11 +1143,150 @@ describe("aggregateAppointmentCounts", () => {
 
   it("falls back to a generic label when the type id has no matching name", () => {
     const result = aggregateAppointmentCounts(
-      [{ date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 999, vaccineNames: [], ...DEFAULT_BUCKETS }],
+      [{ date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 999, vaccineNames: [], ...DEFAULT_BUCKETS }] as CountableAppointment[],
       new Map()
     );
 
     expect(result).toEqual([{ date: "2026-08-17", vaccineName: "Type 999", count: 1 }]);
+  });
+
+  // V-T-poc-testing follow-up (manager, 2026-09-08): a point-of-care
+  // testing appointment must NEVER count as a vaccine via the type-name
+  // fallback above — closing the gap the original point-of-care-testing
+  // brief flagged (a test-type appointment's own name, e.g. "Test
+  // appointment (Flu, COVID, Strep)", contains "covid" as a substring, so
+  // the fallback used to misread it as a COVID vaccine appointment).
+  describe("point-of-care testing exclusion from the vaccine table", () => {
+    it("excludes an appointment with testNames set and no vaccineNames, even though its fallback type name contains 'covid'", () => {
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 90788212,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: ["COVID"],
+        },
+      ];
+      const names = new Map([[90788212, "Test appointment (Flu, COVID, Strep)"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([]);
+    });
+
+    it("excludes an appointment whose type name looks test-ish (starts with 'test appointment') even when testNames itself is empty (no parenthetical, no matching form field)", () => {
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 90788212,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      // Security review (2026-09-08): isTestAppointmentTypeName is
+      // ALLOWLIST-tightened, not a bare "test" substring match — a name
+      // like the OLD test fixture's "COVID Test Visit" no longer matches
+      // (see that function's own doc comment for why), so this uses a
+      // name that actually satisfies the tightened rule (starts with
+      // "test appointment") but has NO parenthetical for
+      // parseTestNamesFromAppointmentTypeName to parse — the exact
+      // "neither signal fired a testNames value, but the type name alone
+      // still says testing" case this test targets.
+      const names = new Map([[90788212, "Test Appointment - Walk-in"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([]);
+    });
+
+    it("does NOT exclude a vaccine appointment whose type name merely mentions 'test' in passing (tightened isTestAppointmentTypeName, security review 2026-09-08)", () => {
+      // The OLD bare-substring heuristic would have wrongly excluded this
+      // — a real vaccine appointment must never be silently dropped from
+      // its own table just because its name contains the word "test".
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 333,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      const names = new Map([[333, "COVID Test Visit"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "COVID · Any · Unknown", count: 1 }]);
+    });
+
+    it("does NOT treat a vaccine type named with a parenthetical, e.g. 'Latest vaccines (fall)', as a test type", () => {
+      // Adversarial case (security review, 2026-09-08): a parenthetical
+      // alone must not be confused with a testing type — only the
+      // "starts with 'test appointment'"/"point of care"/"poc" patterns
+      // do.
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 444,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      const names = new Map([[444, "Latest vaccines (fall)"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "Latest vaccines (fall)", count: 1 }]);
+    });
+
+    it("still falls back to the type name normally for a genuine vaccine-type appointment (regression guard)", () => {
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 111,
+          vaccineNames: [],
+          ...DEFAULT_BUCKETS,
+          testNames: [],
+        },
+      ];
+      const names = new Map([[111, "RSV Vaccine"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "RSV Vaccine", count: 1 }]);
+    });
+
+    it("counts a HYBRID appointment (test type, but with an explicit vaccine form answer) under its vaccineNames normally", () => {
+      // A point-of-care testing appointment where the patient ALSO got a
+      // vaccine that same visit — the explicit vaccineNames answer always
+      // wins, test-type or not (the exclusion rule only applies in the
+      // vaccineNames-EMPTY branch).
+      const appointments: CountableAppointment[] = [
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 90788212,
+          vaccineNames: ["Flu"],
+          testNames: ["COVID"],
+          covidBrand: "any",
+          covidAgeBucket: "unknown",
+          fluAgeBucket: "3-64",
+          createdDate: "2026-08-10",
+        },
+      ];
+      const names = new Map([[90788212, "Test appointment (Flu, COVID, Strep)"]]);
+
+      const result = aggregateAppointmentCounts(appointments, names);
+
+      expect(result).toEqual([{ date: "2026-08-17", vaccineName: "Flu · 3-64", count: 1 }]);
+    });
   });
 
   it("groups by each of an appointment's vaccineNames, ignoring appointmentTypeId entirely, when present", () => {
@@ -965,12 +1296,13 @@ describe("aggregateAppointmentCounts", () => {
     // rewritten to its brand/age composite using THIS appointment's own
     // covidBrand/covidAgeBucket (V-T-schedule-table, Will 2026-09-04);
     // the Flu entry rides its own fluAgeBucket the same way (ROUND 2).
-    const appointments = [
+    const appointments: CountableAppointment[] = [
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: ["Flu", "COVID-Pfizer"],
+        testNames: [],
         covidBrand: "pfizer" as const,
         covidAgeBucket: "12-64" as const,
         fluAgeBucket: "3-64" as const,
@@ -981,6 +1313,7 @@ describe("aggregateAppointmentCounts", () => {
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: ["Flu"],
+        testNames: [],
         covidBrand: "any" as const,
         covidAgeBucket: "unknown" as const,
         fluAgeBucket: "65+" as const,
@@ -999,15 +1332,16 @@ describe("aggregateAppointmentCounts", () => {
 
   it("never emits PHI keys even if a caller (incorrectly) passed extra fields through", () => {
     // aggregateAppointmentCounts only ever destructures {date,
-    // appointmentTypeId, vaccineNames, covidBrand, covidAgeBucket,
-    // fluAgeBucket} off each input — extra fields on the input object
-    // must not leak into output.
+    // appointmentTypeId, vaccineNames, testNames, covidBrand,
+    // covidAgeBucket, fluAgeBucket} off each input — extra fields on the
+    // input object must not leak into output.
     const appointments = [
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: [],
+        testNames: [],
         covidBrand: "any",
         covidAgeBucket: "unknown",
         fluAgeBucket: "unknown",
@@ -1020,6 +1354,7 @@ describe("aggregateAppointmentCounts", () => {
       appointmentTypeId: number;
       hourOfDay: number;
       vaccineNames: string[];
+      testNames: string[];
       covidBrand: "any";
       covidAgeBucket: "unknown";
       fluAgeBucket: "unknown";
@@ -1032,12 +1367,13 @@ describe("aggregateAppointmentCounts", () => {
   });
 
   it("splits COVID appointments into separate composite columns per (brand, age bucket), including brand match case-insensitively", () => {
-    const appointments = [
+    const appointments: CountableAppointment[] = [
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: ["covid"],
+        testNames: [],
         covidBrand: "pfizer" as const,
         covidAgeBucket: "65+" as const,
         fluAgeBucket: "unknown" as const,
@@ -1048,6 +1384,7 @@ describe("aggregateAppointmentCounts", () => {
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: ["COVID"],
+        testNames: [],
         covidBrand: "moderna" as const,
         covidAgeBucket: "3-11" as const,
         fluAgeBucket: "unknown" as const,
@@ -1058,6 +1395,7 @@ describe("aggregateAppointmentCounts", () => {
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: ["COVID"],
+        testNames: [],
         covidBrand: "moderna" as const,
         covidAgeBucket: "3-11" as const,
         fluAgeBucket: "unknown" as const,
@@ -1068,6 +1406,7 @@ describe("aggregateAppointmentCounts", () => {
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: ["COVID"],
+        testNames: [],
         covidBrand: "any" as const,
         covidAgeBucket: "unknown" as const,
         fluAgeBucket: "unknown" as const,
@@ -1090,12 +1429,13 @@ describe("aggregateAppointmentCounts", () => {
     // the 3-11/12+ split; still applies under the revised 12-64/65+
     // split — Pfizer only has fixed 12-64/65+ columns, so age bucket
     // "3-11" on a Pfizer appointment is exactly this case).
-    const appointments = [
+    const appointments: CountableAppointment[] = [
       {
         date: "2026-08-17",
         appointmentTypeId: 111,
         hourOfDay: 10,
         vaccineNames: ["COVID-Pfizer"],
+        testNames: [],
         covidBrand: "pfizer" as const,
         covidAgeBucket: "3-11" as const,
         fluAgeBucket: "unknown" as const,
@@ -1113,12 +1453,13 @@ describe("aggregateAppointmentCounts", () => {
   // VaccineCount cache/API shape as "Flu · {Age}".
   describe("Flu age composite", () => {
     it("splits Flu appointments into separate composite columns per age bucket", () => {
-      const appointments = [
+      const appointments: CountableAppointment[] = [
         {
           date: "2026-08-17",
           appointmentTypeId: 111,
           hourOfDay: 10,
           vaccineNames: ["Flu"],
+          testNames: [],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "3-64" as const,
@@ -1129,6 +1470,7 @@ describe("aggregateAppointmentCounts", () => {
           appointmentTypeId: 111,
           hourOfDay: 10,
           vaccineNames: ["FluMist"],
+          testNames: [],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "65+" as const,
@@ -1139,6 +1481,7 @@ describe("aggregateAppointmentCounts", () => {
           appointmentTypeId: 111,
           hourOfDay: 10,
           vaccineNames: ["Influenza Quadrivalent"],
+          testNames: [],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "unknown" as const,
@@ -1160,12 +1503,13 @@ describe("aggregateAppointmentCounts", () => {
       // vaccine the appointment is actually for — isFluVaccineName gates
       // whether it's ever consulted, same as isCovidVaccineName for
       // covidBrand/covidAgeBucket.
-      const appointments = [
+      const appointments: CountableAppointment[] = [
         {
           date: "2026-08-17",
           appointmentTypeId: 111,
           hourOfDay: 10,
           vaccineNames: ["RSV"],
+          testNames: [],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "65+" as const,
@@ -1189,6 +1533,7 @@ describe("aggregateHourlyCounts", () => {
       hourOfDay: 10,
       appointmentTypeId: 111,
       vaccineNames: [],
+      testNames: [],
       covidBrand: "any",
       covidAgeBucket: "unknown",
       fluAgeBucket: "unknown",
@@ -1282,5 +1627,66 @@ describe("aggregateHourlyCounts", () => {
     const result = aggregateHourlyCounts([appt({ hourOfDay: -1, vaccineNames: ["Flu"] })]);
 
     expect(result).toEqual([]);
+  });
+});
+
+// V-T-poc-testing (Will, 2026-09-08): point-of-care testing table backing
+// aggregation — parallel in shape to aggregateAppointmentCounts, but see
+// its own doc comment in lib/acuity-client.ts for the ONE deliberate
+// difference: no "fall back to appointment type name" step, since every
+// non-test appointment also has an empty testNames and must NOT show up
+// here.
+describe("aggregateTestCounts", () => {
+  function testAppt(overrides: Partial<CountableAppointment> = {}): CountableAppointment {
+    return {
+      date: "2026-08-17",
+      hourOfDay: 10,
+      appointmentTypeId: 90788212,
+      vaccineNames: [],
+      testNames: [],
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "unknown",
+      createdDate: "2026-08-10",
+      ...overrides,
+    };
+  }
+
+  it("groups by (date, testName) and counts", () => {
+    const result = aggregateTestCounts([
+      testAppt({ testNames: ["COVID"] }),
+      testAppt({ testNames: ["COVID"] }),
+      testAppt({ testNames: ["Strep Throat"] }),
+      testAppt({ date: "2026-08-18", testNames: ["COVID"] }),
+    ]);
+
+    expect(result).toEqual([
+      { date: "2026-08-17", testName: "COVID", count: 2 },
+      { date: "2026-08-17", testName: "Strep Throat", count: 1 },
+      { date: "2026-08-18", testName: "COVID", count: 1 },
+    ]);
+  });
+
+  it("counts a multi-test appointment once toward EACH test name, same rule as aggregateAppointmentCounts", () => {
+    const result = aggregateTestCounts([testAppt({ testNames: ["Flu", "COVID"] })]);
+
+    expect(result).toEqual([
+      { date: "2026-08-17", testName: "COVID", count: 1 },
+      { date: "2026-08-17", testName: "Flu", count: 1 },
+    ]);
+  });
+
+  it("excludes an appointment with an empty testNames — no fallback to appointment type name", () => {
+    // A real vaccine appointment (empty testNames) must NEVER show up in
+    // the point-of-care test table, even though its appointmentTypeId
+    // could coincidentally collide with a test type's id in some other
+    // account — this function doesn't even look at appointmentTypeId.
+    const result = aggregateTestCounts([testAppt({ testNames: [] }), testAppt({ testNames: ["COVID"] })]);
+
+    expect(result).toEqual([{ date: "2026-08-17", testName: "COVID", count: 1 }]);
+  });
+
+  it("returns [] for an empty input", () => {
+    expect(aggregateTestCounts([])).toEqual([]);
   });
 });

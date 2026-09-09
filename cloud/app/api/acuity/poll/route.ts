@@ -6,6 +6,7 @@ import {
   AcuityApiError,
   aggregateAppointmentCounts,
   aggregateHourlyCounts,
+  aggregateTestCounts,
   fetchAppointmentsForRange,
   fetchAppointmentTypes,
 } from "@/lib/acuity-client";
@@ -13,13 +14,16 @@ import {
   getCachedActivityCounts,
   getCachedCounts,
   getCachedRows,
+  getCachedTestCounts,
   setCachedActivityCounts,
   setCachedCounts,
   setCachedRows,
+  setCachedTestCounts,
   type ExplorerRow,
 } from "@/lib/acuity-poll-cache";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
 import { buildAppointmentTable, type AppointmentTable } from "@/lib/appointment-table";
+import { buildPocTestTable, type PocTestTable } from "@/lib/poc-test-table";
 import { fetchAfterTodaySummary, type AfterTodaySummary } from "@/lib/acuity-future-summary";
 import { bookingActivityCreatedRange, fetchBookingActivityCounts } from "@/lib/acuity-booking-activity";
 
@@ -96,7 +100,28 @@ import { bookingActivityCreatedRange, fetchBookingActivityCounts } from "@/lib/a
  *     cacheHit: boolean,
  *     asOf: string,                 // ISO 8601
  *     hourlyCounts: HourlyCount[],  // ADDITIVE (V-T-hourly-table, 2026-09-05) — see below
+ *     testCounts: TestCount[],      // ADDITIVE (V-T-poc-testing, 2026-09-08) — see below
+ *     testTable: PocTestTable,      // ADDITIVE (V-T-poc-testing, 2026-09-08) — see below
  *   }
+ *
+ * `testCounts`/`testTable` (V-T-poc-testing, Will 2026-09-08: "Add a point
+ * of care testing appointment table too that shows daily totals for each
+ * type of test that is scheduled") are ADDITIVE fields, same "existing
+ * callers that don't know about them are unaffected" contract as
+ * `hourlyCounts` above. `testCounts` is a flat {date, testName, count}[]
+ * (lib/acuity-client.ts's TestCount, built by aggregateTestCounts from the
+ * SAME already-fetched, already-PHI-stripped `appointments` this route
+ * fetches for `counts`/`hourlyCounts` — no extra Acuity round-trip);
+ * `testTable` is the days x test-type pivot of it (lib/poc-test-table.ts's
+ * buildPocTestTable — deliberately simpler than the vaccine `table`: no
+ * fixed column set, columns are discovered dynamically from whatever test
+ * names actually appear). Cached in a SEPARATE acuity_poll_cache row from
+ * the main `counts` entry, under its own `tests_` key prefix — see
+ * lib/acuity-poll-cache.ts's testCountsRangeKey doc comment for why (the
+ * `counts` column on the main range_key row is a specifically-shaped
+ * VaccineCount[] two OTHER modules already read directly; mixing test
+ * data into it would corrupt them) and for the narrow self-heal case where
+ * a cache hit on the main row doesn't (yet) have a paired tests_ row.
  *
  * `hourlyCounts` (V-T-hourly-table, Will 2026-09-05: "hourly breakdown of
  * how many vaccines are scheduled by the hour") is a purely ADDITIVE field
@@ -531,6 +556,9 @@ export async function GET(request: Request) {
       cacheHit: false,
       asOf: null,
       hourlyCounts: [],
+      // V-T-poc-testing (ADDITIVE, same "empty array, no table field"
+      // shape `counts`/`table` already use when unconfigured).
+      testCounts: [],
     });
   }
 
@@ -538,6 +566,16 @@ export async function GET(request: Request) {
 
   const cached = await getCachedCounts(start, end, effectiveCacheSeconds);
   if (cached) {
+    // V-T-poc-testing: `testCounts` is cached in a SEPARATE row under its
+    // own key prefix (see lib/acuity-poll-cache.ts's testCountsRangeKey
+    // doc comment for why it can't share the `counts` column on THIS row)
+    // but is always WRITTEN alongside it on a fresh fetch below — a miss
+    // here (only possible in the narrow self-heal window right after this
+    // feature's first deploy, or if this row's TTL outlives the paired
+    // tests_ row for some other reason) self-heals to an empty test table
+    // rather than forcing a live Acuity fetch just for this one field.
+    const cachedTestCounts = await getCachedTestCounts(start, end, effectiveCacheSeconds);
+    const testCounts = cachedTestCounts?.testCounts ?? [];
     return NextResponse.json({
       configured: true,
       range: { start, end },
@@ -547,6 +585,8 @@ export async function GET(request: Request) {
       cacheHit: true,
       asOf: cached.computedAt,
       hourlyCounts: cached.hourlyCounts,
+      testCounts,
+      testTable: buildPocTestTable(testCounts, days),
     });
   }
 
@@ -560,9 +600,17 @@ export async function GET(request: Request) {
     const counts = aggregateAppointmentCounts(appointments, nameById);
     const table: AppointmentTable = buildAppointmentTable(counts, days);
     const hourlyCounts = aggregateHourlyCounts(appointments);
+    // V-T-poc-testing: aggregated from the SAME already-fetched
+    // `appointments` — no second Acuity round-trip, same pattern
+    // hourlyCounts already uses.
+    const testCounts = aggregateTestCounts(appointments);
+    const testTable: PocTestTable = buildPocTestTable(testCounts, days);
     const asOf = new Date().toISOString();
 
-    await setCachedCounts(start, end, counts, possiblyTruncated, hourlyCounts);
+    await Promise.all([
+      setCachedCounts(start, end, counts, possiblyTruncated, hourlyCounts),
+      setCachedTestCounts(start, end, testCounts),
+    ]);
 
     return NextResponse.json({
       configured: true,
@@ -573,6 +621,8 @@ export async function GET(request: Request) {
       cacheHit: false,
       asOf,
       hourlyCounts,
+      testCounts,
+      testTable,
     });
   } catch (err) {
     const message = err instanceof AcuityApiError ? err.message : "Failed to poll Acuity for appointments.";

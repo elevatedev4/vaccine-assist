@@ -20,6 +20,7 @@ import {
   fetchAfterTodaySummary,
 } from "@/lib/acuity-future-summary";
 import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
+import { ACUITY_APPOINTMENTS_MAX } from "@/lib/acuity-client";
 
 function acuityAppointmentFixture(
   datetime: string,
@@ -137,7 +138,7 @@ describe("fetchAfterTodaySummary", () => {
     expect(summary.total).toBe(5 * AFTER_TODAY_WINDOW_COUNT);
   });
 
-  it("marks a window as truncated (and names its range) when it hits the 100-appointment cap", async () => {
+  it("marks a window as truncated (and names its range) when it hits the max-appointment cap", async () => {
     const fetchMock = vi.fn(async (url: string | URL) => {
       const urlStr = url.toString();
       if (urlStr.includes("appointment-types")) {
@@ -145,10 +146,10 @@ describe("fetchAfterTodaySummary", () => {
       }
       const minDate = new URL(urlStr).searchParams.get("minDate");
       if (minDate === "2026-09-06") {
-        const hundred = Array.from({ length: 100 }, (_, i) =>
+        const capped = Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) =>
           acuityAppointmentFixture("2026-09-06T10:00:00-0500", "RSV Vaccine", { id: i })
         );
-        return new Response(JSON.stringify(hundred), { status: 200 });
+        return new Response(JSON.stringify(capped), { status: 200 });
       }
       return new Response(JSON.stringify([]), { status: 200 });
     });
@@ -157,7 +158,7 @@ describe("fetchAfterTodaySummary", () => {
     const summary = await fetchAfterTodaySummary("user-1", "key-1", "2026-09-05", 300);
 
     expect(summary.truncatedWindows).toEqual(["2026-09-06..2026-09-12"]);
-    expect(summary.byColumnId["rsv"]).toBe(100);
+    expect(summary.byColumnId["rsv"]).toBe(ACUITY_APPOINTMENTS_MAX);
   });
 
   it("fetches windows with limited concurrency — more than 1 in flight at once, but never more than AFTER_TODAY_FETCH_CONCURRENCY (reliability fix)", async () => {
