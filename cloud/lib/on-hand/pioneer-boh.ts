@@ -2,7 +2,7 @@ import { read, utils } from "xlsx";
 import { normalizeNdc } from "@/lib/ndc";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { parseOnHandContent } from "@/lib/on-hand-parser";
-import { deriveProductViewFields } from "@/lib/product-view";
+import { lookupProduct } from "@/lib/vaccine-product-catalog";
 
 /**
  * Pioneer "current BOH" (beyond-on-hand) stock report parser
@@ -192,13 +192,25 @@ export function looksLikePioneerHeader(line: string): boolean {
   return lower.includes("item name") && lower.includes("ndc");
 }
 
-/** The shared product-view's effective NDC for a catalog vaccine — its
- * own DB ndc when present, else the researched static-catalog
- * packageNdc (lib/product-view.ts's deriveProductViewFields, same
- * fields the Ordering/Lots pages show). Used by matchPioneerBohRows'
- * fallback NDC match below. */
-function effectiveNdcForCatalogVaccine(vaccine: CatalogVaccine): string | null {
-  return deriveProductViewFields(vaccine.name, normalizeNdc(vaccine.ndc)).ndc;
+/**
+ * The researched static-catalog packageNdc for a catalog vaccine
+ * (lib/vaccine-product-catalog.ts's lookupProduct), looked up by name
+ * (and by the vaccine's own DB ndc too, so an EXACT `match.ndc` catalog
+ * row — like Comirnaty's, keyed on the OLD 2025-26 NDC — still resolves)
+ * — REGARDLESS of whether the DB row's own `ndc` column is null or
+ * already set. This is deliberately NOT lib/product-view.ts's `ndc`
+ * field: that field only falls back to the catalog when the DB ndc is
+ * null (it's a DISPLAY value — Ordering/Lots show one canonical NDC per
+ * product, preferring DB truth when present), so it would never surface
+ * the catalog's packageNdc for a row like Comirnaty's, whose DB ndc is
+ * SET but to last season's (now-stale) NDC. A real Pioneer line's NDC
+ * cell can equal either the DB's on-file ndc or the researched
+ * packageNdc, so matchPioneerBohRows' fallback below checks both,
+ * independently of ndc-nullness.
+ */
+function catalogPackageNdcForVaccine(vaccine: CatalogVaccine): string | null {
+  const match = lookupProduct({ name: vaccine.name, ndc: normalizeNdc(vaccine.ndc) });
+  return match?.packageNdc ? normalizeNdc(match.packageNdc) : null;
 }
 
 /**
@@ -255,14 +267,22 @@ function matchByPioneerNameAlias(rawName: string, catalog: CatalogVaccine[]): Ca
 /**
  * Matches parsed Pioneer rows against the vaccine catalog, in order:
  *   1. Exact DB-ndc match (digits-only comparison — lib/ndc.ts).
- *   2. The shared PRODUCT VIEW's ndc (lib/product-view.ts) — a row whose
- *      DB vaccine.ndc is stale/missing still lands on the right product
- *      when its real package NDC matches the one this app already
- *      researched (e.g. Comirnaty 2026-27's "00069263110", Flucelvax
- *      PFS's "70461065603" — see this file's header comment).
+ *   2. The researched static catalog's packageNdc for that same catalog
+ *      vaccine (catalogPackageNdcForVaccine above) — checked EITHER when
+ *      the DB ndc is null (Flucelvax PFS: no ndc on file at all) OR when
+ *      it's set but to a DIFFERENT value than the line's NDC (Comirnaty:
+ *      DB ndc is last season's "00069252810", but a real Pioneer line
+ *      for the 2026-27 formula carries "00069263110", the researched
+ *      packageNdc) — a row's NDC cell can land on either value depending
+ *      on which the pharmacy's own catalog vs. Pioneer's export happens
+ *      to carry, so both are checked regardless of ndc-nullness (see
+ *      catalogPackageNdcForVaccine's own doc comment for why this is
+ *      NOT lib/product-view.ts's display-only `ndc` field).
  *   3. The Pioneer-specific name aliases above (matchByPioneerNameAlias)
  *      — for a row whose NDC cell is blank/garbled but whose item name
- *      still identifies the product unambiguously.
+ *      still identifies the product unambiguously (also how Comirnaty
+ *      resolves when a real line has NO ndc cell at all, not just a
+ *      stale one).
  *   4. The existing free-text name matcher (lib/vaccine-matching.ts's
  *      matchVaccineName), same as before this change.
  * `matched` requires both a catalog match AND a computable dose count —
@@ -279,8 +299,8 @@ export function matchPioneerBohRows(rows: PioneerBohRow[], catalog: CatalogVacci
       const byNdc = catalog.find((vaccine) => normalizeNdc(vaccine.ndc) === row.ndc);
       if (byNdc) vaccineId = byNdc.id;
       if (!vaccineId) {
-        const byProductViewNdc = catalog.find((vaccine) => effectiveNdcForCatalogVaccine(vaccine) === row.ndc);
-        if (byProductViewNdc) vaccineId = byProductViewNdc.id;
+        const byCatalogPackageNdc = catalog.find((vaccine) => catalogPackageNdcForVaccine(vaccine) === row.ndc);
+        if (byCatalogPackageNdc) vaccineId = byCatalogPackageNdc.id;
       }
     }
     if (!vaccineId) {

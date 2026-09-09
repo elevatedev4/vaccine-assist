@@ -716,13 +716,13 @@ describe("GET /api/ordering/recommendation", () => {
 
   // --- V-onhand-batch-sum additions (Will 2026-09-09 4:31pm) ----------
 
-  describe("on-hand: sums same-batch rows, replaces (not adds to) an older batch", () => {
-    it("sums multiple Pioneer lines for one product sharing the SAME received_at", async () => {
+  describe("on-hand: sums a TIME-WINDOWED batch (120s, same source), replaces an older/different-source batch", () => {
+    it("sums two lines for one product whose received_at are only milliseconds apart (real Pioneer insert timing)", async () => {
       const catalog = [{ id: "v-abrysvo", name: "Abrysvo", short_code: "abrysvo", ndc: null, active: true }];
       const onHandRows = [
-        { vaccine_id: "v-abrysvo", quantity: 0, received_at: "2026-09-09T13:00:00.000Z" },
-        { vaccine_id: "v-abrysvo", quantity: 0, received_at: "2026-09-09T13:00:00.000Z" },
-        { vaccine_id: "v-abrysvo", quantity: 9, received_at: "2026-09-09T13:00:00.000Z" },
+        { vaccine_id: "v-abrysvo", quantity: 0, received_at: "2026-09-09T21:31:05.413Z", source: "email" },
+        { vaccine_id: "v-abrysvo", quantity: 0, received_at: "2026-09-09T21:31:05.430Z", source: "email" },
+        { vaccine_id: "v-abrysvo", quantity: 9, received_at: "2026-09-09T21:31:05.457Z", source: "email" },
       ];
       vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
 
@@ -733,15 +733,15 @@ describe("GET /api/ordering/recommendation", () => {
       expect(row.onHand).toBe(9);
     });
 
-    it("a later batch REPLACES an earlier one rather than adding to it", async () => {
+    it("a batch 4.5 hours later REPLACES an older same-day batch — only the newer batch is summed", async () => {
       const catalog = [{ id: "v-mnexspike", name: "mNEXSPIKE", short_code: "mnexspike", ndc: null, active: true }];
       const onHandRows = [
-        // Latest batch (rows returned received_at DESC by the query, same
-        // as fakeSupabase's on_hand_count stand-in below).
-        { vaccine_id: "v-mnexspike", quantity: 0, received_at: "2026-09-09T13:00:00.000Z" },
-        { vaccine_id: "v-mnexspike", quantity: 1114, received_at: "2026-09-09T13:00:00.000Z" },
-        // Older batch — must be ignored entirely, not summed in.
-        { vaccine_id: "v-mnexspike", quantity: 500, received_at: "2026-09-01T13:00:00.000Z" },
+        // 16:31 batch (newest first, matching real received_at DESC
+        // query order) — the one that should win.
+        { vaccine_id: "v-mnexspike", quantity: 1114, received_at: "2026-09-09T16:31:05.457Z", source: "email" },
+        { vaccine_id: "v-mnexspike", quantity: 0, received_at: "2026-09-09T16:31:05.413Z", source: "email" },
+        // 12:00 batch — outside the 120s window around 16:31, must be excluded.
+        { vaccine_id: "v-mnexspike", quantity: 500, received_at: "2026-09-09T12:00:00.000Z", source: "email" },
       ];
       vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
 
@@ -750,6 +750,47 @@ describe("GET /api/ordering/recommendation", () => {
 
       const row = body.rows.find((r: { key: string }) => r.key === "vaccine:v-mnexspike");
       expect(row.onHand).toBe(1114);
+    });
+
+    it("an upload batch at 16:20 and an email batch at 16:31 — the email (newer) batch wins, upload isn't summed in", async () => {
+      const catalog = [{ id: "v-spikevax", name: "Spikevax", short_code: "spikevax", ndc: null, active: true }];
+      const onHandRows = [
+        { vaccine_id: "v-spikevax", quantity: 0, received_at: "2026-09-09T16:31:05.457Z", source: "email" },
+        { vaccine_id: "v-spikevax", quantity: 0, received_at: "2026-09-09T16:31:05.430Z", source: "email" },
+        { vaccine_id: "v-spikevax", quantity: 11, received_at: "2026-09-09T16:31:05.413Z", source: "email" },
+        { vaccine_id: "v-spikevax", quantity: 200, received_at: "2026-09-09T16:20:00.000Z", source: "upload" },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "vaccine:v-spikevax");
+      expect(row.onHand).toBe(11);
+    });
+
+    it("a product present only in an OLDER global batch still shows its own latest-batch value (not 0/dropped)", async () => {
+      const catalog = [
+        { id: "v-mnexspike", name: "mNEXSPIKE", short_code: "mnexspike", ndc: null, active: true },
+        { id: "v-prevnar", name: "Prevnar 20", short_code: "prevnar20", ndc: null, active: true },
+      ];
+      const onHandRows = [
+        // The "global latest" batch (16:31) only reports mNEXSPIKE.
+        { vaccine_id: "v-mnexspike", quantity: 1114, received_at: "2026-09-09T16:31:05.413Z", source: "email" },
+        // Prevnar's own latest batch was earlier (12:00) — still its own
+        // most-recent value, computed independently per product key.
+        { vaccine_id: "v-prevnar", quantity: 8, received_at: "2026-09-09T12:00:00.050Z", source: "email" },
+        { vaccine_id: "v-prevnar", quantity: 0, received_at: "2026-09-09T12:00:00.000Z", source: "email" },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const prevnarRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-prevnar");
+      expect(prevnarRow.onHand).toBe(8);
+      const mnexspikeRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-mnexspike");
+      expect(mnexspikeRow.onHand).toBe(1114);
     });
   });
 

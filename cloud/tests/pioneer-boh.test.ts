@@ -197,12 +197,11 @@ describe("matchPioneerBohRows", () => {
   // from a real 47-line Pioneer BOH PDF: 47 lines, 29 matched, 18
   // unmatched) — two concrete misses from that real file. ---
 
-  describe("PRODUCT-VIEW ndc fallback (real misses from Will's 4:31pm Pioneer PDF)", () => {
-    // On-file DB row: name "Comirnaty 2025-26 12+", ndc null here (stale/
-    // missing on this fixture's catalog — the real DB row's own ndc is
-    // the OLD 2025-26 NDC, "00069252810", which the incoming row's real
-    // "00069263110" package NDC does NOT match either way; the point is
-    // the DB ndc alone can't resolve this row).
+  describe("catalog packageNdc fallback (real misses from Will's 4:31pm Pioneer PDF)", () => {
+    // On-file DB row: name "Comirnaty 2025-26 12+", ndc null here — a
+    // "missing" case (see the REAL-shape test below for the "set but
+    // stale" case, which is what the real Comirnaty row actually looks
+    // like: ndc SET to last season's "00069252810").
     const comirnatyCatalog: CatalogVaccine[] = [
       { id: "v-comirnaty", name: "Comirnaty 2025-26 12+", short_code: "comirnaty12", ndc: null },
     ];
@@ -218,6 +217,39 @@ describe("matchPioneerBohRows", () => {
         ["Mpb Comirnaty 0.1mg Refr Pfs10", "00069263110", 30, 0.3],
       ]);
       const matched = matchPioneerBohRows(rows, comirnatyCatalog);
+      expect(matched[0]).toMatchObject({ vaccineId: "v-comirnaty", matched: true });
+    });
+
+    it("REAL shape (review follow-up): vaccine.ndc SET to the OLD 00069-2528-10 still matches a line carrying the NEW 00069263110 packageNdc", () => {
+      // The real Comirnaty DB row isn't ndc:null — it has last season's
+      // NDC already on file. Item name still carries "0.1mg" here (the
+      // real Pioneer line shape), so this exercises the full real-world
+      // path end to end (NDC fallback fires first; the alias would also
+      // match if it didn't — see the isolated test below for NDC-only).
+      const staleNdcCatalog: CatalogVaccine[] = [
+        { id: "v-comirnaty", name: "Comirnaty 2025-26 12+", short_code: "comirnaty12", ndc: "00069-2528-10" },
+      ];
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Mpb Comirnaty 0.1mg Refr Pfs10", "00069263110", 30, 0.3],
+      ]);
+      const matched = matchPioneerBohRows(rows, staleNdcCatalog);
+      expect(matched[0]).toMatchObject({ vaccineId: "v-comirnaty", matched: true });
+    });
+
+    it("the NDC fallback alone (no alias tokens in the name) still resolves a SET-but-different DB ndc", () => {
+      // Item name deliberately has NO "0.1mg" token, so
+      // matchByPioneerNameAlias can never fire here — only the NDC
+      // fallback (catalogPackageNdcForVaccine, checked regardless of
+      // whether vaccine.ndc is null or merely stale) can resolve this.
+      const staleNdcCatalog: CatalogVaccine[] = [
+        { id: "v-comirnaty", name: "Comirnaty 2025-26 12+", short_code: "comirnaty12", ndc: "00069-2528-10" },
+      ];
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Comirnaty 2026-27 Vial", "00069263110", 30, 0.3],
+      ]);
+      const matched = matchPioneerBohRows(rows, staleNdcCatalog);
       expect(matched[0]).toMatchObject({ vaccineId: "v-comirnaty", matched: true });
     });
 

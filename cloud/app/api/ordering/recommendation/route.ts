@@ -165,18 +165,23 @@ type OnHandEntry = { quantity: number | null; receivedAt: string };
  * Fetches the latest matched on_hand_count rows, scoped to this
  * account's inbound address (plus legacy unattributed rows) when
  * `addressId` is given. Cascades through up to three query shapes so it
- * keeps working regardless of which of 0010 (inbound_email_address_id)
- * and 0011 (ndc) have been applied to this environment yet:
- *   1. select ...,ndc + scoped by address
- *   2. select ... (no ndc) + scoped by address       [0011 missing]
- *   3. select ... (no ndc), unscoped                 [0010 missing, or both]
+ * keeps working regardless of which of 0010 (inbound_email_address_id,
+ * source) and 0011 (ndc) have been applied to this environment yet:
+ *   1. select ..., ndc, source + scoped by address
+ *   2. select ... (no ndc, no source) + scoped by address  [0010 and/or 0011 missing]
+ *   3. select ... (no ndc, no source), unscoped            [0010 missing]
+ * `source` (added by 0010, same table/migration as
+ * inbound_email_address_id) is needed by the batch-sum logic below
+ * (V-onhand-batch-sum) to tell an email batch from an upload batch — a
+ * row with no `source` column available defaults to "email" downstream,
+ * matching that column's own DB default.
  */
 async function fetchOnHandRows(
   supabase: ReturnType<typeof getSupabaseServerClient>,
   addressId: string | null
 ): Promise<{ data: Array<Record<string, unknown>> | null; error: unknown }> {
   const baseColumns = "vaccine_id, quantity, received_at";
-  const columnsWithNdc = `${baseColumns}, ndc`;
+  const columnsWithNdcAndSource = `${baseColumns}, ndc, source`;
 
   async function runQuery(columns: string, scoped: boolean) {
     let query = supabase.from("on_hand_count").select(columns).eq("matched", true);
@@ -186,7 +191,7 @@ async function fetchOnHandRows(
     return query.order("received_at", { ascending: false });
   }
 
-  let { data, error } = await runQuery(columnsWithNdc, true);
+  let { data, error } = await runQuery(columnsWithNdcAndSource, true);
   if (error && isMissingColumnError(error)) {
     ({ data, error } = await runQuery(baseColumns, true));
   }
@@ -339,47 +344,89 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Failed to load on-hand counts." }, { status: 500 });
     }
 
-    // Rows are ordered received_at DESC across every vaccine, so the
-    // first row seen for a given vaccine_id/ndc is from that vaccine's/
-    // that NDC's LATEST BATCH — one query instead of one-per-vaccine.
+    // Rows are ordered received_at DESC across every vaccine — used only
+    // for onHandLastReceivedAt (the page-level "last received" message)
+    // below; the per-product batching itself (computeLatestBatchOnHand)
+    // groups ALL of a key's rows itself rather than relying on that
+    // order, since a batch is now a TIME WINDOW, not "the first row
+    // seen."
     //
     // V-onhand-batch-sum (Will, 2026-09-09 4:31pm, from a real 47-line
-    // Pioneer BOH PDF): several products arrive as MULTIPLE Pioneer
-    // lines in ONE report (Abrysvo 0/0/9, Fluad 0/189/0, mNEXSPIKE
-    // 0/1114, Spikevax 11/0/0/0, Prevnar 0/8, Shingrix 0/11) — every row
-    // from one parse shares the SAME `received_at` (a single multi-row
-    // INSERT's `now()` default is one value for the whole statement, not
-    // per-row), so on-hand for a product is the SUM of every row sharing
-    // both its key (vaccine_id or ndc) AND that latest received_at, not
-    // one arbitrary row. accumulateLatestBatch below sums same-batch
-    // rows for a key and DROPS any row whose received_at doesn't match
-    // the first (= latest, thanks to the DESC order) one already seen
-    // for that key — an older batch is REPLACED, never added to.
-    function accumulateLatestBatch(map: Map<string, OnHandEntry>, key: string, receivedAt: string, quantity: number | null) {
-      const existing = map.get(key);
-      if (!existing) {
-        map.set(key, { quantity, receivedAt });
-        return;
+    // Pioneer BOH PDF, review follow-up 2026-09-09 evening): several
+    // products arrive as MULTIPLE Pioneer lines in ONE report (Abrysvo
+    // 0/0/9, Fluad 0/189/0, mNEXSPIKE 0/1114, Spikevax 11/0/0/0, Prevnar
+    // 0/8, Shingrix 0/11) — on-hand for a product is the SUM of every row
+    // in that report, not one arbitrary row. The FIRST version of this
+    // fix batched rows by byte-identical `received_at`, which turned out
+    // to be wrong: real Pioneer-triggered inserts land at slightly
+    // different millisecond timestamps within the same send (observed
+    // 21:31:05.413 vs 21:31:05.457), not one shared `now()` value, so
+    // that version silently kept only the single latest-ms row again.
+    //
+    // A "batch" is now a TIME WINDOW, computed independently per product
+    // key (vaccine_id or ndc): among that key's own rows, take the
+    // newest `received_at`, then sum every row for that key within
+    // BATCH_WINDOW_MS of it AND sharing that newest row's `source`
+    // (email vs upload — see fetchOnHandRows) — a row older than the
+    // window, or from a different source, is excluded entirely (an older
+    // batch, or a same-day batch from the other ingestion path, never
+    // adds to the latest one). A product with no rows in whatever the
+    // GLOBAL latest batch happens to be still gets its own latest-batch
+    // total, computed the same way, independently.
+    const BATCH_WINDOW_MS = 120_000; // 120 seconds
+
+    type RawOnHandRow = { key: string; quantity: number | null; receivedAt: string; source: string };
+
+    function computeLatestBatchOnHand(rows: RawOnHandRow[]): Map<string, OnHandEntry> {
+      const byKey = new Map<string, RawOnHandRow[]>();
+      for (const row of rows) {
+        const list = byKey.get(row.key);
+        if (list) list.push(row);
+        else byKey.set(row.key, [row]);
       }
-      if (existing.receivedAt !== receivedAt) return; // older batch, superseded — skip
-      if (quantity === null) return; // nothing to add
-      existing.quantity = (existing.quantity ?? 0) + quantity;
+
+      const result = new Map<string, OnHandEntry>();
+      for (const [key, keyRows] of byKey) {
+        let newest = keyRows[0];
+        for (const row of keyRows) {
+          if (row.receivedAt > newest.receivedAt) newest = row;
+        }
+        const windowStartMs = new Date(newest.receivedAt).getTime() - BATCH_WINDOW_MS;
+
+        let quantity: number | null = null;
+        for (const row of keyRows) {
+          if (row.source !== newest.source) continue;
+          if (new Date(row.receivedAt).getTime() < windowStartMs) continue;
+          if (row.quantity === null) continue;
+          quantity = (quantity ?? 0) + row.quantity;
+        }
+        result.set(key, { quantity, receivedAt: newest.receivedAt });
+      }
+      return result;
     }
 
-    const latestOnHandByVaccineId = new Map<string, OnHandEntry>();
-    const latestOnHandByNdc = new Map<string, OnHandEntry>();
     let onHandLastReceivedAt: string | null = null;
+    const byVaccineIdRows: RawOnHandRow[] = [];
+    const byNdcRows: RawOnHandRow[] = [];
     for (const row of onHandRows ?? []) {
       const receivedAt = row.received_at as string;
       const quantity = (row.quantity as number | null) ?? null;
+      // A pre-0010 row (or a fetchOnHandRows fallback tier that couldn't
+      // select `source` at all) has no way to know its ingestion path —
+      // default to "email", the same default on_hand_count.source itself
+      // carries (0010_inbound_email_address.sql).
+      const source = (row.source as string | undefined) ?? "email";
       if (onHandLastReceivedAt === null) onHandLastReceivedAt = receivedAt;
 
       const vaccineId = row.vaccine_id as string | null;
-      if (vaccineId) accumulateLatestBatch(latestOnHandByVaccineId, vaccineId, receivedAt, quantity);
+      if (vaccineId) byVaccineIdRows.push({ key: vaccineId, quantity, receivedAt, source });
 
       const rowNdc = normalizeNdc((row.ndc as string | null | undefined) ?? null);
-      if (rowNdc) accumulateLatestBatch(latestOnHandByNdc, rowNdc, receivedAt, quantity);
+      if (rowNdc) byNdcRows.push({ key: rowNdc, quantity, receivedAt, source });
     }
+
+    const latestOnHandByVaccineId = computeLatestBatchOnHand(byVaccineIdRows);
+    const latestOnHandByNdc = computeLatestBatchOnHand(byNdcRows);
 
     // NDC collapse (Will msg 908): one row per product/NDC rather than
     // one per catalog vaccine — a 3-dose series like Gardasil (3 catalog
