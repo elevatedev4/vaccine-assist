@@ -415,19 +415,142 @@ export function isAgeFormFieldName(name: string): boolean {
 }
 
 /**
+ * PHI-adjacent allowlist (V-T28, Will 2026-09-09 verbatim: "you have 'Any
+ * brand is fine' on two vaccine data rows for the vaccine name, which
+ * cannot be accurate") — every keyword a genuine vaccine-name answer is
+ * expected to contain, case-insensitive substring match. ROOT CAUSE this
+ * guards against: isVaccineFormFieldName below matches ANY field name
+ * containing "vaccine" — which also matches a brand-preference question
+ * phrased like "COVID vaccine brand preference" (the field-skip in
+ * extractVaccineNamesFromForms below is the primary fix for that), but a
+ * belt-and-suspenders second layer is warranted here for the same reason
+ * isAllowedTestValue exists for testNames above: a free-text or
+ * differently-phrased brand/preference answer ("Any brand is fine", "No
+ * preference", "Either one") must never reach vaccineNames even if some
+ * future form phrasing slips past the field-name skip. Deliberately
+ * covers common BRAND names too (Shingrix, Gardasil, FluMist, etc.), not
+ * just vaccine FAMILY names — a real "which vaccine(s)" answer is exactly
+ * as likely to be a brand name as a family name (see the existing
+ * "COVID-Pfizer"/"COVID-Moderna" test fixtures below), and every brand
+ * name here already contains (or is adjacent to) its family keyword
+ * anyway (e.g. "flu" alone already matches "FluMist"/"Influenza" as
+ * substrings) — kept short and family-keyed rather than exhaustively
+ * brand-keyed for that reason. Ambiguous, un-prefixed brand words that
+ * are ALSO literal brand-preference answers (bare "Pfizer"/"Moderna"/
+ * "Any") are deliberately NOT on this list — a real vaccine-selection
+ * answer for COVID always pairs the family word too ("COVID-Pfizer"),
+ * never brand alone, so requiring the family keyword here is strictly a
+ * defense-in-depth win, not a functional loss.
+ */
+const VACCINE_NAME_ALLOWLIST_KEYWORDS = [
+  "covid",
+  "sars",
+  "comirnaty",
+  "spikevax",
+  "novavax",
+  "flu", // substring-covers "influenza"/"flumist" too
+  "shingles",
+  "shingrix",
+  "zoster",
+  "pneumonia",
+  "pneumococcal",
+  "pneumovax",
+  "prevnar",
+  "tdap",
+  "dtap",
+  "tetanus",
+  "diphtheria",
+  "pertussis",
+  "boostrix",
+  "adacel",
+  "tenivac",
+  "rsv",
+  "abrysvo",
+  "arexvy",
+  "hpv",
+  "gardasil",
+  "hepatitis",
+  "hep a",
+  "hep b",
+  "hepa",
+  "hepb",
+  "engerix",
+  "havrix",
+  "vaqta",
+  "twinrix",
+  "mmr",
+  "measles",
+  "mumps",
+  "rubella",
+  "meningitis",
+  "meningococcal",
+  "menactra",
+  "menveo",
+  "menomune",
+  "bexsero",
+  "typhoid",
+  "typhim",
+  "vivotif",
+  "varicella",
+  "chickenpox",
+  "varivax",
+  "polio",
+  "ipol",
+  "rabies",
+  "imovax",
+  "yellow fever",
+] as const;
+
+/** Whether `name` (one already-split, trimmed candidate vaccine name) is
+ * on VACCINE_NAME_ALLOWLIST_KEYWORDS — see that constant's doc comment
+ * for the full rationale. Case-insensitive substring match, same style
+ * as isCovidBrandFormFieldName/isVaccineFormFieldName above (not a
+ * stricter exact/whole-token match like the TEST_VALUE_TOKEN_ALLOWLIST
+ * pair below, since vaccine-name answers legitimately vary far more —
+ * composite brand+family strings, dose numbers, age qualifiers, etc. —
+ * than the test module's small, fixed set of test types). */
+function isKnownVaccineName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return VACCINE_NAME_ALLOWLIST_KEYWORDS.some((keyword) => lower.includes(keyword));
+}
+
+/**
  * PHI boundary: this function must only ever be called with
  * `entry.forms` — never the full raw appointment entry — so it has no
  * way to read name/email/phone/notes even by accident; those never
  * appear on `forms`.
  *
  * Finds the first form field whose name matches isVaccineFormFieldName
- * and splits its answer into individual vaccine names. Acuity represents
- * a multi-select/checkbox answer as a comma-, pipe-, or newline-
- * separated string in `value` — split on any of those so a single
- * appointment can count toward multiple vaccine columns (e.g. a patient
- * getting both Flu and COVID-Pfizer in one visit). Trims whitespace and
- * drops empty entries. Returns [] if no matching field is found or its
- * value is blank — callers fall back to the appointment type's name.
+ * (and does NOT ALSO look like the COVID brand-preference question — see
+ * below) and splits its answer into individual vaccine names. Acuity
+ * represents a multi-select/checkbox answer as a comma-, pipe-, or
+ * newline-separated string in `value` — split on any of those so a
+ * single appointment can count toward multiple vaccine columns (e.g. a
+ * patient getting both Flu and COVID-Pfizer in one visit). Trims
+ * whitespace and drops empty entries. Returns [] if no matching field is
+ * found or its value is blank — callers fall back to the appointment
+ * type's name.
+ *
+ * V-T28 fix (Will, 2026-09-09 verbatim: "you have 'Any brand is fine' on
+ * two vaccine data rows for the vaccine name, which cannot be
+ * accurate"): ROOT CAUSE was that isVaccineFormFieldName's own "contains
+ * 'vaccine'" heuristic also matches a COVID brand-PREFERENCE question
+ * phrased like "COVID vaccine brand preference" — when that field
+ * appeared (whether before or in place of an actual vaccine-selection
+ * field) its answer ("Any brand is fine", a single un-split token) was
+ * being returned as the appointment's one-and-only "vaccine name". Fixed
+ * two ways: (1) a field that ALSO matches isCovidBrandFormFieldName is
+ * skipped outright here — it's a brand-preference question, never a
+ * vaccine-selection one, and its answer instead feeds `covidBrand` via
+ * deriveCovidBrand/extractFormFieldAnswer (a completely separate read of
+ * the SAME field, which already existed and already buckets it
+ * correctly — see the "COVID brand" column); (2) every split candidate
+ * name is additionally checked against isKnownVaccineName (defense in
+ * depth for a phrasing this skip doesn't catch) — a candidate that
+ * doesn't match is dropped rather than returned, and if a field's answer
+ * has NO valid candidates left after that filter, the search continues
+ * to the NEXT form field instead of stopping (so a real vaccine-
+ * selection field appearing after a rejected one is still found).
  */
 function extractVaccineNamesFromForms(forms: unknown): string[] {
   if (!Array.isArray(forms)) return [];
@@ -442,12 +565,18 @@ function extractVaccineNamesFromForms(forms: unknown): string[] {
       const fieldName = (field as Record<string, unknown>).name;
       const fieldValue = (field as Record<string, unknown>).value;
       if (typeof fieldName !== "string" || !isVaccineFormFieldName(fieldName)) continue;
+      // A field that ALSO looks like the COVID brand-preference question
+      // is never a vaccine-selection field, even though its name happens
+      // to contain "vaccine" too (e.g. "COVID vaccine brand preference")
+      // — see this function's own doc comment (V-T28 root cause).
+      if (isCovidBrandFormFieldName(fieldName)) continue;
       if (typeof fieldValue !== "string") continue;
 
       const names = fieldValue
         .split(/[,|\n]/)
         .map((name) => name.trim())
-        .filter((name) => name.length > 0);
+        .filter((name) => name.length > 0)
+        .filter(isKnownVaccineName);
       if (names.length > 0) return names;
     }
   }

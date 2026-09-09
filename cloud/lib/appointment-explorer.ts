@@ -378,9 +378,14 @@ function compareGroups(a: ExplorerRowGroup, b: ExplorerRowGroup, mode: GroupByMo
  * appears once under EACH name's group — an appointment showing up under
  * two different vaccine/test groups is not a bug, it's Will's own
  * "Rows that belong to multiple groups ... appear under each" spec
- * (V-T27). A row with no vaccineNames/testNames in that mode goes to a
- * "(none)" bucket rather than being dropped. Every other mode buckets
- * each row into exactly ONE group.
+ * (V-T27). A row with NO vaccineNames/testNames in that mode is EXCLUDED
+ * entirely — no "(none)" bucket (V-T28, Will 2026-09-09 verbatim: "If
+ * I'm grouping by 'vaccine' you shouldn't show test appointments" — a
+ * point-of-care testing appointment has vaccineNames: [] by construction,
+ * so the old "(none)" bucket was really a "test-only appointments"
+ * bucket showing up inside a vaccine breakdown; same rationale flips
+ * "test" mode to exclude vaccine-only rows with no testNames). Every
+ * other mode buckets each row into exactly ONE group.
  *
  * See groupSortKey/compareGroups above for the per-mode "sensible order"
  * groups are returned in.
@@ -422,16 +427,19 @@ export function groupRows(rows: ExplorerRow[], mode: GroupByMode): ExplorerRowGr
       case "fluAge":
         addTo(row.fluAgeBucket, row);
         break;
-      case "vaccine": {
-        const names = row.vaccineNames.length > 0 ? row.vaccineNames : ["(none)"];
-        for (const name of names) addTo(name, row);
+      case "vaccine":
+        // No "(none)" bucket — a row with zero vaccineNames (a
+        // point-of-care testing appointment, e.g.) is excluded from this
+        // mode entirely rather than shown under a placeholder group. See
+        // this function's own doc comment (V-T28).
+        for (const name of row.vaccineNames) addTo(name, row);
         break;
-      }
-      case "test": {
-        const names = row.testNames.length > 0 ? row.testNames : ["(none)"];
-        for (const name of names) addTo(name, row);
+      case "test":
+        // Mirrors "vaccine" above: a row with zero testNames (a
+        // vaccine-only appointment) is excluded entirely, no "(none)"
+        // bucket.
+        for (const name of row.testNames) addTo(name, row);
         break;
-      }
     }
   }
 
@@ -546,6 +554,34 @@ function addDays(dateStr: string, days: number): string {
   const [year, month, day] = dateStr.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day, 12));
   date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * `dateStr` ("YYYY-MM-DD") + `months` calendar months, still "YYYY-MM-DD"
+ * — backs the explorer's default date range (V-T28, Will 2026-09-09:
+ * "default to today ... go forward 3 months"), a genuine calendar-month
+ * add rather than a fixed 91-day approximation, so e.g. 2026-11-30 + 3
+ * months lands on 2027-02-28 (calendar Feb's real last day), not some
+ * fixed-day-count guess. Same UTC-noon-anchored, DST-proof approach as
+ * addDays/chunkDateRange above. When the target month is shorter than
+ * `dateStr`'s own day-of-month (e.g. Jan 31 + 1 month, where February has
+ * no 31st), JS's Date would otherwise silently spill into the month
+ * AFTER the intended one (Jan 31 + 1 month -> naive Mar 3) — clamped
+ * instead to the intended target month's own LAST day (Feb 28/29).
+ */
+export function addMonthsToDate(dateStr: string, months: number): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const intendedMonthIndex0 = month - 1 + months;
+  const date = new Date(Date.UTC(year, intendedMonthIndex0, day, 12));
+  const normalizedIntendedMonth = ((intendedMonthIndex0 % 12) + 12) % 12;
+  if (date.getUTCMonth() !== normalizedIntendedMonth) {
+    // Overflowed past the intended month (e.g. no Feb 31st) — "day 0" of
+    // the CURRENT (over-shot) month is JS shorthand for the last day of
+    // the PREVIOUS month, i.e. exactly the intended target month's last
+    // day.
+    date.setUTCDate(0);
+  }
   return date.toISOString().slice(0, 10);
 }
 

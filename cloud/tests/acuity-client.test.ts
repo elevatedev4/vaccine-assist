@@ -427,6 +427,146 @@ describe("fetchAppointmentsForRange", () => {
     });
   });
 
+  // V-T28 (Will, 2026-09-09 verbatim: "you have 'Any brand is fine' on two
+  // vaccine data rows for the vaccine name, which cannot be accurate") —
+  // reproduces the two live rows Will saw (2026-08-17 Mon 3PM and a
+  // ~2026-09-01 row) with a fixture shaped like the real intake form: a
+  // single field whose name contains BOTH "vaccine" and "brand" (so it
+  // matches isVaccineFormFieldName's bare "contains 'vaccine'" heuristic)
+  // whose answer is the brand-preference free text, not an actual vaccine
+  // selection. See extractVaccineNamesFromForms's own doc comment for the
+  // root-cause writeup.
+  describe("brand-preference answers never become a vaccine name (V-T28)", () => {
+    it("2026-08-17 Mon 3PM repro: a 'COVID vaccine brand preference' field alone yields vaccineNames: [], and covidBrand still buckets to 'any'", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          date: "August 17, 2026",
+          datetime: "2026-08-17T15:00:00-0500", // 3 PM Central
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [{ fieldID: 9, name: "COVID vaccine brand preference", value: "Any brand is fine" }],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([
+        { date: "2026-08-17", hourOfDay: 15, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      ]);
+    });
+
+    it("~2026-09-01 repro: same 'Any brand is fine' shape on a different day/field label still yields vaccineNames: []", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          date: "September 1, 2026",
+          datetime: "2026-09-01T14:00:00-0500",
+          datetimeCreated: "2026-08-25T09:00:00-0500",
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [{ fieldID: 9, name: "Vaccine Brand Preference", value: "Any brand is fine" }],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-25", "2026-09-08");
+
+      expect(result.appointments).toEqual([
+        {
+          date: "2026-09-01",
+          hourOfDay: 14,
+          appointmentTypeId: 111,
+          vaccineNames: [],
+          covidBrand: "any",
+          covidAgeBucket: "unknown",
+          fluAgeBucket: "unknown",
+          createdDate: "2026-08-25",
+          testNames: [],
+        },
+      ]);
+    });
+
+    it("still finds a REAL vaccine-selection field even when a brand-preference field (also containing 'vaccine') appears first", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [
+                { fieldID: 8, name: "COVID vaccine brand preference", value: "Any brand is fine" },
+                { fieldID: 9, name: "Which vaccine(s) are you receiving?", value: "COVID" },
+              ],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([
+        { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: ["COVID"], ...DEFAULT_BUCKETS },
+      ]);
+    });
+
+    it("drops an unrecognized free-text answer on a genuine vaccine-named field (allowlist defense-in-depth)", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [{ fieldID: 9, name: "Vaccine", value: "Not sure yet, need to ask my doctor" }],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([
+        { date: "2026-08-17", hourOfDay: 10, appointmentTypeId: 111, vaccineNames: [], ...DEFAULT_BUCKETS },
+      ]);
+    });
+
+    it("still accepts a real multi-vaccine answer that legitimately includes a brand name (allowlist doesn't over-reject)", async () => {
+      const fixture = [
+        acuityAppointmentFixture({
+          forms: [
+            {
+              id: 1,
+              name: "Intake",
+              values: [{ fieldID: 9, name: "Vaccine", value: "Shingrix, Tdap" }],
+            },
+          ],
+        }),
+      ];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments).toEqual([
+        {
+          date: "2026-08-17",
+          hourOfDay: 10,
+          appointmentTypeId: 111,
+          vaccineNames: ["Shingrix", "Tdap"],
+          ...DEFAULT_BUCKETS,
+        },
+      ]);
+    });
+  });
+
   // V-T-poc-testing (Will, 2026-09-08): point-of-care test names, mirroring
   // the vaccine name extraction tests above — form-field extraction is the
   // primary path, the appointment TYPE name's own parenthetical is the
