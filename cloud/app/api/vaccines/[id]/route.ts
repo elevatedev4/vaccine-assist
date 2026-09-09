@@ -2,13 +2,22 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
+import { formatNdcForStorage } from "@/lib/ndc";
 
 /**
  * PATCH /api/vaccines/[id] — toggles a vaccine's `active` flag from the
- * desktop app's Active vaccines tab, and (V-cloud-tabs, Will 2026-09-05/07)
+ * desktop app's Active vaccines tab, (V-cloud-tabs, Will 2026-09-05/07)
  * edits its `quantity`/`directions` Pioneer prescription-entry defaults
- * from the same page. Body: { active?: boolean, quantity?: string | null,
- * directions?: string | null } — at least one field required.
+ * from the same page, and (V-onhand-pioneer-ndc-match, Will 2026-09-09
+ * 4:31pm: "so I can persist the researched package NDCs via the API")
+ * edits its `ndc` — the CORE column from 0001_init.sql, not an additive
+ * one, so writing it needs no schema-degradation retry like
+ * quantity/directions below. Body: { active?: boolean, quantity?: string
+ * | null, directions?: string | null, ndc?: string | null } — at least
+ * one field required. `ndc` is validated/formatted by
+ * lib/ndc.ts's formatNdcForStorage (10-11 digits, dashes optional,
+ * stored dashed 5-4-2) — see that function's doc comment for the
+ * 10-digit padding judgment call.
  *
  * This is the only write path onto vaccine.active/quantity/directions
  * from the desktop app: the desktop app never holds the Supabase
@@ -35,7 +44,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   try {
     const body = await request.json();
-    const { active, quantity, directions } = body ?? {};
+    const { active, quantity, directions, ndc } = body ?? {};
 
     const update: Record<string, unknown> = {};
     if (active !== undefined) {
@@ -43,6 +52,19 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         return NextResponse.json({ error: "active must be a boolean." }, { status: 400 });
       }
       update.active = active;
+    }
+    if (ndc !== undefined) {
+      if (ndc === null) {
+        update.ndc = null;
+      } else if (typeof ndc !== "string") {
+        return NextResponse.json({ error: "ndc must be a string or null." }, { status: 400 });
+      } else {
+        const formatted = formatNdcForStorage(ndc);
+        if (!formatted) {
+          return NextResponse.json({ error: "ndc must be 10-11 digits (dashes optional)." }, { status: 400 });
+        }
+        update.ndc = formatted;
+      }
     }
     if (quantity !== undefined) {
       if (quantity !== null && typeof quantity !== "string") {

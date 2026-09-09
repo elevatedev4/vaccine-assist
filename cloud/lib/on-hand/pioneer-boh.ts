@@ -2,6 +2,7 @@ import { read, utils } from "xlsx";
 import { normalizeNdc } from "@/lib/ndc";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { parseOnHandContent } from "@/lib/on-hand-parser";
+import { deriveProductViewFields } from "@/lib/product-view";
 
 /**
  * Pioneer "current BOH" (beyond-on-hand) stock report parser
@@ -191,16 +192,84 @@ export function looksLikePioneerHeader(line: string): boolean {
   return lower.includes("item name") && lower.includes("ndc");
 }
 
+/** The shared product-view's effective NDC for a catalog vaccine — its
+ * own DB ndc when present, else the researched static-catalog
+ * packageNdc (lib/product-view.ts's deriveProductViewFields, same
+ * fields the Ordering/Lots pages show). Used by matchPioneerBohRows'
+ * fallback NDC match below. */
+function effectiveNdcForCatalogVaccine(vaccine: CatalogVaccine): string | null {
+  return deriveProductViewFields(vaccine.name, normalizeNdc(vaccine.ndc)).ndc;
+}
+
 /**
- * Matches parsed Pioneer rows against the vaccine catalog: by NDC first
- * (digits-only comparison — lib/ndc.ts), falling back to the existing
- * free-text name matcher (lib/vaccine-matching.ts's matchVaccineName)
- * when the NDC doesn't match anything (or the row/catalog has no NDC at
- * all). `matched` requires both a catalog match AND a computable dose
- * count — a row with an unparseable BOH/stock-size still gets a
- * vaccine_id when its NDC/name is recognized, but is flagged unmatched
- * so it surfaces for manual review rather than silently persisting a
- * null quantity as if it were legitimate.
+ * Pioneer-specific item-name aliases (V-onhand-pioneer-ndc-match, Will
+ * 2026-09-09 4:31pm, from a real 47-line Pioneer BOH PDF: 18 unmatched
+ * rows). Pioneer's "Item Name" cell carries store-specific prefix/suffix
+ * noise ("Mpb Comirnaty 0.1mg Refr Pfs10", "Flucelvax 2026-2027
+ * Syringe") that lib/vaccine-matching.ts's plain contains/alias matcher
+ * doesn't resolve — this is a SEPARATE small alias table, not an
+ * addition to lib/vaccine-matching.ts's shared NAME_ALIASES, for the
+ * same reason app/api/ordering/recommendation/route.ts keeps its own
+ * COMPOSITE_BASE_TO_CATALOG_NAME out of that shared table (see that
+ * route's doc comment): these patterns are specific to Pioneer's export
+ * format, not a general vaccine-name variant Will might type anywhere
+ * else.
+ *
+ * Each entry requires ALL of `requiredTokens` (case-insensitive
+ * substring) to be present in the raw item name before it's even
+ * considered, so an OLD-season line ("Comirnaty Tri '24-25", "Comirnaty
+ * 2024-25", "Comirnaty 2025-26") that doesn't also carry "0.1mg" stays
+ * UNMATCHED here on purpose (Will's brief: "keep old-season names ...
+ * UNMATCHED on purpose") — this alias table intentionally does NOT fall
+ * back to a bare "comirnaty"/"flucelvax" substring match.
+ */
+const PIONEER_NAME_ALIASES: { requiredTokens: string[]; matchesCatalogName: (name: string) => boolean }[] = [
+  {
+    // "Mpb Comirnaty 0.1mg Refr Pfs10" -> the on-file Comirnaty row.
+    // matchesCatalogName uses a name-PREFIX check (not an exact string)
+    // so this keeps matching through the on-file name's expected
+    // "2025-26" -> "2026-27" rename (same namePrefix tolerance
+    // lib/vaccine-product-catalog.ts's Comirnaty row already uses).
+    requiredTokens: ["comirnaty", "0.1mg"],
+    matchesCatalogName: (name) => name.trim().toLowerCase().startsWith("comirnaty"),
+  },
+  {
+    // "Flucelvax 2026-2027 Syringe" -> "Flucelvax PFS" specifically (a
+    // prefilled Syringe, not the MDV multi-dose vial) — exact name match
+    // so this can never accidentally resolve to "Flucelvax MDV".
+    requiredTokens: ["flucelvax", "2026-2027"],
+    matchesCatalogName: (name) => name.trim().toLowerCase() === "flucelvax pfs",
+  },
+];
+
+function matchByPioneerNameAlias(rawName: string, catalog: CatalogVaccine[]): CatalogVaccine | null {
+  const lower = rawName.toLowerCase();
+  for (const alias of PIONEER_NAME_ALIASES) {
+    if (!alias.requiredTokens.every((token) => lower.includes(token))) continue;
+    const found = catalog.find((vaccine) => alias.matchesCatalogName(vaccine.name));
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Matches parsed Pioneer rows against the vaccine catalog, in order:
+ *   1. Exact DB-ndc match (digits-only comparison — lib/ndc.ts).
+ *   2. The shared PRODUCT VIEW's ndc (lib/product-view.ts) — a row whose
+ *      DB vaccine.ndc is stale/missing still lands on the right product
+ *      when its real package NDC matches the one this app already
+ *      researched (e.g. Comirnaty 2026-27's "00069263110", Flucelvax
+ *      PFS's "70461065603" — see this file's header comment).
+ *   3. The Pioneer-specific name aliases above (matchByPioneerNameAlias)
+ *      — for a row whose NDC cell is blank/garbled but whose item name
+ *      still identifies the product unambiguously.
+ *   4. The existing free-text name matcher (lib/vaccine-matching.ts's
+ *      matchVaccineName), same as before this change.
+ * `matched` requires both a catalog match AND a computable dose count —
+ * a row with an unparseable BOH/stock-size still gets a vaccine_id when
+ * its NDC/name is recognized, but is flagged unmatched so it surfaces
+ * for manual review rather than silently persisting a null quantity as
+ * if it were legitimate.
  */
 export function matchPioneerBohRows(rows: PioneerBohRow[], catalog: CatalogVaccine[]): MatchedOnHandRow[] {
   return rows.map((row) => {
@@ -209,6 +278,14 @@ export function matchPioneerBohRows(rows: PioneerBohRow[], catalog: CatalogVacci
     if (row.ndc) {
       const byNdc = catalog.find((vaccine) => normalizeNdc(vaccine.ndc) === row.ndc);
       if (byNdc) vaccineId = byNdc.id;
+      if (!vaccineId) {
+        const byProductViewNdc = catalog.find((vaccine) => effectiveNdcForCatalogVaccine(vaccine) === row.ndc);
+        if (byProductViewNdc) vaccineId = byProductViewNdc.id;
+      }
+    }
+    if (!vaccineId) {
+      const byAlias = matchByPioneerNameAlias(row.vaccineNameRaw, catalog);
+      if (byAlias) vaccineId = byAlias.id;
     }
     if (!vaccineId) {
       const byName = matchVaccineName(row.vaccineNameRaw, catalog);

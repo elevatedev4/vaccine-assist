@@ -617,6 +617,142 @@ describe("GET /api/ordering/recommendation", () => {
     });
   });
 
+  // --- V-T-flu-map additions (Will 2026-09-09) -----------------------
+
+  describe("flu age-band product mapping", () => {
+    const fluCatalog = [
+      { id: "v-flucelvax-pfs", name: "Flucelvax PFS", short_code: "flucelvaxpfs", ndc: null, active: true },
+      { id: "v-fluad", name: "Fluad", short_code: "fluad", ndc: "70461-0123-03", active: true },
+    ];
+
+    function fluAppointment(fluAgeBucket: "3-64" | "65+" | "unknown") {
+      return {
+        date: "2026-08-19",
+        appointmentTypeId: 1,
+        hourOfDay: 10,
+        vaccineNames: ["Flu Shot"],
+        testNames: [],
+        covidBrand: "any" as const,
+        covidAgeBucket: "unknown" as const,
+        fluAgeBucket,
+        createdDate: "2026-08-10",
+      };
+    }
+
+    it("routes a 3-64 flu appointment's upcoming7d onto the active Flucelvax PFS product", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], fluCatalog) as never);
+      vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+      vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+      vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+        appointments: [fluAppointment("3-64"), fluAppointment("3-64")],
+        possiblyTruncated: false,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const flucelvaxRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flucelvax-pfs");
+      expect(flucelvaxRow.upcoming7d).toBe(2);
+      const fluadRow = body.rows.find((r: { key: string }) => r.key === "70461012303");
+      expect(fluadRow.upcoming7d).toBe(0);
+    });
+
+    it("routes a 65+ flu appointment's upcoming7d onto Fluad", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], fluCatalog) as never);
+      vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+      vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+      vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+        appointments: [fluAppointment("65+"), fluAppointment("65+"), fluAppointment("65+")],
+        possiblyTruncated: false,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const fluadRow = body.rows.find((r: { key: string }) => r.key === "70461012303");
+      expect(fluadRow.upcoming7d).toBe(3);
+      const flucelvaxRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flucelvax-pfs");
+      expect(flucelvaxRow.upcoming7d).toBe(0);
+    });
+
+    it("falls back to any active non-Fluad flu product for a 3-64 count when Flucelvax PFS is inactive", async () => {
+      const catalog = [
+        { id: "v-flucelvax-pfs", name: "Flucelvax PFS", short_code: "flucelvaxpfs", ndc: null, active: false },
+        { id: "v-flucelvax-mdv", name: "Flucelvax MDV", short_code: "flucelvaxmdv", ndc: "70461-0323-03", active: true },
+        { id: "v-fluad", name: "Fluad", short_code: "fluad", ndc: "70461-0123-03", active: true },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+      vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+      vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+      vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+        appointments: [fluAppointment("3-64")],
+        possiblyTruncated: false,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const mdvRow = body.rows.find((r: { key: string }) => r.key === "70461032303");
+      expect(mdvRow.upcoming7d).toBe(1);
+    });
+
+    it("an 'unknown'-band flu appointment still falls through to the generic matcher unchanged", async () => {
+      const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+      vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+      vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+      vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+        appointments: [fluAppointment("unknown")],
+        possiblyTruncated: false,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.upcoming7d).toBe(1);
+    });
+  });
+
+  // --- V-onhand-batch-sum additions (Will 2026-09-09 4:31pm) ----------
+
+  describe("on-hand: sums same-batch rows, replaces (not adds to) an older batch", () => {
+    it("sums multiple Pioneer lines for one product sharing the SAME received_at", async () => {
+      const catalog = [{ id: "v-abrysvo", name: "Abrysvo", short_code: "abrysvo", ndc: null, active: true }];
+      const onHandRows = [
+        { vaccine_id: "v-abrysvo", quantity: 0, received_at: "2026-09-09T13:00:00.000Z" },
+        { vaccine_id: "v-abrysvo", quantity: 0, received_at: "2026-09-09T13:00:00.000Z" },
+        { vaccine_id: "v-abrysvo", quantity: 9, received_at: "2026-09-09T13:00:00.000Z" },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "vaccine:v-abrysvo");
+      expect(row.onHand).toBe(9);
+    });
+
+    it("a later batch REPLACES an earlier one rather than adding to it", async () => {
+      const catalog = [{ id: "v-mnexspike", name: "mNEXSPIKE", short_code: "mnexspike", ndc: null, active: true }];
+      const onHandRows = [
+        // Latest batch (rows returned received_at DESC by the query, same
+        // as fakeSupabase's on_hand_count stand-in below).
+        { vaccine_id: "v-mnexspike", quantity: 0, received_at: "2026-09-09T13:00:00.000Z" },
+        { vaccine_id: "v-mnexspike", quantity: 1114, received_at: "2026-09-09T13:00:00.000Z" },
+        // Older batch — must be ignored entirely, not summed in.
+        { vaccine_id: "v-mnexspike", quantity: 500, received_at: "2026-09-01T13:00:00.000Z" },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "vaccine:v-mnexspike");
+      expect(row.onHand).toBe(1114);
+    });
+  });
+
   describe("group targets are ignored in the effective-target computation (item 6)", () => {
     it("a stale scope='group' override in ordering_target no longer apportions across the group's rows", async () => {
       const catalog = [

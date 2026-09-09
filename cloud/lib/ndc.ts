@@ -18,3 +18,32 @@ export function normalizeNdc(value: string | null | undefined): string | null {
   const digits = first.replace(/\D/g, "");
   return digits.length > 0 ? digits : null;
 }
+
+/**
+ * Validates and formats a manually-entered NDC for storage on
+ * vaccine.ndc (PATCH /api/vaccines/[id]'s `ndc` field,
+ * V-onhand-pioneer-ndc-match, Will 2026-09-09 4:31pm: "so I can persist
+ * the researched package NDCs via the API"). Accepts 10 or 11 digits,
+ * dashed or not.
+ *
+ * A 10-digit input is left-padded with one leading zero to the standard
+ * 11-digit NDC-11 billing form before formatting. This app has no
+ * reliable way to tell WHICH of the three segments (labeler/product/
+ * package) is short from the digits alone — a leading-zero pad is only
+ * correct when the labeler-code segment is the short one, the most
+ * common real-world case, but not the only one (5-3-2 and 5-4-1 formats
+ * also exist). Documented judgment call, not a guaranteed-correct FDA
+ * NDC-11 conversion — same "prototype vs production balance" posture as
+ * this app's other documented tradeoffs (see e.g.
+ * app/api/ordering/recommendation/route.ts's COMPOSITE_BASE_TO_CATALOG_NAME
+ * comment).
+ *
+ * Returns the digits formatted 5-4-2 ("58160-0821-52"), or null if the
+ * input isn't 10-11 digits once dashes/whitespace are stripped.
+ */
+export function formatNdcForStorage(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length !== 10 && digits.length !== 11) return null;
+  const eleven = digits.length === 10 ? `0${digits}` : digits;
+  return `${eleven.slice(0, 5)}-${eleven.slice(5, 9)}-${eleven.slice(9)}`;
+}

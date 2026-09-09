@@ -192,6 +192,77 @@ describe("matchPioneerBohRows", () => {
     const matched = matchPioneerBohRows(rows, CATALOG);
     expect(matched[0]).toMatchObject({ vaccineId: null, matched: false, ndc: "55555555555" });
   });
+
+  // --- V-onhand-pioneer-ndc-match additions (Will 2026-09-09 4:31pm,
+  // from a real 47-line Pioneer BOH PDF: 47 lines, 29 matched, 18
+  // unmatched) — two concrete misses from that real file. ---
+
+  describe("PRODUCT-VIEW ndc fallback (real misses from Will's 4:31pm Pioneer PDF)", () => {
+    // On-file DB row: name "Comirnaty 2025-26 12+", ndc null here (stale/
+    // missing on this fixture's catalog — the real DB row's own ndc is
+    // the OLD 2025-26 NDC, "00069252810", which the incoming row's real
+    // "00069263110" package NDC does NOT match either way; the point is
+    // the DB ndc alone can't resolve this row).
+    const comirnatyCatalog: CatalogVaccine[] = [
+      { id: "v-comirnaty", name: "Comirnaty 2025-26 12+", short_code: "comirnaty12", ndc: null },
+    ];
+    // On-file DB row: name "Flucelvax PFS", ndc null (matches
+    // supabase/seed/vaccines.sql exactly).
+    const flucelvaxCatalog: CatalogVaccine[] = [
+      { id: "v-flucelvax-pfs", name: "Flucelvax PFS", short_code: "flucelvaxpfs", ndc: null },
+    ];
+
+    it("'Mpb Comirnaty 0.1mg Refr Pfs10' NDC 00069263110 matches Comirnaty via the catalog's researched packageNdc", () => {
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Mpb Comirnaty 0.1mg Refr Pfs10", "00069263110", 30, 0.3],
+      ]);
+      const matched = matchPioneerBohRows(rows, comirnatyCatalog);
+      expect(matched[0]).toMatchObject({ vaccineId: "v-comirnaty", matched: true });
+    });
+
+    it("'Flucelvax 2026-2027 Syringe' NDC 70461065603 matches Flucelvax PFS via the catalog's researched packageNdc", () => {
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Flucelvax 2026-2027 Syringe", "70461065603", 50, 0.5],
+      ]);
+      const matched = matchPioneerBohRows(rows, flucelvaxCatalog);
+      expect(matched[0]).toMatchObject({ vaccineId: "v-flucelvax-pfs", matched: true });
+    });
+
+    it("Pioneer name alias: 'Comirnaty' + '0.1mg' matches even with NO ndc cell at all", () => {
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Mpb Comirnaty 0.1mg Refr Pfs10", "", 30, 0.3],
+      ]);
+      const matched = matchPioneerBohRows(rows, comirnatyCatalog);
+      expect(matched[0]).toMatchObject({ vaccineId: "v-comirnaty", matched: true });
+    });
+
+    it("Pioneer name alias: 'Flucelvax' + '2026-2027' matches Flucelvax PFS specifically, not MDV, with no ndc cell", () => {
+      const bothFlucelvax: CatalogVaccine[] = [
+        ...flucelvaxCatalog,
+        { id: "v-flucelvax-mdv", name: "Flucelvax MDV", short_code: "flucelvaxmdv", ndc: "70461-0323-03" },
+      ];
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Flucelvax 2026-2027 Syringe", "", 50, 0.5],
+      ]);
+      const matched = matchPioneerBohRows(rows, bothFlucelvax);
+      expect(matched[0]).toMatchObject({ vaccineId: "v-flucelvax-pfs", matched: true });
+    });
+
+    it("keeps old-season Comirnaty names UNMATCHED on purpose (no '0.1mg' token, no researched-NDC match)", () => {
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Comirnaty Tri '24-25", "", 5, 0.3],
+        ["Mpb Comirnaty 2024-25 Pfs10", "", 5, 0.3],
+      ]);
+      const matched = matchPioneerBohRows(rows, comirnatyCatalog);
+      expect(matched[0].vaccineId).toBeNull();
+      expect(matched[1].vaccineId).toBeNull();
+    });
+  });
 });
 
 describe("parseOnHandUpload", () => {

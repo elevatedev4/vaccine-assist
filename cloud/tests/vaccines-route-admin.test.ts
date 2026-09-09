@@ -251,6 +251,98 @@ describe("PATCH /api/vaccines/[id]", () => {
     expect(update).toHaveBeenNthCalledWith(2, { active: true });
   });
 
+  // --- V-onhand-pioneer-ndc-match additions (Will 2026-09-09 4:31pm:
+  // "so I can persist the researched package NDCs via the API") --------
+
+  it("persists a valid ndc, dashed 5-4-2, even when it arrives undashed", async () => {
+    const single = vi.fn(async () => ({
+      data: { id: "v1", name: "Flucelvax PFS", ndc: "70461-0656-03" },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ndc: "70461065603" }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ ndc: "70461-0656-03" });
+  });
+
+  it("left-pads a 10-digit ndc to 11 digits before formatting", async () => {
+    const single = vi.fn(async () => ({ data: { id: "v1" }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ndc: "1234567890" }), // 10 digits
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(update).toHaveBeenCalledWith({ ndc: "01234-5678-90" });
+  });
+
+  it("clears ndc when given null", async () => {
+    const single = vi.fn(async () => ({ data: { id: "v1", ndc: null }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ndc: null }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(update).toHaveBeenCalledWith({ ndc: null });
+  });
+
+  it("rejects an ndc that isn't 10-11 digits", async () => {
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ndc: "123" }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-string, non-null ndc", async () => {
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ndc: 12345678901 }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+    expect(response.status).toBe(400);
+  });
+
   it("returns 409 when quantity/directions is the ONLY thing to update and the columns don't exist yet", async () => {
     const missingColumnError = { code: "42703", message: 'column "quantity" of relation "vaccine" does not exist' };
     const update = vi.fn(() => ({

@@ -5,7 +5,9 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
-import { computeOrderPackages, displayNameFor, lookupProduct } from "@/lib/vaccine-product-catalog";
+import { computeOrderPackages } from "@/lib/vaccine-product-catalog";
+import { deriveProductViewFields } from "@/lib/product-view";
+import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -95,7 +97,10 @@ const styles = {
   thRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
   td: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
   tdRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
-  groupRow: { background: "#f4f6f8", fontWeight: 600 },
+  // Darkened (Will, 2026-09-09: "Darken the heading color to make it
+  // easier to distinguish") from the original #f4f6f8, still light
+  // enough for black text to stay readable.
+  groupRow: { background: "#d9dde3", fontWeight: 600 },
   // Inputs sized to fit inside a compact cell — fixed ~64px width, thin
   // 1px border, no tall padding.
   targetInput: { width: 64, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
@@ -230,25 +235,35 @@ type EnrichedRow = RecommendationRow & {
    * it knows the product but not its age range, else today's plain
    * vaccine name (V-T26 item 7). */
   displayName: string;
-  /** Doses per package, or null when the catalog has no row for this
-   * product yet ("—" in the table). */
+  /** The shared product-view's NDC: this row's own DB ndc when present,
+   * else the researched catalog packageNdc (V-T-ordering-lots-round3,
+   * Will: "Look up any missing NDCs" — products whose DB row has no NDC
+   * on file, like Capvaxive/Flucelvax PFS/FluMist/mNEXSPIKE/Pneumovax
+   * 23/Spikevax, now show their researched package NDC here instead of
+   * "—"). Overrides (Your target) still key off row.ndc (the DB value),
+   * unchanged. */
+  displayNdc: string | null;
+  /** Doses per package (renamed "Pkg size" in the table — V-T-ordering-
+   * lots-round3), or null when the catalog has no row for this product
+   * yet ("—" in the table). */
   dosesPerPackage: number | null;
   /** ceil(order / dosesPerPackage), or null when dosesPerPackage is
    * unknown ("—" in the table). */
   orderPackages: number | null;
 };
 
-/** Adds the Doses/pkg + Order (pkg) + display-name fields (V-T26 item 7)
- * to a recommendation row, via the static lib/vaccine-product-catalog.ts
- * lookup — pure/no I/O, so this can run per-row at render time. */
+/** Adds the Pkg size + Order (pkg) + display-name/NDC fields to a
+ * recommendation row, via the SHARED lib/product-view.ts lookup (same
+ * fields the /lots page computes for the same product — V-T-ordering-
+ * lots-round3) — pure/no I/O, so this can run per-row at render time. */
 function enrichRow(row: RecommendationRow): EnrichedRow {
-  const product = lookupProduct({ name: row.vaccineName, ndc: row.ndc });
-  const dosesPerPackage = product?.dosesPerPackage ?? null;
+  const fields = deriveProductViewFields(row.vaccineName, row.ndc);
   return {
     ...row,
-    displayName: displayNameFor(row.vaccineName, row.ndc),
-    dosesPerPackage,
-    orderPackages: computeOrderPackages(row.order, dosesPerPackage),
+    displayName: fields.displayName,
+    displayNdc: fields.ndc,
+    dosesPerPackage: fields.packageSize,
+    orderPackages: computeOrderPackages(row.order, fields.packageSize),
   };
 }
 
@@ -725,11 +740,11 @@ export default function OrderingPage() {
           <tr>
             <th style={styles.th}>Vaccine</th>
             <th style={styles.th}>NDC</th>
+            <th style={styles.thRight}>Pkg size</th>
             <th style={styles.thRight}>Upcoming 7d</th>
             <th style={styles.th}>On hand</th>
             <th style={styles.thRight}>Recommended target</th>
             <th style={styles.th}>Your target</th>
-            <th style={styles.thRight}>Doses/pkg</th>
             <th style={styles.thRight}>Order (doses)</th>
             <th style={styles.thRight}>Order (pkg)</th>
           </tr>
@@ -737,41 +752,30 @@ export default function OrderingPage() {
         <tbody>
           {groupedActiveRows.map(({ group, rows }) => {
             const enrichedRows = rows.map(enrichRow);
-            const totals = enrichedRows.reduce(
-              (acc, row) => ({
-                upcoming7d: acc.upcoming7d + row.upcoming7d,
-                onHand: acc.onHand + (row.onHand ?? 0),
-                recommendedTarget: acc.recommendedTarget + row.recommendedTarget,
-                order: acc.order + row.order,
-                // Group total pkg = sum of per-row pkg (Will's brief:
-                // "it's what he'd order"), not "—" and not a re-derived
-                // package count from the summed doses.
-                orderPackages: acc.orderPackages + (row.orderPackages ?? 0),
-              }),
-              { upcoming7d: 0, onHand: 0, recommendedTarget: 0, order: 0, orderPackages: 0 }
-            );
+            // V-T-ordering-lots-round3 (Will 2026-09-09, verbatim): "Leave
+            // off the targets for headings. Just leave the target and
+            // order all blank on those rows." — see
+            // lib/ordering-heading-totals.ts's doc comment.
+            const totals = computeHeadingTotals(enrichedRows);
 
             return (
               <Fragment key={group}>
                 <tr style={styles.groupRow}>
                   <td style={styles.td}>{group}</td>
                   <td style={styles.td}>—</td>
+                  <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>{totals.upcoming7d}</td>
                   <td style={styles.td}>{totals.onHand}</td>
-                  <td style={styles.tdRight}>{totals.recommendedTarget}</td>
-                  {/* V-T26 item 6 (Will 2026-09-09: "Remove group target
-                      for now") — the group-level target input/apportioning
-                      UI is gone; this cell is just a placeholder so the
-                      column still lines up with the row cells below. */}
+                  <td style={styles.tdRight}>—</td>
                   <td style={styles.td}>—</td>
                   <td style={styles.tdRight}>—</td>
-                  <td style={styles.tdRight}>{totals.order}</td>
-                  <td style={styles.tdRight}>{totals.orderPackages}</td>
+                  <td style={styles.tdRight}>—</td>
                 </tr>
                 {enrichedRows.map((row) => (
                   <tr key={row.key}>
                     <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
-                    <td style={styles.td}>{row.ndc ?? "—"}</td>
+                    <td style={styles.td}>{row.displayNdc ?? "—"}</td>
+                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
                     <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>
@@ -783,7 +787,6 @@ export default function OrderingPage() {
                         onSave={(value) => (row.ndc ? saveTarget("ndc", row.ndc, value) : Promise.resolve(false))}
                       />
                     </td>
-                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.order}</td>
                     <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
                   </tr>
@@ -805,10 +808,10 @@ export default function OrderingPage() {
                 <tr>
                   <th style={styles.th}>Vaccine</th>
                   <th style={styles.th}>NDC</th>
+                  <th style={styles.thRight}>Pkg size</th>
                   <th style={styles.thRight}>Upcoming 7d</th>
                   <th style={styles.th}>On hand</th>
                   <th style={styles.thRight}>Recommended target</th>
-                  <th style={styles.thRight}>Doses/pkg</th>
                   <th style={styles.thRight}>Order (doses)</th>
                   <th style={styles.thRight}>Order (pkg)</th>
                 </tr>
@@ -817,11 +820,11 @@ export default function OrderingPage() {
                 {inactiveRows.map(enrichRow).map((row) => (
                   <tr key={row.key}>
                     <td style={styles.td}>{row.displayName}</td>
-                    <td style={styles.td}>{row.ndc ?? "—"}</td>
+                    <td style={styles.td}>{row.displayNdc ?? "—"}</td>
+                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
                     <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>
-                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.order}</td>
                     <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
                   </tr>

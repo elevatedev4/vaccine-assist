@@ -254,6 +254,34 @@ export function compositeNameToMatchableBase(rawName: string): string {
   return rawName;
 }
 
+/**
+ * Client-safe copy of lib/acuity-client.ts's FluAgeBucket (same rationale
+ * as this file's own VaccineCount/HourlyCount re-declarations above —
+ * acuity-client.ts is `server-only`, and this file deliberately has no
+ * import from that module at all). Shape is intentionally identical.
+ */
+export type FluAgeBucket = "3-64" | "65+" | "unknown";
+
+/**
+ * Extracts the Flu age band ("3-64" | "65+" | "unknown") from a raw
+ * aggregated vaccineName, or null when it isn't a Flu composite at all
+ * (V-T-flu-map, Will 2026-09-09: "flu age <65 ... Flucelvax ... 65+ ...
+ * Fluad" — see app/api/ordering/recommendation/route.ts's use of this).
+ * compositeNameToMatchableBase above deliberately collapses BOTH flu age
+ * bands down to the single string "Flu" (so the plain-text matcher has
+ * something to substring-match against), which loses exactly the age
+ * distinction that route needs to route a <65 count onto Flucelvax and a
+ * 65+ count onto Fluad — so this is a SEPARATE, narrower extractor
+ * reusing the same FLU_COMPOSITE_PATTERN regex (kept in sync with
+ * fluCompositeName in lib/acuity-client.ts, same as everywhere else in
+ * this module), not a change to compositeNameToMatchableBase's existing
+ * (already-tested, already-relied-upon) return shape.
+ */
+export function parseFluCompositeAgeBucket(rawName: string): FluAgeBucket | null {
+  const match = FLU_COMPOSITE_PATTERN.exec(rawName);
+  return match ? (match[1] as FluAgeBucket) : null;
+}
+
 // Header label per brand. ROUND 2 originally shortened Moderna to "Mod";
 // Will's V-T11 answer reversed that ("change Mod to Moderna since we have
 // room") now that the tightened spacing/abbreviation pass elsewhere frees

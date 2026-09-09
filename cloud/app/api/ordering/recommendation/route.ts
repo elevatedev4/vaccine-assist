@@ -10,12 +10,13 @@ import {
 } from "@/lib/acuity-client";
 import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
-import { compositeNameToMatchableBase } from "@/lib/appointment-table";
+import { compositeNameToMatchableBase, parseFluCompositeAgeBucket } from "@/lib/appointment-table";
 import { env } from "@/lib/env";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { normalizeNdc } from "@/lib/ndc";
 import { collapseVaccinesByNdc, type CollapsibleVaccine } from "@/lib/ordering-ndc-collapse";
 import { getOrderingGroup } from "@/lib/ordering-group";
+import { matchFluAgeBandToVaccine, type FluMappingCatalogVaccine } from "@/lib/ordering-flu-mapping";
 import { computeEffectiveTargets, recommendedTarget, type TargetInput } from "@/lib/ordering-targets";
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
 import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradation";
@@ -248,20 +249,52 @@ export async function GET(request: Request) {
             return freshCounts;
           })());
 
+        // Flu-group catalog view for matchFluAgeBandToVaccine below —
+        // same {id, name, active} shape collapsibleCatalog (further
+        // down) builds, but computed here since it's needed inside this
+        // loop, before collapsibleCatalog exists yet.
+        const fluMappingCatalog: FluMappingCatalogVaccine[] = catalog.map((vaccine) => ({
+          id: vaccine.id,
+          name: vaccine.name,
+          active: (vaccine as { active?: boolean }).active ?? true,
+        }));
+
         for (const { vaccineName, count } of counts) {
-          // COVID/Flu counts arrive as an aggregation composite ("COVID ·
-          // Pfizer · 65+", "Flu · 3-64" — see covidCompositeName/
-          // fluCompositeName in lib/acuity-client.ts) that doesn't
-          // resemble any catalog name on its own. Strip it down to a
-          // matchable brand/product string (age is never relevant to an
-          // order quantity) — see compositeNameToMatchableBase's doc
-          // comment — then resolve it against the catalog via THIS
-          // route's own matchOrderingVaccineName, not the shared
-          // matchVaccineName directly (see COMPOSITE_BASE_TO_CATALOG_NAME
-          // above for why that resolution must stay out of
-          // lib/vaccine-matching.ts's NAME_ALIASES). A non-composite name
-          // passes through compositeNameToMatchableBase unchanged and
-          // matches exactly as it always has.
+          // V-T-flu-map (Will 2026-09-09): a Flu appointment's KNOWN age
+          // band ("3-64" vs "65+" — the SAME data the /appointments
+          // table's "Flu 3-64"/"Flu 65+" columns already split on)
+          // determines which flu PRODUCT the count should land on —
+          // Flucelvax for <65, Fluad for 65+ — so a Flu composite with a
+          // known band is routed through matchFluAgeBandToVaccine BEFORE
+          // falling through to the generic brand/name matcher below.
+          // "unknown"-band Flu composites (no age question answered)
+          // deliberately fall through to that same generic matcher
+          // UNCHANGED — Will's brief only specifies a product mapping
+          // for the two known bands, and the generic matcher's existing
+          // "Flu · Unknown" -> "Flu" -> substring-match behavior (see
+          // compositeNameToMatchableBase) already covers that case.
+          const fluAgeBand = parseFluCompositeAgeBucket(vaccineName);
+          if (fluAgeBand === "3-64" || fluAgeBand === "65+") {
+            const fluMatch = matchFluAgeBandToVaccine(fluAgeBand, fluMappingCatalog);
+            if (fluMatch) {
+              upcomingByVaccineId.set(fluMatch.id, (upcomingByVaccineId.get(fluMatch.id) ?? 0) + count);
+            }
+            continue;
+          }
+
+          // COVID counts arrive as an aggregation composite ("COVID ·
+          // Pfizer · 65+" — see covidCompositeName in
+          // lib/acuity-client.ts) that doesn't resemble any catalog name
+          // on its own. Strip it down to a matchable brand/product
+          // string (age is never relevant to an order quantity) — see
+          // compositeNameToMatchableBase's doc comment — then resolve it
+          // against the catalog via THIS route's own
+          // matchOrderingVaccineName, not the shared matchVaccineName
+          // directly (see COMPOSITE_BASE_TO_CATALOG_NAME above for why
+          // that resolution must stay out of lib/vaccine-matching.ts's
+          // NAME_ALIASES). A non-composite name passes through
+          // compositeNameToMatchableBase unchanged and matches exactly
+          // as it always has.
           const match = matchOrderingVaccineName(compositeNameToMatchableBase(vaccineName), catalog);
           // An appointment vaccine name with no catalog match simply
           // doesn't contribute to any row's upcoming7d — there's no
@@ -307,8 +340,32 @@ export async function GET(request: Request) {
     }
 
     // Rows are ordered received_at DESC across every vaccine, so the
-    // first row seen for a given vaccine_id/ndc is that vaccine's/that
-    // NDC's latest — one query instead of one-per-vaccine.
+    // first row seen for a given vaccine_id/ndc is from that vaccine's/
+    // that NDC's LATEST BATCH — one query instead of one-per-vaccine.
+    //
+    // V-onhand-batch-sum (Will, 2026-09-09 4:31pm, from a real 47-line
+    // Pioneer BOH PDF): several products arrive as MULTIPLE Pioneer
+    // lines in ONE report (Abrysvo 0/0/9, Fluad 0/189/0, mNEXSPIKE
+    // 0/1114, Spikevax 11/0/0/0, Prevnar 0/8, Shingrix 0/11) — every row
+    // from one parse shares the SAME `received_at` (a single multi-row
+    // INSERT's `now()` default is one value for the whole statement, not
+    // per-row), so on-hand for a product is the SUM of every row sharing
+    // both its key (vaccine_id or ndc) AND that latest received_at, not
+    // one arbitrary row. accumulateLatestBatch below sums same-batch
+    // rows for a key and DROPS any row whose received_at doesn't match
+    // the first (= latest, thanks to the DESC order) one already seen
+    // for that key — an older batch is REPLACED, never added to.
+    function accumulateLatestBatch(map: Map<string, OnHandEntry>, key: string, receivedAt: string, quantity: number | null) {
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, { quantity, receivedAt });
+        return;
+      }
+      if (existing.receivedAt !== receivedAt) return; // older batch, superseded — skip
+      if (quantity === null) return; // nothing to add
+      existing.quantity = (existing.quantity ?? 0) + quantity;
+    }
+
     const latestOnHandByVaccineId = new Map<string, OnHandEntry>();
     const latestOnHandByNdc = new Map<string, OnHandEntry>();
     let onHandLastReceivedAt: string | null = null;
@@ -318,14 +375,10 @@ export async function GET(request: Request) {
       if (onHandLastReceivedAt === null) onHandLastReceivedAt = receivedAt;
 
       const vaccineId = row.vaccine_id as string | null;
-      if (vaccineId && !latestOnHandByVaccineId.has(vaccineId)) {
-        latestOnHandByVaccineId.set(vaccineId, { quantity, receivedAt });
-      }
+      if (vaccineId) accumulateLatestBatch(latestOnHandByVaccineId, vaccineId, receivedAt, quantity);
 
       const rowNdc = normalizeNdc((row.ndc as string | null | undefined) ?? null);
-      if (rowNdc && !latestOnHandByNdc.has(rowNdc)) {
-        latestOnHandByNdc.set(rowNdc, { quantity, receivedAt });
-      }
+      if (rowNdc) accumulateLatestBatch(latestOnHandByNdc, rowNdc, receivedAt, quantity);
     }
 
     // NDC collapse (Will msg 908): one row per product/NDC rather than
