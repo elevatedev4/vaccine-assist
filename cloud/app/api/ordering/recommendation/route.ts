@@ -13,43 +13,63 @@ import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
 import { compositeNameToMatchableBase } from "@/lib/appointment-table";
 import { env } from "@/lib/env";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
-import { buildRecommendationRow } from "@/lib/ordering-recommendation";
+import { normalizeNdc } from "@/lib/ndc";
+import { collapseVaccinesByNdc, type CollapsibleVaccine } from "@/lib/ordering-ndc-collapse";
+import { getVaccineGroup } from "@/lib/vaccine-group-catalog";
+import { computeEffectiveTargets, recommendedTarget, type TargetInput } from "@/lib/ordering-targets";
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
-import { isMissingColumnError } from "@/lib/schema-degradation";
+import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradation";
 
 /**
- * Ordering tab recommendation endpoint (V-ordering, 2026-08-19/20).
+ * Ordering tab recommendation endpoint (V-ordering, 2026-08-19/20;
+ * NDC-collapse + targets + inactive section, V-ordering-targets
+ * 2026-09-08).
  * GET, authed exactly like every other desktop-facing route
  * (requireAuthenticatedUser — see cloud/app/api/vaccines/route.ts).
  *
- * For each ACTIVE catalog vaccine, combines:
- *   - upcoming7d: scheduled Acuity appointment count over [today,
- *     today+6] (7 days inclusive), Chicago time — reuses the SAME
+ * For each collapsed product/NDC group (cloud/lib/ordering-ndc-collapse.ts
+ * — one row per NDC, or per vaccine id when a vaccine has no NDC; Will
+ * msg 908: a 3-dose series like Gardasil is "still just one vaccine"),
+ * combines:
+ *   - upcoming7d: SUM of scheduled Acuity appointment counts over
+ *     [today, today+6] (7 days inclusive), Chicago time, across every
+ *     catalog vaccine collapsed into this row — reuses the SAME
  *     fetchAppointmentTypes/fetchAppointmentsForRange/aggregateAppointmentCounts
- *     path and acuity_poll_cache cache as app/api/acuity/poll/route.ts,
- *     rather than re-fetching Acuity from scratch on every call.
- *   - onHand / onHandAsOf: the latest `on_hand_count` row for that
- *     vaccine where matched = true (see supabase/migrations/0006), or
- *     null/null if none exists yet.
- *   - recommendedOrder: see lib/ordering-recommendation.ts.
+ *     path and acuity_poll_cache cache as app/api/acuity/poll/route.ts.
+ *   - onHand / onHandAsOf: the latest `on_hand_count` row matching this
+ *     group's NDC (falling back to any of its collapsed vaccine_ids —
+ *     Will's brief), or null/null if none exists yet.
+ *   - recommendedTarget / targetOnHand / effectiveTarget / order: see
+ *     lib/ordering-targets.ts. targetOnHand is this row's OWN NDC-scoped
+ *     override (null if none set) — the group-level override (if any)
+ *     lives in the response's `groupTargets` map instead, since it
+ *     applies to every row in the group at once.
  *
  * NO administered-doses field: there is no administration-tracking
- * table/endpoint anywhere in this schema (vaccination records live in
- * PioneerRx, not this app) — see lib/ordering-recommendation.ts's doc
- * comment.
+ * table/endpoint anywhere in this schema — see lib/ordering-recommendation.ts.
  *
- * RESPONSE CONTRACT (locked down — the desktop Ordering tab depends on
- * this exact shape):
+ * RESPONSE CONTRACT (V-ordering-targets — supersedes the prior flat
+ * per-vaccine shape; the desktop app is not part of this change, only
+ * cloud/app/ordering/page.tsx consumes this):
  *   {
- *     "onHandLastReceivedAt": "2026-08-19T13:00:00.000Z" | null,  // latest received_at across ANY matched on_hand_count row
+ *     "onHandLastReceivedAt": "2026-08-19T13:00:00.000Z" | null,
+ *     "targetsPending": false,   // true before 0011 has been applied
+ *     "groupTargets": { "Flu": 200 },  // group-scoped overrides present, by group display name
  *     "rows": [
  *       {
- *         "vaccineId": "uuid",
- *         "vaccineName": "string",
+ *         "key": "00006412102",           // digits-only NDC, or "vaccine:<id>"
+ *         "vaccineName": "Gardasil",
+ *         "ndc": "00006412102" | null,
+ *         "group": "HPV",
+ *         "active": true,
  *         "upcoming7d": 12,
  *         "onHand": 8,
  *         "onHandAsOf": "2026-08-19T13:00:00.000Z" | null,
- *         "recommendedOrder": 5
+ *         "recommendedTarget": 20,
+ *         "targetOnHand": null,           // this row's own NDC override, or null
+ *         "effectiveTarget": 20,
+ *         "targetSource": "recommended",  // "ndc" | "group" | "recommended"
+ *         "order": 12
  *       }
  *     ]
  *   }
@@ -101,6 +121,43 @@ function matchOrderingVaccineName(base: string, catalog: CatalogVaccine[]): Cata
   return matchVaccineName(base, catalog);
 }
 
+type OnHandEntry = { quantity: number | null; receivedAt: string };
+
+/**
+ * Fetches the latest matched on_hand_count rows, scoped to this
+ * account's inbound address (plus legacy unattributed rows) when
+ * `addressId` is given. Cascades through up to three query shapes so it
+ * keeps working regardless of which of 0010 (inbound_email_address_id)
+ * and 0011 (ndc) have been applied to this environment yet:
+ *   1. select ...,ndc + scoped by address
+ *   2. select ... (no ndc) + scoped by address       [0011 missing]
+ *   3. select ... (no ndc), unscoped                 [0010 missing, or both]
+ */
+async function fetchOnHandRows(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  addressId: string | null
+): Promise<{ data: Array<Record<string, unknown>> | null; error: unknown }> {
+  const baseColumns = "vaccine_id, quantity, received_at";
+  const columnsWithNdc = `${baseColumns}, ndc`;
+
+  async function runQuery(columns: string, scoped: boolean) {
+    let query = supabase.from("on_hand_count").select(columns).eq("matched", true);
+    if (scoped && addressId) {
+      query = query.or(`inbound_email_address_id.eq.${addressId},inbound_email_address_id.is.null`);
+    }
+    return query.order("received_at", { ascending: false });
+  }
+
+  let { data, error } = await runQuery(columnsWithNdc, true);
+  if (error && isMissingColumnError(error)) {
+    ({ data, error } = await runQuery(baseColumns, true));
+  }
+  if (error && isMissingColumnError(error)) {
+    ({ data, error } = await runQuery(baseColumns, false));
+  }
+  return { data: (data as Array<Record<string, unknown>> | null) ?? null, error };
+}
+
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
@@ -108,10 +165,13 @@ export async function GET(request: Request) {
   try {
     const supabase = getSupabaseServerClient();
 
+    // No `.eq("active", true)` filter — V-ordering-targets returns
+    // inactive vaccines too (flagged `active: false`, still collapsed by
+    // NDC) so the Ordering page can render its "Inactive vaccines"
+    // section (Will msg 909).
     const { data: vaccinesData, error: vaccinesError } = await supabase
       .from("vaccine")
-      .select("id, name, short_code")
-      .eq("active", true)
+      .select("id, name, short_code, ndc, active")
       .order("name", { ascending: true });
 
     if (vaccinesError) {
@@ -181,34 +241,23 @@ export async function GET(request: Request) {
 
     // V-onhand-account-address (Will 2026-09-08): scope on-hand rows to
     // THIS account's inbound address, OR (transitionally) a legacy row
-    // with no address at all — see supabase/migrations/0010's doc
-    // comment. addressId stays null (falling back to the pre-feature,
-    // unscoped query below) when the address table itself doesn't exist
-    // yet in this environment, same "MIGRATION FILE ONLY" tolerance as
-    // GET /api/on-hand/address.
+    // with no address at all. addressId stays null (falling back to the
+    // pre-feature, unscoped query below) ONLY when
+    // inbound_email_address doesn't exist yet in this environment
+    // (0010 pending) — review fix, V-ordering-targets item 7: any OTHER
+    // failure (a real Supabase error) must not be silently swallowed.
     let addressId: string | null = null;
     try {
       addressId = (await getOrCreateAddressForUser(auth.user.id)).id;
-    } catch {
+    } catch (err) {
+      if (!isMissingTableError(err)) {
+        console.error("GET /api/ordering/recommendation: on-hand address lookup failed", err);
+        return NextResponse.json({ error: "on-hand lookup failed" }, { status: 503 });
+      }
       addressId = null;
     }
 
-    let onHandQuery = supabase.from("on_hand_count").select("vaccine_id, quantity, received_at").eq("matched", true);
-    if (addressId) {
-      onHandQuery = onHandQuery.or(`inbound_email_address_id.eq.${addressId},inbound_email_address_id.is.null`);
-    }
-    let { data: onHandRows, error: onHandError } = await onHandQuery.order("received_at", { ascending: false });
-
-    if (onHandError && isMissingColumnError(onHandError)) {
-      // inbound_email_address exists but on_hand_count hasn't picked up
-      // inbound_email_address_id yet — retry the pre-feature, unscoped
-      // query rather than failing the whole recommendation endpoint.
-      ({ data: onHandRows, error: onHandError } = await supabase
-        .from("on_hand_count")
-        .select("vaccine_id, quantity, received_at")
-        .eq("matched", true)
-        .order("received_at", { ascending: false }));
-    }
+    const { data: onHandRows, error: onHandError } = await fetchOnHandRows(supabase, addressId);
 
     if (onHandError) {
       console.error("GET /api/ordering/recommendation: failed to load on-hand counts", onHandError);
@@ -216,31 +265,163 @@ export async function GET(request: Request) {
     }
 
     // Rows are ordered received_at DESC across every vaccine, so the
-    // first row seen for a given vaccine_id is that vaccine's latest —
-    // one query instead of one-per-vaccine.
-    const latestOnHandByVaccineId = new Map<string, { quantity: number | null; receivedAt: string }>();
+    // first row seen for a given vaccine_id/ndc is that vaccine's/that
+    // NDC's latest — one query instead of one-per-vaccine.
+    const latestOnHandByVaccineId = new Map<string, OnHandEntry>();
+    const latestOnHandByNdc = new Map<string, OnHandEntry>();
     let onHandLastReceivedAt: string | null = null;
     for (const row of onHandRows ?? []) {
-      if (onHandLastReceivedAt === null) onHandLastReceivedAt = row.received_at;
-      if (!row.vaccine_id) continue;
-      if (!latestOnHandByVaccineId.has(row.vaccine_id)) {
-        latestOnHandByVaccineId.set(row.vaccine_id, { quantity: row.quantity, receivedAt: row.received_at });
+      const receivedAt = row.received_at as string;
+      const quantity = (row.quantity as number | null) ?? null;
+      if (onHandLastReceivedAt === null) onHandLastReceivedAt = receivedAt;
+
+      const vaccineId = row.vaccine_id as string | null;
+      if (vaccineId && !latestOnHandByVaccineId.has(vaccineId)) {
+        latestOnHandByVaccineId.set(vaccineId, { quantity, receivedAt });
+      }
+
+      const rowNdc = normalizeNdc((row.ndc as string | null | undefined) ?? null);
+      if (rowNdc && !latestOnHandByNdc.has(rowNdc)) {
+        latestOnHandByNdc.set(rowNdc, { quantity, receivedAt });
       }
     }
 
-    const rows = catalog.map((vaccine) => {
-      const upcoming7d = upcomingByVaccineId.get(vaccine.id) ?? 0;
-      const onHandEntry = latestOnHandByVaccineId.get(vaccine.id) ?? null;
-      return buildRecommendationRow({
-        vaccineId: vaccine.id,
-        vaccineName: vaccine.name,
+    // NDC collapse (Will msg 908): one row per product/NDC rather than
+    // one per catalog vaccine — a 3-dose series like Gardasil (3 catalog
+    // rows sharing one NDC) becomes ONE recommendation row.
+    const collapsibleCatalog: CollapsibleVaccine[] = catalog.map((vaccine) => ({
+      id: vaccine.id,
+      name: vaccine.name,
+      ndc: vaccine.ndc ?? null,
+      active: (vaccine as { active?: boolean }).active ?? true,
+    }));
+    const collapsedGroups = collapseVaccinesByNdc(collapsibleCatalog);
+
+    for (const group of collapsedGroups) {
+      if (group.vaccineIds.length > 1) {
+        console.log(
+          `GET /api/ordering/recommendation: collapsed ${group.vaccineIds.length} vaccine rows into 1 row — ` +
+            `ndc=${group.ndc ?? "(none)"} name="${group.vaccineName}" ids=[${group.vaccineIds.join(", ")}]`
+        );
+      }
+    }
+
+    function onHandFor(group: (typeof collapsedGroups)[number]): OnHandEntry | null {
+      if (group.ndc) {
+        const byNdc = latestOnHandByNdc.get(group.ndc);
+        if (byNdc) return byNdc;
+      }
+      let best: OnHandEntry | null = null;
+      for (const id of group.vaccineIds) {
+        const entry = latestOnHandByVaccineId.get(id);
+        if (entry && (!best || entry.receivedAt > best.receivedAt)) best = entry;
+      }
+      return best;
+    }
+
+    // Targets (Will msg 904): load overrides — degrades to
+    // targetsPending:true (never an error) before 0011 has been applied.
+    const ndcOverrides: Record<string, number> = {};
+    const groupOverrides: Record<string, number> = {};
+    let targetsPending = false;
+    const { data: targetRows, error: targetError } = await supabase
+      .from("ordering_target")
+      .select("scope, key, target_on_hand");
+    if (targetError) {
+      if (isMissingTableError(targetError)) {
+        targetsPending = true;
+      } else {
+        console.error("GET /api/ordering/recommendation: failed to load ordering targets", targetError);
+        return NextResponse.json({ error: "Failed to load ordering targets." }, { status: 500 });
+      }
+    } else {
+      for (const row of (targetRows as Array<{ scope: string; key: string; target_on_hand: number }>) ?? []) {
+        if (row.scope === "ndc") ndcOverrides[row.key] = row.target_on_hand;
+        else if (row.scope === "group") groupOverrides[row.key] = row.target_on_hand;
+      }
+    }
+
+    type BuiltRow = {
+      key: string;
+      vaccineName: string;
+      ndc: string | null;
+      group: string;
+      active: boolean;
+      upcoming7d: number;
+      onHand: number | null;
+      onHandAsOf: string | null;
+    };
+
+    const builtRows: BuiltRow[] = collapsedGroups.map((group) => {
+      const upcoming7d = group.vaccineIds.reduce((sum, id) => sum + (upcomingByVaccineId.get(id) ?? 0), 0);
+      const onHandEntry = onHandFor(group);
+      return {
+        key: group.key,
+        vaccineName: group.vaccineName,
+        ndc: group.ndc,
+        group: getVaccineGroup(group.vaccineName),
+        active: group.active,
         upcoming7d,
         onHand: onHandEntry?.quantity ?? null,
         onHandAsOf: onHandEntry?.receivedAt ?? null,
-      });
+      };
     });
 
-    return NextResponse.json({ onHandLastReceivedAt, rows });
+    // Group apportionment (lib/ordering-targets.ts) considers ONLY
+    // active rows (Will's brief) — inactive rows still get a
+    // recommended/order figure, just never participate in (or benefit
+    // from) a group-level split.
+    const activeTargetInputs: TargetInput[] = builtRows
+      .filter((row) => row.active)
+      .map((row) => ({ key: row.key, ndc: row.ndc, group: row.group, upcoming7d: row.upcoming7d, onHand: row.onHand }));
+    const activeResults = computeEffectiveTargets(activeTargetInputs, { ndc: ndcOverrides, group: groupOverrides });
+    const activeResultByKey = new Map(activeResults.map((result) => [result.key, result]));
+
+    const rows = builtRows.map((row) => {
+      if (row.active) {
+        const result = activeResultByKey.get(row.key);
+        if (result) {
+          return {
+            key: row.key,
+            vaccineName: row.vaccineName,
+            ndc: row.ndc,
+            group: row.group,
+            active: row.active,
+            upcoming7d: row.upcoming7d,
+            onHand: row.onHand,
+            onHandAsOf: row.onHandAsOf,
+            recommendedTarget: result.recommendedTarget,
+            targetOnHand: row.ndc ? ndcOverrides[row.ndc] ?? null : null,
+            effectiveTarget: result.effectiveTarget,
+            targetSource: result.targetSource,
+            order: result.order,
+          };
+        }
+      }
+
+      // Inactive row (or, defensively, a missing active-result lookup):
+      // NDC override only, no group apportionment.
+      const recommended = recommendedTarget(row.upcoming7d);
+      const ndcOverride = row.ndc ? ndcOverrides[row.ndc] : undefined;
+      const effective = ndcOverride ?? recommended;
+      return {
+        key: row.key,
+        vaccineName: row.vaccineName,
+        ndc: row.ndc,
+        group: row.group,
+        active: row.active,
+        upcoming7d: row.upcoming7d,
+        onHand: row.onHand,
+        onHandAsOf: row.onHandAsOf,
+        recommendedTarget: recommended,
+        targetOnHand: ndcOverride ?? null,
+        effectiveTarget: effective,
+        targetSource: (ndcOverride !== undefined ? "ndc" : "recommended") as "ndc" | "recommended",
+        order: Math.max(0, effective - (row.onHand ?? 0)),
+      };
+    });
+
+    return NextResponse.json({ onHandLastReceivedAt, targetsPending, groupTargets: groupOverrides, rows });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },
