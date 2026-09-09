@@ -5,6 +5,7 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { parseOnHandContent } from "@/lib/on-hand-parser";
 import { extractTextFromRawMime } from "@/lib/ses-mime";
 import { isAllowedSnsHost, verifySnsSignature } from "@/lib/sns-signature";
+import { findAddressByToken, parseToken, touchLastReceived, type InboundEmailAddress } from "@/lib/on-hand/address";
 import type { CatalogVaccine } from "@/lib/vaccine-matching";
 
 /**
@@ -57,6 +58,26 @@ import type { CatalogVaccine } from "@/lib/vaccine-matching";
  *
  * PHI/log discipline: only message-type, topic ARN, and parse-outcome
  * line counts are logged (at most). Never the email body/content itself.
+ *
+ * ACCOUNT ATTRIBUTION (V-onhand-account-address, Will 2026-09-08): a real
+ * SES "Received" notification's `receipt.recipients` (falling back to
+ * `mail.destination`) names the actual envelope recipient address(es).
+ * The router upstream of SNS is being changed to forward every recipient
+ * whose local part starts with "vaccines-" here, so this route resolves
+ * the FIRST recipient whose token (lib/on-hand/address.ts's parseToken)
+ * matches an enabled `inbound_email_address` row, and attaches every
+ * inserted on_hand_count row to that account
+ * (inbound_email_address_id + last_received_at). An unknown, disabled, or
+ * absent token — including the legacy fixed
+ * vaccines-onhand@in.orchardsdrug.com address, which isn't a valid token
+ * at all — gets a 200 `{ ignored: "unknown-recipient" }` and a
+ * console.warn, with NOTHING inserted: never a 4xx/5xx for this case,
+ * since SNS retries on failure and a malformed/unrecognized recipient
+ * will never become recognized on retry. This resolution only applies to
+ * the SNS "Received" path — the legacy simple-contract shape (JSON/text
+ * POSTs with no SES envelope at all, used for manual testing) has no
+ * recipient to resolve and keeps inserting unattributed rows exactly as
+ * before.
  */
 
 function safeCompare(a: string, b: string): boolean {
@@ -143,8 +164,16 @@ async function extractLegacyContent(request: Request): Promise<string> {
  * Shared tail end of both entry shapes: run `content` through the
  * on-hand parser against the live vaccine catalog and batch-insert every
  * line (matched or not) into on_hand_count.
+ *
+ * `addressId`, when given, is stamped onto every inserted row as
+ * inbound_email_address_id (the resolved recipient's account — see the
+ * ACCOUNT ATTRIBUTION doc comment above). Omitted entirely (not even as
+ * `null`) when there's no address to attach, so the legacy
+ * simple-contract callers keep inserting the exact same row shape as
+ * before this feature existed — inbound_email_address_id then falls back
+ * to the column's DB default (NULL, treated as "legacy/unattributed").
  */
-async function processOnHandContent(content: string): Promise<NextResponse> {
+async function processOnHandContent(content: string, addressId?: string): Promise<NextResponse> {
   if (!content || content.trim().length === 0) {
     console.log("POST /api/webhooks/ses: empty content, nothing to parse");
     return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
@@ -177,13 +206,17 @@ async function processOnHandContent(content: string): Promise<NextResponse> {
     return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
   }
 
-  const rows = parsed.map((line) => ({
-    raw_line: line.rawLine,
-    vaccine_name_raw: line.vaccineNameRaw,
-    quantity: line.quantity,
-    vaccine_id: line.vaccineId,
-    matched: line.matched,
-  }));
+  const rows = parsed.map((line) => {
+    const row: Record<string, unknown> = {
+      raw_line: line.rawLine,
+      vaccine_name_raw: line.vaccineNameRaw,
+      quantity: line.quantity,
+      vaccine_id: line.vaccineId,
+      matched: line.matched,
+    };
+    if (addressId) row.inbound_email_address_id = addressId;
+    return row;
+  });
 
   const { error: insertError } = await supabase.from("on_hand_count").insert(rows);
   if (insertError) {
@@ -200,6 +233,47 @@ async function processOnHandContent(content: string): Promise<NextResponse> {
     matchedCount,
     unmatchedCount: parsed.length - matchedCount,
   });
+}
+
+/**
+ * Pulls candidate recipient address strings out of an SES "Received"
+ * notification: `receipt.recipients` (the authoritative envelope
+ * recipients — matches the real SMTP RCPT TO) first, falling back to
+ * `mail.destination` only when `receipt.recipients` is absent or empty.
+ */
+function extractRecipients(sesMessage: Record<string, unknown>): string[] {
+  const receipt = sesMessage.receipt as Record<string, unknown> | undefined;
+  const receiptRecipients = receipt?.recipients;
+  if (Array.isArray(receiptRecipients)) {
+    const filtered = receiptRecipients.filter((r): r is string => typeof r === "string");
+    if (filtered.length > 0) return filtered;
+  }
+
+  const mail = sesMessage.mail as Record<string, unknown> | undefined;
+  const destination = mail?.destination;
+  if (Array.isArray(destination)) {
+    return destination.filter((r): r is string => typeof r === "string");
+  }
+
+  return [];
+}
+
+/**
+ * Resolves the first recipient whose token matches an enabled
+ * inbound_email_address row, or null if none do (or there are no
+ * candidate recipients at all). Throws only when Supabase itself isn't
+ * configured (findAddressByToken swallows lookup errors as "no match" —
+ * see its own doc comment), matching processOnHandContent's own
+ * 503-on-unconfigured posture.
+ */
+async function resolveRecipientAddress(recipients: string[]): Promise<InboundEmailAddress | null> {
+  for (const recipient of recipients) {
+    const token = parseToken(recipient);
+    if (!token) continue;
+    const address = await findAddressByToken(token);
+    if (address && address.enabled) return address;
+  }
+  return null;
 }
 
 async function handleSnsRequest(request: Request, snsMessageType: string): Promise<NextResponse> {
@@ -269,8 +343,31 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
       return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
     }
 
+    const recipients = extractRecipients(sesMessage);
+    let resolvedAddress: InboundEmailAddress | null;
+    try {
+      resolvedAddress = await resolveRecipientAddress(recipients);
+    } catch (err) {
+      console.error("POST /api/webhooks/ses: failed to resolve recipient address", err);
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Supabase is not configured." },
+        { status: 503 }
+      );
+    }
+
+    if (!resolvedAddress) {
+      console.warn(
+        `POST /api/webhooks/ses: ignoring SES notification — no enabled recipient token among [${recipients.join(", ")}]`
+      );
+      return NextResponse.json({ ignored: "unknown-recipient" });
+    }
+
     const content = extractTextFromRawMime(rawMime);
-    return processOnHandContent(content);
+    const response = await processOnHandContent(content, resolvedAddress.id);
+    if (response.status === 200) {
+      await touchLastReceived(resolvedAddress.id);
+    }
+    return response;
   }
 
   // UnsubscribeConfirmation or any future SNS message type — acknowledge

@@ -41,7 +41,18 @@ function authedRequest() {
   });
 }
 
-function fakeSupabase(onHandRows: unknown[] = [], catalog: unknown[] = CATALOG) {
+type FakeAddress = { id: string; user_id: string; token: string; enabled: boolean; created_at: string; last_received_at: string | null };
+
+// `address` defaults to null, which makes the "inbound_email_address"
+// table throw "unexpected table" below — exactly like every table this
+// mock doesn't know about. That's deliberate: it's how these tests
+// exercise the route's graceful-fallback path (V-onhand-account-address,
+// Will 2026-09-08) — getOrCreateAddressForUser throws, the route catches
+// it and falls back to the pre-feature UNSCOPED on_hand_count query
+// (.eq().order(), no .or()), so every existing test below keeps passing
+// unchanged. Only tests that explicitly pass `address` exercise the new
+// per-account .or() scoping.
+function fakeSupabase(onHandRows: unknown[] = [], catalog: unknown[] = CATALOG, address: FakeAddress | null = null) {
   return {
     from: (table: string) => {
       if (table === "vaccine") {
@@ -57,7 +68,28 @@ function fakeSupabase(onHandRows: unknown[] = [], catalog: unknown[] = CATALOG) 
         return {
           select: () => ({
             eq: () => ({
+              // Real Supabase's .or(...) takes a PostgREST filter string
+              // like "inbound_email_address_id.eq.addr-1,inbound_email_address_id.is.null" —
+              // this stand-in parses just enough of that shape to filter
+              // onHandRows the same way Postgres would.
+              or: (filter: string) => {
+                const match = filter.match(/inbound_email_address_id\.eq\.([^,]+)/);
+                const allowedId = match ? match[1] : null;
+                const filtered = (onHandRows as Array<{ inbound_email_address_id?: string | null }>).filter(
+                  (row) => row.inbound_email_address_id === allowedId || row.inbound_email_address_id == null
+                );
+                return { order: async () => ({ data: filtered, error: null }) };
+              },
               order: async () => ({ data: onHandRows, error: null }),
+            }),
+          }),
+        };
+      }
+      if (table === "inbound_email_address" && address) {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: address, error: null }),
             }),
           }),
         };
@@ -250,6 +282,32 @@ describe("GET /api/ordering/recommendation", () => {
     expect(pfizerRow.upcoming7d).toBe(2);
     const modernaRow = body.rows.find((r: { vaccineId: string }) => r.vaccineId === "v-mnexspike");
     expect(modernaRow.upcoming7d).toBe(1);
+  });
+
+  it("scopes on-hand rows to this user's inbound address plus legacy null-address rows (V-onhand-account-address)", async () => {
+    const address: FakeAddress = {
+      id: "addr-1",
+      user_id: "staff-1", // matches the mocked requireAuthenticatedUser's user.id above
+      token: "0123456789abcdef0123456789abcdef",
+      enabled: true,
+      created_at: "2026-09-01T00:00:00.000Z",
+      last_received_at: null,
+    };
+    const onHandRows = [
+      { vaccine_id: "v-flu", quantity: 8, received_at: "2026-08-19T13:00:00.000Z", inbound_email_address_id: "addr-1" }, // this account
+      { vaccine_id: "v-mmr", quantity: 2, received_at: "2026-08-18T08:00:00.000Z", inbound_email_address_id: null }, // legacy, pre-feature
+      { vaccine_id: "v-flu", quantity: 999, received_at: "2026-08-20T00:00:00.000Z", inbound_email_address_id: "addr-2" }, // a DIFFERENT account — must be excluded
+    ];
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows, CATALOG, address) as never);
+
+    const response = await GET(authedRequest());
+    const body = await response.json();
+
+    const fluRow = body.rows.find((r: { vaccineId: string }) => r.vaccineId === "v-flu");
+    // The addr-2 row (quantity 999) must be excluded — onHand stays 8, not 999.
+    expect(fluRow.onHand).toBe(8);
+    const mmrRow = body.rows.find((r: { vaccineId: string }) => r.vaccineId === "v-mmr");
+    expect(mmrRow.onHand).toBe(2);
   });
 
   it("returns 502 when the Acuity fetch fails", async () => {

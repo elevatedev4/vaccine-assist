@@ -42,3 +42,28 @@ export function isMissingColumnError(error: unknown): boolean {
   if (!message.includes("column")) return false;
   return message.includes("does not exist") || message.includes("could not find");
 }
+
+/**
+ * Same idea as isMissingColumnError, but for a whole TABLE that hasn't
+ * been created yet — supabase/migrations/0010_inbound_email_address.sql
+ * (V-onhand-account-address) adds the `inbound_email_address` table
+ * itself, not just columns on an existing one, so callers that touch it
+ * before that migration has run (cloud/lib/on-hand/address.ts,
+ * app/api/on-hand/address/route.ts) need this instead:
+ *  - Postgres raises `undefined_table`, SQLSTATE `42P01`, for a query
+ *    against an unknown relation.
+ *  - PostgREST's schema-cache miss for an unrecognized table surfaces as
+ *    code `PGRST205` ("Could not find the table ... in the schema
+ *    cache"), the table-level sibling of PGRST204 above.
+ * Message-text fallback matches the same belt-and-suspenders posture as
+ * isMissingColumnError.
+ */
+export function isMissingTableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "42P01" || code === "PGRST205") return true;
+
+  const message = String((error as { message?: unknown }).message ?? "").toLowerCase();
+  if (!message.includes("table") && !message.includes("relation")) return false;
+  return message.includes("does not exist") || message.includes("could not find");
+}

@@ -26,7 +26,21 @@ const styles = {
   success: { color: "#0a7d27" },
   muted: { color: "#555", fontSize: "0.875rem" },
   section: { marginBottom: "2rem" },
+  codeBlock: {
+    fontFamily: "ui-monospace, monospace",
+    fontSize: "0.9rem",
+    background: "#f4f4f4",
+    border: "1px solid #ddd",
+    borderRadius: 4,
+    padding: "0.6rem 0.75rem",
+    display: "inline-block",
+    marginRight: "0.5rem",
+  },
 } as const;
+
+type OnHandAddressStatus =
+  | { pending: true }
+  | { pending?: false; address: string; token: string; lastReceivedAt: string | null; hasData: boolean };
 
 export default function AcuitySettingsPage() {
   // Phase 1 has no browser sign-in flow anywhere else in the app (the
@@ -51,6 +65,12 @@ export default function AcuitySettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
+  // On-hand report email-in address (V-onhand-account-address, Will
+  // 2026-09-08) — see GET /api/on-hand/address's RESPONSE CONTRACT.
+  const [onHandStatus, setOnHandStatus] = useState<OnHandAddressStatus | null>(null);
+  const [onHandError, setOnHandError] = useState<string | null>(null);
+  const [addressCopied, setAddressCopied] = useState(false);
+
   // Clears this page's own fetched state on sign-out, whatever triggers
   // it (see top-nav.tsx's doc comment — sign-out now lives solely in
   // TopNav's account menu, and every page's session subscription still
@@ -63,6 +83,9 @@ export default function AcuitySettingsPage() {
     setSaveError(null);
     setSaveOk(false);
     setTestResult(null);
+    setOnHandStatus(null);
+    setOnHandError(null);
+    setAddressCopied(false);
   }
 
   useEffect(() => {
@@ -104,6 +127,38 @@ export default function AcuitySettingsPage() {
   useEffect(() => {
     if (session) void loadStatus(session.accessToken);
   }, [session, loadStatus]);
+
+  const loadOnHandAddress = useCallback(async (token: string) => {
+    setOnHandError(null);
+    try {
+      const response = await fetch("/api/on-hand/address", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        setOnHandError("Could not load the on-hand report email address.");
+        return;
+      }
+      const data: OnHandAddressStatus = await response.json();
+      setOnHandStatus(data);
+    } catch {
+      setOnHandError("Could not load the on-hand report email address.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (session) void loadOnHandAddress(session.accessToken);
+  }, [session, loadOnHandAddress]);
+
+  async function handleCopyAddress(address: string) {
+    try {
+      await navigator.clipboard.writeText(address);
+      setAddressCopied(true);
+      setTimeout(() => setAddressCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable/denied — the address is still visible
+      // and selectable in the code box, so this is a soft failure.
+    }
+  }
 
   async function handleSignIn(event: FormEvent) {
     event.preventDefault();
@@ -265,6 +320,39 @@ export default function AcuitySettingsPage() {
           {testResult.message}
         </p>
       )}
+      </section>
+
+      <section style={styles.section}>
+        <h2>On-hand report email-in</h2>
+
+        {onHandError && <p style={styles.error}>{onHandError}</p>}
+        {!onHandStatus && !onHandError && <p style={styles.muted}>Loading…</p>}
+
+        {onHandStatus && "pending" in onHandStatus && onHandStatus.pending ? (
+          <p style={styles.muted}>Activates after the pending database step.</p>
+        ) : null}
+
+        {onHandStatus && !("pending" in onHandStatus && onHandStatus.pending) && (
+          <>
+            <p>
+              <span style={styles.codeBlock}>{onHandStatus.address}</span>
+              <button style={styles.button} type="button" onClick={() => void handleCopyAddress(onHandStatus.address)}>
+                {addressCopied ? "Copied!" : "Copy"}
+              </button>
+            </p>
+            <p>
+              Last report received:{" "}
+              {onHandStatus.lastReceivedAt ? new Date(onHandStatus.lastReceivedAt).toLocaleString() : "never"}
+            </p>
+            <p style={styles.muted}>
+              Point PioneerRx&apos;s daily on-hand report at this address.
+              <br />
+              One line per vaccine: &quot;VaccineName, Quantity&quot;.
+              <br />
+              Reports arrive within a minute of being sent.
+            </p>
+          </>
+        )}
       </section>
 
       <OtherSettingsLinks />

@@ -14,6 +14,8 @@ import { compositeNameToMatchableBase } from "@/lib/appointment-table";
 import { env } from "@/lib/env";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { buildRecommendationRow } from "@/lib/ordering-recommendation";
+import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
+import { isMissingColumnError } from "@/lib/schema-degradation";
 
 /**
  * Ordering tab recommendation endpoint (V-ordering, 2026-08-19/20).
@@ -177,11 +179,36 @@ export async function GET(request: Request) {
     // upcoming7d simply stays 0, same "not configured yet" tolerance as
     // the rest of this app (see app/api/acuity/poll/route.ts).
 
-    const { data: onHandRows, error: onHandError } = await supabase
-      .from("on_hand_count")
-      .select("vaccine_id, quantity, received_at")
-      .eq("matched", true)
-      .order("received_at", { ascending: false });
+    // V-onhand-account-address (Will 2026-09-08): scope on-hand rows to
+    // THIS account's inbound address, OR (transitionally) a legacy row
+    // with no address at all — see supabase/migrations/0010's doc
+    // comment. addressId stays null (falling back to the pre-feature,
+    // unscoped query below) when the address table itself doesn't exist
+    // yet in this environment, same "MIGRATION FILE ONLY" tolerance as
+    // GET /api/on-hand/address.
+    let addressId: string | null = null;
+    try {
+      addressId = (await getOrCreateAddressForUser(auth.user.id)).id;
+    } catch {
+      addressId = null;
+    }
+
+    let onHandQuery = supabase.from("on_hand_count").select("vaccine_id, quantity, received_at").eq("matched", true);
+    if (addressId) {
+      onHandQuery = onHandQuery.or(`inbound_email_address_id.eq.${addressId},inbound_email_address_id.is.null`);
+    }
+    let { data: onHandRows, error: onHandError } = await onHandQuery.order("received_at", { ascending: false });
+
+    if (onHandError && isMissingColumnError(onHandError)) {
+      // inbound_email_address exists but on_hand_count hasn't picked up
+      // inbound_email_address_id yet — retry the pre-feature, unscoped
+      // query rather than failing the whole recommendation endpoint.
+      ({ data: onHandRows, error: onHandError } = await supabase
+        .from("on_hand_count")
+        .select("vaccine_id, quantity, received_at")
+        .eq("matched", true)
+        .order("received_at", { ascending: false }));
+    }
 
     if (onHandError) {
       console.error("GET /api/ordering/recommendation: failed to load on-hand counts", onHandError);

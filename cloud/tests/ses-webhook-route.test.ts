@@ -18,10 +18,32 @@ const CATALOG = [
   { id: "v-mmr", name: "MMR-II", short_code: "mmrii" },
 ];
 
+// V-onhand-account-address: the default fixture recipient/address used by
+// every SNS Notification test below unless a test overrides `receipt` —
+// mirrors a real production recipient once the router forwards
+// vaccines-* addresses here.
+const VALID_TOKEN = "0123456789abcdef0123456789abcdef"; // 32 hex chars
+const VALID_ADDRESS = `vaccines-${VALID_TOKEN}@in.orchardsdrug.com`;
+const DEFAULT_ADDRESS_ROW = {
+  id: "addr-1",
+  user_id: "user-1",
+  token: VALID_TOKEN,
+  enabled: true,
+  created_at: "2026-09-01T00:00:00.000Z",
+  last_received_at: null as string | null,
+};
+
 // Minimal stand-in matching exactly how the route queries: vaccine ->
 // select() resolves directly (no further chaining needed since the route
-// awaits the select() result), on_hand_count -> insert(rows).
-function fakeSupabaseClient(insert: (rows: unknown[]) => Promise<{ error: unknown }> = vi.fn(async () => ({ error: null }))) {
+// awaits the select() result), on_hand_count -> insert(rows),
+// inbound_email_address -> select().eq("token", ...).maybeSingle() /
+// update(...).eq("id", ...) (lib/on-hand/address.ts's findAddressByToken
+// / touchLastReceived).
+function fakeSupabaseClient(
+  insert: (rows: unknown[]) => Promise<{ error: unknown }> = vi.fn(async () => ({ error: null })),
+  addressRow: typeof DEFAULT_ADDRESS_ROW | null = DEFAULT_ADDRESS_ROW,
+  updateAddress: (fields: unknown) => Promise<{ error: unknown }> = vi.fn(async () => ({ error: null }))
+) {
   return {
     from: (table: string) => {
       if (table === "vaccine") {
@@ -29,6 +51,21 @@ function fakeSupabaseClient(insert: (rows: unknown[]) => Promise<{ error: unknow
       }
       if (table === "on_hand_count") {
         return { insert };
+      }
+      if (table === "inbound_email_address") {
+        return {
+          select: () => ({
+            eq: (_column: string, value: string) => ({
+              maybeSingle: async () => ({
+                data: addressRow && addressRow.token === value ? addressRow : null,
+                error: null,
+              }),
+            }),
+          }),
+          update: (fields: unknown) => ({
+            eq: async () => updateAddress(fields),
+          }),
+        };
       }
       throw new Error(`unexpected table ${table}`);
     },
@@ -58,6 +95,7 @@ function snsNotificationBody(overrides: Record<string, unknown> = {}, sesMessage
   const sesMessage = {
     notificationType: "Received",
     mail: { timestamp: "2026-09-05T12:00:00.000Z" },
+    receipt: { recipients: [VALID_ADDRESS] },
     content: Buffer.from(RAW_MIME, "utf-8").toString("base64"),
     ...sesMessageOverrides,
   };
@@ -264,10 +302,13 @@ describe("POST /api/webhooks/ses", () => {
   });
 
   describe("SNS Notification (SES received-email envelope)", () => {
-    it("extracts the MIME text and ingests it through the same on-hand parser path", async () => {
+    it("extracts the MIME text and ingests it through the same on-hand parser path, attaching rows to the resolved recipient account", async () => {
       process.env.SES_SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:vaccines-onhand";
       const insert = vi.fn(async () => ({ error: null }));
-      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert) as never);
+      const updateAddress = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient(insert, DEFAULT_ADDRESS_ROW, updateAddress) as never
+      );
 
       const response = await POST(
         jsonRequest(snsNotificationBody(), { "x-amz-sns-message-type": "Notification" })
@@ -277,9 +318,94 @@ describe("POST /api/webhooks/ses", () => {
       const body = await response.json();
       expect(body).toEqual({ linesTotal: 2, matchedCount: 2, unmatchedCount: 0 });
       expect(insert).toHaveBeenCalledWith([
-        { raw_line: "Flu Quad 2025-26, 10", vaccine_name_raw: "Flu Quad 2025-26", quantity: 10, vaccine_id: "v-flu", matched: true },
-        { raw_line: "MMR, 15", vaccine_name_raw: "MMR", quantity: 15, vaccine_id: "v-mmr", matched: true },
+        {
+          raw_line: "Flu Quad 2025-26, 10",
+          vaccine_name_raw: "Flu Quad 2025-26",
+          quantity: 10,
+          vaccine_id: "v-flu",
+          matched: true,
+          inbound_email_address_id: "addr-1",
+        },
+        {
+          raw_line: "MMR, 15",
+          vaccine_name_raw: "MMR",
+          quantity: 15,
+          vaccine_id: "v-mmr",
+          matched: true,
+          inbound_email_address_id: "addr-1",
+        },
       ]);
+      expect(updateAddress).toHaveBeenCalledWith({ last_received_at: expect.any(String) });
+    });
+
+    it("resolves the recipient from mail.destination when receipt.recipients is absent", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert) as never);
+
+      const response = await POST(
+        jsonRequest(
+          snsNotificationBody({}, { receipt: undefined, mail: { timestamp: "2026-09-05T12:00:00.000Z", destination: [VALID_ADDRESS] } }),
+          { "x-amz-sns-message-type": "Notification" }
+        )
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ linesTotal: 2, matchedCount: 2, unmatchedCount: 0 });
+      expect(insert).toHaveBeenCalled();
+    });
+
+    it("ignores a notification with no recognized recipient token, without inserting anything", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert) as never);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const response = await POST(
+        jsonRequest(
+          snsNotificationBody({}, { receipt: { recipients: ["someone@example.com"] } }),
+          { "x-amz-sns-message-type": "Notification" }
+        )
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ ignored: "unknown-recipient" });
+      expect(insert).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no enabled recipient token"));
+      warnSpy.mockRestore();
+    });
+
+    it("ignores the legacy fixed vaccines-onhand@ address (not a valid token), without inserting anything", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert) as never);
+
+      const response = await POST(
+        jsonRequest(
+          snsNotificationBody({}, { receipt: { recipients: ["vaccines-onhand@in.orchardsdrug.com"] } }),
+          { "x-amz-sns-message-type": "Notification" }
+        )
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ ignored: "unknown-recipient" });
+      expect(insert).not.toHaveBeenCalled();
+    });
+
+    it("ignores a valid-shaped token whose address row is disabled", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient(insert, { ...DEFAULT_ADDRESS_ROW, enabled: false }) as never
+      );
+
+      const response = await POST(
+        jsonRequest(snsNotificationBody(), { "x-amz-sns-message-type": "Notification" })
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ ignored: "unknown-recipient" });
+      expect(insert).not.toHaveBeenCalled();
     });
 
     it("ignores non-Received notification types (e.g. Bounce)", async () => {
