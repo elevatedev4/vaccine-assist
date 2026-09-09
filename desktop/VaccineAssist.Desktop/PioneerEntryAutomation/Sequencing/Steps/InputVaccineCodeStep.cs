@@ -44,31 +44,31 @@ public sealed class InputVaccineCodeStep : IPioneerEntryStep
 
     public string Name => "Enter vaccine product code";
 
-    public Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
+    public async Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
     {
         if (context.DryRun)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: true,
+            return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
                 $"Would type NDC \"{context.Payload.Ndc}\" into the drug field " +
-                $"(AutomationId '{PrescribedItemQuickSearchAutomationId}') and press ENTER twice (no PioneerRx call made)."));
+                $"(AutomationId '{PrescribedItemQuickSearchAutomationId}') and press ENTER twice (no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
         if (string.IsNullOrWhiteSpace(context.Payload.Ndc))
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "This vaccine has no NDC on file (Models.Vaccine.Ndc) — add one in the vaccine catalog before entering it into PioneerRx."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                "This vaccine has no NDC on file (Models.Vaccine.Ndc) — add one in the vaccine catalog before entering it into PioneerRx.");
         }
 
-        var outcome = QuickSearchFieldEntry.TypeAndConfirm(
+        var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
             context.AttachedWindow, PrescribedItemQuickSearchAutomationId, "drug/NDC",
-            context.Payload.Ndc, EnterPresses);
+            context.Payload.Ndc, EnterPresses, context.Log, cancellationToken);
 
-        return Task.FromResult(new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message));
+        return new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message);
     }
 }
