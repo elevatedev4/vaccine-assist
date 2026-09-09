@@ -310,13 +310,58 @@ function toResult(entry: ProductCatalogEntry): ProductLookupResult {
   };
 }
 
+// Matches a "season" token anywhere in a name: "2025-26", "2026-27",
+// "2026-2027" — a 4-digit year, a dash, then either 2 or 4 more digits.
+const SEASON_TOKEN_PATTERN = /\b\d{4}-\d{2,4}\b/g;
+
+/**
+ * Normalizes a product name down to a season-agnostic "base" for
+ * matching (review follow-up, live bug: the lot-list apply's mid-season
+ * DB rename — "mNEXSPIKE" -> "mNEXSPIKE 2026-27", "Comirnaty 2025-26
+ * 12+" -> "Comirnaty 2026-27 12+" — broke exact-name catalog matching,
+ * dropping pkg size/age range/NDC-fallback for every renamed product).
+ * Lowercases, strips any "(...)" parenthetical, strips a season token
+ * ("2025-26"/"2026-27"/"2026-2027"), and collapses whitespace. Applied
+ * to BOTH sides of a name comparison in findInCatalog below, so a catalog
+ * row's own `match.name` ("Comirnaty 2025-26 12+") and a freshly-renamed
+ * DB name ("Comirnaty 2026-27 12+") normalize to the identical base
+ * ("comirnaty 12+") regardless of which season either one happens to be
+ * pinned to.
+ */
+export function normalizeProductBaseName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(SEASON_TOKEN_PATTERN, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Looks up a product by NDC first (normalized digits-only, so a dashed
- * or undashed form both match), then by exact case-insensitive name,
- * against an arbitrary catalog array — split out from lookupProduct so
- * tests can exercise the matching rules against a fixture catalog
- * without needing real rows in the (intentionally empty) seed table
- * below. Returns null when neither matches.
+ * or undashed form both match), then by name — season-agnostic (see
+ * normalizeProductBaseName above) — against an arbitrary catalog array —
+ * split out from lookupProduct so tests can exercise the matching rules
+ * against a fixture catalog without needing real rows in the
+ * (intentionally empty) seed table below. Returns null when nothing
+ * matches.
+ *
+ * Name matching, in order (NDC-first precedence is unchanged — this is
+ * only reached once the NDC check above has already missed):
+ *   1. Exact (trimmed, case-insensitive) `match.name` — unchanged from
+ *      before this fix, still the tightest/fastest check.
+ *   2. Season-agnostic base-name match: both the incoming name and the
+ *      catalog row's `match.name` run through normalizeProductBaseName,
+ *      then compared for EQUALITY or PREFIX (whichever of the two
+ *      normalized strings is shorter must be a prefix of the longer) —
+ *      prefix, not just equality, so a further rename that only ADDS
+ *      words ("Fluad" -> "Fluad Trivalent") still resolves, the same
+ *      tolerance the explicit `namePrefix` field below already gave
+ *      Comirnaty specifically.
+ *   3. The existing explicit `match.namePrefix` field, case-insensitive
+ *      startsWith against the RAW (non-season-stripped) incoming name —
+ *      kept for any future row that needs a prefix rule
+ *      normalizeProductBaseName's season-only stripping doesn't cover.
  */
 export function findInCatalog(
   catalog: readonly ProductCatalogEntry[],
@@ -332,6 +377,20 @@ export function findInCatalog(
   if (trimmedName) {
     const byName = catalog.find((entry) => entry.match.name && entry.match.name.trim().toLowerCase() === trimmedName);
     if (byName) return toResult(byName);
+
+    const normalizedIncoming = normalizeProductBaseName(trimmedName);
+    if (normalizedIncoming) {
+      const byBaseName = catalog.find((entry) => {
+        if (!entry.match.name) return false;
+        const normalizedCatalog = normalizeProductBaseName(entry.match.name);
+        if (!normalizedCatalog) return false;
+        if (normalizedCatalog === normalizedIncoming) return true;
+        return normalizedCatalog.length < normalizedIncoming.length
+          ? normalizedIncoming.startsWith(normalizedCatalog)
+          : normalizedCatalog.startsWith(normalizedIncoming);
+      });
+      if (byBaseName) return toResult(byBaseName);
+    }
 
     const byPrefix = catalog.find(
       (entry) => entry.match.namePrefix && trimmedName.startsWith(entry.match.namePrefix.trim().toLowerCase())

@@ -5,6 +5,7 @@ import {
   findInCatalog,
   formatProductDisplayName,
   lookupProduct,
+  normalizeProductBaseName,
   type ProductCatalogEntry,
 } from "@/lib/vaccine-product-catalog";
 
@@ -113,6 +114,73 @@ describe("findInCatalog", () => {
 
   it("returns null for an empty catalog (today's real seed shape before this research pass)", () => {
     expect(findInCatalog([], { name: "Anything", ndc: "00006412102" })).toBeNull();
+  });
+});
+
+// --- V-catalog-name-prefix additions (review follow-up: the lot-list
+// apply renamed DB rows mid-season — "mNEXSPIKE" -> "mNEXSPIKE 2026-27",
+// "Comirnaty 2025-26 12+" -> "Comirnaty 2026-27 12+" — and exact-name
+// matching silently dropped pkg size/age range/NDC-fallback for BOTH). ---
+
+describe("normalizeProductBaseName", () => {
+  it("strips a season token in any of the three observed shapes", () => {
+    expect(normalizeProductBaseName("Comirnaty 2025-26 12+")).toBe("comirnaty 12+");
+    expect(normalizeProductBaseName("Comirnaty 2026-27 12+")).toBe("comirnaty 12+");
+    expect(normalizeProductBaseName("Comirnaty 2026-2027 12+")).toBe("comirnaty 12+");
+  });
+
+  it("strips a trailing season token with nothing else left over", () => {
+    expect(normalizeProductBaseName("mNEXSPIKE 2026-27")).toBe("mnexspike");
+  });
+
+  it("strips parentheticals and collapses extra whitespace", () => {
+    expect(normalizeProductBaseName("FluMist  (age 2-49)")).toBe("flumist");
+    expect(normalizeProductBaseName("Engerix 20 (age 20+)")).toBe("engerix 20");
+  });
+
+  it("lowercases and trims", () => {
+    expect(normalizeProductBaseName("  Fluad  ")).toBe("fluad");
+  });
+});
+
+describe("season-agnostic name matching against the REAL seed catalog", () => {
+  it("mNEXSPIKE 2026-27 (post-rename DB name) still resolves — pkg size/NDC no longer drop to null", () => {
+    const product = lookupProduct({ name: "mNEXSPIKE 2026-27" });
+    expect(product).toMatchObject({ productName: "mNEXSPIKE (2026-27)", dosesPerPackage: 10 });
+    expect(product?.packageNdc).not.toBeNull();
+  });
+
+  it("Comirnaty 2026-27 12+ (post-rename DB name) still resolves with a package NDC", () => {
+    const product = lookupProduct({ name: "Comirnaty 2026-27 12+" });
+    expect(product).toMatchObject({ productName: "Comirnaty 2026-2027 Formula", dosesPerPackage: 10 });
+    expect(product?.packageNdc).not.toBeNull();
+  });
+});
+
+describe("findInCatalog: 'Fluad' vs 'Fluad Trivalent'", () => {
+  const fixture: ProductCatalogEntry[] = [
+    { match: { name: "Fluad" }, productName: "Fluad Trivalent (2026-27)", dosesPerPackage: 10 },
+    { match: { name: "Flucelvax PFS" }, productName: "Flucelvax (2026-27, PFS)", dosesPerPackage: 10 },
+  ];
+
+  it("'Fluad' matches the Fluad row exactly (unchanged fast path)", () => {
+    expect(findInCatalog(fixture, { name: "Fluad" })?.productName).toBe("Fluad Trivalent (2026-27)");
+  });
+
+  it("'Fluad Trivalent' (a superset rename, no season token at all) also resolves via base-name prefix tolerance", () => {
+    expect(findInCatalog(fixture, { name: "Fluad Trivalent" })?.productName).toBe("Fluad Trivalent (2026-27)");
+  });
+
+  it("never confuses 'Fluad Trivalent' with the unrelated Flucelvax PFS row", () => {
+    expect(findInCatalog(fixture, { name: "Flucelvax PFS" })?.productName).toBe("Flucelvax (2026-27, PFS)");
+  });
+
+  it("NDC-first precedence is unchanged: an NDC match wins even when the name would ALSO resolve via base-name matching", () => {
+    const withNdc: ProductCatalogEntry[] = [
+      { match: { ndc: "00006-4121-02" }, productName: "Gardasil 9", dosesPerPackage: 10 },
+      { match: { name: "mNEXSPIKE" }, productName: "mNEXSPIKE (2026-27)", dosesPerPackage: 10 },
+    ];
+    expect(findInCatalog(withNdc, { ndc: "00006-4121-02", name: "mNEXSPIKE 2026-27" })?.productName).toBe("Gardasil 9");
   });
 });
 
