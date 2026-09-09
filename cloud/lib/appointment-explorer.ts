@@ -467,3 +467,143 @@ function addDays(dateStr: string, days: number): string {
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
+
+/**
+ * V-T24 (Will, verbatim): "The filtering option needs to be more refined,
+ * it's very clunky right now and I don't see a way to clear the filters."
+ * The rebuild moves the always-visible native `<select multiple>`/text
+ * filter row (app/appointments/explorer/page.tsx) behind a per-column
+ * popover (filter icon in the header) plus an active-filter CHIP row above
+ * the table — these two pure helpers back that chip row; every other
+ * popover-open/close/search-within-popover concern is UI-local state that
+ * lives in the page component (no new filter LOGIC, only new filter UI —
+ * lib/appointment-explorer.ts's applyFilters/EMPTY_EXPLORER_FILTERS
+ * contract from before this round is untouched).
+ */
+
+/** One text-column filter field, in the exact left-to-right order its
+ * column appears in the explorer table (see COLUMNS in the page) —
+ * shared by activeFilterChips (chip order) below. `search` is
+ * deliberately NOT in this list — it's the free-text box above the
+ * table, not a per-column filter, and is always ordered LAST in the chip
+ * row (see activeFilterChips). */
+const TEXT_FILTER_FIELDS = ["apptDateText", "bookedOnText", "leadDaysText", "vaccineCountText"] as const;
+
+/** One enumerated (multi-select) column filter field, same left-to-right
+ * column order as TEXT_FILTER_FIELDS. */
+const CHECKLIST_FILTER_FIELDS = [
+  "day",
+  "hour",
+  "appointmentType",
+  "vaccine",
+  "covidBrand",
+  "covidAge",
+  "fluAge",
+] as const;
+
+/** Human-readable label prefix for each filterable field's chip — e.g.
+ * "Lead days: 3", "Day: Mon, Tue". Matches the exact column labels
+ * app/appointments/explorer/page.tsx's COLUMNS array already uses. */
+const FILTER_FIELD_LABELS: Record<
+  (typeof TEXT_FILTER_FIELDS)[number] | (typeof CHECKLIST_FILTER_FIELDS)[number],
+  string
+> = {
+  apptDateText: "Appt date",
+  bookedOnText: "Booked on",
+  leadDaysText: "Lead days",
+  vaccineCountText: "# vaccines",
+  day: "Day",
+  hour: "Hour",
+  appointmentType: "Appointment type",
+  vaccine: "Vaccine",
+  covidBrand: "COVID brand",
+  covidAge: "COVID age",
+  fluAge: "Flu age",
+};
+
+/** One chip in the active-filter row — `key` is the exact ExplorerFilters
+ * field this chip represents (used by clearFilterKey to remove just this
+ * one filter when its own ✕ is clicked), `label` is the full display text
+ * (e.g. "Day: Mon, Tue"). */
+export type FilterChip = {
+  key: keyof ExplorerFilters;
+  label: string;
+};
+
+/**
+ * One chip per currently-active filter, in a fixed, deterministic order
+ * (every text column, then every checklist column, in the same
+ * left-to-right order they appear in the explorer table, with `search`
+ * always last — matching the brief's own example: "Day: Mon, Tue ✕",
+ * "Lead days: 3 ✕", "Search: flu ✕"). A filter counts as "active" the
+ * same way applyFilters treats it: a text field is active when its
+ * TRIMMED value is non-empty; a checklist field is active when its array
+ * is non-empty. Returns [] when no filter (including search) is active —
+ * the caller renders no chip row (and no "Clear all filters" button) in
+ * that case.
+ */
+export function activeFilterChips(filters: ExplorerFilters): FilterChip[] {
+  const chips: FilterChip[] = [];
+
+  for (const field of TEXT_FILTER_FIELDS) {
+    const value = filters[field].trim();
+    if (value) chips.push({ key: field, label: `${FILTER_FIELD_LABELS[field]}: ${value}` });
+  }
+
+  for (const field of CHECKLIST_FILTER_FIELDS) {
+    const values = filters[field];
+    if (values.length > 0) chips.push({ key: field, label: `${FILTER_FIELD_LABELS[field]}: ${values.join(", ")}` });
+  }
+
+  const search = filters.search.trim();
+  if (search) chips.push({ key: "search", label: `Search: ${search}` });
+
+  return chips;
+}
+
+/**
+ * Resets exactly ONE filter field back to its EMPTY_EXPLORER_FILTERS
+ * default (a text field back to "", a checklist field back to []) —
+ * backs a single chip's own ✕ and a column header's popover "Clear" link.
+ * Every other field on `filters` is left untouched.
+ */
+export function clearFilterKey(filters: ExplorerFilters, key: keyof ExplorerFilters): ExplorerFilters {
+  // A FRESH "" or [] — not a reference to EMPTY_EXPLORER_FILTERS[key] —
+  // same rationale as clearAllFilters below: reusing that shared array
+  // instance would let a later mutation of the returned filters object
+  // corrupt the EMPTY_EXPLORER_FILTERS singleton for every other caller.
+  const empty: string | string[] = Array.isArray(filters[key]) ? [] : "";
+  return { ...filters, [key]: empty };
+}
+
+/**
+ * Resets every filter (search included) back to EMPTY_EXPLORER_FILTERS —
+ * backs the "Clear all filters" button above the table. Deliberately does
+ * NOT touch the date range (draftStart/appliedStart/appliedEnd) or the
+ * "Appointment date | Booking date" range-basis toggle (rangeBasis) — per
+ * the brief, verbatim: "also resets search; NOT the date range or basis."
+ * Both of those live as separate page-level state outside ExplorerFilters
+ * entirely, so this function has no way to touch them even by accident.
+ */
+export function clearAllFilters(): ExplorerFilters {
+  // Fresh arrays per call, NOT a shallow spread of EMPTY_EXPLORER_FILTERS
+  // — a shallow `{ ...EMPTY_EXPLORER_FILTERS }` would hand every caller
+  // the SAME array instances for day/hour/etc., so one caller mutating
+  // its own "cleared" filters (e.g. a later `setFilters` push, or just an
+  // accidental in-place edit) would corrupt the shared
+  // EMPTY_EXPLORER_FILTERS singleton for every other caller.
+  return {
+    search: "",
+    apptDateText: "",
+    bookedOnText: "",
+    leadDaysText: "",
+    vaccineCountText: "",
+    day: [],
+    hour: [],
+    appointmentType: [],
+    vaccine: [],
+    covidBrand: [],
+    covidAge: [],
+    fluAge: [],
+  };
+}

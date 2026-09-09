@@ -4,7 +4,7 @@ vi.mock("@/lib/supabase/server", () => ({
   getSupabaseServerClient: vi.fn(),
 }));
 
-import { getCachedCounts, setCachedCounts } from "@/lib/acuity-poll-cache";
+import { getCachedCounts, getCachedTestCounts, setCachedCounts, setCachedTestCounts } from "@/lib/acuity-poll-cache";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 // Minimal stand-in for the subset of the Supabase query builder that
@@ -125,5 +125,76 @@ describe("acuity poll cache", () => {
     await setCachedCounts("2026-08-17", "2026-08-24", [], true);
 
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ hourly_counts: [] }));
+  });
+
+  // V-T-poc-testing (2026-09-08): a SEPARATE cache row, own `tests_` key
+  // prefix — see lib/acuity-poll-cache.ts's testCountsRangeKey doc comment
+  // for why this can't share the main counts entry's `counts` column.
+  describe("getCachedTestCounts / setCachedTestCounts", () => {
+    it("getCachedTestCounts returns null instead of throwing when Supabase is unavailable", async () => {
+      vi.mocked(getSupabaseServerClient).mockImplementation(() => {
+        throw new Error("Supabase server client requested but not configured.");
+      });
+
+      await expect(getCachedTestCounts("2026-08-17", "2026-08-24", 300)).resolves.toBeNull();
+    });
+
+    it("setCachedTestCounts resolves (no-ops) instead of throwing when Supabase is unavailable", async () => {
+      vi.mocked(getSupabaseServerClient).mockImplementation(() => {
+        throw new Error("Supabase server client requested but not configured.");
+      });
+
+      await expect(
+        setCachedTestCounts("2026-08-17", "2026-08-24", [{ date: "2026-08-17", testName: "COVID", count: 2 }])
+      ).resolves.toBeUndefined();
+    });
+
+    it("returns null when the cached row's computed_at is older than ttlSeconds (TTL expiry)", async () => {
+      const staleComputedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient({ counts: [], computed_at: staleComputedAt }) as never
+      );
+
+      await expect(getCachedTestCounts("2026-08-17", "2026-08-24", 300)).resolves.toBeNull();
+    });
+
+    it("round-trips: setCachedTestCounts upserts under the tests_ prefixed range_key, getCachedTestCounts reads it back", async () => {
+      const upsert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue({ from: () => ({ upsert }) } as never);
+      const testCounts = [{ date: "2026-08-17", testName: "COVID", count: 3 }];
+
+      await setCachedTestCounts("2026-08-17", "2026-08-24", testCounts);
+
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          range_key: "tests_2026-08-17_2026-08-24",
+          range_start: "2026-08-17",
+          range_end: "2026-08-24",
+          counts: testCounts,
+          possibly_truncated: false,
+          hourly_counts: [],
+        })
+      );
+
+      const freshComputedAt = new Date(Date.now() - 60 * 1000).toISOString();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient({ counts: testCounts, computed_at: freshComputedAt }) as never
+      );
+
+      const result = await getCachedTestCounts("2026-08-17", "2026-08-24", 300);
+
+      expect(result).toEqual({ testCounts, computedAt: freshComputedAt });
+    });
+
+    it("self-heals to [] when the cached row's counts value isn't an array", async () => {
+      const freshComputedAt = new Date(Date.now() - 60 * 1000).toISOString();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient({ counts: null, computed_at: freshComputedAt }) as never
+      );
+
+      const result = await getCachedTestCounts("2026-08-17", "2026-08-24", 300);
+
+      expect(result).toEqual({ testCounts: [], computedAt: freshComputedAt });
+    });
   });
 });

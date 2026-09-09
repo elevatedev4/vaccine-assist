@@ -1,23 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
 import {
+  activeFilterChips,
   applyFilters,
   chunkDateRange,
+  clearAllFilters,
+  clearFilterKey,
   computeGroups,
   computeLeadDays,
   computeSums,
   dayOfWeekLabel,
-  EMPTY_EXPLORER_FILTERS,
   formatHourLabel,
   rowsToCsv,
   sortRows,
   type ExplorerFilters,
   type ExplorerRow,
+  type FilterChip,
   type GroupByMode,
   type SortDirection,
   type SortKey,
@@ -125,14 +129,129 @@ const styles = {
     cursor: "pointer",
     userSelect: "none" as const,
   },
-  thFilterCell: { padding: "0.15rem 0.3rem", borderBottom: "2px solid #ccc", background: "#fafafa" },
+  thLabel: { display: "inline-flex", alignItems: "center", gap: "0.25rem" },
   td: { padding: "0.15rem 0.4rem", borderBottom: "1px solid #eee", whiteSpace: "nowrap" as const },
-  filterInput: { width: "100%", boxSizing: "border-box" as const, fontSize: "0.66rem", padding: "0.1rem 0.2rem" },
-  filterSelect: {
+
+  // V-T24 rebuild (Will, verbatim: "The filtering option needs to be more
+  // refined, it's very clunky right now and I don't see a way to clear
+  // the filters"): a small "⌄" icon after each column's header label
+  // opens a popover for that column's filter — filled/tinted when the
+  // column has an active filter, plain/muted otherwise, so a skim across
+  // the header row shows exactly which columns are currently filtered.
+  filterIconButton: {
+    border: "none",
+    background: "none",
+    padding: "0 0.1rem",
+    fontSize: "0.7rem",
+    cursor: "pointer",
+    color: "#888",
+    lineHeight: 1,
+  },
+  filterIconButtonActive: {
+    border: "none",
+    background: "#16a34a",
+    color: "#fff",
+    borderRadius: 3,
+    padding: "0 0.2rem",
+    fontSize: "0.7rem",
+    cursor: "pointer",
+    lineHeight: 1.3,
+  },
+
+  // Active-filter chip row, above the table (Will: one chip per active
+  // filter, e.g. "Day: Mon, Tue ✕", plus a "Clear all filters" button).
+  chipRow: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    alignItems: "center",
+    gap: "0.4rem",
+    margin: "0 0 0.6rem",
+  },
+  chip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.3rem",
+    background: "#eef2f6",
+    border: "1px solid #d5dce3",
+    borderRadius: 999,
+    padding: "0.15rem 0.4rem 0.15rem 0.6rem",
+    fontSize: "0.68rem",
+    color: "#333",
+  },
+  chipRemoveButton: {
+    border: "none",
+    background: "none",
+    cursor: "pointer",
+    fontSize: "0.68rem",
+    color: "#666",
+    padding: "0 0.15rem",
+    lineHeight: 1,
+  },
+  clearAllButton: {
+    border: "1px solid #b00020",
+    background: "#fff",
+    color: "#b00020",
+    borderRadius: 4,
+    padding: "0.15rem 0.5rem",
+    fontSize: "0.68rem",
+    cursor: "pointer",
+  },
+
+  // Popover chrome — rendered via a portal into document.body (position:
+  // fixed, anchored to the trigger icon's own bounding rect) so it's never
+  // clipped by the table's own overflow-x: auto scroll wrapper. The
+  // backdrop is a full-viewport transparent layer that closes the popover
+  // on any outside click, same "click outside/Esc closes" contract as a
+  // native <dialog> without needing one.
+  popoverBackdrop: { position: "fixed" as const, inset: 0, zIndex: 40 },
+  popover: {
+    position: "fixed" as const,
+    zIndex: 41,
+    background: "#fff",
+    border: "1px solid #ccc",
+    borderRadius: 6,
+    boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+    padding: "0.5rem",
+    minWidth: "11rem",
+    maxWidth: "16rem",
+    fontSize: "0.72rem",
+  },
+  popoverInput: {
     width: "100%",
     boxSizing: "border-box" as const,
-    fontSize: "0.66rem",
-    padding: "0.05rem",
+    fontSize: "0.72rem",
+    padding: "0.25rem 0.35rem",
+    border: "1px solid #ccc",
+    borderRadius: 3,
+    marginBottom: "0.35rem",
+  },
+  popoverActions: {
+    display: "flex",
+    gap: "0.6rem",
+    margin: "0 0 0.35rem",
+  },
+  popoverLinkButton: {
+    border: "none",
+    background: "none",
+    padding: 0,
+    fontSize: "0.68rem",
+    color: "#1a5fb4",
+    textDecoration: "underline",
+    cursor: "pointer",
+  },
+  popoverChecklist: {
+    maxHeight: "12rem",
+    overflowY: "auto" as const,
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "0.15rem",
+  },
+  popoverCheckboxRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.35rem",
+    fontSize: "0.7rem",
+    cursor: "pointer",
   },
 } as const;
 
@@ -177,36 +296,191 @@ const GROUP_BY_OPTIONS: Array<{ value: GroupByMode; label: string }> = [
   { value: "fluAge", label: "Flu age" },
 ];
 
-/** Native multi-select dropdown — deliberately no new dependency (the
- * brief calls for "no new deps unless already in package.json"). Small
- * fixed size so it renders as a compact dropdown-ish list rather than a
- * tall box, regardless of how many options exist. */
-function MultiSelectFilter({
+// V-T24 rebuild: which SortKey columns are text-filtered vs.
+// checklist-filtered, and which ExplorerFilters field each one reads/
+// writes — drives both the header's filter icon (openFilterFor) and which
+// popover body renders. Columns with no entry here (currently none — every
+// COLUMNS entry has a filter) would simply render no filter icon.
+type TextFilterField = "apptDateText" | "bookedOnText" | "leadDaysText" | "vaccineCountText";
+type ChecklistFilterField = "day" | "hour" | "appointmentType" | "vaccine" | "covidBrand" | "covidAge" | "fluAge";
+
+type ColumnFilterKind = { kind: "text"; field: TextFilterField } | { kind: "checklist"; field: ChecklistFilterField };
+
+const FILTER_KIND_BY_COLUMN: Partial<Record<SortKey, ColumnFilterKind>> = {
+  date: { kind: "text", field: "apptDateText" },
+  day: { kind: "checklist", field: "day" },
+  hour: { kind: "checklist", field: "hour" },
+  createdDate: { kind: "text", field: "bookedOnText" },
+  leadDays: { kind: "text", field: "leadDaysText" },
+  appointmentTypeName: { kind: "checklist", field: "appointmentType" },
+  vaccineNames: { kind: "checklist", field: "vaccine" },
+  vaccineCount: { kind: "text", field: "vaccineCountText" },
+  covidBrand: { kind: "checklist", field: "covidBrand" },
+  covidAgeBucket: { kind: "checklist", field: "covidAge" },
+  fluAgeBucket: { kind: "checklist", field: "fluAge" },
+};
+
+/** Is THIS column's own filter currently active — drives the filled vs.
+ * plain filter icon in the header (Will: "Header shows a filled icon when
+ * that column has an active filter"). */
+function isColumnFilterActive(filters: ExplorerFilters, kind: ColumnFilterKind): boolean {
+  return kind.kind === "text" ? filters[kind.field].trim().length > 0 : filters[kind.field].length > 0;
+}
+
+/** Anchor + which column's popover is open — at most one popover open at
+ * a time (opening a second closes the first, same as a native dropdown). */
+type OpenFilterState = { key: SortKey; rect: DOMRect };
+
+/** Esc closes the currently-open popover (Will: "Keyboard: Esc closes
+ * popover") — a single document-level listener, active only while a
+ * popover is actually open. */
+function useCloseFilterOnEscape(isOpen: boolean, onClose: () => void) {
+  useEffect(() => {
+    if (!isOpen) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+}
+
+/**
+ * Shared popover chrome — rendered via createPortal into document.body so
+ * it's never clipped by the table's own `overflow-x: auto` wrapper (a
+ * popover positioned relative to a header cell INSIDE that wrapper would
+ * get cut off for any column near the right edge once the table scrolls
+ * horizontally). `anchorRect` is the trigger button's own
+ * getBoundingClientRect(), captured once at open time — position: fixed
+ * against that rect, not re-measured on scroll (acceptable simplification
+ * for a prototype: closing on any outside click/scroll-then-click already
+ * covers the common case). The backdrop is a full-viewport transparent
+ * layer whose own click closes the popover (Will: "click outside/Esc
+ * closes").
+ */
+function FilterPopover({
+  anchorRect,
+  onClose,
+  children,
+}: {
+  anchorRect: DOMRect;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useCloseFilterOnEscape(true, onClose);
+
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <>
+      <div style={styles.popoverBackdrop} onClick={onClose} />
+      <div
+        style={{ ...styles.popover, top: anchorRect.bottom + 4, left: Math.max(4, anchorRect.left) }}
+        // Stop a click INSIDE the popover from bubbling to the backdrop
+        // (which would otherwise close it on every checkbox/text click).
+        onClick={(event) => event.stopPropagation()}
+      >
+        {children}
+      </div>
+    </>,
+    document.body
+  );
+}
+
+/** Text-column filter popover body — a single input plus a "Clear" link
+ * (Will: "for text columns a single input with an ✕" — the ✕ lives on
+ * the header's own filled icon / the chip row; this "Clear" link is the
+ * same action from inside the popover, for a column with no chip yet
+ * because it's the very first keystroke). */
+function TextFilterPopoverBody({
+  value,
+  onChange,
+  onClose,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div>
+      {/* eslint-disable-next-line jsx-a11y/no-autofocus -- opening this
+          popover IS the user asking to type into it. */}
+      <input
+        autoFocus
+        type="text"
+        style={styles.popoverInput}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <div style={styles.popoverActions}>
+        <button type="button" style={styles.popoverLinkButton} onClick={() => onChange("")}>
+          Clear
+        </button>
+        <button type="button" style={styles.popoverLinkButton} onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Enumerated-column filter popover body — a search-within-options box, an
+ * "All"/"None" link pair, and a checklist (Will: "for enumerated columns a
+ * checklist with a search box, 'All' / 'None' links"). */
+function ChecklistFilterPopoverBody({
   options,
   selected,
   onChange,
+  onClose,
 }: {
   options: string[];
   selected: string[];
   onChange: (next: string[]) => void;
+  onClose: () => void;
 }) {
+  const [search, setSearch] = useState("");
+  const filteredOptions = options.filter((option) => option.toLowerCase().includes(search.trim().toLowerCase()));
+
+  function toggle(option: string, checked: boolean) {
+    onChange(checked ? [...selected, option] : selected.filter((value) => value !== option));
+  }
+
   return (
-    <select
-      multiple
-      size={Math.min(4, Math.max(2, options.length))}
-      style={styles.filterSelect}
-      value={selected}
-      onChange={(event) => {
-        const next = Array.from(event.target.selectedOptions, (option) => option.value);
-        onChange(next);
-      }}
-    >
-      {options.map((option) => (
-        <option key={option} value={option}>
-          {option}
-        </option>
-      ))}
-    </select>
+    <div>
+      {/* eslint-disable-next-line jsx-a11y/no-autofocus -- see TextFilterPopoverBody. */}
+      <input
+        autoFocus
+        type="text"
+        placeholder="Search…"
+        style={styles.popoverInput}
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+      />
+      <div style={styles.popoverActions}>
+        <button type="button" style={styles.popoverLinkButton} onClick={() => onChange(options)}>
+          All
+        </button>
+        <button type="button" style={styles.popoverLinkButton} onClick={() => onChange([])}>
+          None
+        </button>
+        <button type="button" style={styles.popoverLinkButton} onClick={onClose}>
+          Done
+        </button>
+      </div>
+      <div style={styles.popoverChecklist}>
+        {filteredOptions.length === 0 && <span style={styles.muted}>No matches</span>}
+        {filteredOptions.map((option) => (
+          <label key={option} style={styles.popoverCheckboxRow}>
+            <input
+              type="checkbox"
+              checked={selected.includes(option)}
+              onChange={(event) => toggle(option, event.target.checked)}
+            />
+            {option}
+          </label>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -257,19 +531,25 @@ export default function AppointmentExplorerPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [filters, setFilters] = useState<ExplorerFilters>(EMPTY_EXPLORER_FILTERS);
+  const [filters, setFilters] = useState<ExplorerFilters>(() => clearAllFilters());
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [groupBy, setGroupBy] = useState<GroupByMode>("none");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  // V-T24 rebuild: at most one column filter popover open at a time — see
+  // OpenFilterState/FilterPopover above.
+  const [openFilter, setOpenFilter] = useState<OpenFilterState | null>(null);
+  const closeFilterPopover = useCallback(() => setOpenFilter(null), []);
 
   function resetAfterSignOut() {
     setRows([]);
     setConfigured(null);
     setAsOf(null);
     setLoadError(null);
-    setFilters(EMPTY_EXPLORER_FILTERS);
+    setFilters(clearAllFilters());
     setVisibleCount(PAGE_SIZE);
+    setOpenFilter(null);
   }
 
   useEffect(() => {
@@ -417,6 +697,14 @@ export default function AppointmentExplorerPage() {
   const sums = useMemo(() => computeSums(filteredRows), [filteredRows]);
   const groups = useMemo(() => computeGroups(filteredRows, groupBy), [filteredRows, groupBy]);
   const visibleRows = sortedRows.slice(0, visibleCount);
+
+  // V-T24 rebuild: the active-filter chip row above the table.
+  const filterChips: FilterChip[] = useMemo(() => activeFilterChips(filters), [filters]);
+
+  function handleClearAllFilters() {
+    setFilters(clearAllFilters());
+    setOpenFilter(null);
+  }
 
   function handleHeaderClick(key: SortKey) {
     if (sortKey === key) {
@@ -624,107 +912,76 @@ export default function AppointmentExplorerPage() {
             </div>
           )}
 
+          {/* V-T24 rebuild (Will, verbatim: "The filtering option needs to
+              be more refined, it's very clunky right now and I don't see a
+              way to clear the filters"): the active-filter chip row lives
+              ABOVE the table, one chip per active filter plus "Clear all
+              filters" — see activeFilterChips/clearAllFilters/
+              clearFilterKey in lib/appointment-explorer.ts. Only rendered
+              when at least one filter (search included) is active. */}
+          {filterChips.length > 0 && (
+            <div style={styles.chipRow}>
+              {filterChips.map((chip) => (
+                <span key={chip.key} style={styles.chip}>
+                  {chip.label}
+                  <button
+                    type="button"
+                    style={styles.chipRemoveButton}
+                    onClick={() => setFilters((f) => clearFilterKey(f, chip.key))}
+                    aria-label={`Remove filter: ${chip.label}`}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+              <button type="button" style={styles.clearAllButton} onClick={handleClearAllFilters}>
+                Clear all filters
+              </button>
+            </div>
+          )}
+
           <div style={styles.tableWrap}>
             <table style={styles.table}>
               <thead>
                 <tr>
-                  {COLUMNS.map((column) => (
-                    <th
-                      key={column.key}
-                      style={{
-                        ...styles.th,
-                        ...COLUMN_DIVIDER,
-                        ...(column.headerBackground ? { background: column.headerBackground } : {}),
-                      }}
-                      onClick={() => handleHeaderClick(column.key)}
-                    >
-                      {column.label}
-                      {sortIndicator(column.key)}
-                    </th>
-                  ))}
-                </tr>
-                <tr>
-                  <FilterCell>
-                    <input
-                      type="text"
-                      style={styles.filterInput}
-                      value={filters.apptDateText}
-                      onChange={(event) => setFilters((f) => ({ ...f, apptDateText: event.target.value }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <MultiSelectFilter
-                      options={filterOptions.day}
-                      selected={filters.day}
-                      onChange={(next) => setFilters((f) => ({ ...f, day: next }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <MultiSelectFilter
-                      options={filterOptions.hour}
-                      selected={filters.hour}
-                      onChange={(next) => setFilters((f) => ({ ...f, hour: next }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <input
-                      type="text"
-                      style={styles.filterInput}
-                      value={filters.bookedOnText}
-                      onChange={(event) => setFilters((f) => ({ ...f, bookedOnText: event.target.value }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <input
-                      type="text"
-                      style={styles.filterInput}
-                      value={filters.leadDaysText}
-                      onChange={(event) => setFilters((f) => ({ ...f, leadDaysText: event.target.value }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <MultiSelectFilter
-                      options={filterOptions.appointmentType}
-                      selected={filters.appointmentType}
-                      onChange={(next) => setFilters((f) => ({ ...f, appointmentType: next }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <MultiSelectFilter
-                      options={filterOptions.vaccine}
-                      selected={filters.vaccine}
-                      onChange={(next) => setFilters((f) => ({ ...f, vaccine: next }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <input
-                      type="text"
-                      style={styles.filterInput}
-                      value={filters.vaccineCountText}
-                      onChange={(event) => setFilters((f) => ({ ...f, vaccineCountText: event.target.value }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <MultiSelectFilter
-                      options={filterOptions.covidBrand}
-                      selected={filters.covidBrand}
-                      onChange={(next) => setFilters((f) => ({ ...f, covidBrand: next }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <MultiSelectFilter
-                      options={filterOptions.covidAge}
-                      selected={filters.covidAge}
-                      onChange={(next) => setFilters((f) => ({ ...f, covidAge: next }))}
-                    />
-                  </FilterCell>
-                  <FilterCell>
-                    <MultiSelectFilter
-                      options={filterOptions.fluAge}
-                      selected={filters.fluAge}
-                      onChange={(next) => setFilters((f) => ({ ...f, fluAge: next }))}
-                    />
-                  </FilterCell>
+                  {COLUMNS.map((column) => {
+                    const filterKind = FILTER_KIND_BY_COLUMN[column.key];
+                    const isActive = filterKind ? isColumnFilterActive(filters, filterKind) : false;
+                    return (
+                      <th
+                        key={column.key}
+                        style={{
+                          ...styles.th,
+                          ...COLUMN_DIVIDER,
+                          ...(column.headerBackground ? { background: column.headerBackground } : {}),
+                        }}
+                      >
+                        <span style={styles.thLabel}>
+                          <span onClick={() => handleHeaderClick(column.key)}>
+                            {column.label}
+                            {sortIndicator(column.key)}
+                          </span>
+                          {filterKind && (
+                            <button
+                              type="button"
+                              style={isActive ? styles.filterIconButtonActive : styles.filterIconButton}
+                              aria-label={`Filter ${column.label}`}
+                              aria-pressed={isActive}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                setOpenFilter((current) =>
+                                  current?.key === column.key ? null : { key: column.key, rect }
+                                );
+                              }}
+                            >
+                              ⌄
+                            </button>
+                          )}
+                        </span>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -764,12 +1021,43 @@ export default function AppointmentExplorerPage() {
               </button>
             </p>
           )}
+
+          {/* V-T24 rebuild: the one open column-filter popover, if any —
+              see FilterPopover/FILTER_KIND_BY_COLUMN above. Rendered once,
+              driven entirely by `openFilter` state; its own portal means
+              physical placement in the tree doesn't matter. */}
+          {openFilter &&
+            (() => {
+              const filterKind = FILTER_KIND_BY_COLUMN[openFilter.key];
+              if (!filterKind) return null;
+              const column = COLUMNS.find((c) => c.key === openFilter.key);
+
+              return (
+                <FilterPopover anchorRect={openFilter.rect} onClose={closeFilterPopover}>
+                  {filterKind.kind === "text" ? (
+                    <TextFilterPopoverBody
+                      value={filters[filterKind.field]}
+                      onChange={(next) => setFilters((f) => ({ ...f, [filterKind.field]: next }))}
+                      onClose={closeFilterPopover}
+                    />
+                  ) : (
+                    <ChecklistFilterPopoverBody
+                      options={filterOptions[filterKind.field]}
+                      selected={filters[filterKind.field]}
+                      onChange={(next) => setFilters((f) => ({ ...f, [filterKind.field]: next }))}
+                      onClose={closeFilterPopover}
+                    />
+                  )}
+                  {column && (
+                    <p style={{ margin: "0.35rem 0 0", fontSize: "0.62rem", color: "#888" }}>
+                      Filtering: {column.label}
+                    </p>
+                  )}
+                </FilterPopover>
+              );
+            })()}
         </>
       )}
     </main>
   );
-}
-
-function FilterCell({ children }: { children: ReactNode }) {
-  return <th style={styles.thFilterCell}>{children}</th>;
 }

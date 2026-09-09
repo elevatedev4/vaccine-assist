@@ -28,6 +28,12 @@ vi.mock("@/lib/acuity-poll-cache", () => ({
   setCachedActivityCounts: vi.fn(async () => undefined),
   getCachedRows: vi.fn(async () => null),
   setCachedRows: vi.fn(async () => undefined),
+  // V-T-poc-testing: always a cache miss by default, same fail-soft shape
+  // as every other mocked getter above — every PRE-EXISTING test in this
+  // file that doesn't override these still exercises the same cache-miss
+  // path it always has, now just also computing (and discarding) testCounts.
+  getCachedTestCounts: vi.fn(async () => null),
+  setCachedTestCounts: vi.fn(async () => undefined),
 }));
 
 import { GET } from "@/app/api/acuity/poll/route";
@@ -35,9 +41,12 @@ import {
   getCachedActivityCounts,
   getCachedCounts,
   getCachedRows,
+  getCachedTestCounts,
   setCachedActivityCounts,
   setCachedRows,
+  setCachedTestCounts,
 } from "@/lib/acuity-poll-cache";
+import { ACUITY_APPOINTMENTS_MAX } from "@/lib/acuity-client";
 
 const ACUITY_ENV_KEYS = ["ACUITY_USER_ID", "ACUITY_API_KEY"] as const;
 
@@ -106,6 +115,7 @@ describe("GET /api/acuity/poll — validation", () => {
       cacheHit: false,
       asOf: null,
       hourlyCounts: [],
+      testCounts: [],
     });
     // No `table` field yet — nothing to pivot without credentials, same
     // as the empty `counts` array (see route.ts's RESPONSE CONTRACT doc).
@@ -184,6 +194,100 @@ describe("GET /api/acuity/poll — validation", () => {
       expect(body.hourlyCounts).toEqual([
         { date: "2026-08-17", hour: 10, appointmentCount: 1, vaccineCount: 1 },
       ]);
+      // V-T-poc-testing (ADDITIVE): no test-type appointment in this
+      // fixture, so both are present but empty — never omitted.
+      expect(body.testCounts).toEqual([]);
+      expect(body.testTable).toEqual({
+        days: ["2026-08-17", "2026-08-18"],
+        columns: [],
+        rows: [],
+        dailyTotals: { "2026-08-17": 0, "2026-08-18": 0 },
+        grandTotal: 0,
+      });
+    });
+
+    // V-T-poc-testing: testCounts/testTable present in default mode, and
+    // cached under their own key (separate round-trip from `counts`) —
+    // see lib/acuity-poll-cache.ts's testCountsRangeKey doc comment.
+    it("includes testCounts/testTable, built from a point-of-care testing appointment, alongside the vaccine table", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+
+      const fetchMock = vi.fn(async (url: string | URL) => {
+        const urlStr = url.toString();
+        if (urlStr.includes("appointment-types")) {
+          return new Response(
+            JSON.stringify([{ id: 90788212, name: "Test appointment (Flu, COVID, Strep)" }]),
+            { status: 200 }
+          );
+        }
+        const fixture = {
+          id: 1,
+          datetime: "2026-08-17T11:00:00-0500",
+          appointmentTypeID: 90788212,
+          type: "Test appointment (Flu, COVID, Strep)",
+          forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Select tests:", value: "COVID (free)" }] }],
+        };
+        return new Response(JSON.stringify([fixture]), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(pollRequest("?start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.testCounts).toEqual([{ date: "2026-08-17", testName: "COVID", count: 1 }]);
+      expect(body.testTable).toEqual({
+        days: ["2026-08-17", "2026-08-18"],
+        columns: [{ testName: "COVID", label: "COVID" }],
+        rows: [{ testName: "COVID", countsByDay: { "2026-08-17": 1, "2026-08-18": 0 }, total: 1 }],
+        dailyTotals: { "2026-08-17": 1, "2026-08-18": 0 },
+        grandTotal: 1,
+      });
+      // KNOWN PRE-EXISTING GAP, not introduced by this change and out of
+      // this brief's scope to fix: a point-of-care testing appointment has
+      // no vaccine-selection form field, so aggregateAppointmentCounts
+      // (lib/acuity-client.ts) falls back to the appointment TYPE's own
+      // name ("Test appointment (Flu, COVID, Strep)") for the vaccine
+      // table too — and that name happens to contain "covid" as a
+      // substring, so it's rewritten to a COVID composite and counted
+      // there. Flagged to Will as a follow-up rather than silently
+      // "fixed" by touching aggregateAppointmentCounts's shared fallback
+      // behavior (used by ordering's recommendation route too) inside a
+      // brief that didn't ask for it.
+      expect(body.table.grandTotal).toBe(1);
+
+      // Cache round-trip: the fresh fetch above must have written a
+      // SEPARATE cached row for testCounts (its own key prefix), not
+      // touched the main counts cache's own write call shape.
+      expect(vi.mocked(setCachedTestCounts)).toHaveBeenCalledWith(
+        "2026-08-17",
+        "2026-08-18",
+        [{ date: "2026-08-17", testName: "COVID", count: 1 }]
+      );
+    });
+
+    it("reads testCounts back from its own cache entry on a cache hit, self-healing to an empty test table when only the main counts row is cached", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+
+      vi.mocked(getCachedCounts).mockResolvedValueOnce({
+        counts: [{ date: "2026-08-17", vaccineName: "Flu · Unknown", count: 1 }],
+        hourlyCounts: [],
+        possiblyTruncated: false,
+        computedAt: new Date().toISOString(),
+      });
+      // Simulates the self-heal window: the main counts row is cached and
+      // fresh, but no paired tests_ row exists yet.
+      vi.mocked(getCachedTestCounts).mockResolvedValueOnce(null);
+
+      const response = await GET(pollRequest("?start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.cacheHit).toBe(true);
+      expect(body.testCounts).toEqual([]);
+      expect(body.testTable.grandTotal).toBe(0);
     });
   });
 
@@ -430,7 +534,7 @@ describe("GET /api/acuity/poll — validation", () => {
       );
     });
 
-    it("marks possiblyTruncated when any fetch window hits the 100-appointment cap", async () => {
+    it("marks possiblyTruncated when any fetch window hits the max-appointment cap", async () => {
       process.env.ACUITY_USER_ID = "12345";
       process.env.ACUITY_API_KEY = "test-key";
 
@@ -442,8 +546,8 @@ describe("GET /api/acuity/poll — validation", () => {
         const minDate = new URL(urlStr).searchParams.get("minDate")!;
         const maxDate = new URL(urlStr).searchParams.get("maxDate")!;
         if (minDate <= "2026-09-01" && "2026-09-01" <= maxDate) {
-          const hundred = Array.from({ length: 100 }, (_, i) => acuityAppointmentFixture({ id: i }));
-          return new Response(JSON.stringify(hundred), { status: 200 });
+          const capped = Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) => acuityAppointmentFixture({ id: i }));
+          return new Response(JSON.stringify(capped), { status: 200 });
         }
         return new Response(JSON.stringify([]), { status: 200 });
       });
@@ -590,6 +694,7 @@ describe("GET /api/acuity/poll — validation", () => {
           appointmentTypeId: 111,
           appointmentTypeName: "Vaccine Appointment",
           vaccineNames: ["Flu"],
+          testNames: [],
           covidBrand: "any",
           covidAgeBucket: "unknown",
           fluAgeBucket: "unknown",
@@ -615,6 +720,7 @@ describe("GET /api/acuity/poll — validation", () => {
           appointmentTypeId: 111,
           appointmentTypeName: "Vaccine Appointment",
           vaccineNames: ["Flu"],
+          testNames: [],
           covidBrand: "any" as const,
           covidAgeBucket: "unknown" as const,
           fluAgeBucket: "unknown" as const,

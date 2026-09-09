@@ -14,6 +14,7 @@ import {
   fetchBookingActivityCounts,
 } from "@/lib/acuity-booking-activity";
 import { BOOKING_ACTIVITY_LOOKBACK_DAYS } from "@/lib/appointment-table";
+import { ACUITY_APPOINTMENTS_MAX } from "@/lib/acuity-client";
 
 function acuityAppointmentFixture(
   datetime: string,
@@ -173,7 +174,7 @@ describe("fetchBookingActivityCounts", () => {
     expect(typesCalls).toHaveLength(1);
   });
 
-  it("marks a window as truncated (and names its range) when it hits the 100-appointment cap", async () => {
+  it("marks a window as truncated (and names its range) when it hits the max-appointment cap", async () => {
     const fetchMock = vi.fn(async (url: string | URL) => {
       const urlStr = url.toString();
       if (urlStr.includes("appointment-types")) {
@@ -182,10 +183,10 @@ describe("fetchBookingActivityCounts", () => {
       const minDate = new URL(urlStr).searchParams.get("minDate")!;
       const maxDate = new URL(urlStr).searchParams.get("maxDate")!;
       if (minDate <= "2026-09-05" && "2026-09-05" <= maxDate) {
-        const hundred = Array.from({ length: 100 }, (_, i) =>
+        const capped = Array.from({ length: ACUITY_APPOINTMENTS_MAX }, (_, i) =>
           acuityAppointmentFixture(`${minDate}T10:00:00-0500`, "2026-09-05T09:00:00-0500", "Flu", { id: i })
         );
-        return new Response(JSON.stringify(hundred), { status: 200 });
+        return new Response(JSON.stringify(capped), { status: 200 });
       }
       return new Response(JSON.stringify([]), { status: 200 });
     });

@@ -1,6 +1,6 @@
 import "server-only";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import type { CountableAppointment, HourlyCount, VaccineCount } from "@/lib/acuity-client";
+import type { CountableAppointment, HourlyCount, TestCount, VaccineCount } from "@/lib/acuity-client";
 
 /**
  * Server-side cache for app/api/acuity/poll/route.ts, backed by the
@@ -129,6 +129,96 @@ export async function setCachedCounts(
   } catch {
     // Best-effort — a failed cache write just means the next request
     // re-fetches from Acuity instead of hitting a stale/absent cache.
+  }
+}
+
+// V-T-poc-testing (Will, 2026-09-08): the point-of-care testing table's
+// `testCounts` (lib/acuity-client.ts's aggregateTestCounts). The brief
+// asks for this to be cached as "the same entry as counts" — but the
+// `counts` column on the MAIN range_key row is a specifically-shaped
+// VaccineCount[] that two OTHER modules already read directly off this
+// exact cache (app/api/ordering/recommendation/route.ts and
+// lib/acuity-future-summary.ts — see setCachedCounts's own doc comment);
+// mixing a second, differently-shaped array into that same column would
+// silently corrupt those callers' aggregation. So this reuses the
+// established idiom this very file already uses for `?activity=1` and
+// `?rows=1` (activityRangeKey/rowsRangeKey below) instead: the SAME
+// acuity_poll_cache table, a NEW key-prefix namespace on the same generic
+// jsonb `counts` column, so no migration is needed (this worktree can't
+// add one — see the coordination note in the poll route's own doc
+// comment). Since this is a brand-new prefix (not a reshape of an
+// existing row), there's nothing to "version" — a pre-existing row using
+// the bare `${minDate}_${maxDate}` key for the main counts entry is
+// completely untouched by this addition.
+//
+// SELF-HEAL (same pattern as hourly_counts's own doc comment): the main
+// counts cache and this testCounts cache are always WRITTEN together (see
+// the poll route), but a request landing in the narrow window where the
+// main counts cache still hits (TTL not yet expired) while this row
+// happens to be missing (e.g. right after this feature's first deploy, an
+// old counts row exists with no paired tests_ row yet) simply renders
+// testCounts as [] for that one cache hit — it self-heals within one
+// cache TTL once the main entry naturally expires and both are refetched/
+// re-cached together.
+function testCountsRangeKey(minDate: string, maxDate: string): string {
+  return `tests_${minDate}_${maxDate}`;
+}
+
+export type CachedTestCounts = {
+  testCounts: TestCount[];
+  computedAt: string;
+};
+
+/** Same TTL/fail-soft contract as getCachedCounts above. */
+export async function getCachedTestCounts(
+  minDate: string,
+  maxDate: string,
+  ttlSeconds: number
+): Promise<CachedTestCounts | null> {
+  try {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("acuity_poll_cache")
+      .select("counts, computed_at")
+      .eq("range_key", testCountsRangeKey(minDate, maxDate))
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    const computedAt = new Date(data.computed_at);
+    if (Number.isNaN(computedAt.getTime())) return null;
+    if (Date.now() - computedAt.getTime() >= ttlSeconds * 1000) return null;
+
+    return {
+      testCounts: Array.isArray(data.counts) ? (data.counts as TestCount[]) : [],
+      computedAt: data.computed_at,
+    };
+  } catch {
+    // Supabase not configured / table missing — treat as a cache miss.
+    return null;
+  }
+}
+
+/**
+ * `possibly_truncated`/`hourly_counts` are written with the same
+ * unconditional defaults as setCachedActivityCounts/setCachedRows above —
+ * this feature doesn't track either, same "keep every writer's row shape
+ * consistent" rationale.
+ */
+export async function setCachedTestCounts(minDate: string, maxDate: string, testCounts: TestCount[]): Promise<void> {
+  try {
+    const supabase = getSupabaseServerClient();
+    await supabase.from("acuity_poll_cache").upsert({
+      range_key: testCountsRangeKey(minDate, maxDate),
+      range_start: minDate,
+      range_end: maxDate,
+      counts: testCounts,
+      possibly_truncated: false,
+      hourly_counts: [],
+      computed_at: new Date().toISOString(),
+    });
+  } catch {
+    // Best-effort — same fail-soft rationale as setCachedCounts above.
   }
 }
 

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeFilterChips,
   applyFilters,
   chunkDateRange,
+  clearAllFilters,
+  clearFilterKey,
   computeGroups,
   computeLeadDays,
   computeSums,
@@ -11,6 +14,7 @@ import {
   matchesSearch,
   rowsToCsv,
   sortRows,
+  type ExplorerFilters,
   type ExplorerRow,
 } from "@/lib/appointment-explorer";
 
@@ -435,5 +439,129 @@ describe("chunkDateRange", () => {
   it("returns a single exact-fit chunk when the range is exactly maxDays", () => {
     const chunks = chunkDateRange("2026-08-01", "2026-08-31", 31);
     expect(chunks).toEqual([{ start: "2026-08-01", end: "2026-08-31" }]);
+  });
+});
+
+// V-T24 (Will, verbatim): "The filtering option needs to be more refined,
+// it's very clunky right now and I don't see a way to clear the filters."
+describe("activeFilterChips", () => {
+  it("returns [] when no filter is active", () => {
+    expect(activeFilterChips(EMPTY_EXPLORER_FILTERS)).toEqual([]);
+  });
+
+  it("returns [] when every text field is only whitespace", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, apptDateText: "   ", search: "  " };
+    expect(activeFilterChips(filters)).toEqual([]);
+  });
+
+  it("builds one chip per active text field, label trimmed", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, leadDaysText: " 3 " };
+    expect(activeFilterChips(filters)).toEqual([{ key: "leadDaysText", label: "Lead days: 3" }]);
+  });
+
+  it("builds one chip per active checklist field, joining selected values with ', '", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, day: ["Mon", "Tue"] };
+    expect(activeFilterChips(filters)).toEqual([{ key: "day", label: "Day: Mon, Tue" }]);
+  });
+
+  it("orders chips: text columns, then checklist columns, then search LAST", () => {
+    const filters: ExplorerFilters = {
+      ...EMPTY_EXPLORER_FILTERS,
+      search: "flu",
+      leadDaysText: "3",
+      day: ["Mon", "Tue"],
+    };
+
+    expect(activeFilterChips(filters)).toEqual([
+      { key: "leadDaysText", label: "Lead days: 3" },
+      { key: "day", label: "Day: Mon, Tue" },
+      { key: "search", label: "Search: flu" },
+    ]);
+  });
+
+  it("builds a chip for every distinct active filter across all columns at once", () => {
+    const filters: ExplorerFilters = {
+      ...EMPTY_EXPLORER_FILTERS,
+      apptDateText: "2026-09",
+      bookedOnText: "2026-08",
+      leadDaysText: "-",
+      vaccineCountText: "2",
+      day: ["Mon"],
+      hour: ["10 AM"],
+      appointmentType: ["Vaccine Appointment"],
+      vaccine: ["Flu"],
+      covidBrand: ["pfizer"],
+      covidAge: ["12-64"],
+      fluAge: ["3-64"],
+      search: "flu",
+    };
+
+    expect(activeFilterChips(filters).map((chip) => chip.key)).toEqual([
+      "apptDateText",
+      "bookedOnText",
+      "leadDaysText",
+      "vaccineCountText",
+      "day",
+      "hour",
+      "appointmentType",
+      "vaccine",
+      "covidBrand",
+      "covidAge",
+      "fluAge",
+      "search",
+    ]);
+  });
+});
+
+describe("clearFilterKey", () => {
+  it("resets a text field back to '' without touching any other field", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, leadDaysText: "3", search: "flu" };
+
+    const result = clearFilterKey(filters, "leadDaysText");
+
+    expect(result.leadDaysText).toBe("");
+    expect(result.search).toBe("flu");
+  });
+
+  it("resets a checklist field back to [] without touching any other field", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, day: ["Mon", "Tue"], hour: ["10 AM"] };
+
+    const result = clearFilterKey(filters, "day");
+
+    expect(result.day).toEqual([]);
+    expect(result.hour).toEqual(["10 AM"]);
+  });
+
+  it("clearing 'search' via its own chip key only clears search", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, search: "flu", day: ["Mon"] };
+
+    const result = clearFilterKey(filters, "search");
+
+    expect(result.search).toBe("");
+    expect(result.day).toEqual(["Mon"]);
+  });
+
+  it("returns a fresh array for a cleared checklist field — never the shared EMPTY_EXPLORER_FILTERS instance", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, day: ["Mon"] };
+
+    const result = clearFilterKey(filters, "day");
+    result.day.push("Tue");
+
+    expect(EMPTY_EXPLORER_FILTERS.day).toEqual([]);
+  });
+});
+
+describe("clearAllFilters", () => {
+  it("returns a filters object equal to EMPTY_EXPLORER_FILTERS", () => {
+    expect(clearAllFilters()).toEqual(EMPTY_EXPLORER_FILTERS);
+  });
+
+  it("returns a fresh object each call — mutating the result never leaks into a later call", () => {
+    const first = clearAllFilters();
+    first.day.push("Mon");
+
+    const second = clearAllFilters();
+
+    expect(second.day).toEqual([]);
   });
 });

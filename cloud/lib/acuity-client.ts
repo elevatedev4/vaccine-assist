@@ -203,6 +203,22 @@ export type CountableAppointment = {
   hourOfDay: number;
   /**
    * PHI boundary, extension of the CountableAppointment doc comment above
+   * (V-T-poc-testing, Will 2026-09-08: "Add a point of care testing
+   * appointment table too that shows daily totals for each type of test
+   * that is scheduled"). The exact test(s) selected on a point-of-care
+   * testing appointment — mirrors vaccineNames' own mechanism exactly:
+   * derived by extractTestNamesFromForms (isTestFormFieldName) from the
+   * SAME `forms` array vaccineNames reads, with a fallback (only when no
+   * form field matches) to parsing the appointment TYPE's own name for a
+   * parenthetical test list — see extractTestNamesFromForms's doc comment
+   * for the live-probe evidence (2026-09-08) behind both paths. Empty when
+   * neither path finds anything. Every other field on `forms`/the raw
+   * entry is still discarded exactly as before — this is one more
+   * narrowly-scoped read, not a loosening of the boundary.
+   */
+  testNames: string[];
+  /**
+   * PHI boundary, extension of the CountableAppointment doc comment above
    * (V-T-booking-activity, Will 2026-09-05/07: "# vaccines BOOKED per day
    * — the day the booking was MADE, not the appointment date — for the
    * last 28 days, so I can track marketing"). "YYYY-MM-DD" — the
@@ -276,7 +292,38 @@ export type AppointmentRangeResult = {
   possiblyTruncated: boolean;
 };
 
-const ACUITY_APPOINTMENTS_MAX = 100;
+/**
+ * V-T23 (Will, verbatim: "A single day can absolutely have more than 100
+ * appointments. You'll have to figure out a solution that works for
+ * that."). Live-probed against the real Acuity API (2026-09-08, read-only
+ * GETs against the production account — counts only, no patient data):
+ * Acuity's `max` param is NOT actually hard-capped at 100 despite this
+ * account's own /reference docs page only documenting the parameter, not
+ * a ceiling — a `max=500` request over a 455-day range returned 352 rows
+ * (the account's true total for that window; raising to `max=1000` or even
+ * `max=100000` returned the identical 352, confirming 352 is the complete
+ * count, not a second cap) in ~330-1045ms. That makes "bigger max" the
+ * first strategy in the brief's preference order (bigger max -> datetime
+ * sub-windows -> per-type/per-calendar sub-queries) the one that ships:
+ * raised from 100 to 1000, comfortably above any plausible single-day
+ * volume for this single-pharmacy account (the busiest 60-day window
+ * probed came back at 120 total appointments) while still bounding one
+ * request's worst-case payload/latency. The recursive date-halving in
+ * fetchAppointmentsForRange below is UNCHANGED and stays as the safety
+ * net for the (now far less likely) case a single day still saturates
+ * even at this raised cap — see that function's doc comment.
+ *
+ * (Datetime sub-windows were separately confirmed to work too —
+ * minDate/maxDate accept a full "YYYY-MM-DDTHH:MM:SS" value and correctly
+ * narrow the result — but aren't needed now that strategy 1 resolves the
+ * problem outright; per-appointment-type/per-calendar sub-queries were
+ * confirmed available (GET /calendars; both calendarID and
+ * appointmentTypeID filter /appointments) but likewise unneeded.)
+ *
+ * Exported (like REQUESTS_PER_RANGE_BUDGET below) so tests can assert
+ * against the real cap rather than a hardcoded duplicate of this number.
+ */
+export const ACUITY_APPOINTMENTS_MAX = 1000;
 
 /**
  * Ceiling on how many Acuity requests ONE top-level fetchAppointmentsForRange
@@ -438,6 +485,108 @@ function extractFormFieldAnswer(forms: unknown, matcher: (name: string) => boole
   }
 
   return null;
+}
+
+/**
+ * Matches an Acuity intake-form field's `name` against a "does this look
+ * like the point-of-care test-selection question" heuristic (V-T-poc-
+ * testing, Will 2026-09-08): case-insensitive substring match on "test" —
+ * mirrors isVaccineFormFieldName's own "small, separately-exported,
+ * separately-tested heuristic" rationale. Live-probed (2026-09-08,
+ * read-only GET against the production account, appointment type "Test
+ * appointment (Flu, COVID, Strep)"): the real field name is exactly
+ * "Select tests:", which this substring match catches. Observed answer
+ * values (not PHI — a test TYPE, same category as a vaccine name):
+ * "COVID (free)", "COVID", "Strep Throat" — no "Flu" answer happened to be
+ * in the sampled window, but the field is a multi-select ("Select
+ * test*s*:"), so extractTestNamesFromForms below splits on the same
+ * comma/pipe/newline delimiters extractVaccineNamesFromForms uses, ready
+ * for a multi-value answer.
+ */
+export function isTestFormFieldName(name: string): boolean {
+  return typeof name === "string" && name.toLowerCase().includes("test");
+}
+
+/**
+ * Strips a trailing parenthetical qualifier — e.g. "COVID (free)" ->
+ * "COVID" — from one already-trimmed test-name token. JUDGMENT CALL,
+ * doc-commented per the brief: the live probe (see isTestFormFieldName)
+ * found the SAME test ("COVID") answered both as "COVID" and "COVID
+ * (free)" depending on a pricing option baked into the checkbox label —
+ * without this normalization those would land in two separate columns of
+ * the point-of-care test table (lib/poc-test-table.ts) for what is
+ * obviously one test type, which would misrepresent "daily totals for
+ * each type of test" (the exact ask). A qualifier that isn't a trailing
+ * "(...)" is left alone; a token that's ENTIRELY parenthetical (rare/
+ * malformed) is left as-is rather than stripped to "".
+ */
+function stripPriceQualifier(name: string): string {
+  const stripped = name.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  return stripped.length > 0 ? stripped : name;
+}
+
+/**
+ * PHI boundary, same rule as extractVaccineNamesFromForms: must only ever
+ * be called with `entry.forms`. Finds the first form field whose name
+ * matches isTestFormFieldName and splits its answer into individual test
+ * names — same comma/pipe/newline split, trim, drop-empty, "first match
+ * wins" shape as extractVaccineNamesFromForms, plus stripPriceQualifier's
+ * "(free)"-style normalization on each token. Returns [] if no matching
+ * field is found or its value is blank — callers fall back to parsing the
+ * appointment type's own name (see parseTestNamesFromAppointmentTypeName)
+ * only when this comes back empty, exactly as the brief specifies.
+ */
+function extractTestNamesFromForms(forms: unknown): string[] {
+  if (!Array.isArray(forms)) return [];
+
+  for (const form of forms) {
+    if (typeof form !== "object" || form === null) continue;
+    const values = (form as Record<string, unknown>).values;
+    if (!Array.isArray(values)) continue;
+
+    for (const field of values) {
+      if (typeof field !== "object" || field === null) continue;
+      const fieldName = (field as Record<string, unknown>).name;
+      const fieldValue = (field as Record<string, unknown>).value;
+      if (typeof fieldName !== "string" || !isTestFormFieldName(fieldName)) continue;
+      if (typeof fieldValue !== "string") continue;
+
+      const names = fieldValue
+        .split(/[,|\n]/)
+        .map((name) => stripPriceQualifier(name.trim()))
+        .filter((name) => name.length > 0);
+      if (names.length > 0) return names;
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Fallback path (V-T-poc-testing, brief: "fall back to parsing the
+ * appointment type name's parenthetical ... only if no form field carries
+ * the selection") — used ONLY when extractTestNamesFromForms above found
+ * nothing. Acuity's raw appointment entry includes a `type` field carrying
+ * the appointment type's own human-readable name inline (live-probed
+ * 2026-09-08: `entry.type === "Test appointment (Flu, COVID, Strep)"` for
+ * this account's test appointment type) — reading it here means this
+ * fallback needs no second API call / no appointment-types map threaded
+ * through this module, unlike aggregateAppointmentCounts's OWN vaccine-
+ * name fallback (which needs the route's separately-fetched
+ * appointmentTypeNames map, since it falls back to the WHOLE type name as
+ * one name, not a parsed list). Extracts the LAST parenthesized group's
+ * comma-separated contents, e.g. "Test appointment (Flu, COVID, Strep)" ->
+ * ["Flu", "COVID", "Strep"]; returns [] if the name has no parenthetical
+ * or every parsed segment is blank.
+ */
+function parseTestNamesFromAppointmentTypeName(typeName: unknown): string[] {
+  if (typeof typeName !== "string") return [];
+  const match = /\(([^)]*)\)\s*$/.exec(typeName.trim());
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
 }
 
 /**
@@ -674,24 +823,37 @@ async function fetchAppointmentWindow(
   // for this module's own dedupe step (see RawWindowAppointment) and
   // stripped before anything returns from fetchAppointmentsForRange.
   // `forms` is read ONLY through
-  // extractVaccineNamesFromForms/deriveCovidBrand/deriveAgeInYears, each
-  // of which extracts (and, for age, immediately buckets via
-  // bucketCovidAge/bucketFluAge) only its own specific question's answer
-  // — nothing else off `forms` survives this projection, and the raw
-  // age/DOB string in particular never exists outside deriveAgeInYears's
-  // call stack. covidAgeBucket and fluAgeBucket (V-T-schedule-table
-  // ROUND 2) are two independent bucketings of the SAME extracted age —
-  // one age-question lookup per appointment, not two.
+  // extractVaccineNamesFromForms/extractTestNamesFromForms/deriveCovidBrand/
+  // deriveAgeInYears, each of which extracts (and, for age, immediately
+  // buckets via bucketCovidAge/bucketFluAge) only its own specific
+  // question's answer — nothing else off `forms` survives this
+  // projection, and the raw age/DOB string in particular never exists
+  // outside deriveAgeInYears's call stack. covidAgeBucket and fluAgeBucket
+  // (V-T-schedule-table ROUND 2) are two independent bucketings of the
+  // SAME extracted age — one age-question lookup per appointment, not
+  // two. `entry.type` (V-T-poc-testing) is the ONE other raw field read
+  // here beyond `forms`/`id`/`datetime`/`datetimeCreated`/
+  // `appointmentTypeID` — the appointment TYPE's own name, not patient
+  // data, read only as extractTestNamesFromForms's fallback source (see
+  // parseTestNamesFromAppointmentTypeName) and discarded the instant
+  // testNames is derived from it.
   const appointments = data
     .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
     .map((entry) => {
       const ageInYears = deriveAgeInYears(entry.forms);
       const rawId = Number(entry.id);
+      const testNames = extractTestNamesFromForms(entry.forms);
       return {
         date: acuityDatetimeToChicagoDate(entry.datetime),
         hourOfDay: acuityDatetimeToChicagoHour(entry.datetime),
         appointmentTypeId: Number(entry.appointmentTypeID),
         vaccineNames: extractVaccineNamesFromForms(entry.forms),
+        // V-T-poc-testing: fall back to the appointment TYPE's own name
+        // ONLY when no form field carried the selection — see
+        // parseTestNamesFromAppointmentTypeName's doc comment for why
+        // `entry.type` (not a second appointment-types fetch) is the
+        // source.
+        testNames: testNames.length > 0 ? testNames : parseTestNamesFromAppointmentTypeName(entry.type),
         covidBrand: deriveCovidBrand(entry.forms),
         covidAgeBucket: bucketCovidAge(ageInYears),
         fluAgeBucket: bucketFluAge(ageInYears),
@@ -980,4 +1142,49 @@ export function aggregateHourlyCounts(appointments: CountableAppointment[]): Hou
   }
 
   return Array.from(groups.values()).sort((a, b) => a.date.localeCompare(b.date) || a.hour - b.hour);
+}
+
+export type TestCount = {
+  date: string;
+  testName: string;
+  count: number;
+};
+
+/**
+ * Pure aggregation for the point-of-care testing table (V-T-poc-testing,
+ * Will 2026-09-08: "a point of care testing appointment table too that
+ * shows daily totals for each type of test that is scheduled"). Parallel
+ * in SHAPE to aggregateAppointmentCounts (groups by (date, name) and
+ * counts, one bump per name so a 2-test appointment counts once toward
+ * EACH test) but DELIBERATELY DIFFERENT in one respect: an appointment
+ * with an empty `testNames` contributes NOTHING here — there is no
+ * "fall back to the appointment type name" step like
+ * aggregateAppointmentCounts has for vaccines. That fallback exists there
+ * because EVERY appointment needs to land somewhere in the vaccine table;
+ * here it would be actively wrong — every non-test appointment (a real
+ * vaccine visit) also has an empty `testNames`, and falling back to ITS
+ * OWN appointment-type name would flood the point-of-care test table with
+ * every vaccine appointment type as a bogus "test" column. Only genuine
+ * point-of-care testing appointments (testNames populated via
+ * extractTestNamesFromForms or its appointment-type-name fallback — see
+ * CountableAppointment.testNames) ever appear in the output.
+ */
+export function aggregateTestCounts(appointments: CountableAppointment[]): TestCount[] {
+  const groups = new Map<string, TestCount>();
+
+  for (const { date, testNames } of appointments) {
+    for (const testName of testNames) {
+      const key = `${date}::${testName}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.count += 1;
+        continue;
+      }
+      groups.set(key, { date, testName, count: 1 });
+    }
+  }
+
+  return Array.from(groups.values()).sort(
+    (a, b) => a.date.localeCompare(b.date) || a.testName.localeCompare(b.testName)
+  );
 }
