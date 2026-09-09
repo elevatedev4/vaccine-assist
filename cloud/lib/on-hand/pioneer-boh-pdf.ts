@@ -66,14 +66,50 @@
  *   - pdf.numPages > MAX_PDF_PAGES (50) -> null, checked after pdfjs
  *     parses just the document structure (page count), before any
  *     per-page text extraction work.
+ *   - A PDF_PARSE_TIMEOUT_MS (20s) wall-clock budget on the WHOLE parse
+ *     (document load + every page's text extraction), raced via
+ *     `Promise.race` — a pathological PDF (deeply nested objects,
+ *     pdfjs getting stuck) can't hang the webhook/upload request
+ *     indefinitely. Logs "pdf parse timeout" and resolves null.
  *   - ANY exception pdfjs throws (malformed PDF, unsupported feature,
  *     etc.) -> null, logged as the exception's constructor name ONLY
  *     (never `.message`, which could echo back attacker-controlled
  *     bytes from a malformed PDF into logs).
+ *   - `getDocument`'s `loadingTask.destroy()` is called in a `finally`
+ *     block on EVERY path once a loading task exists (success, guard
+ *     trip, exception, or timeout) — pdfjs holds worker/document
+ *     resources open until destroyed; without this, a webhook that
+ *     receives many PDFs (or hits the timeout above) would leak them.
+ *   - `getDocument` is called with `useSystemFonts: false` and
+ *     `disableFontFace: true` (this module never renders — only
+ *     `getTextContent()` — so font loading is pure attack surface with
+ *     no upside) and `useWorkerFetch: false` (no network fetches from
+ *     inside pdfjs). `isEvalSupported` is NOT passed: this pdfjs-dist
+ *     version (6.x) removed the eval-based code-generation path
+ *     entirely upstream, so the option no longer exists on
+ *     `DocumentInitParameters` — there's nothing left to disable.
  * `null` in every case means "give up cleanly" — the caller
  * (app/api/webhooks/ses/route.ts's processOnHandAttachment) falls back
  * to the plain-text body path exactly as it already does for an
  * oversized xlsx/csv attachment.
+ *
+ * Footer guard (hardening follow-up, 2026-09-09): a wrapped item name
+ * (see step 5 below) is normally any text-only row following a data
+ * row, but a PDF export's page footer/pagination line ("Page 1 of 3",
+ * "Generated 09/09/2026 12:00 PM", "Total: 42 items", ...) is ALSO a
+ * text-only row and would otherwise get glued onto the last product's
+ * name. Two independent conditions drop such a row instead of merging
+ * it (see FOOTER_LINE_PATTERN and the isLastPage/lastNumericRowY
+ * tracking in the extraction loop):
+ *   1. Its text matches FOOTER_LINE_PATTERN (a "page N [of M]",
+ *      "generated"/"printed"/"report date", or "total" line) — checked
+ *      on every page, not just the last, since a footer can appear on
+ *      any page of a multi-page export.
+ *   2. It falls below the last genuine data row's y-position, but ONLY
+ *      on the document's LAST page — a trailing line under the final
+ *      product row (with no more data ever following it) is
+ *      structurally a footer even when it doesn't match the text
+ *      pattern above.
  */
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
@@ -90,10 +126,19 @@ const MAX_PDF_BYTES = MAX_UPLOAD_BYTES;
  * ses-mime.ts's MAX_MIME_DEPTH. */
 const MAX_PDF_PAGES = 50;
 
+/** Wall-clock budget for the WHOLE parse (document load + every page's
+ * text extraction) — see the module doc comment's timeout guard. */
+const PDF_PARSE_TIMEOUT_MS = 20_000;
+
 /** How many points of y-jitter between two text items counts as "the
  * same visual row" — the brief's "~2-3 pt" range; 2.5 splits the
  * difference. */
 const ROW_Y_TOLERANCE = 2.5;
+
+/** Page footer / pagination lines — a text-only row matching this is
+ * NEVER merged into the previous product name, regardless of which
+ * page it's on (see the module doc comment's Footer guard section). */
+const FOOTER_LINE_PATTERN = /^(page\s+\d+(\s+of\s+\d+)?|generated|printed|report date|total)/i;
 
 export type PioneerBohPdfResult = {
   rows: PioneerBohRow[];
@@ -221,31 +266,34 @@ function errorClassName(err: unknown): string {
   return typeof err;
 }
 
-/**
- * Extracts Pioneer BOH rows from a PDF export. Returns null on any
- * guard trip or pdfjs exception (see module doc comment) — the caller
- * falls back to the plain-text body path. A non-null result can still
- * carry `headerFound: false` / `rows: []` when the PDF parsed cleanly
- * but no page's table matched the expected header shape (e.g. an
- * unrelated PDF attachment) — that's not an exception, just "nothing to
- * ingest", left for the caller to log/summarize rather than silently
- * treated the same as a hard failure.
- */
-export async function parsePioneerBohPdf(buffer: Buffer): Promise<PioneerBohPdfResult | null> {
-  if (buffer.length > MAX_PDF_BYTES) {
-    console.warn(`parsePioneerBohPdf: skipping oversized PDF (${buffer.length} bytes > ${MAX_PDF_BYTES} max)`);
-    return null;
-  }
+type LoadingTask = ReturnType<typeof getDocument>;
 
+/** A timeout promise that resolves (never rejects) to null after `ms`
+ * milliseconds, logging "pdf parse timeout" when it fires — paired with
+ * a `cancel()` that clears the underlying timer (a no-op if it already
+ * fired) so a parse that finishes first doesn't leave a dangling timer
+ * around to log a stray warning later. `.unref()`'d so this timer never
+ * by itself keeps the Node process alive. */
+function createParseTimeout(ms: number): { promise: Promise<null>; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout>;
+  const promise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn("parsePioneerBohPdf: pdf parse timeout");
+      resolve(null);
+    }, ms);
+    timer.unref?.();
+  });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
+
+/** The actual document-load + row-extraction work, isolated from
+ * `parsePioneerBohPdf` so it can be raced against the timeout above.
+ * Never rejects — every failure path resolves null instead, matching
+ * the module's "null means give up cleanly" contract. */
+async function runParse(loadingTask: LoadingTask): Promise<PioneerBohPdfResult | null> {
   let numPages: number;
   let getPage: (pageNumber: number) => Promise<{ getTextContent: () => Promise<{ items: unknown[] }> }>;
   try {
-    const loadingTask = getDocument({
-      data: new Uint8Array(buffer),
-      useWorkerFetch: false,
-      disableFontFace: true,
-      verbosity: 0,
-    });
     const pdf = await loadingTask.promise;
     numPages = pdf.numPages;
     getPage = (pageNumber: number) => pdf.getPage(pageNumber) as unknown as Promise<{ getTextContent: () => Promise<{ items: unknown[] }> }>;
@@ -266,6 +314,12 @@ export async function parsePioneerBohPdf(buffer: Buffer): Promise<PioneerBohPdfR
     let lastRow: PioneerBohRow | null = null;
 
     for (let pageNumber = 1; pageNumber <= numPages; pageNumber++) {
+      const isLastPage = pageNumber === numPages;
+      // The last genuine (non-footer, non-wrapped-name) data row's
+      // y-position on THIS page — only meaningful/checked on the last
+      // page (see the module doc comment's Footer guard section).
+      let lastNumericRowY: number | null = null;
+
       const page = await getPage(pageNumber);
       const content = await page.getTextContent();
       const items: PdfTextItem[] = content.items
@@ -282,6 +336,7 @@ export async function parsePioneerBohPdf(buffer: Buffer): Promise<PioneerBohPdfR
       let i = 0;
       while (i < pageRows.length) {
         const row = pageRows[i];
+        const rowY = row[0]?.y ?? 0;
         const headerCols = detectHeaderColumns(row);
 
         if (headerCols.name !== undefined && headerCols.boh !== undefined) {
@@ -318,13 +373,27 @@ export async function parsePioneerBohPdf(buffer: Buffer): Promise<PioneerBohPdfR
         }
 
         const hasOtherData = Boolean(cells.boh || cells.ndc || cells.stockSize);
-        if (!hasOtherData && lastRow) {
-          // Wrapped item name — continues the previous row rather than
-          // starting a new one.
-          lastRow.vaccineNameRaw = `${lastRow.vaccineNameRaw} ${name}`.trim();
-          lastRow.rawLine = buildRawLine(lastRow.vaccineNameRaw, lastRow.ndc, lastRow.quantityRaw, lastRow.stockSize);
-          i++;
-          continue;
+
+        if (!hasOtherData) {
+          // Footer guard: a page footer/pagination line is ALSO a
+          // text-only row and must never be glued onto the previous
+          // product name — see the module doc comment's Footer guard
+          // section for both conditions.
+          const isFooterText = FOOTER_LINE_PATTERN.test(name);
+          const isPastLastNumericRowOnLastPage = isLastPage && lastNumericRowY !== null && rowY < lastNumericRowY;
+          if (isFooterText || isPastLastNumericRowOnLastPage) {
+            i++;
+            continue;
+          }
+
+          if (lastRow) {
+            // Wrapped item name — continues the previous row rather
+            // than starting a new one.
+            lastRow.vaccineNameRaw = `${lastRow.vaccineNameRaw} ${name}`.trim();
+            lastRow.rawLine = buildRawLine(lastRow.vaccineNameRaw, lastRow.ndc, lastRow.quantityRaw, lastRow.stockSize);
+            i++;
+            continue;
+          }
         }
 
         const ndc = normalizeNdc(cells.ndc || null);
@@ -347,6 +416,7 @@ export async function parsePioneerBohPdf(buffer: Buffer): Promise<PioneerBohPdfR
         };
         rows.push(newRow);
         lastRow = newRow;
+        if (hasOtherData) lastNumericRowY = rowY;
         i++;
       }
     }
@@ -355,5 +425,43 @@ export async function parsePioneerBohPdf(buffer: Buffer): Promise<PioneerBohPdfR
   } catch (err) {
     console.warn(`parsePioneerBohPdf: pdfjs failed while extracting text (${errorClassName(err)})`);
     return null;
+  }
+}
+
+/**
+ * Extracts Pioneer BOH rows from a PDF export. Returns null on any
+ * guard trip, timeout, or pdfjs exception (see module doc comment) —
+ * the caller falls back to the plain-text body path. A non-null result
+ * can still carry `headerFound: false` / `rows: []` when the PDF parsed
+ * cleanly but no page's table matched the expected header shape (e.g.
+ * an unrelated PDF attachment) — that's not a failure, just "nothing to
+ * ingest", left for the caller to log/summarize rather than silently
+ * treated the same as a hard failure.
+ */
+export async function parsePioneerBohPdf(buffer: Buffer): Promise<PioneerBohPdfResult | null> {
+  if (buffer.length > MAX_PDF_BYTES) {
+    console.warn(`parsePioneerBohPdf: skipping oversized PDF (${buffer.length} bytes > ${MAX_PDF_BYTES} max)`);
+    return null;
+  }
+
+  const loadingTask = getDocument({
+    data: new Uint8Array(buffer),
+    useWorkerFetch: false,
+    useSystemFonts: false,
+    disableFontFace: true,
+    verbosity: 0,
+  });
+
+  const timeout = createParseTimeout(PDF_PARSE_TIMEOUT_MS);
+  try {
+    return await Promise.race([runParse(loadingTask), timeout.promise]);
+  } finally {
+    timeout.cancel();
+    try {
+      await loadingTask.destroy();
+    } catch {
+      // Best-effort cleanup — nothing more to do if destroy itself
+      // throws, and there's no result to report it against here.
+    }
   }
 }

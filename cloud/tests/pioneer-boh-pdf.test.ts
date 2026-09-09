@@ -158,4 +158,78 @@ describe("parsePioneerBohPdf", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("skipping oversized PDF"));
     warnSpy.mockRestore();
   });
+
+  describe("footer guard", () => {
+    it("drops a pagination/footer-text row (matches FOOTER_LINE_PATTERN) instead of merging it into the previous name, even on a non-last page", async () => {
+      const doc = await PDFDocument.create();
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+
+      const page1 = doc.addPage([500, 400]);
+      page1.drawText("Item Name", { x: 20, y: 380, size: 9, font });
+      page1.drawText("NDC/UPC", { x: 170, y: 380, size: 9, font });
+      page1.drawText("Current BOH", { x: 280, y: 380, size: 9, font });
+      page1.drawText("Stock size", { x: 380, y: 380, size: 9, font });
+      page1.drawText("Widget A", { x: 20, y: 360, size: 9, font });
+      page1.drawText("70461002603", { x: 170, y: 360, size: 9, font });
+      page1.drawText("10", { x: 280, y: 360, size: 9, font });
+      page1.drawText("1", { x: 380, y: 360, size: 9, font });
+      // A pagination line directly below the last data row on page 1 —
+      // page 1 is NOT the last page, so only the regex clause (not the
+      // below-last-numeric-row-on-the-last-page clause) can catch this.
+      page1.drawText("Page 1 of 2", { x: 20, y: 340, size: 9, font });
+
+      const page2 = doc.addPage([500, 400]);
+      page2.drawText("Item Name", { x: 20, y: 380, size: 9, font });
+      page2.drawText("NDC/UPC", { x: 170, y: 380, size: 9, font });
+      page2.drawText("Current BOH", { x: 280, y: 380, size: 9, font });
+      page2.drawText("Stock size", { x: 380, y: 380, size: 9, font });
+      page2.drawText("Widget B", { x: 20, y: 360, size: 9, font });
+      page2.drawText("99999999999", { x: 170, y: 360, size: 9, font });
+      page2.drawText("20", { x: 280, y: 360, size: 9, font });
+      page2.drawText("2", { x: 380, y: 360, size: 9, font });
+
+      const buffer = Buffer.from(await doc.save());
+      const result = await parsePioneerBohPdf(buffer);
+
+      expect(result?.rows).toHaveLength(2);
+      const names = result!.rows.map((r) => r.vaccineNameRaw);
+      expect(names).toEqual(["Widget A", "Widget B"]);
+      expect(names.join(" ")).not.toContain("Page 1 of 2");
+    });
+
+    it("drops a trailing text-only row below the last numeric row on the LAST page, even when it doesn't match FOOTER_LINE_PATTERN", async () => {
+      const doc = await PDFDocument.create();
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+      const page = doc.addPage([500, 400]);
+      page.drawText("Item Name", { x: 20, y: 380, size: 9, font });
+      page.drawText("NDC/UPC", { x: 170, y: 380, size: 9, font });
+      page.drawText("Current BOH", { x: 280, y: 380, size: 9, font });
+      page.drawText("Stock size", { x: 380, y: 380, size: 9, font });
+      page.drawText("Widget C", { x: 20, y: 360, size: 9, font });
+      page.drawText("11111111111", { x: 170, y: 360, size: 9, font });
+      page.drawText("30", { x: 280, y: 360, size: 9, font });
+      page.drawText("3", { x: 380, y: 360, size: 9, font });
+      // Trailing boilerplate that does NOT match FOOTER_LINE_PATTERN —
+      // only the "below the last numeric row on the last page" clause
+      // catches this one.
+      page.drawText("Thank you for choosing Pioneer", { x: 20, y: 340, size: 9, font });
+
+      const buffer = Buffer.from(await doc.save());
+      const result = await parsePioneerBohPdf(buffer);
+
+      expect(result?.rows).toHaveLength(1);
+      expect(result?.rows[0].vaccineNameRaw).toBe("Widget C");
+    });
+
+    it("still merges a genuine wrapped item name on a non-last page (no regression)", async () => {
+      // Covered by the multi-page fixture above ("Wrapped Long Product
+      // Name Vial" + "Extra Descriptor" on page 1, which is not the
+      // last page) — re-asserted here for clarity against the footer
+      // guard's isLastPage condition.
+      const buffer = await buildFixturePdf();
+      const result = await parsePioneerBohPdf(buffer);
+      const wrapped = result!.rows.find((r) => r.vaccineNameRaw.startsWith("Wrapped"));
+      expect(wrapped?.vaccineNameRaw).toBe("Wrapped Long Product Name Vial Extra Descriptor");
+    });
+  });
 });
