@@ -51,6 +51,15 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
+        // V-T28 item 3 (Will's brief): "the desktop log must name the log
+        // file's full path at startup ... so Will can find them" — the
+        // very first line ever written to a fresh log file is now that
+        // file's own path (UiaTreeDumper.DumpWindowToFile already logs the
+        // UIA-dump path whenever one is written — see that method — so
+        // between the two, both paths this brief asked for are always
+        // discoverable from "Copy logs").
+        AppFileLog.Log($"[Startup] Log file: {AppFileLog.LogFilePath}");
+
         _localSettingsService = new LocalSettingsService();
         _autoLoginConfigService = new AutoLoginConfigService();
         _settings = _localSettingsService.Load();
