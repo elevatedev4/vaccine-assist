@@ -1,0 +1,33 @@
+<Window x:Class="VaccineAssist.Desktop.Views.VarUpdateConfirmationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Confirm VAR update"
+        Width="380" SizeToContent="Height"
+        WindowStyle="ToolWindow"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner">
+    <!--
+        V-T21 item 6 (Will, 2026-09-08, verbatim): "The pharmacist update
+        VAR prompt needs to be a popup not just a little text prompt. The
+        popup should have a checkbox saying that they have asked the
+        pharmacist to update the VAR then click ok to continue." Modal
+        (ShowDialog, via ShowAndGetConfirmation) — OK stays disabled until
+        the checkbox is checked; Cancel (and Esc, via IsCancel) leaves
+        Confirmed false. See ViewModels/DataEntryPopupViewModel.cs's
+        ConfirmVarUpdateRequested for how this gates EnterIntoPioneerAsync.
+    -->
+    <StackPanel Margin="16">
+        <TextBlock x:Name="MessageTextBlock" TextWrapping="Wrap" FontWeight="Bold" Foreground="DarkOrange"/>
+        <CheckBox x:Name="ConfirmedCheckBox" Content="I have asked the pharmacist to update the VAR"
+                  Margin="0,12,0,0"
+                  Checked="ConfirmedCheckBox_OnCheckedChanged"
+                  Unchecked="ConfirmedCheckBox_OnCheckedChanged"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="OkButton" Content="OK" Padding="12,4" Margin="0,0,8,0"
+                    IsEnabled="False" IsDefault="True" Click="OkButton_OnClick"/>
+            <Button Content="Cancel" Padding="12,4" IsCancel="True" Click="CancelButton_OnClick"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -8,7 +8,9 @@
         ShowInTaskbar="False"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
-        Loaded="DataEntryPopupWindow_OnLoaded">
+        Loaded="DataEntryPopupWindow_OnLoaded"
+        Activated="DataEntryPopupWindow_OnActivated"
+        Deactivated="DataEntryPopupWindow_OnDeactivated">
     <!--
         GUIDED FLOW rework (V-... Part B): one question at a time, all
         radio buttons: age, then vaccine GROUP, then PRODUCT, then DOSE
@@ -177,13 +179,47 @@
                 <StackPanel>
                     <TextBlock Text="{Binding LotGateMessage}" Foreground="DarkOrange"
                                FontWeight="Bold" TextWrapping="Wrap"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                        <TextBox Text="{Binding NewLotNumber, UpdateSourceTrigger=PropertyChanged}" Width="90" ToolTip="Lot number"/>
-                        <DatePicker SelectedDate="{Binding NewLotExpiration}" Width="120" Margin="6,0,0,0"/>
-                        <Button Content="Add lot" Command="{Binding AddLotCommand}" Padding="6,2" Margin="6,0,0,0"/>
+
+                    <!-- V-T21 item 5 (Will, 2026-09-08): the lot number/
+                         expiration boxes (and "Add lot") are HIDDEN once
+                         "Leave lot/expiration blank and proceed" below is
+                         checked — nothing left to type once staff has
+                         chosen to proceed without a lot this time. -->
+                    <StackPanel>
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SkipLotAndExpiration}" Value="True">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <TextBox Text="{Binding NewLotNumber, UpdateSourceTrigger=PropertyChanged}" Width="90" ToolTip="Lot number"/>
+                            <DatePicker SelectedDate="{Binding NewLotExpiration}" Width="120" Margin="6,0,0,0"/>
+                            <Button Content="Add lot" Command="{Binding AddLotCommand}" Padding="6,2" Margin="6,0,0,0"/>
+                        </StackPanel>
+                        <!-- V-T21 item 5: checked -> on proceed, this typed
+                             lot is saved via the lots API as the vaccine's
+                             CURRENT lot, replacing its other lots (see
+                             DataEntryPopupViewModel.ApplyUpdateCurrentLotToThisAsync) —
+                             an alternative to clicking "Add lot" above
+                             immediately: check this box and just click
+                             "Enter into Pioneer" instead. -->
+                        <CheckBox Content="Update current lots to this lot" Margin="0,6,0,0"
+                                  IsChecked="{Binding UpdateCurrentLotToThis, Mode=TwoWay}"/>
                     </StackPanel>
-                    <Button Content="Leave lot/expiration blank and proceed" Command="{Binding SkipLotAndExpirationCommand}"
-                            Padding="6,2" Margin="0,6,0,0" HorizontalAlignment="Left"/>
+
+                    <!-- V-T21 item 5: replaces the old "Leave lot/expiration
+                         blank and proceed" BUTTON — same SkipLotAndExpiration
+                         semantics, now a plain TwoWay-bound checkbox
+                         (mutually exclusive with "Update current lots to
+                         this lot" above — see that property's own doc
+                         comment). -->
+                    <CheckBox Content="Leave lot/expiration blank and proceed" Margin="0,6,0,0"
+                              IsChecked="{Binding SkipLotAndExpiration, Mode=TwoWay}"/>
                 </StackPanel>
             </Border>
         </StackPanel>

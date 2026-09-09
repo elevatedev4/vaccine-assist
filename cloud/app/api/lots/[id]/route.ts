@@ -15,6 +15,12 @@ import { isMissingColumnError } from "@/lib/schema-degradation";
  * beyond_use_date degrades the same way as app/api/lots/route.ts: if the
  * column doesn't exist yet (supabase/migrations/0009_...), the update
  * retries without it and flags `beyondUseDateSupported: false`.
+ *
+ * DELETE /api/lots/[id] — V-T21 item 5 (Will, 2026-09-08): the data-entry
+ * popup's "Update current lots to this lot" checkbox saves a fresh lot
+ * then deletes every OTHER lot on file for that vaccine (see desktop
+ * DataEntryPopupViewModel.ApplyUpdateCurrentLotAsync) — needs a per-lot
+ * delete route neither screen required before.
  */
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAuthenticatedUser(request);
@@ -86,6 +92,33 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
 
     return NextResponse.json({ lot: data, beyondUseDateSupported });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Supabase is not configured." },
+      { status: 503 }
+    );
+  }
+}
+
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
+  const { id } = await params;
+  if (!id) {
+    return NextResponse.json({ error: "Missing lot id." }, { status: 400 });
+  }
+
+  try {
+    const supabase = getSupabaseServerClient();
+    const { error } = await supabase.from("lot").delete().eq("id", id);
+
+    if (error) {
+      console.error("DELETE /api/lots/[id]: Supabase error", error);
+      return NextResponse.json({ error: "Failed to delete lot." }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

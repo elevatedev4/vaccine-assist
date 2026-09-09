@@ -5,17 +5,22 @@ namespace VaccineAssist.Desktop.Models;
 /// ComboBox (Will, 2026-09-07: "vaccine types as group headers... with an
 /// 'All &lt;group&gt; vaccines' selectable item per group... and specific
 /// vaccines beneath"). See PhysiciansViewModel.BuildVaccineOptions for how
-/// this list is built (VaccineGroupCatalog.DisplayOrder order, "All ...
-/// vaccines" first within each group, then that group's vaccines by name)
-/// and PhysicianRuleMatcher for the specific &gt; group &gt; wildcard
-/// precedence this enables.
+/// this list is built — V-T21 item 7 (2026-09-08) changed the grouping
+/// itself to VaccineGroupCatalog.PhysiciansDisplayOrder's 3 buckets (Flu
+/// vaccines / COVID vaccines / Other vaccines), NOT
+/// VaccineGroupCatalog.DisplayOrder's fine-grained groups — "All ..."
+/// first within each group that supports a wildcard, then that group's
+/// vaccines by name — and PhysicianRuleMatcher for the specific &gt;
+/// group &gt; wildcard precedence this enables.
 ///
 /// Two shapes:
 ///   - A GROUP option (Vaccine null, IsGroupWildcard true) — persists
-///     PhysicianRule.VaccineGroup with VaccineId left null.
+///     PhysicianRule.VaccineGroup (the PERSISTED fine-grained value, e.g.
+///     "Flu"/"COVID" — see VaccineGroupCatalog.PersistedGroupForPhysiciansGroup,
+///     NOT this option's own Group text) with VaccineId left null.
 ///   - A SPECIFIC-VACCINE option (Vaccine set) — persists
 ///     PhysicianRule.VaccineId with VaccineGroup left null. Group is still
-///     set here (to that vaccine's own VaccineGroupCatalog group) purely so
+///     set here (to that vaccine's own physicians-tab group) purely so
 ///     the ComboBox can render it under the right group header — it is
 ///     never itself persisted for a specific-vaccine rule.
 /// </summary>

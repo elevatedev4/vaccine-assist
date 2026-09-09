@@ -79,13 +79,14 @@ public sealed class LotRowViewModel : ObservableObject
     /// edit) — what a failed save reverts back to.</summary>
     private (string LotNumber, DateTime Expiration, DateTime? BeyondUseDate, string? Note) _committed;
 
-    public LotRowViewModel(Lot lot, string vaccineName, string? vaccineNdc)
+    public LotRowViewModel(Lot lot, string vaccineName, string? vaccineNdc, bool isVaccineActive = true)
     {
         Id = lot.Id;
         VaccineId = lot.VaccineId;
         VaccineName = vaccineName;
         VaccineNdc = vaccineNdc;
         Status = lot.Status;
+        IsVaccineActive = isVaccineActive;
 
         _lotNumber = lot.LotNumber;
         _expiration = lot.Expiration.ToDateTime(TimeOnly.MinValue);
@@ -98,6 +99,15 @@ public sealed class LotRowViewModel : ObservableObject
     public Guid VaccineId { get; }
     public string VaccineName { get; }
     public string? VaccineNdc { get; }
+
+    /// <summary>V-T21 item 4 (Will, 2026-09-08): whether the JOINED vaccine
+    /// row is currently active — drives which of LotsViewModel's
+    /// ActiveLots/InactiveLots collections this row lands in (see that
+    /// class's own doc comment). Defaults to true for callers that don't
+    /// pass it (AddLotCommand's brand-new row, which only ever targets the
+    /// active-only "Add a lot" vaccine picker — see LotsViewModel.Vaccines'
+    /// own doc comment).</summary>
+    public bool IsVaccineActive { get; }
 
     /// <summary>Read-only in this grid — "active"/"depleted"; editing
     /// status isn't part of MSG893 item 4's ask.</summary>

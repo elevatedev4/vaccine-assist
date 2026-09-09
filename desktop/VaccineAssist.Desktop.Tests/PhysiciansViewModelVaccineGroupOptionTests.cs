@@ -32,17 +32,19 @@ public class PhysiciansViewModelVaccineGroupOptionTests
 
         await viewModel.LoadAsync();
 
-        var covidOptions = viewModel.VaccineOptions.Where(o => o.Group == "COVID").ToArray();
+        var covidOptions = viewModel.VaccineOptions.Where(o => o.Group == "COVID vaccines").ToArray();
         Assert.Equal("All COVID vaccines", covidOptions[0].DisplayText);
         Assert.True(covidOptions[0].IsGroupWildcard);
         Assert.Equal(new[] { "Comirnaty 2025-26 12+", "Spikevax" }, covidOptions.Skip(1).Select(o => o.DisplayText));
         Assert.All(covidOptions.Skip(1), o => Assert.False(o.IsGroupWildcard));
 
-        // COVID group (index into VaccineOptions) must come before
-        // Tetanus/whooping cough — VaccineGroupCatalog.DisplayOrder order.
-        var covidIndex = viewModel.VaccineOptions.ToList().FindIndex(o => o.Group == "COVID");
-        var tetanusIndex = viewModel.VaccineOptions.ToList().FindIndex(o => o.Group == "Tetanus/whooping cough");
-        Assert.True(covidIndex < tetanusIndex);
+        // V-T21 item 7: exactly 3 physicians-tab groups now (Flu/COVID/
+        // Other), in that order — Boostrix (fine-grained "Tetanus/
+        // whooping cough") buckets into the catch-all "Other vaccines"
+        // here, which must come AFTER "COVID vaccines".
+        var covidIndex = viewModel.VaccineOptions.ToList().FindIndex(o => o.Group == "COVID vaccines");
+        var otherIndex = viewModel.VaccineOptions.ToList().FindIndex(o => o.Group == "Other vaccines");
+        Assert.True(covidIndex < otherIndex);
     }
 
     [Fact]
@@ -55,7 +57,7 @@ public class PhysiciansViewModelVaccineGroupOptionTests
         await viewModel.LoadAsync();
 
         viewModel.NewRulePhysician = viewModel.Physicians.Single();
-        viewModel.NewRuleVaccineOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID" && o.IsGroupWildcard);
+        viewModel.NewRuleVaccineOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
 
         Assert.True(viewModel.AddRuleCommand.CanExecute(null));
         viewModel.AddRuleCommand.Execute(null);
@@ -97,7 +99,7 @@ public class PhysiciansViewModelVaccineGroupOptionTests
         await viewModel.LoadAsync();
 
         viewModel.NewRulePhysician = viewModel.Physicians.Single();
-        viewModel.NewRuleVaccineOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID" && o.IsGroupWildcard);
+        viewModel.NewRuleVaccineOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
         viewModel.NewRuleIsAnyVaccine = true;
 
         viewModel.AddRuleCommand.Execute(null);

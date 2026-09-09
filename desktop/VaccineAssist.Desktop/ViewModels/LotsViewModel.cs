@@ -37,6 +37,18 @@ public sealed class LotsViewModel : ObservableObject
 
     public ObservableCollection<LotRowViewModel> Lots { get; } = new();
 
+    /// <summary>V-T21 item 4 (Will, 2026-09-08): the same LotRowViewModel
+    /// instances as Lots, partitioned by LotRowViewModel.IsVaccineActive —
+    /// ActiveLots/InactiveLots are what Views/LotsView.xaml actually binds
+    /// its two DataGrids to (active on top, inactive in a collapsed
+    /// "Inactive vaccines (N)" Expander below), while Lots itself stays
+    /// the full flat list for callers/tests that don't care about the
+    /// split. Rebuilt every LoadAsync/AddLotAsync alongside Lots — never
+    /// diverges from it.</summary>
+    public ObservableCollection<LotRowViewModel> ActiveLots { get; } = new();
+
+    public ObservableCollection<LotRowViewModel> InactiveLots { get; } = new();
+
     public bool IsBusy
     {
         get => _isBusy;
@@ -105,12 +117,20 @@ public sealed class LotsViewModel : ObservableObject
                 existingRow.EditCommitted -= OnRowEditCommitted;
             }
             Lots.Clear();
+            ActiveLots.Clear();
+            InactiveLots.Clear();
             foreach (var lot in lotsTask.Result.OrderBy(l => l.Expiration))
             {
                 vaccinesById.TryGetValue(lot.VaccineId, out var vaccine);
-                var row = new LotRowViewModel(lot, vaccine?.Name ?? "(unknown vaccine)", vaccine?.Ndc);
+                // An orphan lot with no matching vaccine row at all
+                // (LoadFallsBackToAPlaceholderNameWhenNoVaccineRowMatchesAtAll)
+                // is treated as active — there's no active flag to read, and
+                // hiding it in the collapsed section would make an already
+                // rare/unexpected orphan even easier to miss.
+                var row = new LotRowViewModel(lot, vaccine?.Name ?? "(unknown vaccine)", vaccine?.Ndc, vaccine?.Active ?? true);
                 row.EditCommitted += OnRowEditCommitted;
                 Lots.Add(row);
+                (row.IsVaccineActive ? ActiveLots : InactiveLots).Add(row);
             }
         }
         catch (Exception ex)
@@ -135,9 +155,13 @@ public sealed class LotsViewModel : ObservableObject
             var created = await _apiService.CreateLotAsync(
                 NewLotVaccine.Id, NewLotNumber.Trim(), expiration, note: NewLotNote);
 
-            var row = new LotRowViewModel(created, NewLotVaccine.Name, NewLotVaccine.Ndc);
+            // NewLotVaccine is only ever chosen from Vaccines (active-only —
+            // see that property's own doc comment), so this new row is
+            // always active.
+            var row = new LotRowViewModel(created, NewLotVaccine.Name, NewLotVaccine.Ndc, isVaccineActive: true);
             row.EditCommitted += OnRowEditCommitted;
             Lots.Add(row);
+            ActiveLots.Add(row);
             NewLotNumber = "";
             NewLotNote = null;
         }

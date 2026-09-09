@@ -222,12 +222,19 @@ public sealed class PhysiciansViewModel : ObservableObject
         }
     }
 
-    /// <summary>(Re)builds VaccineOptions from Vaccines — VaccineGroupCatalog.DisplayOrder
-    /// order, one "All &lt;group&gt; vaccines" option first in each group
-    /// present (ONLY when VaccineGroupSupported — see that property's own
-    /// doc comment for why an unsupported server must never see this
-    /// option at all, not even a disabled one), then that group's vaccines
-    /// by name. Always Clear()s before re-Add()ing (same convention
+    /// <summary>(Re)builds VaccineOptions from Vaccines — V-T21 item 7
+    /// (Will, 2026-09-08): grouped into exactly VaccineGroupCatalog.
+    /// PhysiciansDisplayOrder's 3 buckets (Flu vaccines / COVID vaccines /
+    /// Other vaccines), NOT the data-entry flow's fine-grained groups —
+    /// see VaccineGroupCatalog.GetPhysiciansGroup's own doc comment. One
+    /// "All &lt;group&gt;" wildcard option first in each group present,
+    /// ONLY when BOTH VaccineGroupSupported is true (see that property's
+    /// own doc comment for why an unsupported server must never see this
+    /// option at all, not even a disabled one) AND the group actually has
+    /// a persistable value (PersistedGroupForPhysiciansGroup — "Other
+    /// vaccines" never gets a wildcard option, per the brief: "the 'All
+    /// &lt;group&gt; vaccines' rule options only for Flu and COVID").
+    /// Always Clear()s before re-Add()ing (same convention
     /// DataEntryPopupViewModel's BuildAvailableGroups/BuildProductOptions
     /// use) so VaccineOptionsView's grouping stays in sync with a fresh
     /// load. Callers MUST set VaccineGroupSupported before calling this —
@@ -236,14 +243,15 @@ public sealed class PhysiciansViewModel : ObservableObject
     {
         VaccineOptions.Clear();
         var byGroup = Vaccines
-            .GroupBy(VaccineGroupCatalog.GetGroup)
+            .GroupBy(VaccineGroupCatalog.GetPhysiciansGroup)
             .ToDictionary(g => g.Key, g => g.OrderBy(v => v.Name).ToList());
 
-        foreach (var group in VaccineGroupCatalog.DisplayOrder.Where(byGroup.ContainsKey))
+        foreach (var group in VaccineGroupCatalog.PhysiciansDisplayOrder.Where(byGroup.ContainsKey))
         {
-            if (VaccineGroupSupported)
+            var canWildcard = VaccineGroupSupported && VaccineGroupCatalog.PersistedGroupForPhysiciansGroup(group) is not null;
+            if (canWildcard)
             {
-                VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = $"All {group} vaccines" });
+                VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = $"All {group}" });
             }
             foreach (var vaccine in byGroup[group])
             {
@@ -366,7 +374,21 @@ public sealed class PhysiciansViewModel : ObservableObject
                     ErrorMessage = "Vaccine-type rules aren't available yet — the migration hasn't run. Refresh and pick a specific vaccine instead.";
                     return;
                 }
-                vaccineGroup = NewRuleVaccineOption.Group;
+                // V-T21 item 7: NewRuleVaccineOption.Group is now the
+                // PHYSICIANS-TAB display group ("Flu vaccines"/"COVID
+                // vaccines") — convert back to the persisted fine-grained
+                // value ("Flu"/"COVID") physician-resolution expects. Null
+                // here would mean a wildcard option somehow got built for
+                // "Other vaccines" (BuildVaccineOptions is supposed to
+                // never offer one) — belt-and-suspenders hard stop, same
+                // posture as the VaccineGroupSupported check just above.
+                var persistedGroup = VaccineGroupCatalog.PersistedGroupForPhysiciansGroup(NewRuleVaccineOption.Group);
+                if (persistedGroup is null)
+                {
+                    ErrorMessage = "This vaccine type doesn't support an 'All ... vaccines' rule — pick a specific vaccine instead.";
+                    return;
+                }
+                vaccineGroup = persistedGroup;
             }
             else
             {
