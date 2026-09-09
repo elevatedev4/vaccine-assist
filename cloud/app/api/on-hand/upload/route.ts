@@ -4,7 +4,8 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
 import { extractUploadPayload } from "@/lib/on-hand/upload";
 import { insertOnHandRows } from "@/lib/on-hand/insert";
-import { parseOnHandUpload } from "@/lib/on-hand/pioneer-boh";
+import { matchPioneerBohRows, parseOnHandUpload, type MatchedOnHandRow } from "@/lib/on-hand/pioneer-boh";
+import { parsePioneerBohPdf } from "@/lib/on-hand/pioneer-boh-pdf";
 import { isMissingTableError } from "@/lib/schema-degradation";
 import type { CatalogVaccine } from "@/lib/vaccine-matching";
 
@@ -13,12 +14,18 @@ import type { CatalogVaccine } from "@/lib/vaccine-matching";
  * data set" (Will's brief, verbatim), for a user who hasn't received any
  * on-hand email yet. Accepts either a multipart/form-data upload (a
  * `file` field — what app/ordering/page.tsx's file input posts) or a raw
- * text/csv body. Three input shapes, one shared entry point
- * (lib/on-hand/pioneer-boh.ts's parseOnHandUpload):
+ * text/csv body. Four input shapes:
  *   - an xlsx file (Pioneer's real BOH export)
  *   - a Pioneer-shaped csv/tsv (same columns as the xlsx)
+ *   - a PDF export of the same table (V-boh-pdf-attachment, 2026-09-09
+ *     — PioneerRx's real scheduled email attaches exactly this; a
+ *     manually uploaded copy parses identically via
+ *     lib/on-hand/pioneer-boh-pdf.ts's parsePioneerBohPdf, handled
+ *     directly below since that path is async, unlike the other three)
  *   - the original hand-typed "VaccineName, Quantity" lines
- * so email and upload never drift on what counts as valid input.
+ * xlsx/csv/text share one entry point (lib/on-hand/pioneer-boh.ts's
+ * parseOnHandUpload) so email and upload never drift on what counts as
+ * valid input.
  *
  * 2 MB cap (V-ordering-targets, raised from 200 KB for xlsx — see
  * lib/on-hand/upload.ts's MAX_UPLOAD_BYTES) applies to either shape.
@@ -85,7 +92,20 @@ export async function POST(request: Request) {
   }
 
   const catalog: CatalogVaccine[] = catalogData ?? [];
-  const parsed = parseOnHandUpload(payload, catalog);
+
+  let parsed: MatchedOnHandRow[];
+  if (payload.kind === "pdf") {
+    const pdfResult = await parsePioneerBohPdf(payload.buffer);
+    if (!pdfResult) {
+      return NextResponse.json({ error: "Could not read the uploaded PDF." }, { status: 400 });
+    }
+    console.log(
+      `POST /api/on-hand/upload: pdf parsed pages=${pdfResult.pages} rows=${pdfResult.rows.length} headerFound=${pdfResult.headerFound}`
+    );
+    parsed = matchPioneerBohRows(pdfResult.rows, catalog);
+  } else {
+    parsed = parseOnHandUpload(payload, catalog);
+  }
 
   if (parsed.length === 0) {
     return NextResponse.json({ inserted: 0, unmatched: [] });

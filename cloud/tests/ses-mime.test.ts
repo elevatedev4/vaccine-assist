@@ -334,32 +334,83 @@ describe("extractAttachmentFromRawMime", () => {
     expect((result as { kind: "xlsx"; buffer: Buffer }).buffer.toString("utf-8")).toBe("octet stream xlsx bytes");
   });
 
-  it("logs and returns null for an unsupported attachment type (pdf), never its body", () => {
+  it("logs and returns null for an unsupported attachment type (zip), never its body", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const boundary = "BOUNDARY-PDF";
+    const boundary = "BOUNDARY-ZIP";
     const raw = [
       `Content-Type: multipart/mixed; boundary="${boundary}"`,
       "",
       `--${boundary}`,
-      "Content-Type: application/pdf",
-      'Content-Disposition: attachment; filename="report.pdf"',
+      "Content-Type: application/zip",
+      'Content-Disposition: attachment; filename="report.zip"',
       "Content-Transfer-Encoding: base64",
       "",
-      Buffer.from("super secret PDF body content").toString("base64"),
+      Buffer.from("super secret zip body content").toString("base64"),
       `--${boundary}--`,
       "",
     ].join(CRLF);
 
     expect(extractAttachmentFromRawMime(raw)).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('unsupported attachment type=application/pdf name="report.pdf"')
+      expect.stringContaining('unsupported attachment type=application/zip name="report.zip"')
     );
     for (const call of warnSpy.mock.calls) {
       for (const arg of call) {
-        expect(String(arg)).not.toContain("secret PDF body");
+        expect(String(arg)).not.toContain("secret zip body");
       }
     }
     warnSpy.mockRestore();
+  });
+
+  it("extracts a base64 pdf attachment by content-type (application/pdf)", () => {
+    const boundary = "BOUNDARY-PDF-CT";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: application/pdf; name="report.pdf"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("fake pdf bytes").toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("pdf");
+    expect((result as { kind: "pdf"; buffer: Buffer }).buffer.toString("utf-8")).toBe("fake pdf bytes");
+  });
+
+  // The real PioneerRx "AppExport: Vaccine BOH" email (prod finding,
+  // 2026-09-09 12:00pm CST): multipart/mixed with a text/plain body part
+  // and ONE attachment part that is application/octet-stream (NOT
+  // application/pdf) named "_AppExport_Vaccine-BOH.pdf", base64-encoded
+  // — this is the shape the filename-pattern fallback exists for.
+  it("recognizes the real Pioneer BOH email shape: octet-stream + '_AppExport_Vaccine-BOH.pdf' filename", () => {
+    const boundary = "BOUNDARY-PIONEER-BOH";
+    const pdfBytes = Buffer.from("%PDF-1.4 fake pioneer boh pdf bytes");
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "",
+      "Automatic delivery from scheduled saved search: AppExport - Vaccine BOH",
+      `--${boundary}`,
+      "Content-Type: application/octet-stream",
+      'Content-Disposition: attachment; filename="_AppExport_Vaccine-BOH.pdf"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      pdfBytes.toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("pdf");
+    expect((result as { kind: "pdf"; buffer: Buffer }).buffer.equals(pdfBytes)).toBe(true);
   });
 });
 

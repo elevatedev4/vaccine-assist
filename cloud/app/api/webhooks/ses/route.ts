@@ -2,7 +2,14 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { describeMimeStructure, extractAttachmentFromRawMime, extractTextFromRawMime, getHeader, splitHeaderBody } from "@/lib/ses-mime";
+import {
+  describeMimeStructure,
+  extractAttachmentFromRawMime,
+  extractTextFromRawMime,
+  getHeader,
+  splitHeaderBody,
+  type ExtractedAttachment,
+} from "@/lib/ses-mime";
 import { isAllowedSnsHost, verifySnsSignature } from "@/lib/sns-signature";
 import { findAddressByToken, parseToken, touchLastReceived, type InboundEmailAddress } from "@/lib/on-hand/address";
 import { insertOnHandRows } from "@/lib/on-hand/insert";
@@ -14,6 +21,7 @@ import {
   parsePioneerBohXlsx,
   type MatchedOnHandRow,
 } from "@/lib/on-hand/pioneer-boh";
+import { parsePioneerBohPdf } from "@/lib/on-hand/pioneer-boh-pdf";
 import type { CatalogVaccine } from "@/lib/vaccine-matching";
 
 /**
@@ -282,13 +290,23 @@ async function processOnHandContent(content: string, addressId?: string): Promis
  * attachment is never handed to `read()`, full stop. `rawMimeForFallback`
  * is only used on the oversize path, to fall back to the plain-text
  * lines parser rather than dropping the email entirely.
+ *
+ * PDF (V-boh-pdf-attachment, 2026-09-09): PioneerRx's real scheduled
+ * export attaches the table as a PDF, not xlsx/csv — same size gate,
+ * parsed via lib/on-hand/pioneer-boh-pdf.ts's parsePioneerBohPdf
+ * instead of SheetJS. That function returns null for either a guard
+ * trip (buffer already passed the size gate here, so this would only
+ * be the internal page-count guard) or any pdfjs exception — either
+ * way this falls back to the plain-text lines parser exactly like the
+ * oversize path above, rather than reporting "0 rows" for a PDF that
+ * failed to parse.
  */
 async function processOnHandAttachment(
-  attachment: { kind: "xlsx"; buffer: Buffer } | { kind: "csv"; text: string },
+  attachment: ExtractedAttachment,
   addressId: string | undefined,
   rawMimeForFallback: string
 ): Promise<NextResponse> {
-  const sizeBytes = attachment.kind === "xlsx" ? attachment.buffer.length : Buffer.byteLength(attachment.text, "utf-8");
+  const sizeBytes = attachment.kind === "csv" ? Buffer.byteLength(attachment.text, "utf-8") : attachment.buffer.length;
   if (sizeBytes > MAX_UPLOAD_BYTES) {
     console.warn(
       `POST /api/webhooks/ses: skipping oversized ${attachment.kind} attachment (${sizeBytes} bytes > ${MAX_UPLOAD_BYTES} max) ` +
@@ -310,6 +328,18 @@ async function processOnHandAttachment(
   const catalogResult = await loadCatalogOrError(supabase);
   if ("error" in catalogResult) return catalogResult.error;
   const { catalog } = catalogResult;
+
+  if (attachment.kind === "pdf") {
+    const pdfResult = await parsePioneerBohPdf(attachment.buffer);
+    if (!pdfResult) {
+      console.warn("POST /api/webhooks/ses: pdf parse failed — falling back to plain-text lines");
+      return processOnHandContent(extractTextFromRawMime(rawMimeForFallback), addressId);
+    }
+    console.log(
+      `POST /api/webhooks/ses: pdf parsed pages=${pdfResult.pages} rows=${pdfResult.rows.length} headerFound=${pdfResult.headerFound}`
+    );
+    return insertAndSummarize(supabase, matchPioneerBohRows(pdfResult.rows, catalog), addressId);
+  }
 
   const rows =
     attachment.kind === "xlsx"

@@ -635,7 +635,7 @@ export default function OrderingPage() {
         {uploading ? "Uploading…" : "Upload on-hand file"}
         <input
           type="file"
-          accept=".xlsx,.csv,.txt"
+          accept=".xlsx,.csv,.txt,.pdf"
           onChange={(e) => void handleUploadFile(e)}
           disabled={uploading}
           style={{ display: "none" }}
@@ -854,7 +854,7 @@ export default function OrderingPage() {
                 {uploading ? "Uploading…" : "Or upload a file now"}
                 <input
                   type="file"
-                  accept=".xlsx,.csv,.txt"
+                  accept=".xlsx,.csv,.txt,.pdf"
                   onChange={(e) => void handleUploadFile(e)}
                   disabled={uploading}
                   style={{ display: "none" }}

@@ -28,17 +28,33 @@ function looksLikeXlsx(filename: string, mimeType: string): boolean {
   return XLSX_MIME_TYPES.has(mimeType);
 }
 
+/** PDF upload recognition (V-boh-pdf-attachment, 2026-09-09) — mirrors
+ * the SES webhook attachment path (lib/ses-mime.ts) so a manually
+ * uploaded copy of the same PDF Pioneer emails parses identically. */
+const PDF_EXTENSION_PATTERN = /\.pdf$/i;
+const PDF_MIME_TYPE = "application/pdf";
+
+function looksLikePdf(filename: string, mimeType: string): boolean {
+  if (PDF_EXTENSION_PATTERN.test(filename)) return true;
+  return mimeType === PDF_MIME_TYPE;
+}
+
 /**
  * Reads the request body into an UploadPayload — either a decoded text
  * string (the legacy "VaccineName, Quantity" lines, or a Pioneer
  * csv/tsv table) or a raw Buffer for an xlsx file (lib/on-hand/pioneer-boh.ts
- * parses that with SheetJS). Multipart uploads are routed to `xlsx` by
- * filename extension or declared MIME type; a raw (non-multipart) POST
- * body is always treated as text — xlsx is a binary zip container that
- * can't round-trip through a raw text body reliably, and every caller
- * that would send one (the upload button) always posts multipart.
+ * parses that with SheetJS). Multipart uploads are routed to `xlsx` or
+ * `pdf` by filename extension or declared MIME type; a raw
+ * (non-multipart) POST body is always treated as text — xlsx/pdf are
+ * binary containers that can't round-trip through a raw text body
+ * reliably, and every caller that would send one (the upload button)
+ * always posts multipart. A `pdf` result is handled by the caller
+ * directly (via lib/on-hand/pioneer-boh-pdf.ts's parsePioneerBohPdf,
+ * which is async, unlike parseOnHandUpload's synchronous xlsx/text
+ * dispatch) rather than folded into the UploadPayload union
+ * parseOnHandUpload consumes.
  */
-export async function extractUploadPayload(request: Request): Promise<UploadPayload> {
+export async function extractUploadPayload(request: Request): Promise<UploadPayload | { kind: "pdf"; buffer: Buffer }> {
   const contentType = request.headers.get("content-type") ?? "";
 
   if (contentType.includes("multipart/form-data")) {
@@ -55,6 +71,10 @@ export async function extractUploadPayload(request: Request): Promise<UploadPayl
     if (looksLikeXlsx(filename, file.type)) {
       const buffer = Buffer.from(await file.arrayBuffer());
       return { kind: "xlsx", buffer };
+    }
+    if (looksLikePdf(filename, file.type)) {
+      const buffer = Buffer.from(await file.arrayBuffer());
+      return { kind: "pdf", buffer };
     }
     return { kind: "text", text: await file.text() };
   }

@@ -30,12 +30,20 @@
  *       through the same path as `.xlsx` — SheetJS's `read()` (used by
  *       lib/on-hand/pioneer-boh.ts's parsePioneerBohXlsx) handles both
  *       formats from the same Buffer.
+ *   (f) `application/pdf` (or a `.pdf` filename, which is how
+ *       PioneerRx's real BOH export actually arrives — as
+ *       `application/octet-stream` with a `.pdf` filename, same as the
+ *       `.xlsx`-filename-with-octet-stream-type case above) — returned
+ *       as `{ kind: "pdf", buffer }` for
+ *       lib/on-hand/pioneer-boh-pdf.ts's parsePioneerBohPdf to extract
+ *       the table from glyph positions (a PDF has no cell structure
+ *       SheetJS-style parsing can use).
  *
  * Deliberately does NOT handle:
  *   - Nesting beyond MAX_MIME_DEPTH levels (a container part that deep
  *     is treated as an opaque leaf rather than expanded further —
  *     bounds the work done on an adversarial/malformed message).
- *   - Attachment types other than xlsx/xls/csv/tsv (logged via
+ *   - Attachment types other than xlsx/xls/csv/tsv/pdf (logged via
  *     `console.warn` — see extractAttachmentFromRawMime — and skipped,
  *     never inspected).
  *   - RFC 2231 continuation parameters (`filename*0*=`, `filename*1*=`,
@@ -196,6 +204,14 @@ const XLSX_CONTENT_TYPE_PATTERN = /vnd\.openxmlformats-officedocument\.spreadshe
 const XLSX_FILENAME_PATTERN = /\.xlsx?$/i;
 const CSV_CONTENT_TYPE_PATTERN = /text\/csv/i;
 const CSV_FILENAME_PATTERN = /\.(csv|tsv)$/i;
+/** PDF attachment recognition (V-boh-pdf-attachment, 2026-09-09) —
+ * PioneerRx's real "AppExport: Vaccine BOH" email attaches a PDF as
+ * `application/octet-stream` with a `.pdf` filename (never
+ * `application/pdf`), so the filename pattern is the one that actually
+ * matches in production; the content-type pattern is kept for a sender
+ * that DOES set it correctly. */
+const PDF_CONTENT_TYPE_PATTERN = /application\/pdf/i;
+const PDF_FILENAME_PATTERN = /\.pdf$/i;
 
 /**
  * Upper bound on an attachment part's RAW (still-encoded) text length,
@@ -267,7 +283,10 @@ function getAttachmentFilename(headers: string, contentTypeRaw: string): string 
   return "";
 }
 
-export type ExtractedAttachment = { kind: "xlsx"; buffer: Buffer } | { kind: "csv"; text: string };
+export type ExtractedAttachment =
+  | { kind: "xlsx"; buffer: Buffer }
+  | { kind: "csv"; text: string }
+  | { kind: "pdf"; buffer: Buffer };
 
 /** True when a part "looks like" an attachment (as opposed to an
  * inline body part) even though it isn't a recognized xlsx/csv — used
@@ -312,13 +331,17 @@ export function extractAttachmentFromRawMime(raw: string): ExtractedAttachment |
 
     const isXlsx = XLSX_CONTENT_TYPE_PATTERN.test(part.contentTypeRaw) || XLSX_FILENAME_PATTERN.test(filename);
     const isCsv = !isXlsx && (CSV_CONTENT_TYPE_PATTERN.test(part.contentTypeRaw) || CSV_FILENAME_PATTERN.test(filename));
+    const isPdf =
+      !isXlsx && !isCsv && (PDF_CONTENT_TYPE_PATTERN.test(part.contentTypeRaw) || PDF_FILENAME_PATTERN.test(filename));
 
-    if ((isXlsx || isCsv) && part.body.length > MAX_ATTACHMENT_PART_CHARS) {
+    if ((isXlsx || isCsv || isPdf) && part.body.length > MAX_ATTACHMENT_PART_CHARS) {
       // Oversized — skip WITHOUT decoding (never even reaches Buffer.from
-      // or SheetJS's read()). Caller falls back to extractTextFromRawMime's
-      // plain-text search; still a 200 response either way.
+      // or SheetJS's read()/pdfjs). Caller falls back to
+      // extractTextFromRawMime's plain-text search; still a 200 response
+      // either way.
+      const label = isXlsx ? "xlsx" : isCsv ? "csv/tsv" : "pdf";
       console.warn(
-        `extractAttachmentFromRawMime: skipping oversized ${isXlsx ? "xlsx" : "csv/tsv"} attachment part ` +
+        `extractAttachmentFromRawMime: skipping oversized ${label} attachment part ` +
           `(${part.body.length} raw chars > ${MAX_ATTACHMENT_PART_CHARS} max) — falling back to plain-text`
       );
       continue;
@@ -337,7 +360,15 @@ export function extractAttachmentFromRawMime(raw: string): ExtractedAttachment |
       if (decoded) return { kind: "csv", text: decoded };
     }
 
-    if (!isXlsx && !isCsv && looksLikeAttachment(part, filename)) {
+    if (isPdf) {
+      try {
+        return { kind: "pdf", buffer: Buffer.from(part.body.replace(/\s/g, ""), "base64") };
+      } catch {
+        continue;
+      }
+    }
+
+    if (!isXlsx && !isCsv && !isPdf && looksLikeAttachment(part, filename)) {
       const typeForLog = part.contentTypeRaw.split(";")[0].trim();
       console.warn(`extractAttachmentFromRawMime: unsupported attachment type=${typeForLog} name="${filename}"`);
     }
