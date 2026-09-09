@@ -119,7 +119,13 @@ const styles = {
   sumStatLabel: { fontSize: "0.62rem", color: "#666", textTransform: "uppercase" as const, letterSpacing: "0.03em" },
   sumStatValue: { fontSize: "1.1rem", fontWeight: 700 },
   groupTableWrap: { marginTop: "0.6rem", overflowX: "auto" as const },
-  tableWrap: { overflowX: "auto" as const },
+  // Explorer table overflow fix (Will, 2026-09-08 follow-up): the table
+  // wrapper below is the ONLY element allowed to scroll horizontally — the
+  // page body itself must never scroll sideways. `maxWidth: "100%"`
+  // (rather than relying on the block-level default alone) keeps this div
+  // from ever growing past its parent <main> even if some ancestor's own
+  // box model gets adjusted later.
+  tableWrap: { overflowX: "auto" as const, maxWidth: "100%" },
   table: { borderCollapse: "collapse" as const, fontSize: "0.72rem", width: "100%" },
   th: {
     textAlign: "left" as const,
@@ -131,6 +137,24 @@ const styles = {
   },
   thLabel: { display: "inline-flex", alignItems: "center", gap: "0.25rem" },
   td: { padding: "0.15rem 0.4rem", borderBottom: "1px solid #eee", whiteSpace: "nowrap" as const },
+  // Vaccines/Tests and Appointment type cells can carry long joined lists
+  // that otherwise blow the table out to many thousands of pixels wide and
+  // clip later columns (Will, 2026-09-08 follow-up: "# vaccines column is
+  // clipped") — capped width + normal wrapping keeps a long value wrapping
+  // onto multiple lines within its own cell instead of forcing the whole
+  // table wider.
+  tdVaccines: {
+    padding: "0.15rem 0.4rem",
+    borderBottom: "1px solid #eee",
+    whiteSpace: "normal" as const,
+    maxWidth: "520px",
+  },
+  tdAppointmentType: {
+    padding: "0.15rem 0.4rem",
+    borderBottom: "1px solid #eee",
+    whiteSpace: "normal" as const,
+    maxWidth: "260px",
+  },
 
   // V-T24 rebuild (Will, verbatim: "The filtering option needs to be more
   // refined, it's very clunky right now and I don't see a way to clear
@@ -277,6 +301,7 @@ const COLUMNS: ColumnDef[] = [
   { key: "leadDays", label: "Lead days" },
   { key: "appointmentTypeName", label: "Appointment type" },
   { key: "vaccineNames", label: "Vaccines" },
+  { key: "testNames", label: "Tests" },
   { key: "vaccineCount", label: "# vaccines" },
   { key: "covidBrand", label: "COVID brand", headerBackground: GROUP_HEADER_COLORS.covid },
   { key: "covidAgeBucket", label: "COVID age", headerBackground: GROUP_HEADER_COLORS.covid },
@@ -290,6 +315,7 @@ const GROUP_BY_OPTIONS: Array<{ value: GroupByMode; label: string }> = [
   { value: "day", label: "Day of week" },
   { value: "hour", label: "Hour" },
   { value: "vaccine", label: "Vaccine" },
+  { value: "test", label: "Test" },
   { value: "appointmentType", label: "Appointment type" },
   { value: "covidBrand", label: "COVID brand" },
   { value: "covidAge", label: "COVID age" },
@@ -302,7 +328,15 @@ const GROUP_BY_OPTIONS: Array<{ value: GroupByMode; label: string }> = [
 // popover body renders. Columns with no entry here (currently none — every
 // COLUMNS entry has a filter) would simply render no filter icon.
 type TextFilterField = "apptDateText" | "bookedOnText" | "leadDaysText" | "vaccineCountText";
-type ChecklistFilterField = "day" | "hour" | "appointmentType" | "vaccine" | "covidBrand" | "covidAge" | "fluAge";
+type ChecklistFilterField =
+  | "day"
+  | "hour"
+  | "appointmentType"
+  | "vaccine"
+  | "tests"
+  | "covidBrand"
+  | "covidAge"
+  | "fluAge";
 
 type ColumnFilterKind = { kind: "text"; field: TextFilterField } | { kind: "checklist"; field: ChecklistFilterField };
 
@@ -314,6 +348,7 @@ const FILTER_KIND_BY_COLUMN: Partial<Record<SortKey, ColumnFilterKind>> = {
   leadDays: { kind: "text", field: "leadDaysText" },
   appointmentTypeName: { kind: "checklist", field: "appointmentType" },
   vaccineNames: { kind: "checklist", field: "vaccine" },
+  testNames: { kind: "checklist", field: "tests" },
   vaccineCount: { kind: "text", field: "vaccineCountText" },
   covidBrand: { kind: "checklist", field: "covidBrand" },
   covidAgeBucket: { kind: "checklist", field: "covidAge" },
@@ -665,6 +700,7 @@ export default function AppointmentExplorerPage() {
     const hourToValue = new Map<string, number>();
     const types = new Set<string>();
     const vaccines = new Set<string>();
+    const tests = new Set<string>();
     const covidBrands = new Set<string>();
     const covidAges = new Set<string>();
     const fluAges = new Set<string>();
@@ -674,6 +710,7 @@ export default function AppointmentExplorerPage() {
       hourToValue.set(formatHourLabel(row.hourOfDay), row.hourOfDay);
       types.add(row.appointmentTypeName);
       for (const name of row.vaccineNames) vaccines.add(name);
+      for (const name of row.testNames) tests.add(name);
       covidBrands.add(row.covidBrand);
       covidAges.add(row.covidAgeBucket);
       fluAges.add(row.fluAgeBucket);
@@ -686,6 +723,7 @@ export default function AppointmentExplorerPage() {
         .map(([label]) => label),
       appointmentType: Array.from(types).sort(),
       vaccine: Array.from(vaccines).sort(),
+      tests: Array.from(tests).sort(),
       covidBrand: Array.from(covidBrands).sort(),
       covidAge: Array.from(covidAges).sort(),
       fluAge: Array.from(fluAges).sort(),
@@ -995,8 +1033,9 @@ export default function AppointmentExplorerPage() {
                       <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{formatHourLabel(row.hourOfDay)}</td>
                       <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.createdDate || "—"}</td>
                       <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{leadDays}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.appointmentTypeName}</td>
-                      <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.vaccineNames.join(", ") || "—"}</td>
+                      <td style={{ ...styles.tdAppointmentType, ...COLUMN_DIVIDER }}>{row.appointmentTypeName}</td>
+                      <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.vaccineNames.join(", ") || "—"}</td>
+                      <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.testNames.join(", ") || "—"}</td>
                       <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.vaccineNames.length}</td>
                       <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>
                         {row.covidBrand}

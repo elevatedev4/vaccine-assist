@@ -29,6 +29,12 @@ export type ExplorerRow = {
   appointmentTypeId: number;
   appointmentTypeName: string;
   vaccineNames: string[];
+  /** Point-of-care test name(s) on this appointment, e.g. ["COVID"] —
+   * empty for a normal vaccine appointment. Same field the main dashboard's
+   * point-of-care testing table reads (lib/poc-test-table.ts's TestCount),
+   * added here (V-data-explorer follow-up, Will 2026-09-08) so a POC
+   * testing appointment's test(s) show up in the explorer too. */
+  testNames: string[];
   covidBrand: CovidBrand;
   covidAgeBucket: CovidAgeBucket;
   fluAgeBucket: FluAgeBucket;
@@ -110,6 +116,7 @@ export function matchesSearch(row: ExplorerRow, query: string): boolean {
     formatHourLabel(row.hourOfDay),
     row.appointmentTypeName,
     row.vaccineNames.join(", "),
+    row.testNames.join(", "),
     row.covidBrand,
     row.covidAgeBucket,
     row.fluAgeBucket,
@@ -139,6 +146,9 @@ export type ExplorerFilters = {
   hour: string[];
   appointmentType: string[];
   vaccine: string[];
+  /** Multi-select allowlist over `testNames` — same "matches if ANY
+   * selected name is on the row" semantics as `vaccine` above. */
+  tests: string[];
   covidBrand: string[];
   covidAge: string[];
   fluAge: string[];
@@ -154,6 +164,7 @@ export const EMPTY_EXPLORER_FILTERS: ExplorerFilters = {
   hour: [],
   appointmentType: [],
   vaccine: [],
+  tests: [],
   covidBrand: [],
   covidAge: [],
   fluAge: [],
@@ -187,6 +198,7 @@ export function applyFilters(rows: ExplorerRow[], filters: ExplorerFilters): Exp
     if (filters.hour.length > 0 && !filters.hour.includes(formatHourLabel(row.hourOfDay))) return false;
     if (filters.appointmentType.length > 0 && !filters.appointmentType.includes(row.appointmentTypeName)) return false;
     if (filters.vaccine.length > 0 && !row.vaccineNames.some((name) => filters.vaccine.includes(name))) return false;
+    if (filters.tests.length > 0 && !row.testNames.some((name) => filters.tests.includes(name))) return false;
     if (filters.covidBrand.length > 0 && !filters.covidBrand.includes(row.covidBrand)) return false;
     if (filters.covidAge.length > 0 && !filters.covidAge.includes(row.covidAgeBucket)) return false;
     if (filters.fluAge.length > 0 && !filters.fluAge.includes(row.fluAgeBucket)) return false;
@@ -203,6 +215,7 @@ export type SortKey =
   | "leadDays"
   | "appointmentTypeName"
   | "vaccineNames"
+  | "testNames"
   | "vaccineCount"
   | "covidBrand"
   | "covidAgeBucket"
@@ -230,6 +243,8 @@ function sortValue(row: ExplorerRow, key: SortKey): string | number {
       return row.appointmentTypeName;
     case "vaccineNames":
       return row.vaccineNames.join(", ");
+    case "testNames":
+      return row.testNames.join(", ");
     case "vaccineCount":
       return row.vaccineNames.length;
     case "covidBrand":
@@ -294,6 +309,7 @@ export type GroupByMode =
   | "day"
   | "hour"
   | "vaccine"
+  | "test"
   | "appointmentType"
   | "covidBrand"
   | "covidAge"
@@ -313,11 +329,12 @@ export type GroupSummaryRow = {
  * Buckets the filtered rows by `mode` and computes appointments/vaccines/
  * percentage per bucket. "none" returns [] (no summary table to render).
  *
- * "vaccine" mode is the one deliberately double-counting bucket (per the
- * explorer's spec): a row with 2 vaccineNames is bumped once per name, so
- * both `appointments` and `vaccines` in each vaccine's group row count
- * every OCCURRENCE of that name, not distinct appointments — an
- * appointment appearing in two different vaccine groups is not a bug.
+ * "vaccine" and "test" modes are the deliberately double-counting buckets
+ * (per the explorer's spec): a row with 2 vaccineNames (or 2 testNames) is
+ * bumped once per name, so both `appointments` and `vaccines` in each
+ * group row count every OCCURRENCE of that name, not distinct
+ * appointments — an appointment appearing in two different vaccine/test
+ * groups is not a bug.
  * Every other mode buckets each row exactly once, and `vaccines` there is
  * still each bucketed row's own vaccineNames.length (same rule as
  * computeSums), so those groups' `vaccines` and `appointments` numbers
@@ -372,6 +389,11 @@ export function computeGroups(rows: ExplorerRow[], mode: GroupByMode): GroupSumm
         for (const name of names) bump(name, 1);
         break;
       }
+      case "test": {
+        const names = row.testNames.length > 0 ? row.testNames : ["(none)"];
+        for (const name of names) bump(name, 1);
+        break;
+      }
     }
   }
 
@@ -393,6 +415,7 @@ const CSV_HEADERS = [
   "Lead days",
   "Appointment type",
   "Vaccines",
+  "Tests",
   "# vaccines",
   "COVID brand",
   "COVID age",
@@ -425,6 +448,7 @@ export function rowsToCsv(rows: ExplorerRow[]): string {
       lead === null ? "" : String(lead),
       row.appointmentTypeName,
       row.vaccineNames.join(", "),
+      row.testNames.join(", "),
       String(row.vaccineNames.length),
       row.covidBrand,
       row.covidAgeBucket,
@@ -496,6 +520,7 @@ const CHECKLIST_FILTER_FIELDS = [
   "hour",
   "appointmentType",
   "vaccine",
+  "tests",
   "covidBrand",
   "covidAge",
   "fluAge",
@@ -516,6 +541,7 @@ const FILTER_FIELD_LABELS: Record<
   hour: "Hour",
   appointmentType: "Appointment type",
   vaccine: "Vaccine",
+  tests: "Tests",
   covidBrand: "COVID brand",
   covidAge: "COVID age",
   fluAge: "Flu age",
@@ -602,6 +628,7 @@ export function clearAllFilters(): ExplorerFilters {
     hour: [],
     appointmentType: [],
     vaccine: [],
+    tests: [],
     covidBrand: [],
     covidAge: [],
     fluAge: [],

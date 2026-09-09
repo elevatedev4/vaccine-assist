@@ -25,6 +25,7 @@ function row(overrides: Partial<ExplorerRow> = {}): ExplorerRow {
     appointmentTypeId: 111,
     appointmentTypeName: "Vaccine Appointment",
     vaccineNames: ["Flu"],
+    testNames: [],
     covidBrand: "any",
     covidAgeBucket: "unknown",
     fluAgeBucket: "3-64",
@@ -108,6 +109,10 @@ describe("matchesSearch", () => {
   it("returns false when nothing matches", () => {
     expect(matchesSearch(row({ vaccineNames: ["Flu"] }), "shingles")).toBe(false);
   });
+
+  it("matches on test names", () => {
+    expect(matchesSearch(row({ testNames: ["COVID"] }), "covid")).toBe(true);
+  });
 });
 
 describe("applyFilters", () => {
@@ -167,6 +172,17 @@ describe("applyFilters", () => {
 
   it("filters by vaccine multi-select (matches if ANY vaccineName is selected)", () => {
     const result = applyFilters(rows, { ...EMPTY_EXPLORER_FILTERS, vaccine: ["COVID-Moderna"] });
+    expect(result).toHaveLength(1);
+    expect(result[0].date).toBe("2026-09-12");
+  });
+
+  it("filters by tests multi-select (matches if ANY testName is selected)", () => {
+    const testRows = [
+      row({ date: "2026-09-10", testNames: [] }),
+      row({ date: "2026-09-11", testNames: ["COVID"] }),
+      row({ date: "2026-09-12", testNames: ["COVID", "Strep Throat"] }),
+    ];
+    const result = applyFilters(testRows, { ...EMPTY_EXPLORER_FILTERS, tests: ["Strep Throat"] });
     expect(result).toHaveLength(1);
     expect(result[0].date).toBe("2026-09-12");
   });
@@ -354,6 +370,22 @@ describe("computeGroups", () => {
     expect(totalOccurrences).toBe(4);
   });
 
+  it("groups by test, double-counting a multi-test appointment across both groups", () => {
+    const testRows = [
+      row({ testNames: ["COVID"] }),
+      row({ testNames: ["COVID", "Strep Throat"] }),
+      row({ testNames: [] }),
+    ];
+    const groups = computeGroups(testRows, "test");
+    const byGroup = Object.fromEntries(groups.map((g) => [g.group, g]));
+    // "COVID" appears in rows 1 and 2 -> 2 occurrences.
+    expect(byGroup["COVID"].appointments).toBe(2);
+    // "Strep Throat" appears once (row 2).
+    expect(byGroup["Strep Throat"].appointments).toBe(1);
+    // A row with no test names buckets under "(none)".
+    expect(byGroup["(none)"].appointments).toBe(1);
+  });
+
   it("sorts groups by descending appointment count, ties broken alphabetically", () => {
     const groups = computeGroups(
       [row({ appointmentTypeName: "Z" }), row({ appointmentTypeName: "A" }), row({ appointmentTypeName: "A" })],
@@ -368,7 +400,7 @@ describe("rowsToCsv", () => {
     const csv = rowsToCsv([row()]);
     const lines = csv.split("\n");
     expect(lines[0]).toBe(
-      "Appt date,Day,Hour,Booked on,Lead days,Appointment type,Vaccines,# vaccines,COVID brand,COVID age,Flu age"
+      "Appt date,Day,Hour,Booked on,Lead days,Appointment type,Vaccines,Tests,# vaccines,COVID brand,COVID age,Flu age"
     );
     expect(lines).toHaveLength(2);
   });
@@ -388,12 +420,17 @@ describe("rowsToCsv", () => {
     expect(csv).toContain('"Flu, COVID-Pfizer"');
   });
 
+  it("includes the Tests column, joining multiple test names with a comma", () => {
+    const csv = rowsToCsv([row({ testNames: ["COVID", "Strep Throat"] })]);
+    expect(csv).toContain('"COVID, Strep Throat"');
+  });
+
   it("leaves plain fields unquoted", () => {
     const csv = rowsToCsv([row()]);
     const dataLine = csv.split("\n")[1];
-    expect(dataLine.startsWith("2026-09-10,Thu,10 AM,2026-09-01,9,Vaccine Appointment,Flu,1,any,unknown,3-64")).toBe(
-      true
-    );
+    expect(
+      dataLine.startsWith("2026-09-10,Thu,10 AM,2026-09-01,9,Vaccine Appointment,Flu,,1,any,unknown,3-64")
+    ).toBe(true);
   });
 });
 
@@ -490,6 +527,7 @@ describe("activeFilterChips", () => {
       hour: ["10 AM"],
       appointmentType: ["Vaccine Appointment"],
       vaccine: ["Flu"],
+      tests: ["COVID"],
       covidBrand: ["pfizer"],
       covidAge: ["12-64"],
       fluAge: ["3-64"],
@@ -505,11 +543,17 @@ describe("activeFilterChips", () => {
       "hour",
       "appointmentType",
       "vaccine",
+      "tests",
       "covidBrand",
       "covidAge",
       "fluAge",
       "search",
     ]);
+  });
+
+  it("builds a chip for the tests filter, like vaccine", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, tests: ["COVID", "Strep Throat"] };
+    expect(activeFilterChips(filters)).toEqual([{ key: "tests", label: "Tests: COVID, Strep Throat" }]);
   });
 });
 

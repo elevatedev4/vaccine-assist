@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildPocTestTable, computePocTestHeatmapMaxes, type TestCount } from "@/lib/poc-test-table";
+import {
+  buildPocTestTable,
+  computePocTestHeatmapMaxes,
+  isPocTestTableEmpty,
+  type TestCount,
+} from "@/lib/poc-test-table";
 
 describe("buildPocTestTable", () => {
   const days = ["2026-08-17", "2026-08-18", "2026-08-19"];
@@ -87,5 +92,34 @@ describe("computePocTestHeatmapMaxes", () => {
     // not the same number — proves the two scales are independent, same
     // pattern lib/appointment-table.ts's computeHeatmapMaxes tests assert.
     expect(computePocTestHeatmapMaxes(table)).toEqual({ dataScaleMax: 4, totalScaleMax: 7 });
+  });
+});
+
+describe("isPocTestTableEmpty", () => {
+  it("returns true for a table with no discovered test-type columns", () => {
+    const table = buildPocTestTable([], ["2026-08-17", "2026-08-18"]);
+
+    expect(isPocTestTableEmpty(table)).toBe(true);
+  });
+
+  it("returns false for a table with at least one test-type column, even if every count is 0", () => {
+    const days = ["2026-08-17", "2026-08-18"];
+    const testCounts: TestCount[] = [{ date: "2026-08-17", testName: "COVID", count: 0 }];
+
+    // The COVID column is seeded (count 0 is still an entry that names the
+    // test), so every day cell is 0 — that column PRESENCE, not the
+    // zeros, is what isPocTestTableEmpty checks.
+    const table = buildPocTestTable(testCounts, days);
+    expect(table.columns).toEqual([{ testName: "COVID", label: "COVID" }]);
+
+    expect(isPocTestTableEmpty(table)).toBe(false);
+  });
+
+  it("returns false for a populated table (e.g. a COVID column with real counts)", () => {
+    const days = ["2026-08-17"];
+    const testCounts: TestCount[] = [{ date: "2026-08-17", testName: "COVID", count: 3 }];
+    const table = buildPocTestTable(testCounts, days);
+
+    expect(isPocTestTableEmpty(table)).toBe(false);
   });
 });

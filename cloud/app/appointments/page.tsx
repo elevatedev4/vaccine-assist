@@ -19,7 +19,13 @@ import {
   type HourlyMetric,
   type VaccineCount,
 } from "@/lib/appointment-table";
-import { buildPocTestTable, computePocTestHeatmapMaxes, type PocTestTable, type TestCount } from "@/lib/poc-test-table";
+import {
+  buildPocTestTable,
+  computePocTestHeatmapMaxes,
+  isPocTestTableEmpty,
+  type PocTestTable,
+  type TestCount,
+} from "@/lib/poc-test-table";
 
 // Re-poll cadence while the page is open and signed in (Will, 2026-08-16:
 // "a reasonable refresh rate, maybe every 15 minutes"). Comfortably above
@@ -206,14 +212,17 @@ const styles = {
   // table already fits, only kicks in a scrollbar if a viewport is truly
   // narrower than the table (e.g. a small laptop screen).
   tableWrap: { overflowX: "auto", marginTop: "0.4rem" },
-  // Point-of-care testing table (V-T-poc-testing, Will 2026-09-08): "Add
-  // it below to the right of the vaccine appointment table" — a flex row
-  // holding both tables' wrappers, wrapping the POC table below the
-  // vaccine table once the viewport is too narrow to fit both
-  // side-by-side. `alignItems: "flex-start"` keeps the shorter table
-  // pinned to the top rather than vertically centered against the taller
-  // one.
-  twoTableRow: { display: "flex", flexWrap: "wrap", gap: "1.5rem", alignItems: "flex-start" },
+  // Point-of-care testing table (V-T-poc-testing, Will 2026-09-08 follow-up
+  // fix, verbatim: "Add it below to the right of the vaccine appointment
+  // table") — the vaccine table (~1300px wide) renders full-width on its
+  // OWN row now (a flex row alongside it wrapped once the vaccine table
+  // alone exceeds most viewport widths). BELOW that, this flex row holds
+  // Hourly breakdown (left) and Point-of-care tests (right), 32px gap,
+  // wrapping the POC table below Hourly breakdown once the viewport is too
+  // narrow to fit both side-by-side. `alignItems: "flex-start"` keeps the
+  // shorter table pinned to the top rather than vertically centered
+  // against the taller one.
+  bottomTablesRow: { display: "flex", flexWrap: "wrap", gap: "2rem", alignItems: "flex-start" },
   twoTableCol: { minWidth: 0 },
   // Hourly table (V-T-hourly-table, Will 2026-09-05) — "match the main
   // table exactly" for cells/borders/width, but a PLAIN header (no
@@ -942,12 +951,11 @@ export default function AppointmentsPage() {
         // so folding them into totalsScaleMax would crush the daily-totals
         // gradient the same way mixing per-vaccine and total counts would.
         //
-        // V-T-poc-testing (Will, 2026-09-08): the point-of-care testing
-        // table renders to the RIGHT of this vaccine table (a flex row,
-        // wrapping below on narrow screens — styles.twoTableRow) — see the
-        // sibling <div> after this one's closing tags.
-        <div style={styles.twoTableRow}>
-        <div style={styles.twoTableCol}>
+        // V-T-poc-testing (Will, 2026-09-08 follow-up fix): this table now
+        // renders alone on its own row — Hourly breakdown and the
+        // point-of-care testing table render BELOW it, side by side (a
+        // separate flex row, styles.bottomTablesRow, further down this
+        // file).
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <colgroup>
@@ -1052,91 +1060,34 @@ export default function AppointmentsPage() {
             </tbody>
           </table>
         </div>
-        </div>
-
-        {/* Point-of-care testing table (V-T-poc-testing, Will 2026-09-08):
-            "Add a point of care testing appointment table too that shows
-            daily totals for each type of test that is scheduled. Add it
-            below to the right of the vaccine appointment table." Same
-            fonts/borders/heatmap conventions as the vaccine table above
-            (styles.table/thType/thLeaf/td/totalCell, dataCellStyle,
-            heatmapCellBackground) but with a dynamic (not fixed) column
-            set — one per test type actually seen (lib/poc-test-table.ts's
-            buildPocTestTable) — and no per-group header coloring, since
-            there's no vaccine grouping here, only test types. Refreshed by
-            the same Refresh button and auto-refresh interval as every
-            other table on this page (it's rebuilt from `poll.testCounts`,
-            which the SAME loadCounts fetch above already populates). An
-            empty testCounts (no point-of-care testing appointments in
-            range) still renders the table shell — just a Total column,
-            all zero — rather than disappearing, matching the main table's
-            "always render, even at zero" convention. */}
-        <div style={styles.twoTableCol}>
-          <h2 style={styles.hourlyHeading}>Point-of-care tests</h2>
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
-              <colgroup>
-                <col />
-                <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
-                {testTable.columns.map((column) => (
-                  <col key={column.testName} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
-                ))}
-              </colgroup>
-              <thead>
-                <tr>
-                  <th style={styles.thType}>Scheduled date</th>
-                  <th style={styles.thLeaf}>Total</th>
-                  {testTable.columns.map((column) => (
-                    <th key={column.testName} style={{ ...styles.thLeaf, ...COLUMN_DIVIDER }}>
-                      {column.label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {testTable.days.map((day) => (
-                  <tr key={day}>
-                    <td style={styles.tdType}>{formatDayLabel(day)}</td>
-                    <td
-                      style={totalCellStyle(
-                        styles.totalCell,
-                        heatmapCellBackground(testTable.dailyTotals[day], testHeatmapMaxes.totalScaleMax)
-                      )}
-                    >
-                      {testTable.dailyTotals[day]}
-                    </td>
-                    {testTable.columns.map((column, index) =>
-                      renderCount(
-                        { vaccineName: column.testName, group: "Other", subgroup: null, label: column.label },
-                        testTable.rows[index].countsByDay[day],
-                        testHeatmapMaxes.dataScaleMax
-                      )
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        </div>
       )}
 
       {poll && poll.configured && (
-        // Hourly breakdown (V-T-hourly-table, Will 2026-09-05, verbatim):
-        // "Add a second table that shows hourly breakdown of how many
-        // vaccines are scheduled by the hour from 8-6 ... Include the
-        // daily totals as the lefternmost column as well, and show the
-        // same number of days in the future as the other table. Make a
-        // toggle that switches between vaccine appointments and # vaccines
-        // for this table, and make # vaccines the default." Same
-        // compact/vertical-border/natural-width look as the main table
-        // (dataCellStyle/COLUMN_DIVIDER reused below) but a PLAIN header —
-        // there's no vaccine grouping here, just hours, so no
-        // groupHeaderStyle/GROUP_COLORS tint. Doc comment on
-        // HourlyBreakdownRow.outsideTotal (lib/appointment-table.ts)
-        // covers the "+N outside 8-6" judgment call for appointments
-        // outside the 8am-6pm grid that still count toward the day Total.
-        <>
+        // Bottom row (V-T-poc-testing, Will 2026-09-08 follow-up fix,
+        // verbatim: "Add it below to the right of the vaccine appointment
+        // table"): Hourly breakdown (left) and the point-of-care testing
+        // table (right) render side by side BELOW the vaccine table, 32px
+        // gap (styles.bottomTablesRow), wrapping the POC table below
+        // Hourly breakdown once the viewport is too narrow to fit both —
+        // `alignItems: "flex-start"` on that style keeps the shorter
+        // column pinned to the top.
+        <div style={styles.bottomTablesRow}>
+        <div style={styles.twoTableCol}>
+          {/* Hourly breakdown (V-T-hourly-table, Will 2026-09-05, verbatim):
+              "Add a second table that shows hourly breakdown of how many
+              vaccines are scheduled by the hour from 8-6 ... Include the
+              daily totals as the lefternmost column as well, and show the
+              same number of days in the future as the other table. Make a
+              toggle that switches between vaccine appointments and #
+              vaccines for this table, and make # vaccines the default."
+              Same compact/vertical-border/natural-width look as the main
+              table (dataCellStyle/COLUMN_DIVIDER reused below) but a PLAIN
+              header — there's no vaccine grouping here, just hours, so no
+              groupHeaderStyle/GROUP_COLORS tint. Doc comment on
+              HourlyBreakdownRow.outsideTotal (lib/appointment-table.ts)
+              covers the "+N outside 8-6" judgment call for appointments
+              outside the 8am-6pm grid that still count toward the day
+              Total. */}
           <h2 style={styles.hourlyHeading}>Hourly breakdown</h2>
           <div style={styles.toggleRow}>
             <button
@@ -1200,7 +1151,82 @@ export default function AppointmentsPage() {
               </tbody>
             </table>
           </div>
-        </>
+        </div>
+
+        <div style={styles.twoTableCol}>
+          {/* Point-of-care testing table (V-T-poc-testing, Will
+              2026-09-08): "Add a point of care testing appointment table
+              too that shows daily totals for each type of test that is
+              scheduled." Same fonts/borders/heatmap conventions as the
+              vaccine table above (styles.table/thType/thLeaf/td/totalCell,
+              dataCellStyle, heatmapCellBackground) but with a dynamic (not
+              fixed) column set — one per test type actually seen
+              (lib/poc-test-table.ts's buildPocTestTable) — and no
+              per-group header coloring, since there's no vaccine grouping
+              here, only test types. Refreshed by the same Refresh button
+              and auto-refresh interval as every other table on this page
+              (it's rebuilt from `poll.testCounts`, which the SAME
+              loadCounts fetch above already populates). Follow-up fix
+              (Will, 2026-09-08): a testTable with NO discovered test-type
+              columns (isPocTestTableEmpty — no point-of-care testing
+              appointments anywhere in the range) now renders just the
+              heading plus a muted one-line message instead of a table
+              whose only column (Total) is all zeros, which read as a
+              broken/empty table rather than "nothing to show." A table
+              WITH at least one test-type column still always renders (even
+              if a given day's count is 0) — same "always render the
+              columns you have" convention as the main table. */}
+          <h2 style={styles.hourlyHeading}>Point-of-care tests</h2>
+          {isPocTestTableEmpty(testTable) ? (
+            <p style={styles.muted}>No point-of-care tests scheduled in this range.</p>
+          ) : (
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <colgroup>
+                  <col />
+                  <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
+                  {testTable.columns.map((column) => (
+                    <col key={column.testName} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
+                  ))}
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th style={styles.thType}>Scheduled date</th>
+                    <th style={styles.thLeaf}>Total</th>
+                    {testTable.columns.map((column) => (
+                      <th key={column.testName} style={{ ...styles.thLeaf, ...COLUMN_DIVIDER }}>
+                        {column.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {testTable.days.map((day) => (
+                    <tr key={day}>
+                      <td style={styles.tdType}>{formatDayLabel(day)}</td>
+                      <td
+                        style={totalCellStyle(
+                          styles.totalCell,
+                          heatmapCellBackground(testTable.dailyTotals[day], testHeatmapMaxes.totalScaleMax)
+                        )}
+                      >
+                        {testTable.dailyTotals[day]}
+                      </td>
+                      {testTable.columns.map((column, index) =>
+                        renderCount(
+                          { vaccineName: column.testName, group: "Other", subgroup: null, label: column.label },
+                          testTable.rows[index].countsByDay[day],
+                          testHeatmapMaxes.dataScaleMax
+                        )
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+        </div>
       )}
 
       {/* V-T-booking-activity (Will, 2026-09-05/07): "collapsed by default

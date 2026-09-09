@@ -87,6 +87,22 @@ export function buildPocTestTable(testCounts: TestCount[], days: string[]): PocT
   return { days, columns, rows, dailyTotals, grandTotal };
 }
 
+/**
+ * True when `table` has NO discovered test-type columns — i.e. no
+ * point-of-care testing appointments anywhere in the requested range
+ * (V-T-poc-testing follow-up fix, Will 2026-09-08). The page uses this to
+ * render a muted "No point-of-care tests scheduled in this range." line
+ * instead of a table shell whose only column (Total) would otherwise be
+ * all zeros — that empty-shell rendering read as a broken table rather
+ * than "nothing to show here." A table with at least one column (even one
+ * where every day's count happens to be 0) is NOT considered empty — it
+ * still renders normally, same "always render the columns you have"
+ * convention as the main vaccine table.
+ */
+export function isPocTestTableEmpty(table: PocTestTable): boolean {
+  return table.columns.length === 0;
+}
+
 export type PocTestHeatmapMaxes = {
   /** Max single-cell per-test-type count across every day/test-type cell —
    * same "own independent scale" pattern as
