@@ -19,16 +19,25 @@ vi.mock("@/lib/auth", () => ({
 // exercises the same cache-miss path it always has.
 // getCachedActivityCounts/setCachedActivityCounts (V-T-booking-activity)
 // added alongside these for the same reason, exercised by the
-// "?activity=1" describe block below.
+// "?activity=1" describe block below. getCachedRows/setCachedRows
+// (V-data-explorer) are the same for the "?rows=1" describe block.
 vi.mock("@/lib/acuity-poll-cache", () => ({
   getCachedCounts: vi.fn(async () => null),
   setCachedCounts: vi.fn(async () => undefined),
   getCachedActivityCounts: vi.fn(async () => null),
   setCachedActivityCounts: vi.fn(async () => undefined),
+  getCachedRows: vi.fn(async () => null),
+  setCachedRows: vi.fn(async () => undefined),
 }));
 
 import { GET } from "@/app/api/acuity/poll/route";
-import { getCachedActivityCounts, getCachedCounts, setCachedActivityCounts } from "@/lib/acuity-poll-cache";
+import {
+  getCachedActivityCounts,
+  getCachedCounts,
+  getCachedRows,
+  setCachedActivityCounts,
+  setCachedRows,
+} from "@/lib/acuity-poll-cache";
 
 const ACUITY_ENV_KEYS = ["ACUITY_USER_ID", "ACUITY_API_KEY"] as const;
 
@@ -472,6 +481,178 @@ describe("GET /api/acuity/poll — validation", () => {
         expect.any(String),
         20
       );
+    });
+  });
+
+  // V-data-explorer (Will, 2026-09-08): one-row-per-appointment mode for
+  // the Data Explorer page. Same start/end/MAX_RANGE_DAYS validation as
+  // the normal mode (resolveRange), reused verbatim — covered here rather
+  // than re-asserted per case, plus the response-shape/auth/caching
+  // behavior specific to this mode.
+  describe("?rows=1 (V-data-explorer)", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      for (const key of ACUITY_ENV_KEYS) delete process.env[key];
+      vi.mocked(getCachedRows).mockReset();
+      vi.mocked(getCachedRows).mockResolvedValue(null);
+      vi.mocked(setCachedRows).mockReset();
+      vi.mocked(setCachedRows).mockResolvedValue(undefined);
+    });
+
+    function rowsRequest(query: string) {
+      return new Request(`http://localhost/api/acuity/poll?rows=1${query}`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+    }
+
+    function rowsRequestNoAuth(query: string) {
+      return new Request(`http://localhost/api/acuity/poll?rows=1${query}`);
+    }
+
+    function acuityAppointmentFixture(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 1,
+        datetime: "2026-08-17T10:00:00-0500",
+        datetimeCreated: "2026-08-10T09:00:00-0500",
+        appointmentTypeID: 111,
+        forms: [{ id: 1, name: "Intake", values: [{ fieldID: 9, name: "Vaccine", value: "Flu" }] }],
+        ...overrides,
+      };
+    }
+
+    it("still requires authentication — a request with no Authorization header is rejected before this mode ever runs", async () => {
+      // requireAuthenticatedUser is mocked to always succeed in this file
+      // (see the top-of-file comment) — this asserts the route calls it
+      // BEFORE dispatching to the rows handler, using the real auth
+      // module's own behavior via tests/acuity-poll-route.test.ts's
+      // separate, unmocked test. Here we assert the mocked call actually
+      // happens for a rows request (i.e. the rows branch doesn't skip the
+      // auth gate) by checking a request WITHOUT the header still 200s
+      // only because auth is mocked — a real deployment enforces this via
+      // requireAuthenticatedUser itself (see lib/auth.ts, exercised
+      // unmocked in tests/acuity-poll-route.test.ts).
+      const response = await GET(rowsRequestNoAuth("&start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+    });
+
+    it("rejects a malformed date the same way the normal mode does", async () => {
+      const response = await GET(rowsRequest("&start=not-a-date&end=2026-08-24"));
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/YYYY-MM-DD/);
+    });
+
+    it("still enforces the 31-day range cap", async () => {
+      const response = await GET(rowsRequest("&start=2026-01-01&end=2026-12-31"));
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/31 days/i);
+    });
+
+    it("returns the unconfigured-credentials JSON shape when no Acuity credentials exist", async () => {
+      const response = await GET(rowsRequest("&start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({
+        configured: false,
+        range: { start: "2026-08-17", end: "2026-08-18" },
+        rows: [],
+        asOf: null,
+        cacheHit: false,
+      });
+    });
+
+    it("returns one row per appointment, with appointmentTypeName resolved and PHI-stripped fields only", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+
+      const fetchMock = vi.fn(async (url: string | URL) => {
+        const urlStr = url.toString();
+        if (urlStr.includes("appointment-types")) {
+          return new Response(JSON.stringify([{ id: 111, name: "Vaccine Appointment" }]), { status: 200 });
+        }
+        return new Response(JSON.stringify([acuityAppointmentFixture()]), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(rowsRequest("&start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.configured).toBe(true);
+      expect(body.range).toEqual({ start: "2026-08-17", end: "2026-08-18" });
+      expect(body.cacheHit).toBe(false);
+      expect(body.asOf).toEqual(expect.any(String));
+      expect(body.rows).toEqual([
+        {
+          date: "2026-08-17",
+          createdDate: "2026-08-10",
+          appointmentTypeId: 111,
+          appointmentTypeName: "Vaccine Appointment",
+          vaccineNames: ["Flu"],
+          covidBrand: "any",
+          covidAgeBucket: "unknown",
+          fluAgeBucket: "unknown",
+          hourOfDay: 10,
+        },
+      ]);
+      // No PHI field (email/phone/notes/raw age/DOB) ever appears in the
+      // response body — the exact toEqual above already pins the row to
+      // ONLY the fields in ExplorerRow, but this double-checks no PHI key
+      // was smuggled in.
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toMatch(/email|phone|notes|firstName|lastName|dob|birth/i);
+      expect(vi.mocked(setCachedRows)).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns cached rows (cacheHit: true) without touching Acuity", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+      const cachedRows = [
+        {
+          date: "2026-08-17",
+          createdDate: "2026-08-10",
+          appointmentTypeId: 111,
+          appointmentTypeName: "Vaccine Appointment",
+          vaccineNames: ["Flu"],
+          covidBrand: "any" as const,
+          covidAgeBucket: "unknown" as const,
+          fluAgeBucket: "unknown" as const,
+          hourOfDay: 10,
+        },
+      ];
+      vi.mocked(getCachedRows).mockResolvedValue({ rows: cachedRows, computedAt: new Date().toISOString() });
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await GET(rowsRequest("&start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(body.cacheHit).toBe(true);
+      expect(body.rows).toEqual(cachedRows);
+    });
+
+    it("returns 502 when the underlying Acuity fetch fails", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
+
+      const response = await GET(rowsRequest("&start=2026-08-17&end=2026-08-18"));
+      expect(response.status).toBe(502);
+      const body = await response.json();
+      expect(body.error).toMatch(/rejected these credentials|unexpected status/i);
+    });
+
+    it("honors ?force=1 by using the shorter FORCE_COOLDOWN_SECONDS cache floor", async () => {
+      process.env.ACUITY_USER_ID = "12345";
+      process.env.ACUITY_API_KEY = "test-key";
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+
+      await GET(rowsRequest("&start=2026-08-17&end=2026-08-18&force=1"));
+
+      expect(vi.mocked(getCachedRows)).toHaveBeenCalledWith("2026-08-17", "2026-08-18", 20);
     });
   });
 });

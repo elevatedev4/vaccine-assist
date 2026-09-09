@@ -1,6 +1,6 @@
 import "server-only";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import type { HourlyCount, VaccineCount } from "@/lib/acuity-client";
+import type { CountableAppointment, HourlyCount, VaccineCount } from "@/lib/acuity-client";
 
 /**
  * Server-side cache for app/api/acuity/poll/route.ts, backed by the
@@ -199,6 +199,88 @@ export async function setCachedActivityCounts(
       range_end: maxDate,
       counts,
       possibly_truncated: possiblyTruncated,
+      hourly_counts: [],
+      computed_at: new Date().toISOString(),
+    });
+  } catch {
+    // Best-effort — same fail-soft rationale as setCachedCounts above.
+  }
+}
+
+/**
+ * One de-identified appointment row for the Data Explorer
+ * (app/appointments/explorer/page.tsx) — a CountableAppointment
+ * (lib/acuity-client.ts's PHI-stripping boundary, unchanged) plus the
+ * appointment TYPE's name, resolved once from the same appointment-types
+ * map the main `?rows=1` handler already fetches for `table`/`counts` —
+ * no new PHI surface, same fields the rest of this route already trusts.
+ */
+export type ExplorerRow = CountableAppointment & { appointmentTypeName: string };
+
+export type CachedRows = {
+  rows: ExplorerRow[];
+  computedAt: string;
+};
+
+// V-data-explorer: rows mode reuses this SAME table/column (`counts` is a
+// bare `jsonb` column — see 0003_acuity_poll_cache.sql — with no schema
+// constraint tying it to VaccineCount's shape) under a distinct key
+// PREFIX, exactly the same trick activityRangeKey uses above to avoid
+// colliding with a real appointment-date range that happens to share the
+// same two dates. No migration needed: a generic jsonb column holding a
+// different array shape under a namespaced key is exactly what this
+// column already tolerates (see getCachedActivityCounts/
+// setCachedActivityCounts's own reuse of the same column/table).
+function rowsRangeKey(minDate: string, maxDate: string): string {
+  return `rows_${minDate}_${maxDate}`;
+}
+
+/**
+ * Same TTL/fail-soft contract as getCachedCounts/getCachedActivityCounts
+ * above. `hourly_counts`/`possibly_truncated` aren't read back here — the
+ * Data Explorer has no hourly breakdown or truncation flag of its own
+ * (see app/api/acuity/poll/route.ts's `?rows=1` doc comment).
+ */
+export async function getCachedRows(minDate: string, maxDate: string, ttlSeconds: number): Promise<CachedRows | null> {
+  try {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("acuity_poll_cache")
+      .select("counts, computed_at")
+      .eq("range_key", rowsRangeKey(minDate, maxDate))
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    const computedAt = new Date(data.computed_at);
+    if (Number.isNaN(computedAt.getTime())) return null;
+    if (Date.now() - computedAt.getTime() >= ttlSeconds * 1000) return null;
+
+    return {
+      rows: Array.isArray(data.counts) ? (data.counts as ExplorerRow[]) : [],
+      computedAt: data.computed_at,
+    };
+  } catch {
+    // Supabase not configured / table missing — treat as a cache miss.
+    return null;
+  }
+}
+
+/**
+ * `possibly_truncated: false` and `hourly_counts: []` are written
+ * unconditionally — this feature doesn't track either, same "keep every
+ * writer's row shape consistent" rationale as setCachedActivityCounts
+ * above (a NOT NULL column with no default-tolerant reader elsewhere).
+ */
+export async function setCachedRows(minDate: string, maxDate: string, rows: ExplorerRow[]): Promise<void> {
+  try {
+    const supabase = getSupabaseServerClient();
+    await supabase.from("acuity_poll_cache").upsert({
+      range_key: rowsRangeKey(minDate, maxDate),
+      range_start: minDate,
+      range_end: maxDate,
+      counts: rows,
+      possibly_truncated: false,
       hourly_counts: [],
       computed_at: new Date().toISOString(),
     });

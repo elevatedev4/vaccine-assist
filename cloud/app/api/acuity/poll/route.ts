@@ -12,8 +12,11 @@ import {
 import {
   getCachedActivityCounts,
   getCachedCounts,
+  getCachedRows,
   setCachedActivityCounts,
   setCachedCounts,
+  setCachedRows,
+  type ExplorerRow,
 } from "@/lib/acuity-poll-cache";
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
 import { buildAppointmentTable, type AppointmentTable } from "@/lib/appointment-table";
@@ -181,6 +184,37 @@ import { bookingActivityCreatedRange, fetchBookingActivityCounts } from "@/lib/a
  * comment for why this can't reuse the main range cache. `configured:
  * false` (no Acuity credentials) returns `activityCounts: []` the same way
  * the main mode returns `counts: []`.
+ *
+ * `?rows=1&start=YYYY-MM-DD&end=YYYY-MM-DD` (V-data-explorer, Will
+ * 2026-09-08: "a data explorer page for me to see all the data and search
+ * and filter and perform sum functions on it") returns ONE ROW PER
+ * APPOINTMENT for the requested range instead of the pre-aggregated
+ * `counts`/`table` the normal mode returns — still fully de-identified,
+ * still exactly lib/acuity-client.ts's CountableAppointment fields (see
+ * that type's PHI-boundary doc comment) plus `appointmentTypeName`
+ * resolved from the SAME appointment-types map the normal mode already
+ * fetches for its own labels. Reuses fetchAppointmentsForRange /
+ * fetchAppointmentTypes exactly like the normal mode — no second Acuity
+ * fetcher — and the SAME start/end/MAX_RANGE_DAYS validation via
+ * resolveRange below (a caller wanting more than MAX_RANGE_DAYS worth of
+ * rows issues multiple sequential `?rows=1` requests, one per <=31-day
+ * chunk — see lib/appointment-explorer.ts's chunkDateRange, used by the
+ * explorer page). RESPONSE CONTRACT:
+ *
+ *   {
+ *     configured: boolean,
+ *     range: { start: "YYYY-MM-DD", end: "YYYY-MM-DD" },
+ *     rows: ExplorerRow[],   // CountableAppointment + appointmentTypeName
+ *     asOf: string | null,
+ *     cacheHit: boolean,
+ *   }
+ *
+ * Cached in the SAME acuity_poll_cache table/column as everything else on
+ * this route, under a `rows_${start}_${end}` key (lib/acuity-poll-cache.ts's
+ * getCachedRows/setCachedRows) — same "distinct key prefix on a generic
+ * jsonb column, no migration" trick `?activity=1`'s `created_` prefix
+ * already uses. `force=1` bypasses this cache the same way as every other
+ * mode (FORCE_COOLDOWN_SECONDS floor).
  */
 
 // Reliability fix (2026-09-05): the `?afterTodayOnly=1` mode can run up to
@@ -248,6 +282,49 @@ function daysInRange(start: string, end: string): string[] {
   const days: string[] = [];
   for (let i = 0; i < span; i++) days.push(addDaysToChicagoDate(start, i));
   return days;
+}
+
+/**
+ * Shared start/end resolution + validation for every mode that takes a
+ * caller-supplied range (the normal mode and `?rows=1`) — same rules
+ * either way: both-or-neither of start/end, YYYY-MM-DD format, start <=
+ * end, span <= MAX_RANGE_DAYS, falling back to defaultRange() when
+ * neither param is given. Returns the resolved range, or a ready-to-return
+ * error Response — callers do the same `"error" in`-shaped check as
+ * requireAuthenticatedUser (lib/auth.ts): `if (resolved instanceof
+ * Response) return resolved;`.
+ */
+function resolveRange(requestUrl: URL): { start: string; end: string } | Response {
+  const startParam = requestUrl.searchParams.get("start");
+  const endParam = requestUrl.searchParams.get("end");
+
+  let start: string;
+  let end: string;
+  if (startParam || endParam) {
+    if (!startParam || !endParam || !isValidDate(startParam) || !isValidDate(endParam)) {
+      return NextResponse.json({ error: "start and end must both be provided as YYYY-MM-DD." }, { status: 400 });
+    }
+    start = startParam;
+    end = endParam;
+  } else {
+    const defaults = defaultRange();
+    start = defaults.start;
+    end = defaults.end;
+  }
+
+  if (start > end) {
+    return NextResponse.json({ error: "start must not be after end." }, { status: 400 });
+  }
+
+  const spanDays = rangeSpanDays(start, end);
+  if (spanDays > MAX_RANGE_DAYS) {
+    return NextResponse.json(
+      { error: `Date range must not exceed ${MAX_RANGE_DAYS} days (requested ${spanDays}).` },
+      { status: 400 }
+    );
+  }
+
+  return { start, end };
 }
 
 /**
@@ -353,6 +430,66 @@ async function handleActivityOnly(requestUrl: URL): Promise<Response> {
   }
 }
 
+/**
+ * `?rows=1` — see this route's doc comment above for the full response
+ * contract and PHI/caching rationale. Same range validation as the normal
+ * mode (resolveRange), same fetchAppointmentTypes/fetchAppointmentsForRange
+ * fetch pair, just a per-appointment `rows` array instead of the
+ * aggregated `counts`/`table`.
+ */
+async function handleRows(requestUrl: URL): Promise<Response> {
+  const resolved = resolveRange(requestUrl);
+  if (resolved instanceof Response) return resolved;
+  const { start, end } = resolved;
+
+  const credentials = await getAcuityCredentials();
+  if (!credentials) {
+    return NextResponse.json({
+      configured: false,
+      range: { start, end },
+      rows: [],
+      asOf: null,
+      cacheHit: false,
+    });
+  }
+
+  const force = requestUrl.searchParams.get("force") === "1";
+  const cacheSeconds = force ? FORCE_COOLDOWN_SECONDS : env.acuityPollCacheSeconds();
+
+  const cached = await getCachedRows(start, end, cacheSeconds);
+  if (cached) {
+    return NextResponse.json({
+      configured: true,
+      range: { start, end },
+      rows: cached.rows,
+      asOf: cached.computedAt,
+      cacheHit: true,
+    });
+  }
+
+  try {
+    const [appointmentTypes, { appointments }] = await Promise.all([
+      fetchAppointmentTypes(credentials.userId, credentials.apiKey),
+      fetchAppointmentsForRange(credentials.userId, credentials.apiKey, start, end),
+    ]);
+
+    const nameById = new Map(appointmentTypes.map((type) => [type.id, type.name]));
+    const rows: ExplorerRow[] = appointments.map((appointment) => ({
+      ...appointment,
+      appointmentTypeName: nameById.get(appointment.appointmentTypeId) ?? `Type ${appointment.appointmentTypeId}`,
+    }));
+    const asOf = new Date().toISOString();
+
+    await setCachedRows(start, end, rows);
+
+    return NextResponse.json({ configured: true, range: { start, end }, rows, asOf, cacheHit: false });
+  } catch (err) {
+    const message = err instanceof AcuityApiError ? err.message : "Failed to poll Acuity for appointments.";
+    console.error("GET /api/acuity/poll: rows fetch failed", message);
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}
+
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
@@ -367,37 +504,13 @@ export async function GET(request: Request) {
     return handleActivityOnly(requestUrl);
   }
 
-  const startParam = requestUrl.searchParams.get("start");
-  const endParam = requestUrl.searchParams.get("end");
-
-  let start: string;
-  let end: string;
-  if (startParam || endParam) {
-    if (!startParam || !endParam || !isValidDate(startParam) || !isValidDate(endParam)) {
-      return NextResponse.json(
-        { error: "start and end must both be provided as YYYY-MM-DD." },
-        { status: 400 }
-      );
-    }
-    start = startParam;
-    end = endParam;
-  } else {
-    const defaults = defaultRange();
-    start = defaults.start;
-    end = defaults.end;
+  if (requestUrl.searchParams.get("rows") === "1") {
+    return handleRows(requestUrl);
   }
 
-  if (start > end) {
-    return NextResponse.json({ error: "start must not be after end." }, { status: 400 });
-  }
-
-  const spanDays = rangeSpanDays(start, end);
-  if (spanDays > MAX_RANGE_DAYS) {
-    return NextResponse.json(
-      { error: `Date range must not exceed ${MAX_RANGE_DAYS} days (requested ${spanDays}).` },
-      { status: 400 }
-    );
-  }
+  const resolved = resolveRange(requestUrl);
+  if (resolved instanceof Response) return resolved;
+  const { start, end } = resolved;
 
   const cacheSeconds = env.acuityPollCacheSeconds();
   const force = requestUrl.searchParams.get("force") === "1";
