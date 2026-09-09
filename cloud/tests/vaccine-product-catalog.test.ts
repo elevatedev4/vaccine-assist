@@ -3,6 +3,7 @@ import {
   computeOrderPackages,
   displayNameFor,
   findInCatalog,
+  formatProductDisplayName,
   lookupProduct,
   type ProductCatalogEntry,
 } from "@/lib/vaccine-product-catalog";
@@ -61,7 +62,7 @@ describe("vaccine-product-catalog seed data (V-T26 item 7)", () => {
     const product = lookupProduct({ ndc: "00005-2000-10, 00005-2000-02", name: "Prevnar 20" });
     expect(product).toEqual({
       productName: "Prevnar 20",
-      ageRange: "19+ (label 6 wk+)",
+      ageRange: "19+",
       dosesPerPackage: 10,
       packageNdc: "00005-2000-10",
     });
@@ -138,11 +139,36 @@ describe("computeOrderPackages", () => {
 });
 
 describe("displayNameFor", () => {
-  it("uses `productName (ageRange)` when the catalog knows both", () => {
+  it("uses `productName (ageRange)` when the catalog knows both and ageRange is flat (no parens)", () => {
     expect(displayNameFor("Gardasil", "00006-4121-02")).toBe("Gardasil 9 (9-45 yr)");
   });
 
   it("falls back to today's plain vaccine name when the catalog has no match", () => {
     expect(displayNameFor("Some Unresearched Vaccine", null)).toBe("Some Unresearched Vaccine");
+  });
+
+  // V-T26 followups (Will 2026-09-09): every real seed ageRange is flat
+  // today (Capvaxive/Prevnar 20 fixed from a nested-parens form — see
+  // the CATALOG below), but this locks down the fallback rendering rule
+  // itself against a future ageRange that isn't.
+  it("formatProductDisplayName uses `productName — ageRange` (em dash, no wrapping parens) when ageRange itself contains parentheses", () => {
+    expect(formatProductDisplayName("Test Product", "18+ (2-17 high-risk)")).toBe("Test Product — 18+ (2-17 high-risk)");
+    expect(formatProductDisplayName("Test Product", ")just a paren")).toBe("Test Product — )just a paren");
+  });
+
+  it("formatProductDisplayName uses `productName (ageRange)` when ageRange has no parentheses", () => {
+    expect(formatProductDisplayName("Test Product", "18+")).toBe("Test Product (18+)");
+  });
+
+  it("formatProductDisplayName returns just productName when ageRange is null", () => {
+    expect(formatProductDisplayName("Test Product", null)).toBe("Test Product");
+  });
+
+  it("Capvaxive's real seed row renders flat (no nested parentheses)", () => {
+    expect(displayNameFor("Capvaxive", null)).toBe("Capvaxive (18+; 2-17 high-risk)");
+  });
+
+  it("Prevnar 20's real seed row renders flat (no nested parentheses)", () => {
+    expect(displayNameFor("Prevnar 20", "00005-2000-10, 00005-2000-02")).toBe("Prevnar 20 (19+)");
   });
 });

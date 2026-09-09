@@ -95,7 +95,7 @@ const CATALOG: ProductCatalogEntry[] = [
   {
     match: { name: "Capvaxive" },
     productName: "Capvaxive",
-    ageRange: "18+ (2-17 high-risk)",
+    ageRange: "18+; 2-17 high-risk",
     dosesPerPackage: 10,
     packageNdc: "00006-4347-02",
     source: "CDC Adult price list",
@@ -190,7 +190,7 @@ const CATALOG: ProductCatalogEntry[] = [
     // `match.ndc` (also just the first NDC) always resolves to it.
     match: { ndc: "00005-2000-10", name: "Prevnar 20" },
     productName: "Prevnar 20",
-    ageRange: "19+ (label 6 wk+)",
+    ageRange: "19+",
     dosesPerPackage: 10,
     packageNdc: "00005-2000-10",
     source: "CDC Adult price list",
@@ -352,14 +352,32 @@ export function lookupProduct(args: { name?: string | null; ndc?: string | null 
   return findInCatalog(CATALOG, args);
 }
 
-/** The Ordering page's display name for a row: `productName (ageRange)`
- * when the catalog knows both, `productName` alone when it knows the
- * product but not its age range, else today's plain vaccine name
+/**
+ * Formats a known product's display name: `productName (ageRange)` when
+ * ageRange is set AND itself contains no parentheses (every real seed
+ * row's ageRange is meant to be flat — see the CATALOG comments — but
+ * this guards any future row that isn't), else `productName —
+ * ageRange` (em dash, no wrapping parens) so two nested "(...)" groups
+ * can never stack (V-T26 followups, Will 2026-09-09: "avoid nested
+ * parentheses like 'Capvaxive (18+ (2-17 high-risk))'"), else just
+ * `productName` when ageRange is unknown. Split out from displayNameFor
+ * below so this formatting rule is directly testable against a
+ * synthetic parenthesized ageRange without needing one in the real
+ * (now-flat) seed table.
+ */
+export function formatProductDisplayName(productName: string, ageRange: string | null): string {
+  if (!ageRange) return productName;
+  return ageRange.includes("(") || ageRange.includes(")") ? `${productName} — ${ageRange}` : `${productName} (${ageRange})`;
+}
+
+/** The Ordering page's display name for a row — see
+ * formatProductDisplayName for the exact rendering rule. Falls back to
+ * today's plain vaccine name when the catalog has no match at all
  * (Will's brief: "when known, else today's name"). */
 export function displayNameFor(vaccineName: string, ndc: string | null): string {
   const product = lookupProduct({ name: vaccineName, ndc });
   if (!product) return vaccineName;
-  return product.ageRange ? `${product.productName} (${product.ageRange})` : product.productName;
+  return formatProductDisplayName(product.productName, product.ageRange);
 }
 
 /** Order (pkg) = ceil(orderDoses / dosesPerPackage), or null when
