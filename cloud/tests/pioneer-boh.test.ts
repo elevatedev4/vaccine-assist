@@ -106,6 +106,22 @@ describe("parsePioneerBohXlsx", () => {
     expect(rows).toHaveLength(5);
     expect(rows[0]).toMatchObject({ vaccineNameRaw: "Fluad 2026-2027 Syringe", ndc: "70461002603", doses: 115 });
   });
+
+  // Legacy .xls (BIFF8) — SES-attachment-mime fix (2026-09-09): PioneerRx
+  // may email the report as a legacy .xls (application/vnd.ms-excel)
+  // rather than .xlsx. SheetJS's read() auto-detects BIFF8 from the same
+  // Buffer path parsePioneerBohXlsx already uses, so this confirms that
+  // holds rather than being merely assumed.
+  it("parses a legacy .xls (BIFF8) buffer the same way as .xlsx", () => {
+    const sheet = utils.aoa_to_sheet(SAMPLE_ROWS);
+    const workbook = utils.book_new();
+    utils.book_append_sheet(workbook, sheet, "Sheet1");
+    const buffer = write(workbook, { type: "buffer", bookType: "biff8" }) as Buffer;
+
+    const rows = parsePioneerBohXlsx(buffer);
+    expect(rows).toHaveLength(5);
+    expect(rows[0]).toMatchObject({ vaccineNameRaw: "Fluad 2026-2027 Syringe", ndc: "70461002603", doses: 115 });
+  });
 });
 
 describe("parsePioneerBohDelimited", () => {

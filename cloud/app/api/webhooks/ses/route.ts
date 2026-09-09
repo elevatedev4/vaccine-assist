@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { extractAttachmentFromRawMime, extractTextFromRawMime } from "@/lib/ses-mime";
+import { describeMimeStructure, extractAttachmentFromRawMime, extractTextFromRawMime, getHeader, splitHeaderBody } from "@/lib/ses-mime";
 import { isAllowedSnsHost, verifySnsSignature } from "@/lib/sns-signature";
 import { findAddressByToken, parseToken, touchLastReceived, type InboundEmailAddress } from "@/lib/on-hand/address";
 import { insertOnHandRows } from "@/lib/on-hand/insert";
@@ -425,6 +425,21 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
     } catch {
       console.warn("POST /api/webhooks/ses: failed to base64-decode SES content field");
       return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
+    }
+
+    // Structure-only debug logging (PHI/log discipline above): never the
+    // part bodies/subject/from/to, only Content-Type / filename /
+    // Content-Transfer-Encoding per part — added 2026-09-09 after a real
+    // Pioneer "AppExport: Vaccine BOH" email parsed as 0 matched/1
+    // unmatched with no attachment found at all, and no way to tell why
+    // without seeing the MIME shape it actually sent.
+    const topMimeSplit = splitHeaderBody(rawMime);
+    const topContentType = topMimeSplit ? (getHeader(topMimeSplit.headers, "Content-Type") ?? "text/plain") : "text/plain";
+    console.log(
+      `POST /api/webhooks/ses: mime top-level contentType=${topContentType.split(";")[0].trim()} rawChars=${rawMime.length}`
+    );
+    for (const line of describeMimeStructure(rawMime)) {
+      console.log(`POST /api/webhooks/ses: ${line}`);
     }
 
     const recipients = extractRecipients(sesMessage);

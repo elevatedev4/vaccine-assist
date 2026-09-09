@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { extractAttachmentFromRawMime, extractTextFromRawMime, MAX_ATTACHMENT_PART_CHARS } from "@/lib/ses-mime";
+import { describe, expect, it, vi } from "vitest";
+import {
+  describeMimeStructure,
+  extractAttachmentFromRawMime,
+  extractTextFromRawMime,
+  MAX_ATTACHMENT_PART_CHARS,
+} from "@/lib/ses-mime";
 
 const CRLF = "\r\n";
 
@@ -89,7 +94,7 @@ describe("extractTextFromRawMime", () => {
     expect(extractTextFromRawMime(raw)).toBe("MMR, 15");
   });
 
-  it("falls back to the full raw text when multipart nests beyond one level", () => {
+  it("recurses into multipart nested two levels deep to find a text/plain part", () => {
     const outer = "OUTER";
     const inner = "INNER";
     const raw = [
@@ -106,14 +111,10 @@ describe("extractTextFromRawMime", () => {
       `--${outer}--`,
       "",
     ].join(CRLF);
-    const result = extractTextFromRawMime(raw);
-    // Nothing is silently dropped — the caller still gets non-empty
-    // content (the raw MIME) rather than an empty string.
-    expect(result.length).toBeGreaterThan(0);
-    expect(result).toContain("multipart/mixed");
+    expect(extractTextFromRawMime(raw)).toBe("MMR, 15");
   });
 
-  it("falls back to the full raw text when no text/plain part exists at all", () => {
+  it("falls back to a stripped text/html part when no text/plain part exists at all", () => {
     const boundary = "HTMLONLY";
     const raw = [
       `Content-Type: multipart/alternative; boundary="${boundary}"`,
@@ -125,9 +126,23 @@ describe("extractTextFromRawMime", () => {
       `--${boundary}--`,
       "",
     ].join(CRLF);
+    expect(extractTextFromRawMime(raw)).toBe("Flu Quad 2025-26, 40");
+  });
+
+  it("falls back to the full raw text when nesting exceeds the depth cap", () => {
+    // 6 levels of multipart/mixed, each containing only the next level —
+    // deeper than MAX_MIME_DEPTH (4), so the text/plain part at the
+    // bottom is never reached and nothing is silently dropped either.
+    let raw = ["Content-Type: text/plain", "", "MMR, 15"].join(CRLF);
+    for (let i = 0; i < 6; i++) {
+      const boundary = `LEVEL${i}`;
+      raw = [`Content-Type: multipart/mixed; boundary="${boundary}"`, "", `--${boundary}`, raw, `--${boundary}--`, ""].join(
+        CRLF
+      );
+    }
     const result = extractTextFromRawMime(raw);
     expect(result.length).toBeGreaterThan(0);
-    expect(result).toContain("multipart/alternative");
+    expect(result).not.toBe("MMR, 15");
   });
 });
 
@@ -226,5 +241,175 @@ describe("extractAttachmentFromRawMime", () => {
     ].join(CRLF);
 
     expect(extractAttachmentFromRawMime(raw)).not.toBeNull();
+  });
+
+  it("finds an xlsx part nested two levels deep (mixed -> related -> attachment)", () => {
+    const outer = "OUTER-NEST";
+    const inner = "INNER-NEST";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${outer}"`,
+      "",
+      `--${outer}`,
+      `Content-Type: multipart/related; boundary="${inner}"`,
+      "",
+      `--${inner}`,
+      "Content-Type: text/plain",
+      "",
+      "Automatic delivery from scheduled saved search",
+      `--${inner}`,
+      'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="Vaccine BOH.xlsx"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("fake nested xlsx bytes").toString("base64"),
+      `--${inner}--`,
+      `--${outer}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("xlsx");
+    expect((result as { kind: "xlsx"; buffer: Buffer }).buffer.toString("utf-8")).toBe("fake nested xlsx bytes");
+  });
+
+  it("decodes an RFC 2231 filename* filename to recognize an xlsx attachment", () => {
+    const boundary = "BOUNDARY-RFC2231";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: application/octet-stream",
+      "Content-Disposition: attachment; filename*=utf-8''Vaccine%20BOH.xlsx",
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("rfc2231 xlsx bytes").toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("xlsx");
+    expect((result as { kind: "xlsx"; buffer: Buffer }).buffer.toString("utf-8")).toBe("rfc2231 xlsx bytes");
+  });
+
+  it("recognizes a legacy .xls part by application/vnd.ms-excel content-type", () => {
+    const boundary = "BOUNDARY-XLS";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: application/vnd.ms-excel; name="Vaccine BOH.xls"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("legacy xls bytes").toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("xlsx");
+    expect((result as { kind: "xlsx"; buffer: Buffer }).buffer.toString("utf-8")).toBe("legacy xls bytes");
+  });
+
+  it("treats application/octet-stream with an .xlsx filename as xlsx", () => {
+    const boundary = "BOUNDARY-OCTET";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: application/octet-stream",
+      'Content-Disposition: attachment; filename="Vaccine BOH.xlsx"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("octet stream xlsx bytes").toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    const result = extractAttachmentFromRawMime(raw);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("xlsx");
+    expect((result as { kind: "xlsx"; buffer: Buffer }).buffer.toString("utf-8")).toBe("octet stream xlsx bytes");
+  });
+
+  it("logs and returns null for an unsupported attachment type (pdf), never its body", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const boundary = "BOUNDARY-PDF";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: application/pdf",
+      'Content-Disposition: attachment; filename="report.pdf"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("super secret PDF body content").toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join(CRLF);
+
+    expect(extractAttachmentFromRawMime(raw)).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('unsupported attachment type=application/pdf name="report.pdf"')
+    );
+    for (const call of warnSpy.mock.calls) {
+      for (const arg of call) {
+        expect(String(arg)).not.toContain("secret PDF body");
+      }
+    }
+    warnSpy.mockRestore();
+  });
+});
+
+describe("describeMimeStructure", () => {
+  it("emits one structure-only line per part, recursively, with no body text", () => {
+    const outer = "OUTER-DESC";
+    const inner = "INNER-DESC";
+    const secretBody = "Automatic delivery from scheduled saved search: SECRET_MARKER";
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${outer}"`,
+      "",
+      `--${outer}`,
+      `Content-Type: multipart/alternative; boundary="${inner}"`,
+      "",
+      `--${inner}`,
+      "Content-Type: text/plain",
+      "",
+      secretBody,
+      `--${inner}--`,
+      `--${outer}`,
+      'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="Vaccine BOH.xlsx"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from("xlsx bytes").toString("base64"),
+      `--${outer}--`,
+      "",
+    ].join(CRLF);
+
+    const lines = describeMimeStructure(raw);
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    expect(lines[0]).toContain("depth=0 idx=0 type=multipart/mixed");
+    expect(lines.some((l) => l.includes("type=multipart/alternative"))).toBe(true);
+    expect(lines.some((l) => l.includes("type=text/plain"))).toBe(true);
+    expect(
+      lines.some(
+        (l) =>
+          l.includes('type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') &&
+          l.includes('name="Vaccine BOH.xlsx"') &&
+          l.includes("enc=base64") &&
+          /bodyChars=\d+/.test(l)
+      )
+    ).toBe(true);
+
+    for (const line of lines) {
+      expect(line).not.toContain(secretBody);
+      expect(line).not.toContain("SECRET_MARKER");
+    }
+  });
+
+  it("returns an empty array for a raw string with no header/body separator", () => {
+    expect(describeMimeStructure("not a valid mime message")).toEqual([]);
   });
 });
