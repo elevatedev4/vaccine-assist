@@ -53,11 +53,27 @@ const DEFAULT_ADDRESS_ROW = {
 // inbound_email_address -> select().eq("token", ...).maybeSingle() /
 // update(...).eq("id", ...) (lib/on-hand/address.ts's findAddressByToken
 // / touchLastReceived).
+// V-onhand-dedupe: app_setting stand-in shared by every dedupe test below
+// — a real in-memory Map so state written by one POST() call (e.g.
+// markMessageIdProcessed's upsert) is visible to a SECOND POST() call
+// against the SAME fakeSupabaseClient instance, exactly like two SNS
+// deliveries hitting the same real app_setting row. `missingTable: true`
+// makes every select/upsert against app_setting fail with a genuine
+// isMissingTableError-shaped error (42P01), exercising the "table
+// doesn't exist yet — degrade, don't block ingestion" path specifically
+// (as opposed to the generic catch-anything fallback the dedupe code
+// also has).
+type AppSettingOptions = { store?: Map<string, unknown>; missingTable?: boolean };
+
 function fakeSupabaseClient(
   insert: (rows: unknown[]) => Promise<{ error: unknown }> = vi.fn(async () => ({ error: null })),
   addressRow: typeof DEFAULT_ADDRESS_ROW | null = DEFAULT_ADDRESS_ROW,
-  updateAddress: (fields: unknown) => Promise<{ error: unknown }> = vi.fn(async () => ({ error: null }))
+  updateAddress: (fields: unknown) => Promise<{ error: unknown }> = vi.fn(async () => ({ error: null })),
+  appSetting: AppSettingOptions = {}
 ) {
+  const { store = new Map<string, unknown>(), missingTable = false } = appSetting;
+  const missingTableError = { code: "42P01", message: 'relation "app_setting" does not exist' };
+
   return {
     from: (table: string) => {
       if (table === "vaccine") {
@@ -79,6 +95,23 @@ function fakeSupabaseClient(
           update: (fields: unknown) => ({
             eq: async () => updateAddress(fields),
           }),
+        };
+      }
+      if (table === "app_setting") {
+        return {
+          select: () => ({
+            eq: (_column: string, key: string) => ({
+              maybeSingle: async () => {
+                if (missingTable) return { data: null, error: missingTableError };
+                return { data: store.has(key) ? { value: store.get(key) } : null, error: null };
+              },
+            }),
+          }),
+          upsert: async (row: { key: string; value: unknown }) => {
+            if (missingTable) return { error: missingTableError };
+            store.set(row.key, row.value);
+            return { error: null };
+          },
         };
       }
       throw new Error(`unexpected table ${table}`);
@@ -582,6 +615,98 @@ describe("POST /api/webhooks/ses", () => {
         jsonRequest(snsNotificationBody(), { "x-amz-sns-message-type": "Notification" }, "http://localhost/api/webhooks/ses?secret=correct-secret")
       );
       expect(response.status).toBe(200);
+    });
+  });
+
+  // --- V-onhand-dedupe additions (Will 2026-09-09 evening: SNS delivered
+  // the same Pioneer email twice — 20:00:53 and 20:01:28) -------------
+  describe("idempotency (duplicate SNS deliveries)", () => {
+    it("the SAME messageId delivered twice inserts only once; the second call returns duplicate:true and does not touch last_received_at", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      const updateAddress = vi.fn(async () => ({ error: null }));
+      const store = new Map<string, unknown>();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient(insert, DEFAULT_ADDRESS_ROW, updateAddress, { store }) as never
+      );
+
+      const body = snsNotificationBody({ MessageId: "same-message-id" });
+
+      const first = await POST(jsonRequest(body, { "x-amz-sns-message-type": "Notification" }));
+      expect(first.status).toBe(200);
+      const firstBody = await first.json();
+      expect(firstBody.duplicate).toBeUndefined();
+      expect(insert).toHaveBeenCalledTimes(1);
+      expect(updateAddress).toHaveBeenCalledTimes(1);
+
+      const second = await POST(jsonRequest(body, { "x-amz-sns-message-type": "Notification" }));
+      expect(second.status).toBe(200);
+      const secondBody = await second.json();
+      expect(secondBody.duplicate).toBe(true);
+      // Still only ONE insert total — the duplicate delivery inserted nothing.
+      expect(insert).toHaveBeenCalledTimes(1);
+      // last_received_at must NOT be touched by the duplicate delivery.
+      expect(updateAddress).toHaveBeenCalledTimes(1);
+    });
+
+    it("DIFFERENT messageIds both insert", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      const store = new Map<string, unknown>();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient(insert, DEFAULT_ADDRESS_ROW, undefined, { store }) as never
+      );
+
+      const first = await POST(
+        jsonRequest(snsNotificationBody({ MessageId: "id-1" }), { "x-amz-sns-message-type": "Notification" })
+      );
+      expect(first.status).toBe(200);
+      const second = await POST(
+        jsonRequest(snsNotificationBody({ MessageId: "id-2" }), { "x-amz-sns-message-type": "Notification" })
+      );
+      expect(second.status).toBe(200);
+      const secondBody = await second.json();
+      expect(secondBody.duplicate).toBeUndefined();
+
+      expect(insert).toHaveBeenCalledTimes(2);
+    });
+
+    it("a missing app_setting table degrades gracefully — both deliveries of the SAME messageId still insert", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient(insert, DEFAULT_ADDRESS_ROW, undefined, { missingTable: true }) as never
+      );
+
+      const body = snsNotificationBody({ MessageId: "same-message-id" });
+      const first = await POST(jsonRequest(body, { "x-amz-sns-message-type": "Notification" }));
+      expect(first.status).toBe(200);
+      const second = await POST(jsonRequest(body, { "x-amz-sns-message-type": "Notification" }));
+      expect(second.status).toBe(200);
+      const secondBody = await second.json();
+      expect(secondBody.duplicate).toBeUndefined();
+
+      // Both inserted — dedupe never engages when app_setting doesn't exist.
+      expect(insert).toHaveBeenCalledTimes(2);
+    });
+
+    it("falls back to a content-hash when NO message id is available at all, still catching a duplicate", async () => {
+      const insert = vi.fn(async () => ({ error: null }));
+      const store = new Map<string, unknown>();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabaseClient(insert, DEFAULT_ADDRESS_ROW, undefined, { store }) as never
+      );
+
+      // No messageId anywhere — mail.messageId absent (the default
+      // sesMessage.mail fixture has none) AND the SNS envelope's own
+      // MessageId omitted too.
+      const body = snsNotificationBody({ MessageId: undefined });
+
+      const first = await POST(jsonRequest(body, { "x-amz-sns-message-type": "Notification" }));
+      expect(first.status).toBe(200);
+      const second = await POST(jsonRequest(body, { "x-amz-sns-message-type": "Notification" }));
+      expect(second.status).toBe(200);
+      const secondBody = await second.json();
+      expect(secondBody.duplicate).toBe(true);
+
+      expect(insert).toHaveBeenCalledTimes(1);
     });
   });
 });

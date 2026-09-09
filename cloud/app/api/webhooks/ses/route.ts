@@ -23,6 +23,13 @@ import {
 } from "@/lib/on-hand/pioneer-boh";
 import { parsePioneerBohPdf } from "@/lib/on-hand/pioneer-boh-pdf";
 import type { CatalogVaccine } from "@/lib/vaccine-matching";
+import {
+  computeBatchContentHash,
+  isDuplicateContentHash,
+  isMessageIdProcessed,
+  markMessageIdProcessed,
+  recordContentHash,
+} from "@/lib/on-hand/dedupe";
 
 /**
  * SES inbound-email webhook — on-hand stock ingestion (V-ordering,
@@ -193,6 +200,13 @@ async function loadCatalogOrError(
   return { catalog: data ?? [] };
 }
 
+/** Header handleSnsRequest checks to tell a genuine 200 (rows inserted,
+ * or 0 lines) apart from a "duplicate delivery, nothing inserted" 200 —
+ * both are status 200 (SNS must never see anything but success for a
+ * dup, or it'll keep retrying), but only the former should update
+ * last_received_at. See insertAndSummarize's dedupe block below. */
+const DUPLICATE_HEADER = "x-onhand-duplicate";
+
 /**
  * Shared tail end of every entry shape (legacy text lines, a Pioneer
  * xlsx/csv attachment): batch-insert already-matched rows into
@@ -209,21 +223,74 @@ async function loadCatalogOrError(
  * to the column's DB default (NULL, treated as "legacy/unattributed").
  * `source` is deliberately NOT set here (unlike the upload route) — the
  * column's own DB default, 'email', is exactly right for this path.
+ *
+ * `messageId` (V-onhand-dedupe, Will 2026-09-09 evening — see
+ * lib/on-hand/dedupe.ts's header comment) is the SES message id for
+ * this delivery, when one's available — only meaningful together with
+ * `addressId` (the legacy simple-contract path has neither). BEFORE
+ * inserting anything: if `messageId` was already processed, skip the
+ * insert entirely and return 200 with `duplicate: true` (and the
+ * DUPLICATE_HEADER so handleSnsRequest knows not to touch
+ * last_received_at) — logging the skip. When no `messageId` is
+ * available at all, falls back to a content-hash check instead
+ * (lib/on-hand/dedupe.ts's isDuplicateContentHash). AFTER a successful
+ * insert, records whichever check was used so the NEXT delivery of the
+ * same message/content is caught. Either dedupe step degrading (missing
+ * app_setting table) or throwing is swallowed — logged once, never
+ * blocks ingestion of the actual on-hand data.
  */
 async function insertAndSummarize(
   supabase: ReturnType<typeof getSupabaseServerClient>,
   rows: MatchedOnHandRow[],
-  addressId: string | undefined
+  addressId: string | undefined,
+  messageId?: string
 ): Promise<NextResponse> {
   if (rows.length === 0) {
     console.log("POST /api/webhooks/ses: parse outcome — 0 lines");
     return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
   }
 
+  if (addressId) {
+    try {
+      if (messageId) {
+        if (await isMessageIdProcessed(supabase, messageId)) {
+          console.log(`POST /api/webhooks/ses: duplicate delivery skipped messageId=${messageId}`);
+          return NextResponse.json(
+            { linesTotal: rows.length, matchedCount: 0, unmatchedCount: 0, duplicate: true },
+            { headers: { [DUPLICATE_HEADER]: "1" } }
+          );
+        }
+      } else {
+        const hash = computeBatchContentHash(rows);
+        if (await isDuplicateContentHash(supabase, addressId, hash, new Date())) {
+          console.log(`POST /api/webhooks/ses: duplicate delivery skipped (content-hash) addressId=${addressId}`);
+          return NextResponse.json(
+            { linesTotal: rows.length, matchedCount: 0, unmatchedCount: 0, duplicate: true },
+            { headers: { [DUPLICATE_HEADER]: "1" } }
+          );
+        }
+      }
+    } catch (err) {
+      console.warn("POST /api/webhooks/ses: dedupe check failed — proceeding without dedupe", err);
+    }
+  }
+
   const { error: insertError } = await insertOnHandRows(supabase, rows, { addressId });
   if (insertError) {
     console.error("POST /api/webhooks/ses: failed to insert on_hand_count rows", insertError);
     return NextResponse.json({ error: "Failed to store on-hand counts." }, { status: 500 });
+  }
+
+  if (addressId) {
+    try {
+      if (messageId) {
+        await markMessageIdProcessed(supabase, messageId);
+      } else {
+        await recordContentHash(supabase, addressId, computeBatchContentHash(rows), new Date());
+      }
+    } catch (err) {
+      console.warn("POST /api/webhooks/ses: failed to record dedupe bookkeeping (rows were still inserted)", err);
+    }
   }
 
   const matchedCount = rows.filter((row) => row.matched).length;
@@ -240,8 +307,10 @@ async function insertAndSummarize(
 /**
  * Legacy simple-contract path (and the SNS text/plain fallback): run
  * `content` through the original "VaccineName, Quantity" line parser.
+ * `messageId` (V-onhand-dedupe) is threaded straight through to
+ * insertAndSummarize — see that function's doc comment.
  */
-async function processOnHandContent(content: string, addressId?: string): Promise<NextResponse> {
+async function processOnHandContent(content: string, addressId?: string, messageId?: string): Promise<NextResponse> {
   if (!content || content.trim().length === 0) {
     console.log("POST /api/webhooks/ses: empty content, nothing to parse");
     return NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0 });
@@ -266,7 +335,7 @@ async function processOnHandContent(content: string, addressId?: string): Promis
   // happens to be the table still gets NDC-matched instead of being
   // treated as garbled "VaccineName, Quantity" lines.
   const rows = parseOnHandUpload({ kind: "text", text: content }, catalogResult.catalog);
-  return insertAndSummarize(supabase, rows, addressId);
+  return insertAndSummarize(supabase, rows, addressId, messageId);
 }
 
 /**
@@ -304,7 +373,8 @@ async function processOnHandContent(content: string, addressId?: string): Promis
 async function processOnHandAttachment(
   attachment: ExtractedAttachment,
   addressId: string | undefined,
-  rawMimeForFallback: string
+  rawMimeForFallback: string,
+  messageId?: string
 ): Promise<NextResponse> {
   const sizeBytes = attachment.kind === "csv" ? Buffer.byteLength(attachment.text, "utf-8") : attachment.buffer.length;
   if (sizeBytes > MAX_UPLOAD_BYTES) {
@@ -312,7 +382,7 @@ async function processOnHandAttachment(
       `POST /api/webhooks/ses: skipping oversized ${attachment.kind} attachment (${sizeBytes} bytes > ${MAX_UPLOAD_BYTES} max) ` +
         "before parsing — falling back to plain-text lines"
     );
-    return processOnHandContent(extractTextFromRawMime(rawMimeForFallback), addressId);
+    return processOnHandContent(extractTextFromRawMime(rawMimeForFallback), addressId, messageId);
   }
 
   let supabase;
@@ -333,12 +403,12 @@ async function processOnHandAttachment(
     const pdfResult = await parsePioneerBohPdf(attachment.buffer);
     if (!pdfResult) {
       console.warn("POST /api/webhooks/ses: pdf parse failed — falling back to plain-text lines");
-      return processOnHandContent(extractTextFromRawMime(rawMimeForFallback), addressId);
+      return processOnHandContent(extractTextFromRawMime(rawMimeForFallback), addressId, messageId);
     }
     console.log(
       `POST /api/webhooks/ses: pdf parsed pages=${pdfResult.pages} rows=${pdfResult.rows.length} headerFound=${pdfResult.headerFound}`
     );
-    return insertAndSummarize(supabase, matchPioneerBohRows(pdfResult.rows, catalog), addressId);
+    return insertAndSummarize(supabase, matchPioneerBohRows(pdfResult.rows, catalog), addressId, messageId);
   }
 
   const rows =
@@ -346,7 +416,25 @@ async function processOnHandAttachment(
       ? matchPioneerBohRows(parsePioneerBohXlsx(attachment.buffer), catalog)
       : matchPioneerBohRows(parsePioneerBohDelimited(attachment.text, attachment.text.includes("\t") ? "\t" : ","), catalog);
 
-  return insertAndSummarize(supabase, rows, addressId);
+  return insertAndSummarize(supabase, rows, addressId, messageId);
+}
+
+/**
+ * The SES message id for this delivery (V-onhand-dedupe) —
+ * `mail.messageId` on the parsed SES "Received" notification first (the
+ * authoritative per-email id SES itself assigns), falling back to the
+ * outer SNS envelope's own `MessageId` (`body.MessageId`, a per-SNS-
+ * delivery id — SNS's retry of the SAME notification reuses the SAME
+ * MessageId, so this fallback still dedupes correctly even without
+ * `mail.messageId`). Returns undefined only when NEITHER is present
+ * (malformed/unusual payload), which falls insertAndSummarize through
+ * to the content-hash fallback instead.
+ */
+function extractSesMessageId(sesMessage: Record<string, unknown>, snsBody: Record<string, unknown>): string | undefined {
+  const mail = sesMessage.mail as Record<string, unknown> | undefined;
+  if (mail && typeof mail.messageId === "string" && mail.messageId) return mail.messageId;
+  if (typeof snsBody.MessageId === "string" && snsBody.MessageId) return snsBody.MessageId;
+  return undefined;
 }
 
 /**
@@ -497,11 +585,17 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
     // any message that isn't multipart or has no recognizable xlsx/csv
     // part, so a plain-text on-hand email falls straight through to the
     // existing plain-text path unchanged.
+    const messageId = extractSesMessageId(sesMessage, body);
     const attachment = extractAttachmentFromRawMime(rawMime);
     const response = attachment
-      ? await processOnHandAttachment(attachment, resolvedAddress.id, rawMime)
-      : await processOnHandContent(extractTextFromRawMime(rawMime), resolvedAddress.id);
-    if (response.status === 200) {
+      ? await processOnHandAttachment(attachment, resolvedAddress.id, rawMime, messageId)
+      : await processOnHandContent(extractTextFromRawMime(rawMime), resolvedAddress.id, messageId);
+    // A duplicate delivery (insertAndSummarize's dedupe check) is still
+    // status 200 — SNS must see success or it'll keep retrying — but
+    // must NOT touch last_received_at (V-onhand-dedupe: "without ...
+    // touching last_received_at"), hence the header check alongside the
+    // status check.
+    if (response.status === 200 && response.headers.get(DUPLICATE_HEADER) !== "1") {
       await touchLastReceived(resolvedAddress.id);
     }
     return response;
