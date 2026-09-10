@@ -571,6 +571,43 @@ describe("rowsToCsv", () => {
       dataLine.startsWith("2026-09-10,Thu,10 AM,2026-09-01,9,Vaccine Appointment,Flu,,1,any,unknown,3-64")
     ).toBe(true);
   });
+
+  // Coordinator follow-up (verbatim): "route rowToCsvFields ... through
+  // the same vaccineCellValues helper so test-only rows export empty
+  // vaccine/COVID-brand/COVID-age/Flu-age fields instead of
+  // 'any'/'unknown'" — same isTestOnlyAppointment/vaccineCellValues rule
+  // the on-screen table uses (see the "vaccineCellValues" describe block
+  // above), now applied to the CSV export path too.
+  it("blanks COVID brand/COVID age/Flu age for a test-only row, same as the table", () => {
+    const csv = rowsToCsv([
+      row({
+        vaccineNames: [],
+        testNames: ["COVID"],
+        appointmentTypeName: "Point of Care Testing",
+        covidBrand: "any",
+        covidAgeBucket: "unknown",
+        fluAgeBucket: "unknown",
+      }),
+    ]);
+    const dataLine = csv.split("\n")[1];
+    // Vaccines "", Tests "COVID", # vaccines 0, COVID brand "", COVID age
+    // "", Flu age "" — no "any"/"unknown" anywhere in the exported row.
+    expect(dataLine).toBe("2026-09-10,Thu,10 AM,2026-09-01,9,Point of Care Testing,,COVID,0,,,");
+  });
+
+  it("keeps a mixed vaccine+test row's COVID brand/age fields filled in the CSV", () => {
+    const csv = rowsToCsv([
+      row({
+        vaccineNames: ["Flu"],
+        testNames: ["COVID"],
+        covidBrand: "any",
+        covidAgeBucket: "unknown",
+        fluAgeBucket: "3-64",
+      }),
+    ]);
+    const dataLine = csv.split("\n")[1];
+    expect(dataLine).toBe("2026-09-10,Thu,10 AM,2026-09-01,9,Vaccine Appointment,Flu,COVID,1,any,unknown,3-64");
+  });
 });
 
 describe("chunkDateRange", () => {

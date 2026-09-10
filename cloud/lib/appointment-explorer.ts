@@ -534,9 +534,27 @@ function csvField(value: string): string {
 
 /** One row's worth of CSV_HEADERS-ordered field values, shared by
  * rowsToCsv and groupedRowsToCsv below so the two never drift out of sync
- * on column order/formatting. */
+ * on column order/formatting.
+ *
+ * COVID brand/COVID age/Flu age route through the SAME vaccineCellValues
+ * decision the on-screen table uses (V-T-explorer round 4 follow-up, the
+ * coordinator, verbatim: "route rowToCsvFields ... through the same
+ * vaccineCellValues helper so test-only rows export empty vaccine/
+ * COVID-brand/COVID-age/Flu-age fields instead of 'any'/'unknown'") — a
+ * test-only appointment's default "any"/"unknown" buckets are just as
+ * misleading in a CSV export as they are on screen. The "Vaccines" field
+ * itself is deliberately left as `row.vaccineNames.join(", ")` rather than
+ * vaccineCellValues' own vaccineNamesDisplay: that field already renders
+ * "" for a test-only row (vaccineNames is empty by isTestOnlyAppointment's
+ * own definition) with no change needed, and vaccineNamesDisplay's "—"
+ * fallback for a genuinely-empty NON-test row is a table-display
+ * convenience this CSV export never used (an empty CSV field has always
+ * been plain "", not "—") — reusing it here would be an unrelated
+ * behavior change to a case nobody asked to fix.
+ */
 function rowToCsvFields(row: ExplorerRow): string[] {
   const lead = computeLeadDays(row);
+  const vaccineCells = vaccineCellValues(row);
   return [
     row.date,
     dayOfWeekLabel(row.date),
@@ -547,9 +565,9 @@ function rowToCsvFields(row: ExplorerRow): string[] {
     row.vaccineNames.join(", "),
     row.testNames.join(", "),
     String(row.vaccineNames.length),
-    row.covidBrand,
-    row.covidAgeBucket,
-    row.fluAgeBucket,
+    vaccineCells.covidBrand,
+    vaccineCells.covidAgeBucket,
+    vaccineCells.fluAgeBucket,
   ];
 }
 
