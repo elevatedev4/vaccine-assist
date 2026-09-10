@@ -207,6 +207,65 @@ export function applyFilters(rows: ExplorerRow[], filters: ExplorerFilters): Exp
   });
 }
 
+/**
+ * True for a point-of-care TEST appointment with no vaccine component
+ * (testNames non-empty, vaccineNames empty) — Will's "on tests" (V-T-
+ * explorer round 4, verbatim: "On tests, vaccine related fields should be
+ * blank, not have unknown or any written in there"). A MIXED appointment
+ * (both vaccineNames and testNames populated, if the intake model ever
+ * allows it) is deliberately NOT treated as a test appointment here: it
+ * genuinely has vaccine data, so that data stays visible — see
+ * vaccineCellValues below, whose own doc comment covers the "mixed"
+ * case explicitly.
+ */
+export function isTestOnlyAppointment(row: Pick<ExplorerRow, "vaccineNames" | "testNames">): boolean {
+  return row.testNames.length > 0 && row.vaccineNames.length === 0;
+}
+
+/** The explorer table's vaccine-related cells, already formatted for
+ * display — same 4 values app/appointments/explorer/page.tsx's
+ * renderDataRow previously read straight off `row` (vaccineNames joined,
+ * covidBrand, covidAgeBucket, fluAgeBucket). */
+export type VaccineCellValues = {
+  vaccineNamesDisplay: string;
+  covidBrand: string;
+  covidAgeBucket: string;
+  fluAgeBucket: string;
+};
+
+/**
+ * Single source of truth for what the explorer's vaccine-related cells
+ * show — used by both the flat table and every group-by table (all of
+ * them render through the same renderDataRow in the page, so a grouped
+ * "Test" table stays consistent with the flat one automatically).
+ *
+ * A test-only appointment (isTestOnlyAppointment) has no real vaccine to
+ * report — covidBrand/covidAgeBucket/fluAgeBucket on a row like that are
+ * just the acuity-client.ts default buckets ("any"/"unknown"/"unknown")
+ * for a form question the patient was never actually asked, not a
+ * meaningful "no preference" or "age unknown" answer — so every one of
+ * these cells renders as an EMPTY STRING rather than that placeholder
+ * text (Will, verbatim: "vaccine related fields should be blank, not have
+ * unknown or any written in there").
+ *
+ * Any other row (a vaccine appointment, or a MIXED vaccine+test
+ * appointment) is unchanged from the table's pre-existing formatting:
+ * vaccineNames joined with ", " (or "—" when genuinely empty on a
+ * non-test row), and covidBrand/covidAgeBucket/fluAgeBucket exactly as
+ * derived.
+ */
+export function vaccineCellValues(row: ExplorerRow): VaccineCellValues {
+  if (isTestOnlyAppointment(row)) {
+    return { vaccineNamesDisplay: "", covidBrand: "", covidAgeBucket: "", fluAgeBucket: "" };
+  }
+  return {
+    vaccineNamesDisplay: row.vaccineNames.join(", ") || "—",
+    covidBrand: row.covidBrand,
+    covidAgeBucket: row.covidAgeBucket,
+    fluAgeBucket: row.fluAgeBucket,
+  };
+}
+
 export type SortKey =
   | "date"
   | "day"
@@ -475,9 +534,27 @@ function csvField(value: string): string {
 
 /** One row's worth of CSV_HEADERS-ordered field values, shared by
  * rowsToCsv and groupedRowsToCsv below so the two never drift out of sync
- * on column order/formatting. */
+ * on column order/formatting.
+ *
+ * COVID brand/COVID age/Flu age route through the SAME vaccineCellValues
+ * decision the on-screen table uses (V-T-explorer round 4 follow-up, the
+ * coordinator, verbatim: "route rowToCsvFields ... through the same
+ * vaccineCellValues helper so test-only rows export empty vaccine/
+ * COVID-brand/COVID-age/Flu-age fields instead of 'any'/'unknown'") — a
+ * test-only appointment's default "any"/"unknown" buckets are just as
+ * misleading in a CSV export as they are on screen. The "Vaccines" field
+ * itself is deliberately left as `row.vaccineNames.join(", ")` rather than
+ * vaccineCellValues' own vaccineNamesDisplay: that field already renders
+ * "" for a test-only row (vaccineNames is empty by isTestOnlyAppointment's
+ * own definition) with no change needed, and vaccineNamesDisplay's "—"
+ * fallback for a genuinely-empty NON-test row is a table-display
+ * convenience this CSV export never used (an empty CSV field has always
+ * been plain "", not "—") — reusing it here would be an unrelated
+ * behavior change to a case nobody asked to fix.
+ */
 function rowToCsvFields(row: ExplorerRow): string[] {
   const lead = computeLeadDays(row);
+  const vaccineCells = vaccineCellValues(row);
   return [
     row.date,
     dayOfWeekLabel(row.date),
@@ -488,9 +565,9 @@ function rowToCsvFields(row: ExplorerRow): string[] {
     row.vaccineNames.join(", "),
     row.testNames.join(", "),
     String(row.vaccineNames.length),
-    row.covidBrand,
-    row.covidAgeBucket,
-    row.fluAgeBucket,
+    vaccineCells.covidBrand,
+    vaccineCells.covidAgeBucket,
+    vaccineCells.fluAgeBucket,
   ];
 }
 

@@ -13,9 +13,11 @@ import {
   formatHourLabel,
   groupedRowsToCsv,
   groupRows,
+  isTestOnlyAppointment,
   matchesSearch,
   rowsToCsv,
   sortRows,
+  vaccineCellValues,
   type ExplorerFilters,
   type ExplorerRow,
 } from "@/lib/appointment-explorer";
@@ -281,6 +283,86 @@ describe("computeSums", () => {
   });
 });
 
+// V-T-explorer round 4 (Will, verbatim): "On tests, vaccine related fields
+// should be blank, not have unknown or any written in there." A
+// point-of-care test appointment still carries acuity-client.ts's default
+// covidBrand/covidAgeBucket/fluAgeBucket buckets ("any"/"unknown"/
+// "unknown") even though the patient was never asked those questions —
+// isTestOnlyAppointment/vaccineCellValues are the single place that turns
+// those into blanks for display.
+describe("isTestOnlyAppointment", () => {
+  it("is true for a pure test appointment (testNames set, vaccineNames empty)", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: [], testNames: ["COVID"] })).toBe(true);
+  });
+
+  it("is false for a vaccine-only appointment", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: ["Flu"], testNames: [] })).toBe(false);
+  });
+
+  it("is false for a mixed vaccine+test appointment", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: ["Flu"], testNames: ["COVID"] })).toBe(false);
+  });
+
+  it("is false for an appointment with neither (e.g. an unrelated appointment type)", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: [], testNames: [] })).toBe(false);
+  });
+});
+
+describe("vaccineCellValues", () => {
+  it("blanks every vaccine-related cell for a test-only appointment", () => {
+    const testRow = row({
+      vaccineNames: [],
+      testNames: ["COVID"],
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "unknown",
+    });
+    expect(vaccineCellValues(testRow)).toEqual({
+      vaccineNamesDisplay: "",
+      covidBrand: "",
+      covidAgeBucket: "",
+      fluAgeBucket: "",
+    });
+  });
+
+  it("leaves a vaccine appointment's cells unchanged", () => {
+    const vaccineRow = row({
+      vaccineNames: ["Flu", "COVID-Pfizer"],
+      testNames: [],
+      covidBrand: "pfizer",
+      covidAgeBucket: "12-64",
+      fluAgeBucket: "3-64",
+    });
+    expect(vaccineCellValues(vaccineRow)).toEqual({
+      vaccineNamesDisplay: "Flu, COVID-Pfizer",
+      covidBrand: "pfizer",
+      covidAgeBucket: "12-64",
+      fluAgeBucket: "3-64",
+    });
+  });
+
+  it("renders '—' for a non-test row that genuinely has no vaccineNames", () => {
+    const emptyRow = row({ vaccineNames: [], testNames: [], covidBrand: "any", covidAgeBucket: "unknown", fluAgeBucket: "unknown" });
+    expect(vaccineCellValues(emptyRow).vaccineNamesDisplay).toBe("—");
+  });
+
+  it("keeps a mixed vaccine+test appointment's vaccine cells filled (not blanked)", () => {
+    const mixedRow = row({
+      vaccineNames: ["Flu"],
+      testNames: ["COVID"],
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "3-64",
+    });
+    expect(vaccineCellValues(mixedRow)).toEqual({
+      vaccineNamesDisplay: "Flu",
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "3-64",
+    });
+  });
+});
+
 // V-T27 (Will, verbatim, 2026-09-09): "Group by should make groups and
 // display the data in a table under each group. The current functionality
 // is summing." — groupRows replaces the old count-only computeGroups: each
@@ -488,6 +570,43 @@ describe("rowsToCsv", () => {
     expect(
       dataLine.startsWith("2026-09-10,Thu,10 AM,2026-09-01,9,Vaccine Appointment,Flu,,1,any,unknown,3-64")
     ).toBe(true);
+  });
+
+  // Coordinator follow-up (verbatim): "route rowToCsvFields ... through
+  // the same vaccineCellValues helper so test-only rows export empty
+  // vaccine/COVID-brand/COVID-age/Flu-age fields instead of
+  // 'any'/'unknown'" — same isTestOnlyAppointment/vaccineCellValues rule
+  // the on-screen table uses (see the "vaccineCellValues" describe block
+  // above), now applied to the CSV export path too.
+  it("blanks COVID brand/COVID age/Flu age for a test-only row, same as the table", () => {
+    const csv = rowsToCsv([
+      row({
+        vaccineNames: [],
+        testNames: ["COVID"],
+        appointmentTypeName: "Point of Care Testing",
+        covidBrand: "any",
+        covidAgeBucket: "unknown",
+        fluAgeBucket: "unknown",
+      }),
+    ]);
+    const dataLine = csv.split("\n")[1];
+    // Vaccines "", Tests "COVID", # vaccines 0, COVID brand "", COVID age
+    // "", Flu age "" — no "any"/"unknown" anywhere in the exported row.
+    expect(dataLine).toBe("2026-09-10,Thu,10 AM,2026-09-01,9,Point of Care Testing,,COVID,0,,,");
+  });
+
+  it("keeps a mixed vaccine+test row's COVID brand/age fields filled in the CSV", () => {
+    const csv = rowsToCsv([
+      row({
+        vaccineNames: ["Flu"],
+        testNames: ["COVID"],
+        covidBrand: "any",
+        covidAgeBucket: "unknown",
+        fluAgeBucket: "3-64",
+      }),
+    ]);
+    const dataLine = csv.split("\n")[1];
+    expect(dataLine).toBe("2026-09-10,Thu,10 AM,2026-09-01,9,Vaccine Appointment,Flu,COVID,1,any,unknown,3-64");
   });
 });
 
