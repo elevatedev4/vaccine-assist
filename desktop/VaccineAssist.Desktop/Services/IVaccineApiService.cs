@@ -32,6 +32,23 @@ public interface IVaccineApiService
     /// </summary>
     Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// V-..., 2026-09-10: calls PATCH /api/vaccines/{id} with
+    /// {"quantity": quantity} — saves a quantity staff typed into the
+    /// data-entry popup's blank-quantity prompt (see
+    /// PioneerEntryAutomation/Sequencing/Steps/InputQuantityStep.cs and
+    /// PioneerEntryStepContext.SaveQuantityAsync) back onto the vaccine's
+    /// catalog record, so the next run has it on file and doesn't have to
+    /// ask again. Same cloud route as SetVaccineActiveAsync (see
+    /// cloud/app/api/vaccines/[id]/route.ts's own doc comment on the
+    /// {active?, quantity?, directions?, ndc?} PATCH body contract).
+    /// </summary>
+    Task<Vaccine> UpdateVaccineQuantityAsync(Guid id, string quantity, CancellationToken cancellationToken = default);
+
+    /// <summary>Same as UpdateVaccineQuantityAsync, for `directions` — see
+    /// InputDirectionsStep.cs and PioneerEntryStepContext.SaveDirectionsAsync.</summary>
+    Task<Vaccine> UpdateVaccineDirectionsAsync(Guid id, string directions, CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<Lot>> GetLotsAsync(
         Guid? vaccineId = null,
         string? status = null,

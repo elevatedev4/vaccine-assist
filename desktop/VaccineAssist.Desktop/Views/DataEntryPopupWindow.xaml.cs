@@ -79,6 +79,13 @@ public partial class DataEntryPopupWindow : Window
         // comment for why this MUST be set here (the gate fails closed
         // when it's null).
         _viewModel.ConfirmVarUpdateRequested = message => VarUpdateConfirmationWindow.ShowAndGetConfirmation(message, this);
+
+        // V-..., 2026-09-10: same wiring pattern, for the blank-Quantity/
+        // blank-Directions prompt — see
+        // DataEntryPopupViewModel.RequestTextPromptRequested's own doc
+        // comment.
+        _viewModel.RequestTextPromptRequested = (title, message, allowSkip) =>
+            TextEntryPromptWindow.ShowAndGetResult(title, message, allowSkip, this);
     }
 
     /// <summary>

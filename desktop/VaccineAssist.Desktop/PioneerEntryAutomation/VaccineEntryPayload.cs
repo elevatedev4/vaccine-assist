@@ -59,6 +59,12 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation;
 /// <param name="Directions">This vaccine's Models.Vaccine.Directions,
 /// typed into PioneerRx's directions field by InputDirectionsStep. Same
 /// null-skips posture as Quantity.</param>
+/// <param name="VaccineName">The vaccine's display name (Models.Vaccine.Name)
+/// — V-... 2026-09-10: used ONLY for the blank-Quantity/blank-Directions
+/// prompt's title ("Quantity needed for &lt;VaccineName&gt;" — see
+/// Sequencing/Steps/InputQuantityStep.cs and InputDirectionsStep.cs), never
+/// typed into Pioneer anywhere. Empty when not supplied (e.g. an older
+/// caller/test) — the prompt falls back to "this vaccine".</param>
 public sealed record VaccineEntryPayload(
     string ShortCode,
     string LotNumber,
@@ -70,7 +76,8 @@ public sealed record VaccineEntryPayload(
     string? HomeVisitReason = null,
     bool SkipLotAndExpiration = false,
     string? Quantity = null,
-    string? Directions = null)
+    string? Directions = null,
+    string VaccineName = "")
 {
     /// <summary>The exact "code,lot,exp" clipboard format the old macro read from
     /// %vaccinedata% (vaccine-add-new.mxe line 32-36) — kept for the Entry

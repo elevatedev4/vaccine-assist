@@ -47,6 +47,24 @@ public sealed class VaccineApiService : IVaccineApiService
         return result.Vaccine;
     }
 
+    public async Task<Vaccine> UpdateVaccineQuantityAsync(Guid id, string quantity, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Patch, $"/api/vaccines/{id}");
+        request.Content = JsonContent.Create(new UpdateVaccineQuantityRequest(quantity));
+
+        var result = await SendAsync<VaccineResponse>(request, cancellationToken);
+        return result.Vaccine;
+    }
+
+    public async Task<Vaccine> UpdateVaccineDirectionsAsync(Guid id, string directions, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Patch, $"/api/vaccines/{id}");
+        request.Content = JsonContent.Create(new UpdateVaccineDirectionsRequest(directions));
+
+        var result = await SendAsync<VaccineResponse>(request, cancellationToken);
+        return result.Vaccine;
+    }
+
     public async Task<IReadOnlyList<Lot>> GetLotsAsync(
         Guid? vaccineId = null,
         string? status = null,
@@ -341,4 +359,10 @@ public sealed class VaccineApiService : IVaccineApiService
 
     private sealed record SetVaccineActiveRequest(
         [property: JsonPropertyName("active")] bool Active);
+
+    private sealed record UpdateVaccineQuantityRequest(
+        [property: JsonPropertyName("quantity")] string Quantity);
+
+    private sealed record UpdateVaccineDirectionsRequest(
+        [property: JsonPropertyName("directions")] string Directions);
 }

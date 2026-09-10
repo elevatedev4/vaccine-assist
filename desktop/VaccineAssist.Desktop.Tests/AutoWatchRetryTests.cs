@@ -12,7 +12,7 @@ namespace VaccineAssist.Desktop.Tests;
 /// by an injected fake clock, so these run instantly with no real waiting —
 /// same "pure polling primitive, real waits injected by the live caller"
 /// pattern as SendF3AndDismissPreEntryDialogsStepTests.cs's coverage of
-/// DismissPendingDialogsAsync/DismissAllStrayWindowsAsync/WaitForAsync.
+/// RunCombinedPreEntryLoopAsync/WaitForAsync.
 /// </summary>
 public class AutoWatchRetryTests
 {
