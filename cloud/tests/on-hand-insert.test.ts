@@ -73,18 +73,30 @@ describe("insertOnHandRows — NDC reconciliation wiring (V-onhand-ndc-units)", 
     logSpy.mockRestore();
   });
 
-  it("logs a conflict and does NOT call update when a product's batch lines carry more than one distinct report NDC", async () => {
+  it("logs a tie and does NOT call update when two lines tie for a product's highest stock but disagree on NDC", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { client, updateCalls } = fakeSupabase();
     const catalog: CatalogVaccine[] = [{ id: "v1", name: "Fluad", ndc: "70461-0123-03" }];
     const rows = [
-      row({ vaccineId: "v1", ndc: "70461002603", matchedByExactNdc: false }),
-      row({ vaccineId: "v1", ndc: "70461002604", matchedByExactNdc: false }),
+      row({ vaccineId: "v1", ndc: "70461002603", quantity: 40, matchedByExactNdc: false }),
+      row({ vaccineId: "v1", ndc: "70461002604", quantity: 40, matchedByExactNdc: false }),
     ];
 
     await insertOnHandRows(client as never, rows, {}, catalog);
     expect(updateCalls).toEqual([]);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("distinct report NDCs"));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("tied for highest stock"));
+    warnSpy.mockRestore();
+  });
+
+  it("logs no-stock and does NOT call update when every line for a product has zero stock", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client, updateCalls } = fakeSupabase();
+    const catalog: CatalogVaccine[] = [{ id: "v1", name: "Fluad", ndc: "70461-0123-03" }];
+    const rows = [row({ vaccineId: "v1", ndc: "70461002603", quantity: 0, matchedByExactNdc: false })];
+
+    await insertOnHandRows(client as never, rows, {}, catalog);
+    expect(updateCalls).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no stock on any line"));
     warnSpy.mockRestore();
   });
 
