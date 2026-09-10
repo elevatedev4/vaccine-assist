@@ -3,6 +3,7 @@ import { normalizeNdc } from "@/lib/ndc";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { parseOnHandContent } from "@/lib/on-hand-parser";
 import { lookupProduct } from "@/lib/vaccine-product-catalog";
+import { parseQuantityCell } from "@/lib/on-hand/quantity-cell";
 
 /**
  * Pioneer "current BOH" (beyond-on-hand) stock report parser
@@ -62,6 +63,14 @@ export type MatchedOnHandRow = {
   matched: boolean;
   ndc: string | null;
   stockSize: number | null;
+  /** True only when `vaccineId` was resolved via an EXACT vaccine.ndc
+   * match (matchPioneerBohRows pass 1 below) — see
+   * lib/on-hand/ndc-reconcile.ts for why this matters: a line that
+   * matched by exact ndc already has the correct ndc on file, so it's
+   * never a candidate for NDC reconciliation. Always false for the
+   * legacy plain-text on-hand parser (lib/on-hand-parser.ts), which
+   * never carries a report ndc at all. */
+  matchedByExactNdc: boolean;
 };
 
 function isHeaderRow(cells: unknown[]): boolean {
@@ -77,15 +86,6 @@ function cellToString(cell: unknown): string {
   return String(cell).trim();
 }
 
-function cellToNumber(cell: unknown): number | null {
-  if (typeof cell === "number" && Number.isFinite(cell)) return cell;
-  if (typeof cell === "string" && cell.trim() !== "") {
-    const parsed = Number(cell.trim());
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
 export function computeDoses(quantityRaw: number | null, stockSize: number | null): number | null {
   if (quantityRaw === null || stockSize === null || stockSize <= 0) return null;
   return Math.round(quantityRaw / stockSize);
@@ -99,6 +99,20 @@ export function computeDoses(quantityRaw: number | null, stockSize: number | nul
  * wherever they fall — this is what makes the two-row header tolerant of
  * both rows landing anywhere near the top rather than assuming a fixed
  * skip count.
+ *
+ * "Current BOH" and "Stock size" cells go through the shared
+ * lib/on-hand/quantity-cell.ts parser (V-onhand-ndc-units) — the SAME
+ * parser lib/on-hand/pioneer-boh-pdf.ts's PDF path uses — so a cell like
+ * "9 EA" or "4.5 ML" parses identically on either ingest path. rawLine
+ * stores each cell's ORIGINAL text (not the parsed number) so the unit
+ * stays recoverable later (see lib/on-hand/insert.ts's doc comment: no
+ * new on_hand_count column this round, so raw_line is where a
+ * "9 EA"/"0.5 ML" annotation has to live).
+ *
+ * A blank Stock size cell defaults to 1 (dose = BOH) — consistent with
+ * the PDF path's long-standing behavior — logging a warning so a truly
+ * missing stock size is still visible, rather than silently treated as
+ * "can't compute doses."
  */
 export function parsePioneerBohMatrix(matrix: unknown[][]): PioneerBohRow[] {
   const rows: PioneerBohRow[] = [];
@@ -111,12 +125,16 @@ export function parsePioneerBohMatrix(matrix: unknown[][]): PioneerBohRow[] {
     if (!name) continue; // blank row
 
     const ndc = normalizeNdc(cellToString(cells[1]) || null);
-    const quantityRaw = cellToNumber(cells[2]);
-    const stockSize = cellToNumber(cells[3]);
+    const quantityRaw = parseQuantityCell(cells[2]).value;
+    const parsedStockSize = parseQuantityCell(cells[3]).value;
+    if (parsedStockSize === null) {
+      console.warn(`parsePioneerBohMatrix: blank stock size for "${name}" — defaulting to 1`);
+    }
+    const stockSize = parsedStockSize === null ? 1 : parsedStockSize;
     const doses = computeDoses(quantityRaw, stockSize);
 
     rows.push({
-      rawLine: [name, ndc ?? "", quantityRaw ?? "", stockSize ?? ""].join(" | "),
+      rawLine: [name, ndc ?? "", cellToString(cells[2]), cellToString(cells[3])].join(" | "),
       vaccineNameRaw: name,
       ndc,
       quantityRaw,
@@ -294,10 +312,14 @@ function matchByPioneerNameAlias(rawName: string, catalog: CatalogVaccine[]): Ca
 export function matchPioneerBohRows(rows: PioneerBohRow[], catalog: CatalogVaccine[]): MatchedOnHandRow[] {
   return rows.map((row) => {
     let vaccineId: string | null = null;
+    let matchedByExactNdc = false;
 
     if (row.ndc) {
       const byNdc = catalog.find((vaccine) => normalizeNdc(vaccine.ndc) === row.ndc);
-      if (byNdc) vaccineId = byNdc.id;
+      if (byNdc) {
+        vaccineId = byNdc.id;
+        matchedByExactNdc = true;
+      }
       if (!vaccineId) {
         const byCatalogPackageNdc = catalog.find((vaccine) => catalogPackageNdcForVaccine(vaccine) === row.ndc);
         if (byCatalogPackageNdc) vaccineId = byCatalogPackageNdc.id;
@@ -320,6 +342,7 @@ export function matchPioneerBohRows(rows: PioneerBohRow[], catalog: CatalogVacci
       matched: vaccineId !== null && row.doses !== null,
       ndc: row.ndc,
       stockSize: row.stockSize,
+      matchedByExactNdc,
     };
   });
 }
@@ -349,5 +372,10 @@ export function parseOnHandUpload(payload: UploadPayload, catalog: CatalogVaccin
     return matchPioneerBohRows(parsePioneerBohDelimited(payload.text, delimiter), catalog);
   }
 
-  return parseOnHandContent(payload.text, catalog).map((line) => ({ ...line, ndc: null, stockSize: null }));
+  return parseOnHandContent(payload.text, catalog).map((line) => ({
+    ...line,
+    ndc: null,
+    stockSize: null,
+    matchedByExactNdc: false,
+  }));
 }

@@ -104,6 +104,23 @@ export async function GET(request: Request) {
 }
 
 /**
+ * Derives a `short_code` from a vaccine name (vaccine.short_code is
+ * NOT NULL + UNIQUE — see supabase/migrations/0001_init.sql — and the
+ * POST handler below omitted it entirely until this fix, which made
+ * every insert fail with a 500). Lowercases the name, collapses every
+ * run of non-alphanumeric characters into a single "-", and trims
+ * leading/trailing "-" — e.g. "Abrysvo (1 ct)" -> "abrysvo-1-ct".
+ * Returns "" for a name with no letters/digits at all (caller rejects
+ * that before ever reaching Supabase).
+ */
+function deriveShortCode(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
  * POST /api/vaccines — creates one vaccine row (V-T-ordering-lots-round4,
  * Will: Abrysvo's 1-count product needs its own DB row, created "via the
  * API after merge" rather than hand-inserted, and this is that endpoint).
@@ -114,8 +131,17 @@ export async function GET(request: Request) {
  * boolean (default true) }. Same auth guard as every other /api/vaccines*
  * route. Rejects a duplicate name (case-insensitive, trimmed) with 409 —
  * this table has no unique constraint on `name`, so the check is done
- * here rather than relying on the database to reject it. Returns
- * { vaccine } 201.
+ * here rather than relying on the database to reject it.
+ *
+ * short_code (bugfix, V-onhand-ndc-units): derived from the name via
+ * deriveShortCode above and included on every insert — the column is
+ * NOT NULL + UNIQUE, and the insert was 500ing on every call before this
+ * fix because it never set the column at all. A derived code that
+ * collides with an existing vaccine's short_code also gets a 409 (same
+ * "check here, don't rely on the DB constraint to surface a clean error"
+ * posture as the name check), and any genuine Supabase insert failure
+ * now logs its actual `.message` so a future failure is diagnosable from
+ * the server log alone. Returns { vaccine } 201.
  */
 export async function POST(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -148,29 +174,50 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "active must be a boolean." }, { status: 400 });
     }
 
+    const shortCode = deriveShortCode(trimmedName);
+    if (!shortCode) {
+      return NextResponse.json({ error: "name must contain at least one letter or digit." }, { status: 400 });
+    }
+
     const supabase = getSupabaseServerClient();
 
-    const { data: existing, error: existingError } = await supabase
+    const { data: existingByName, error: existingByNameError } = await supabase
       .from("vaccine")
       .select("id, name")
       .ilike("name", trimmedName);
-    if (existingError) {
-      console.error("POST /api/vaccines: Supabase error checking for duplicates", existingError);
+    if (existingByNameError) {
+      console.error(`POST /api/vaccines: Supabase error checking for duplicate name - ${existingByNameError.message}`, existingByNameError);
       return NextResponse.json({ error: "Failed to create vaccine." }, { status: 500 });
     }
-    if ((existing ?? []).some((row) => row.name.trim().toLowerCase() === trimmedName.toLowerCase())) {
+    if ((existingByName ?? []).some((row) => row.name.trim().toLowerCase() === trimmedName.toLowerCase())) {
       return NextResponse.json({ error: "A vaccine with this name already exists." }, { status: 409 });
+    }
+
+    const { data: existingByShortCode, error: existingByShortCodeError } = await supabase
+      .from("vaccine")
+      .select("id, short_code")
+      .eq("short_code", shortCode);
+    if (existingByShortCodeError) {
+      console.error(
+        `POST /api/vaccines: Supabase error checking for duplicate short_code - ${existingByShortCodeError.message}`,
+        existingByShortCodeError
+      );
+      return NextResponse.json({ error: "Failed to create vaccine." }, { status: 500 });
+    }
+    if ((existingByShortCode ?? []).length > 0) {
+      return NextResponse.json({ error: "A vaccine with this short code already exists." }, { status: 409 });
     }
 
     const insertPayload: Record<string, unknown> = {
       name: trimmedName,
       ndc: formattedNdc,
       active: active ?? true,
+      short_code: shortCode,
     };
 
     const { data, error } = await supabase.from("vaccine").insert(insertPayload).select().single();
     if (error) {
-      console.error("POST /api/vaccines: Supabase error", error);
+      console.error(`POST /api/vaccines: Supabase error - ${error.message}`, error);
       return NextResponse.json({ error: "Failed to create vaccine." }, { status: 500 });
     }
 

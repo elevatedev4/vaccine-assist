@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { utils, write } from "xlsx";
 import {
   computeDoses,
@@ -93,6 +93,32 @@ describe("parsePioneerBohMatrix", () => {
   it("returns [] for an all-header/all-blank matrix", () => {
     expect(parsePioneerBohMatrix([["Item Name", "NDC/UPC"], [null, null]])).toEqual([]);
   });
+
+  // --- V-onhand-ndc-units: BOH/stock-size cells now carry a unit
+  // (EA or ML) straight from Pioneer's report. ---
+  describe("units (EA/ML)", () => {
+    it("parses BOH/stock-size cells that carry a unit, and preserves the ORIGINAL cell text (with unit) in rawLine", () => {
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Abrysvo Vial", "00069246501", "9 EA", "1 EA"],
+      ]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        rawLine: "Abrysvo Vial | 00069246501 | 9 EA | 1 EA",
+        quantityRaw: 9,
+        stockSize: 1,
+        doses: 9,
+      });
+    });
+
+    it("parses an mL unit with no space and a decimal stock size", () => {
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Fluad Syringe", "70461002603", "57.5mL", "0.5 ML"],
+      ]);
+      expect(rows[0]).toMatchObject({ quantityRaw: 57.5, stockSize: 0.5, doses: 115 });
+    });
+  });
 });
 
 describe("parsePioneerBohXlsx", () => {
@@ -158,6 +184,37 @@ describe("parsePioneerBohDelimited", () => {
   });
 });
 
+describe("matchPioneerBohRows — matchedByExactNdc (V-onhand-ndc-units)", () => {
+  it("flags matchedByExactNdc:true when the row's ndc equals the vaccine's on-file ndc exactly", () => {
+    const catalog = [{ id: "v1", name: "Widget", short_code: "widget", ndc: "70461-0026-03" }];
+    const rows = parsePioneerBohMatrix([
+      ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+      ["Widget Vial", "70461002603", 10, 1],
+    ]);
+    const matched = matchPioneerBohRows(rows, catalog);
+    expect(matched[0]).toMatchObject({ vaccineId: "v1", matchedByExactNdc: true });
+  });
+
+  it("flags matchedByExactNdc:false when the row matched via name only (ndc doesn't match anything on file)", () => {
+    const catalog = [{ id: "v1", name: "Widget", short_code: "widget", ndc: "99999-9999-99" }];
+    const rows = parsePioneerBohMatrix([
+      ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+      ["Widget Vial", "70461002603", 10, 1],
+    ]);
+    const matched = matchPioneerBohRows(rows, catalog);
+    expect(matched[0]).toMatchObject({ vaccineId: "v1", matchedByExactNdc: false });
+  });
+
+  it("flags matchedByExactNdc:false when nothing matched at all", () => {
+    const rows = parsePioneerBohMatrix([
+      ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+      ["Totally Unknown", "55555555555", 10, 1],
+    ]);
+    const matched = matchPioneerBohRows(rows, []);
+    expect(matched[0]).toMatchObject({ vaccineId: null, matchedByExactNdc: false });
+  });
+});
+
 describe("matchPioneerBohRows", () => {
   it("matches by NDC first, normalizing dashes on the catalog side", () => {
     const rows = parsePioneerBohMatrix(SAMPLE_ROWS);
@@ -175,13 +232,26 @@ describe("matchPioneerBohRows", () => {
     expect(matched[0]).toMatchObject({ vaccineId: "v-vaxchora", matched: true, quantity: 0 });
   });
 
-  it("flags matched:false (but still returns any name-matched vaccineId) when doses can't be computed", () => {
+  it("flags matched:false (but still returns any name-matched vaccineId) when BOH itself can't be computed (blank cell)", () => {
     const rows = parsePioneerBohMatrix([
       ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
-      ["Flu Quad 2025-26", "", 40, null], // no stock size -> doses null
+      ["Flu Quad 2025-26", "", "", 5], // no BOH -> doses null regardless of stock size
     ]);
     const matched = matchPioneerBohRows(rows, CATALOG);
     expect(matched[0]).toMatchObject({ vaccineId: "v-flu", quantity: null, matched: false });
+  });
+
+  it("defaults a blank stock size to 1 (dose = BOH) and logs it, mirroring the PDF path's long-standing behavior (V-onhand-ndc-units)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rows = parsePioneerBohMatrix([
+      ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+      ["Flu Quad 2025-26", "", 40, null],
+    ]);
+    expect(rows[0]).toMatchObject({ quantityRaw: 40, stockSize: 1, doses: 40 });
+    const matched = matchPioneerBohRows(rows, CATALOG);
+    expect(matched[0]).toMatchObject({ vaccineId: "v-flu", quantity: 40, matched: true });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("blank stock size"));
+    warnSpy.mockRestore();
   });
 
   it("flags matched:false with a null vaccineId when nothing matches at all", () => {
@@ -334,6 +404,7 @@ describe("parseOnHandUpload", () => {
         matched: true,
         ndc: null,
         stockSize: null,
+        matchedByExactNdc: false,
       },
       {
         rawLine: "MMR, 15",
@@ -343,6 +414,7 @@ describe("parseOnHandUpload", () => {
         matched: false,
         ndc: null,
         stockSize: null,
+        matchedByExactNdc: false,
       },
     ]);
   });

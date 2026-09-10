@@ -375,15 +375,21 @@ describe("POST /api/vaccines", () => {
     vi.mocked(getSupabaseServerClient).mockReset();
   });
 
+  // Two duplicate-checking selects happen before the insert: one for the
+  // name (ilike), one for the derived short_code (eq) — see
+  // deriveShortCode in the route. Both return no matches here.
   function noExistingMatchesFrom() {
     return {
-      select: () => ({ ilike: async () => ({ data: [], error: null }) }),
+      select: () => ({
+        ilike: async () => ({ data: [], error: null }),
+        eq: async () => ({ data: [], error: null }),
+      }),
     };
   }
 
-  it("creates a vaccine with just a name, defaulting active to true and ndc to null", async () => {
+  it("creates a vaccine with just a name, defaulting active to true and ndc to null, and derives short_code from the name", async () => {
     const single = vi.fn(async () => ({
-      data: { id: "v1", name: "Abrysvo (1 ct)", ndc: null, active: true },
+      data: { id: "v1", name: "Abrysvo (1 ct)", ndc: null, active: true, short_code: "abrysvo-1-ct" },
       error: null,
     }));
     const select = vi.fn(() => ({ single }));
@@ -391,7 +397,7 @@ describe("POST /api/vaccines", () => {
     let call = 0;
     const from = vi.fn(() => {
       call += 1;
-      if (call === 1) return noExistingMatchesFrom();
+      if (call <= 2) return noExistingMatchesFrom();
       return { insert };
     });
     vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
@@ -406,8 +412,8 @@ describe("POST /api/vaccines", () => {
 
     expect(response.status).toBe(201);
     const body = await response.json();
-    expect(body.vaccine).toEqual({ id: "v1", name: "Abrysvo (1 ct)", ndc: null, active: true });
-    expect(insert).toHaveBeenCalledWith({ name: "Abrysvo (1 ct)", ndc: null, active: true });
+    expect(body.vaccine).toEqual({ id: "v1", name: "Abrysvo (1 ct)", ndc: null, active: true, short_code: "abrysvo-1-ct" });
+    expect(insert).toHaveBeenCalledWith({ name: "Abrysvo (1 ct)", ndc: null, active: true, short_code: "abrysvo-1-ct" });
   });
 
   it("trims the name and formats a valid ndc via lib/ndc.ts's formatNdcForStorage", async () => {
@@ -417,7 +423,7 @@ describe("POST /api/vaccines", () => {
     let call = 0;
     const from = vi.fn(() => {
       call += 1;
-      if (call === 1) return noExistingMatchesFrom();
+      if (call <= 2) return noExistingMatchesFrom();
       return { insert };
     });
     vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
@@ -430,7 +436,35 @@ describe("POST /api/vaccines", () => {
       })
     );
 
-    expect(insert).toHaveBeenCalledWith({ name: "Abrysvo (1 ct)", ndc: "00069-2465-01", active: false });
+    expect(insert).toHaveBeenCalledWith({
+      name: "Abrysvo (1 ct)",
+      ndc: "00069-2465-01",
+      active: false,
+      short_code: "abrysvo-1-ct",
+    });
+  });
+
+  it("rejects a duplicate short_code (derived from a different name) with 409, without inserting", async () => {
+    let call = 0;
+    const from = vi.fn(() => {
+      call += 1;
+      if (call === 1) {
+        // Name check: no match.
+        return { select: () => ({ ilike: async () => ({ data: [], error: null }) }) };
+      }
+      // short_code check: a match.
+      return { select: () => ({ eq: async () => ({ data: [{ id: "v0", short_code: "abrysvo-1-ct" }], error: null }) }) };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Abrysvo, (1 ct)" }),
+      })
+    );
+    expect(response.status).toBe(409);
   });
 
   it("rejects a missing/empty name without touching Supabase", async () => {
@@ -495,6 +529,32 @@ describe("POST /api/vaccines", () => {
       })
     );
     expect(response.status).toBe(409);
+  });
+
+  it("logs the actual Supabase error message and returns 500 when the insert itself fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const insertError = { message: "duplicate key value violates unique constraint", code: "23505" };
+    let call = 0;
+    const from = vi.fn(() => {
+      call += 1;
+      if (call <= 2) return noExistingMatchesFrom();
+      return {
+        insert: () => ({ select: () => ({ single: async () => ({ data: null, error: insertError }) }) }),
+      };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Abrysvo (1 ct)" }),
+      })
+    );
+
+    expect(response.status).toBe(500);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(insertError.message), insertError);
+    errorSpy.mockRestore();
   });
 
 });

@@ -1,7 +1,9 @@
 import "server-only";
 import { isMissingColumnError } from "@/lib/schema-degradation";
 import type { MatchedOnHandRow } from "@/lib/on-hand/pioneer-boh";
+import { decideNdcAdoptions } from "@/lib/on-hand/ndc-reconcile";
 import type { getSupabaseServerClient } from "@/lib/supabase/server";
+import type { CatalogVaccine } from "@/lib/vaccine-matching";
 
 type SupabaseClient = ReturnType<typeof getSupabaseServerClient>;
 
@@ -44,11 +46,30 @@ function buildRow(row: MatchedOnHandRow, options: InsertOnHandOptions, includeNd
  * WITHOUT those two columns — same "try, catch, retry" shape 0009/0010
  * already established, so uploads work today and pick up the new
  * columns automatically once the migration runs, no code change needed.
+ *
+ * NDC reconciliation (V-onhand-ndc-units, Will 2026-09-09/10 — "The BOH
+ * report I'm sending has the NDC in the report... this is important to
+ * understanding the true BOH"): when a `catalog` is given AND the insert
+ * above succeeded, `rows` is run through lib/on-hand/ndc-reconcile.ts's
+ * decideNdcAdoptions and every resulting adoption is written to
+ * vaccine.ndc on this SAME Supabase client — this is the one place both
+ * the manual-upload route and the SES webhook funnel their parsed rows
+ * through, so every Pioneer send (email or manual upload) self-corrects
+ * a stale/wrong on-file NDC. `catalog` is optional so a caller that
+ * hasn't been updated (or a legacy plain-text batch with no report NDCs
+ * at all) simply skips reconciliation — decideNdcAdoptions would find
+ * nothing to adopt anyway, but skipping the extra Supabase round-trip
+ * when there's no catalog to reconcile against is cheap and explicit.
+ * Reconciliation failures are logged and swallowed — never surfaced as
+ * this function's `error` — since the on_hand_count rows themselves
+ * already inserted successfully; a failed NDC update shouldn't make an
+ * otherwise-successful ingest look like it failed.
  */
 export async function insertOnHandRows(
   supabase: SupabaseClient,
   rows: MatchedOnHandRow[],
-  options: InsertOnHandOptions = {}
+  options: InsertOnHandOptions = {},
+  catalog?: CatalogVaccine[]
 ): Promise<{ error: unknown }> {
   if (rows.length === 0) return { error: null };
 
@@ -60,5 +81,38 @@ export async function insertOnHandRows(
     ({ error } = await supabase.from("on_hand_count").insert(dbRows));
   }
 
+  if (!error && catalog) {
+    await reconcileNdcFromReport(supabase, rows, catalog);
+  }
+
   return { error };
+}
+
+async function reconcileNdcFromReport(
+  supabase: SupabaseClient,
+  rows: MatchedOnHandRow[],
+  catalog: CatalogVaccine[]
+): Promise<void> {
+  let result: ReturnType<typeof decideNdcAdoptions>;
+  try {
+    result = decideNdcAdoptions(rows, catalog);
+  } catch (err) {
+    console.warn("insertOnHandRows: NDC reconciliation decision failed — skipping", err);
+    return;
+  }
+
+  for (const conflict of result.conflicts) {
+    console.warn(
+      `NDC reconciliation: ${conflict.vaccineName} — batch carries ${conflict.ndcs.length} distinct report NDCs [${conflict.ndcs.join(", ")}], leaving vaccine.ndc unchanged`
+    );
+  }
+
+  for (const adoption of result.adoptions) {
+    const { error } = await supabase.from("vaccine").update({ ndc: adoption.newNdc }).eq("id", adoption.vaccineId);
+    if (error) {
+      console.error(`insertOnHandRows: failed to update ${adoption.vaccineName} ndc - ${(error as { message?: string })?.message}`, error);
+      continue;
+    }
+    console.log(`NDC adopted from Pioneer report: ${adoption.vaccineName} ${adoption.oldNdc ?? "(none)"} → ${adoption.newNdc}`);
+  }
 }

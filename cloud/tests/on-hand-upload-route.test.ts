@@ -60,10 +60,19 @@ function buildXlsxFile(rows: (string | number | null)[][]): ArrayBuffer {
   return Uint8Array.from(buffer).buffer;
 }
 
+// V-onhand-ndc-units: insertOnHandRows now also (best-effort) writes
+// vaccine.ndc adoptions after a successful insert — the "vaccine" table
+// mock needs an `.update().eq()` chain too, not just `.select()`, for
+// any upload whose catalog/report-NDC combination triggers an adoption.
 function fakeSupabase(insert: (rows: unknown[]) => Promise<{ error: unknown }> = vi.fn(async () => ({ error: null }))) {
   return {
     from: (table: string) => {
-      if (table === "vaccine") return { select: async () => ({ data: CATALOG, error: null }) };
+      if (table === "vaccine") {
+        return {
+          select: async () => ({ data: CATALOG, error: null }),
+          update: () => ({ eq: async () => ({ error: null }) }),
+        };
+      }
       if (table === "on_hand_count") return { insert };
       throw new Error(`unexpected table ${table}`);
     },

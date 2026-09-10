@@ -221,6 +221,73 @@ describe("GET /api/ordering/recommendation", () => {
     });
   });
 
+  // --- V-onhand-ndc-units (Will 2026-09-09/10): "display unit size for
+  // each item, new column, after NDC" ---
+  describe("unitSize", () => {
+    it("combines stock_size + the unit recovered from raw_line's 4th field", async () => {
+      const onHandRows = [
+        {
+          vaccine_id: "v-flu",
+          quantity: 8,
+          received_at: "2026-08-19T13:00:00.000Z",
+          stock_size: 1,
+          raw_line: "Flu Quad Vial | 00000000000 | 8 EA | 1 EA",
+        },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.unitSize).toBe("1 EA");
+    });
+
+    it("falls back to the bare numeric stock_size when raw_line carries no recognizable unit", async () => {
+      const onHandRows = [
+        {
+          vaccine_id: "v-flu",
+          quantity: 8,
+          received_at: "2026-08-19T13:00:00.000Z",
+          stock_size: 0.5,
+          raw_line: "Flu Quad Vial, 8",
+        },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.unitSize).toBe("0.5");
+    });
+
+    it("is null when there is no on-hand row for the product at all", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([]) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.unitSize).toBeNull();
+    });
+
+    it("is null when stock_size itself is null (0011 applied, but this particular batch line had no stock size)", async () => {
+      const onHandRows = [
+        {
+          vaccine_id: "v-flu",
+          quantity: 8,
+          received_at: "2026-08-19T13:00:00.000Z",
+          stock_size: null,
+          raw_line: "Flu Quad Vial | 00000000000 | 8 EA |",
+        },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase(onHandRows) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.unitSize).toBeNull();
+    });
+  });
+
   it("sums Acuity upcoming appointment counts per matched vaccine into upcoming7d", async () => {
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([]) as never);
     vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
