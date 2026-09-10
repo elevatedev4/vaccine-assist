@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
@@ -21,6 +21,7 @@ import {
   groupRows,
   rowsToCsv,
   sortRows,
+  vaccineCellValues,
   type ExplorerFilters,
   type ExplorerRow,
   type ExplorerRowGroup,
@@ -110,6 +111,39 @@ const styles = {
   error: { color: "#b00020" },
   warning: { color: "#8a5300", background: "#fff4e0", padding: "0.5rem 0.75rem", borderRadius: 4 },
   muted: { color: "#555", fontSize: "0.72rem" },
+  // V-T-explorer-loading (Will, round-4 verbatim: "make sure a spinning
+  // loader or something shows when the query is being run but hasn't
+  // responded yet. Right now it just looks like a big delay."):
+  // `resultsAreaWrap` wraps everything below the controls row so the
+  // overlay below can sit on top of it (position: relative anchor);
+  // `loadingOverlay` is the actual spinner + "Loading…" banner, shown the
+  // instant `loading` goes true (see loadRows in the component below) —
+  // BEFORE any fetch response, not after — and the previous table stays
+  // visible underneath at reduced opacity (see the inline opacity style
+  // where this is used) rather than being unmounted, so a filter/sort
+  // click during a fetch doesn't flash to a blank page.
+  resultsAreaWrap: { position: "relative" as const },
+  loadingOverlay: {
+    position: "absolute" as const,
+    inset: 0,
+    zIndex: 20,
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "0.5rem",
+    paddingTop: "3rem",
+    background: "rgba(255,255,255,0.72)",
+  },
+  spinner: {
+    width: "1.6rem",
+    height: "1.6rem",
+    borderRadius: "50%",
+    border: "3px solid #d5dce3",
+    borderTopColor: "#16a34a",
+    animation: "explorer-spin 0.7s linear infinite",
+  },
+  loadingLabel: { fontSize: "0.78rem", fontWeight: 600, color: "#333" },
   sumsPanel: {
     display: "flex",
     flexWrap: "wrap" as const,
@@ -590,7 +624,21 @@ export default function AppointmentExplorerPage() {
   const [openFilter, setOpenFilter] = useState<OpenFilterState | null>(null);
   const closeFilterPopover = useCallback(() => setOpenFilter(null), []);
 
+  // V-T-explorer-loading round 4 (Will, verbatim: "make sure a spinning
+  // loader ... shows when the query is being run but hasn't responded
+  // yet"): a monotonically-increasing request id, bumped at the START of
+  // every loadRows call (Apply/Refresh/initial fetch/a paged chunk run)
+  // and re-checked before that call is allowed to touch state — guards
+  // against an OUT-OF-ORDER response (e.g. Refresh clicked twice, or Apply
+  // clicked again before the first range's fetch finished) overwriting a
+  // newer request's already-landed result with a stale one. Not React
+  // state on purpose — bumping it must never itself trigger a re-render.
+  const loadRequestIdRef = useRef(0);
+
   function resetAfterSignOut() {
+    // Bump the request id too — an in-flight request from before sign-out
+    // must not be allowed to repopulate `rows` after this reset.
+    loadRequestIdRef.current += 1;
     setRows([]);
     setConfigured(null);
     setAsOf(null);
@@ -624,6 +672,12 @@ export default function AppointmentExplorerPage() {
   // the FIRST chunk's response — Acuity being configured or not can't
   // differ between chunks of the same request.
   const loadRows = useCallback(async (token: string, start: string, end: string, options?: { force?: boolean }) => {
+    // See loadRequestIdRef's own doc comment above — this request "owns"
+    // requestId for its whole lifetime; every state write below (and the
+    // final setLoading(false)) is gated on still being the CURRENT
+    // request, so a slower, now-superseded fetch can never clobber a
+    // faster, newer one's result (or its loading indicator).
+    const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setLoadError(null);
     try {
@@ -637,7 +691,9 @@ export default function AppointmentExplorerPage() {
         const response = await fetch(`/api/acuity/poll?rows=1&start=${chunk.start}&end=${chunk.end}${forceParam}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (loadRequestIdRef.current !== requestId) return; // superseded mid-chunk
         const data = await response.json();
+        if (loadRequestIdRef.current !== requestId) return; // superseded while awaiting .json()
         if (!response.ok) {
           setLoadError(data.error ?? "Could not load appointment data.");
           return;
@@ -650,14 +706,19 @@ export default function AppointmentExplorerPage() {
         latestAsOf = data.asOf;
       }
 
+      if (loadRequestIdRef.current !== requestId) return; // superseded before the last chunk landed
       setConfigured(sawConfigured);
       setRows(collected);
       setAsOf(latestAsOf);
       setVisibleCount(PAGE_SIZE);
     } catch (err) {
+      if (loadRequestIdRef.current !== requestId) return;
       setLoadError(err instanceof Error ? err.message : "Could not load appointment data.");
     } finally {
-      setLoading(false);
+      // Only the current request is allowed to clear the spinner — an
+      // old, superseded request finishing late must not turn off loading
+      // while a newer request is still in flight.
+      if (loadRequestIdRef.current === requestId) setLoading(false);
     }
   }, []);
 
@@ -838,6 +899,14 @@ export default function AppointmentExplorerPage() {
   function renderDataRow(row: ExplorerRow, key: string) {
     const leadDaysValue = computeLeadDays(row);
     const leadDays = leadDaysValue === null ? "—" : String(leadDaysValue);
+    // Vaccine-related cells (Vaccines/COVID brand/COVID age/Flu age) all
+    // go through one shared decision (Will, verbatim: "On tests, vaccine
+    // related fields should be blank, not have unknown or any written in
+    // there") — see vaccineCellValues's own doc comment for the
+    // test-only-vs-mixed-appointment rule. Every group-by table renders
+    // through this SAME renderDataRow, so a grouped "Test" table's blanks
+    // stay consistent with the flat table's automatically.
+    const vaccineCells = vaccineCellValues(row);
     return (
       <tr key={key}>
         <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.date}</td>
@@ -846,14 +915,18 @@ export default function AppointmentExplorerPage() {
         <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.createdDate || "—"}</td>
         <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{leadDays}</td>
         <td style={{ ...styles.tdAppointmentType, ...COLUMN_DIVIDER }}>{row.appointmentTypeName}</td>
-        <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.vaccineNames.join(", ") || "—"}</td>
+        <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{vaccineCells.vaccineNamesDisplay}</td>
         <td style={{ ...styles.tdVaccines, ...COLUMN_DIVIDER }}>{row.testNames.join(", ") || "—"}</td>
         <td style={{ ...styles.td, ...COLUMN_DIVIDER }}>{row.vaccineNames.length}</td>
-        <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>{row.covidBrand}</td>
         <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>
-          {row.covidAgeBucket}
+          {vaccineCells.covidBrand}
         </td>
-        <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.flu }}>{row.fluAgeBucket}</td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.covid }}>
+          {vaccineCells.covidAgeBucket}
+        </td>
+        <td style={{ ...styles.td, ...COLUMN_DIVIDER, background: GROUP_HEADER_COLORS.flu }}>
+          {vaccineCells.fluAgeBucket}
+        </td>
       </tr>
     );
   }
@@ -918,6 +991,10 @@ export default function AppointmentExplorerPage() {
 
   return (
     <main style={styles.mainWide}>
+      {/* Spinner keyframes for styles.spinner above — a plain global
+          <style> tag (no external animation library) since this is the
+          only place on the page that needs one. */}
+      <style>{"@keyframes explorer-spin { to { transform: rotate(360deg); } }"}</style>
       <h1 style={styles.heading}>Data explorer</h1>
       <p style={styles.backLink}>
         <a href="/appointments">← Back to Schedule</a>
@@ -1001,21 +1078,37 @@ export default function AppointmentExplorerPage() {
 
       {loadError && <p style={styles.error}>{loadError}</p>}
 
-      {configured === false && (
-        <p>
-          Acuity credentials are not configured yet. <a href="/settings">Go to Settings</a>
-        </p>
-      )}
+      {/* V-T-explorer-loading round 4: the spinner overlay shows the
+          INSTANT `loading` goes true (see loadRows — setLoading(true) runs
+          before the fetch, not after) and sits above whatever was
+          previously rendered here, regardless of `configured` — this
+          fixes the original bug where the only "Loading…" text was gated
+          behind `configured === true`, which stayed null for the entire
+          initial fetch, so nothing at all showed while the first request
+          was in flight. The content below stays mounted (just dimmed via
+          opacity) rather than being replaced, so a date-range/filter/
+          group-by change during a fetch never flashes to a blank page. */}
+      <div style={styles.resultsAreaWrap}>
+        {loading && (
+          <div style={styles.loadingOverlay} role="status" aria-live="polite">
+            <span style={styles.spinner} aria-hidden="true" />
+            <span style={styles.loadingLabel}>Loading…</span>
+          </div>
+        )}
+        <div style={{ opacity: loading ? 0.45 : 1, transition: "opacity 150ms ease" }}>
+          {configured === false && (
+            <p>
+              Acuity credentials are not configured yet. <a href="/settings">Go to Settings</a>
+            </p>
+          )}
 
-      {configured === true && loading && rows.length === 0 && <p style={styles.muted}>Loading…</p>}
+          {configured === true && !loading && rows.length === 0 && !loadError && (
+            <p style={styles.muted}>No appointments found in this range.</p>
+          )}
 
-      {configured === true && !loading && rows.length === 0 && !loadError && (
-        <p style={styles.muted}>No appointments found in this range.</p>
-      )}
-
-      {configured === true && (
-        <>
-          <div style={styles.sumsPanel}>
+          {configured === true && (
+            <>
+              <div style={styles.sumsPanel}>
             <div style={styles.sumStat}>
               <span style={styles.sumStatLabel}>Appointments</span>
               <span style={styles.sumStatValue}>{sums.appointments}</span>
@@ -1147,8 +1240,10 @@ export default function AppointmentExplorerPage() {
                 </FilterPopover>
               );
             })()}
-        </>
-      )}
+            </>
+          )}
+        </div>
+      </div>
     </main>
   );
 }

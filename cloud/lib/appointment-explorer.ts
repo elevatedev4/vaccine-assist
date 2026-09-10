@@ -207,6 +207,65 @@ export function applyFilters(rows: ExplorerRow[], filters: ExplorerFilters): Exp
   });
 }
 
+/**
+ * True for a point-of-care TEST appointment with no vaccine component
+ * (testNames non-empty, vaccineNames empty) — Will's "on tests" (V-T-
+ * explorer round 4, verbatim: "On tests, vaccine related fields should be
+ * blank, not have unknown or any written in there"). A MIXED appointment
+ * (both vaccineNames and testNames populated, if the intake model ever
+ * allows it) is deliberately NOT treated as a test appointment here: it
+ * genuinely has vaccine data, so that data stays visible — see
+ * vaccineCellValues below, whose own doc comment covers the "mixed"
+ * case explicitly.
+ */
+export function isTestOnlyAppointment(row: Pick<ExplorerRow, "vaccineNames" | "testNames">): boolean {
+  return row.testNames.length > 0 && row.vaccineNames.length === 0;
+}
+
+/** The explorer table's vaccine-related cells, already formatted for
+ * display — same 4 values app/appointments/explorer/page.tsx's
+ * renderDataRow previously read straight off `row` (vaccineNames joined,
+ * covidBrand, covidAgeBucket, fluAgeBucket). */
+export type VaccineCellValues = {
+  vaccineNamesDisplay: string;
+  covidBrand: string;
+  covidAgeBucket: string;
+  fluAgeBucket: string;
+};
+
+/**
+ * Single source of truth for what the explorer's vaccine-related cells
+ * show — used by both the flat table and every group-by table (all of
+ * them render through the same renderDataRow in the page, so a grouped
+ * "Test" table stays consistent with the flat one automatically).
+ *
+ * A test-only appointment (isTestOnlyAppointment) has no real vaccine to
+ * report — covidBrand/covidAgeBucket/fluAgeBucket on a row like that are
+ * just the acuity-client.ts default buckets ("any"/"unknown"/"unknown")
+ * for a form question the patient was never actually asked, not a
+ * meaningful "no preference" or "age unknown" answer — so every one of
+ * these cells renders as an EMPTY STRING rather than that placeholder
+ * text (Will, verbatim: "vaccine related fields should be blank, not have
+ * unknown or any written in there").
+ *
+ * Any other row (a vaccine appointment, or a MIXED vaccine+test
+ * appointment) is unchanged from the table's pre-existing formatting:
+ * vaccineNames joined with ", " (or "—" when genuinely empty on a
+ * non-test row), and covidBrand/covidAgeBucket/fluAgeBucket exactly as
+ * derived.
+ */
+export function vaccineCellValues(row: ExplorerRow): VaccineCellValues {
+  if (isTestOnlyAppointment(row)) {
+    return { vaccineNamesDisplay: "", covidBrand: "", covidAgeBucket: "", fluAgeBucket: "" };
+  }
+  return {
+    vaccineNamesDisplay: row.vaccineNames.join(", ") || "—",
+    covidBrand: row.covidBrand,
+    covidAgeBucket: row.covidAgeBucket,
+    fluAgeBucket: row.fluAgeBucket,
+  };
+}
+
 export type SortKey =
   | "date"
   | "day"

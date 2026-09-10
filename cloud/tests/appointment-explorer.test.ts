@@ -13,9 +13,11 @@ import {
   formatHourLabel,
   groupedRowsToCsv,
   groupRows,
+  isTestOnlyAppointment,
   matchesSearch,
   rowsToCsv,
   sortRows,
+  vaccineCellValues,
   type ExplorerFilters,
   type ExplorerRow,
 } from "@/lib/appointment-explorer";
@@ -278,6 +280,86 @@ describe("computeSums", () => {
   it("returns 0/null-safe values for an empty set", () => {
     const sums = computeSums([]);
     expect(sums).toEqual({ appointments: 0, vaccines: 0, avgVaccinesPerAppointment: 0, avgLeadDays: null });
+  });
+});
+
+// V-T-explorer round 4 (Will, verbatim): "On tests, vaccine related fields
+// should be blank, not have unknown or any written in there." A
+// point-of-care test appointment still carries acuity-client.ts's default
+// covidBrand/covidAgeBucket/fluAgeBucket buckets ("any"/"unknown"/
+// "unknown") even though the patient was never asked those questions —
+// isTestOnlyAppointment/vaccineCellValues are the single place that turns
+// those into blanks for display.
+describe("isTestOnlyAppointment", () => {
+  it("is true for a pure test appointment (testNames set, vaccineNames empty)", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: [], testNames: ["COVID"] })).toBe(true);
+  });
+
+  it("is false for a vaccine-only appointment", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: ["Flu"], testNames: [] })).toBe(false);
+  });
+
+  it("is false for a mixed vaccine+test appointment", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: ["Flu"], testNames: ["COVID"] })).toBe(false);
+  });
+
+  it("is false for an appointment with neither (e.g. an unrelated appointment type)", () => {
+    expect(isTestOnlyAppointment({ vaccineNames: [], testNames: [] })).toBe(false);
+  });
+});
+
+describe("vaccineCellValues", () => {
+  it("blanks every vaccine-related cell for a test-only appointment", () => {
+    const testRow = row({
+      vaccineNames: [],
+      testNames: ["COVID"],
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "unknown",
+    });
+    expect(vaccineCellValues(testRow)).toEqual({
+      vaccineNamesDisplay: "",
+      covidBrand: "",
+      covidAgeBucket: "",
+      fluAgeBucket: "",
+    });
+  });
+
+  it("leaves a vaccine appointment's cells unchanged", () => {
+    const vaccineRow = row({
+      vaccineNames: ["Flu", "COVID-Pfizer"],
+      testNames: [],
+      covidBrand: "pfizer",
+      covidAgeBucket: "12-64",
+      fluAgeBucket: "3-64",
+    });
+    expect(vaccineCellValues(vaccineRow)).toEqual({
+      vaccineNamesDisplay: "Flu, COVID-Pfizer",
+      covidBrand: "pfizer",
+      covidAgeBucket: "12-64",
+      fluAgeBucket: "3-64",
+    });
+  });
+
+  it("renders '—' for a non-test row that genuinely has no vaccineNames", () => {
+    const emptyRow = row({ vaccineNames: [], testNames: [], covidBrand: "any", covidAgeBucket: "unknown", fluAgeBucket: "unknown" });
+    expect(vaccineCellValues(emptyRow).vaccineNamesDisplay).toBe("—");
+  });
+
+  it("keeps a mixed vaccine+test appointment's vaccine cells filled (not blanked)", () => {
+    const mixedRow = row({
+      vaccineNames: ["Flu"],
+      testNames: ["COVID"],
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "3-64",
+    });
+    expect(vaccineCellValues(mixedRow)).toEqual({
+      vaccineNamesDisplay: "Flu",
+      covidBrand: "any",
+      covidAgeBucket: "unknown",
+      fluAgeBucket: "3-64",
+    });
   });
 });
 
