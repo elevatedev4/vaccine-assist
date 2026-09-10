@@ -204,6 +204,18 @@ export default function LotsPage() {
   const autosaveSeqRef = useRef<Record<string, number>>({});
   const autosaveInFlightRef = useRef<Record<string, boolean>>({});
 
+  // Review follow-up (reviewer, 2026-09-10): with no cleanup, typing in a
+  // Lot #/date field and then navigating away from /lots before the
+  // ~600ms debounce elapsed left that row's pending timer armed — it
+  // still fired after unmount, running a real fetch and then calling
+  // setState (setSavingByKey/setRowErrors/etc., inside runAutosave) on an
+  // unmounted component. Cancel every row's pending timer on unmount.
+  useEffect(() => {
+    return () => {
+      for (const runner of Object.values(autosaveRunnersRef.current)) runner.cancel();
+    };
+  }, []);
+
   // Clears this page's own fetched state on sign-out, whatever triggers
   // it (see top-nav.tsx's doc comment — sign-out now lives solely in
   // TopNav's account menu, and every page's session subscription still
