@@ -115,29 +115,45 @@ const styles = {
   // loader or something shows when the query is being run but hasn't
   // responded yet. Right now it just looks like a big delay."):
   // `resultsAreaWrap` wraps everything below the controls row so the
-  // overlay below can sit on top of it (position: relative anchor);
+  // loading bar below can sit on top of it (position: relative anchor);
   // `loadingOverlay` is the actual spinner + "Loading…" banner, shown the
   // instant `loading` goes true (see loadRows in the component below) —
   // BEFORE any fetch response, not after — and the previous table stays
   // visible underneath at reduced opacity (see the inline opacity style
   // where this is used) rather than being unmounted, so a filter/sort
   // click during a fetch doesn't flash to a blank page.
+  //
+  // ROUND 5 (Will, verbatim: "Make sure the loading spinner is at the top
+  // where people can see it, not centered vertically on a large table off
+  // screen."): `loadingOverlay` used to be `inset: 0` with
+  // justifyContent: "center", which vertically centered it over the WHOLE
+  // results area — on a tall table that middle point can land well below
+  // the fold, invisible right when the user clicks Apply/Refresh. Pinned
+  // to `top: 0` instead (no `bottom`/`inset`, so its own height is just
+  // its content, not the full results area) — a slim, full-width bar
+  // directly under the controls row and above the table, in exactly the
+  // same place Apply/Refresh themselves are, every time.
   resultsAreaWrap: { position: "relative" as const },
   loadingOverlay: {
     position: "absolute" as const,
-    inset: 0,
+    top: 0,
+    left: 0,
+    right: 0,
     zIndex: 20,
     display: "flex",
-    flexDirection: "column" as const,
+    flexDirection: "row" as const,
     alignItems: "center",
     justifyContent: "center",
     gap: "0.5rem",
-    paddingTop: "3rem",
-    background: "rgba(255,255,255,0.72)",
+    padding: "0.5rem 0.8rem",
+    background: "#fff",
+    border: "1px solid #d5dce3",
+    borderRadius: 6,
+    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
   },
   spinner: {
-    width: "1.6rem",
-    height: "1.6rem",
+    width: "1.1rem",
+    height: "1.1rem",
     borderRadius: "50%",
     border: "3px solid #d5dce3",
     borderTopColor: "#16a34a",
@@ -1078,16 +1094,19 @@ export default function AppointmentExplorerPage() {
 
       {loadError && <p style={styles.error}>{loadError}</p>}
 
-      {/* V-T-explorer-loading round 4: the spinner overlay shows the
-          INSTANT `loading` goes true (see loadRows — setLoading(true) runs
-          before the fetch, not after) and sits above whatever was
-          previously rendered here, regardless of `configured` — this
-          fixes the original bug where the only "Loading…" text was gated
-          behind `configured === true`, which stayed null for the entire
-          initial fetch, so nothing at all showed while the first request
-          was in flight. The content below stays mounted (just dimmed via
+      {/* V-T-explorer-loading round 4: the spinner bar shows the INSTANT
+          `loading` goes true (see loadRows — setLoading(true) runs before
+          the fetch, not after) and sits above whatever was previously
+          rendered here, regardless of `configured` — this fixes the
+          original bug where the only "Loading…" text was gated behind
+          `configured === true`, which stayed null for the entire initial
+          fetch, so nothing at all showed while the first request was in
+          flight. The content below stays mounted (just dimmed via
           opacity) rather than being replaced, so a date-range/filter/
-          group-by change during a fetch never flashes to a blank page. */}
+          group-by change during a fetch never flashes to a blank page.
+          ROUND 5: pinned to the TOP of this area (styles.loadingOverlay's
+          own doc comment) rather than vertically centered, so it's never
+          scrolled off screen behind a tall table. */}
       <div style={styles.resultsAreaWrap}>
         {loading && (
           <div style={styles.loadingOverlay} role="status" aria-live="polite">
