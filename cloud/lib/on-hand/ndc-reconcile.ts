@@ -11,26 +11,43 @@ import type { CatalogVaccine } from "@/lib/vaccine-matching";
  * the report.").
  *
  * The Pioneer report is treated as the source of truth for NDCs, but
- * ONLY for a line that matched a vaccine some way OTHER than an exact
- * `vaccine.ndc` match (matchPioneerBohRows's pass 1 — see
- * MatchedOnHandRow.matchedByExactNdc) — a pass-1 line's report NDC
- * already equals the on-file ndc by construction, so it's never a
- * reconciliation candidate. Pass 2 (catalog packageNdc), pass 3 (Pioneer
- * name alias), and pass 4 (free-text name match) can all resolve a line
- * whose report NDC DISAGREES with (or is simply missing from)
- * vaccine.ndc — Fluad being the concrete case that motivated this: its
- * DB ndc is last season's, so it never matches by exact ndc, but its
- * name still resolves it, and the report line carries the CURRENT NDC.
+ * which of a product's several report lines is trusted is decided by
+ * STOCK, not by which matching pass found it (fix/ndc-adopt-in-stock,
+ * Will 2026-09-10, real Pioneer noon report: Pioneer lists several
+ * products under multiple NDCs — old package sizes/years alongside the
+ * current one — and the old "exactly one distinct NDC among
+ * non-exact-matched lines" rule adopted whichever stale/zero-stock NDC
+ * happened to be the SOLE name-matched line, overwriting a correct,
+ * in-stock ndc six times in one real run: Comirnaty, mNEXSPIKE, Prevnar
+ * 20, and Shingrix all had their in-stock exact-ndc-matched line's report
+ * NDC excluded from candidacy while a zero-stock name-matched line stood
+ * alone and "won"; Fluad and Spikevax carried 3-4 distinct report NDCs
+ * and were left unchanged entirely even though exactly one line actually
+ * had stock).
  *
- * Grouped per vaccineId (not per row): if every reconciliation-candidate
- * line for a product in this batch agrees on ONE report NDC, that NDC is
- * a CANDIDATE adoption — still subject to three guards (review fix,
- * reviewer repro: Abrysvo's 10-count row, ndc "00069-2465-10", almost
- * got silently overwritten to "00069-2465-01" — the SEPARATE 1-count
- * product's own NDC — by a report line carrying that NDC, which resolved
- * to the 10-count row only because it's listed as an altNdc there purely
- * for on-hand-matching purposes, not because it's ever a valid NDC for
- * that row):
+ * So: for each product, EVERY line in this batch is a candidate
+ * (regardless of which of matchPioneerBohRows's four passes matched it —
+ * MatchedOnHandRow.matchedByExactNdc no longer excludes a line, it's
+ * informational only now), and the line with the HIGHEST doses
+ * (`quantity`) wins — that's the package Pioneer actually has on the
+ * shelf right now, which is the whole point of trusting this report.
+ *
+ *   - If the highest quantity across a product's lines is 0 or null,
+ *     nothing is adopted (`skipped` reason "no-stock") — no line has any
+ *     stock, so there's no report-confirmed "current" NDC to prefer.
+ *   - If two or more lines tie for that highest quantity but disagree on
+ *     NDC, nothing is adopted (`skipped` reason "tie") — no principled
+ *     way to prefer one over the other.
+ *   - Otherwise the single highest-quantity line's NDC is the candidate.
+ *     If it's already what's on file (digits-only), nothing to do.
+ *
+ * The candidate then still runs the same three adoption guards as
+ * before (review fix, reviewer repro: Abrysvo's 10-count row, ndc
+ * "00069-2465-10", almost got silently overwritten to "00069-2465-01" —
+ * the SEPARATE 1-count product's own NDC — by a report line carrying
+ * that NDC, which resolved to the 10-count row only because it's listed
+ * as an altNdc there purely for on-hand-matching purposes, not because
+ * it's ever a valid NDC for that row):
  *
  *   1. Known-altNdc guard (isKnownAltNdcForProduct): a candidate NDC
  *      that's a recognized ALT ndc (lib/vaccine-product-catalog.ts's
@@ -46,14 +63,13 @@ import type { CatalogVaccine } from "@/lib/vaccine-matching";
  *      currently holds it.
  *   3. Cross-batch dedupe: after every other guard, if the SAME
  *      candidate NDC would end up adopted onto more than one vaccine row
- *      in this one decision pass (two different products both name-
- *      matching a line that happens to carry the same report NDC), NONE
- *      of them are adopted — one NDC is never written to two rows.
+ *      in this one decision pass (two different products both winning
+ *      with a line that happens to carry the same report NDC), NONE of
+ *      them are adopted — one NDC is never written to two rows.
  *
- * Any row/product tripping a guard, or disagreeing on more than one
- * distinct report NDC (the pre-existing check), is returned in
- * `skipped`/`conflicts` respectively rather than silently dropped, so
- * the caller can log exactly why nothing was adopted.
+ * Any row/product tripping a guard is returned in `skipped` rather than
+ * silently dropped, so the caller can log exactly why nothing was
+ * adopted.
  *
  * Pure and side-effect-free — lib/on-hand/insert.ts is what actually
  * writes the adoptions to Supabase and logs them.
@@ -70,14 +86,6 @@ export type NdcAdoption = {
   newNdc: string;
 };
 
-export type NdcConflict = {
-  vaccineId: string;
-  vaccineName: string;
-  /** The distinct (normalized, digits-only) report NDCs that disagreed
-   * for this product in this batch. */
-  ndcs: string[];
-};
-
 export type NdcSkipReason =
   /** The candidate NDC is a known altNdc for the SAME product — not a
    * correction, a recognized old/variant identifier. */
@@ -88,51 +96,63 @@ export type NdcSkipReason =
   | "other-product"
   /** The candidate NDC would have been adopted onto more than one
    * vaccine row in this same decision pass. */
-  | "duplicate-in-batch";
+  | "duplicate-in-batch"
+  /** No line for this product carried any stock (highest quantity was 0
+   * or null) — nothing in the report confirms a "current" NDC. */
+  | "no-stock"
+  /** Two or more lines tied for the highest quantity but disagreed on
+   * NDC — no principled way to prefer one. */
+  | "tie";
 
 export type NdcSkip = {
   vaccineId: string;
   vaccineName: string;
-  /** The (normalized, digits-only) candidate NDC that was NOT adopted. */
+  /** The (normalized, digits-only) candidate NDC that was NOT adopted —
+   * for "tie" this is the tied NDCs joined with ", "; for "no-stock"
+   * there's no candidate at all, so this is "". */
   ndc: string;
   reason: NdcSkipReason;
 };
 
 export type NdcReconciliationResult = {
   adoptions: NdcAdoption[];
-  conflicts: NdcConflict[];
   skipped: NdcSkip[];
 };
 
 export function decideNdcAdoptions(rows: MatchedOnHandRow[], catalog: CatalogVaccine[]): NdcReconciliationResult {
-  const reportNdcsByVaccine = new Map<string, Set<string>>();
+  type Line = { ndc: string; quantity: number };
+  const linesByVaccine = new Map<string, Line[]>();
 
   for (const row of rows) {
     if (!row.vaccineId) continue;
-    if (row.matchedByExactNdc) continue; // pass 1 — already correct on file
     const normalized = normalizeNdc(row.ndc);
     if (!normalized) continue;
 
-    const set = reportNdcsByVaccine.get(row.vaccineId) ?? new Set<string>();
-    set.add(normalized);
-    reportNdcsByVaccine.set(row.vaccineId, set);
+    const list = linesByVaccine.get(row.vaccineId) ?? [];
+    list.push({ ndc: normalized, quantity: row.quantity ?? 0 });
+    linesByVaccine.set(row.vaccineId, list);
   }
 
-  const conflicts: NdcConflict[] = [];
   const skipped: NdcSkip[] = [];
   const candidates: NdcAdoption[] = [];
 
-  for (const [vaccineId, ndcSet] of reportNdcsByVaccine) {
+  for (const [vaccineId, lines] of linesByVaccine) {
     const vaccine = catalog.find((candidate) => candidate.id === vaccineId);
     if (!vaccine) continue; // shouldn't happen (vaccineId came from this same catalog), but nothing to reconcile against
 
-    const ndcs = [...ndcSet];
-    if (ndcs.length > 1) {
-      conflicts.push({ vaccineId, vaccineName: vaccine.name, ndcs });
+    const maxQuantity = Math.max(...lines.map((line) => line.quantity));
+    if (maxQuantity <= 0) {
+      skipped.push({ vaccineId, vaccineName: vaccine.name, ndc: "", reason: "no-stock" });
       continue;
     }
 
-    const reportNdc = ndcs[0];
+    const winnerNdcs = [...new Set(lines.filter((line) => line.quantity === maxQuantity).map((line) => line.ndc))];
+    if (winnerNdcs.length > 1) {
+      skipped.push({ vaccineId, vaccineName: vaccine.name, ndc: winnerNdcs.join(", "), reason: "tie" });
+      continue;
+    }
+
+    const reportNdc = winnerNdcs[0];
     if (normalizeNdc(vaccine.ndc ?? null) === reportNdc) continue; // already on file, nothing to adopt
 
     const owner = { name: vaccine.name, ndc: vaccine.ndc ?? null };
@@ -189,5 +209,5 @@ export function decideNdcAdoptions(rows: MatchedOnHandRow[], catalog: CatalogVac
     adoptions.push(group[0]);
   }
 
-  return { adoptions, conflicts, skipped };
+  return { adoptions, skipped };
 }

@@ -101,12 +101,6 @@ async function reconcileNdcFromReport(
     return;
   }
 
-  for (const conflict of result.conflicts) {
-    console.warn(
-      `NDC reconciliation: ${conflict.vaccineName} — batch carries ${conflict.ndcs.length} distinct report NDCs [${conflict.ndcs.join(", ")}], leaving vaccine.ndc unchanged`
-    );
-  }
-
   for (const skip of result.skipped) {
     if (skip.reason === "alt-ndc") {
       console.warn(
@@ -116,9 +110,15 @@ async function reconcileNdcFromReport(
       console.warn(
         `NDC reconciliation: NDC ${skip.ndc} belongs to a different product — not adopted onto ${skip.vaccineName}`
       );
-    } else {
+    } else if (skip.reason === "duplicate-in-batch") {
       console.warn(
         `NDC reconciliation: NDC ${skip.ndc} would be adopted by more than one product in this batch — not adopted onto ${skip.vaccineName}`
+      );
+    } else if (skip.reason === "no-stock") {
+      console.warn(`NDC reconciliation: ${skip.vaccineName} — no stock on any line, leaving vaccine.ndc unchanged`);
+    } else {
+      console.warn(
+        `NDC reconciliation: ${skip.vaccineName} — batch lines tied for highest stock across distinct report NDCs [${skip.ndc}], leaving vaccine.ndc unchanged`
       );
     }
   }
