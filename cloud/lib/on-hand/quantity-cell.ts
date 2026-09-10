@@ -22,8 +22,12 @@
  * cell can carry stray whitespace/glyph-split artifacts around the
  * number).
  *
- * Returns { value: null, unit: null } for a blank cell or one with no
- * leading numeric content at all.
+ * Returns { value: null, unit: null } for a blank cell, one with no
+ * leading numeric content at all, or a NEGATIVE number (review fix,
+ * V-onhand-ndc-units: a BOH/stock-size cell is a physical quantity —
+ * "-9 EA" is not a valid report value, so it's treated the same as
+ * unparseable rather than silently flowing a negative number into
+ * computeDoses/downstream math).
  */
 export type ParsedQuantityCell = {
   value: number | null;
@@ -54,7 +58,7 @@ export function extractUnitFromRawLine(rawLine: string): "EA" | "ML" | null {
 
 export function parseQuantityCell(cell: unknown): ParsedQuantityCell {
   if (typeof cell === "number") {
-    return Number.isFinite(cell) ? { value: cell, unit: null } : { value: null, unit: null };
+    return Number.isFinite(cell) && cell >= 0 ? { value: cell, unit: null } : { value: null, unit: null };
   }
   if (typeof cell !== "string") return { value: null, unit: null };
 
@@ -66,7 +70,7 @@ export function parseQuantityCell(cell: unknown): ParsedQuantityCell {
   if (!match) return { value: null, unit: null };
 
   const value = Number(match[1]);
-  if (!Number.isFinite(value)) return { value: null, unit: null };
+  if (!Number.isFinite(value) || value < 0) return { value: null, unit: null };
 
   const unit = match[2] ? (match[2].toUpperCase() as "EA" | "ML") : null;
   return { value, unit };

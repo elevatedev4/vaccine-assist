@@ -107,6 +107,22 @@ async function reconcileNdcFromReport(
     );
   }
 
+  for (const skip of result.skipped) {
+    if (skip.reason === "alt-ndc") {
+      console.warn(
+        `NDC reconciliation: alt NDC, not adopted — ${skip.vaccineName} report NDC ${skip.ndc} is a known alternate NDC for this product, leaving vaccine.ndc unchanged`
+      );
+    } else if (skip.reason === "other-product") {
+      console.warn(
+        `NDC reconciliation: NDC ${skip.ndc} belongs to a different product — not adopted onto ${skip.vaccineName}`
+      );
+    } else {
+      console.warn(
+        `NDC reconciliation: NDC ${skip.ndc} would be adopted by more than one product in this batch — not adopted onto ${skip.vaccineName}`
+      );
+    }
+  }
+
   for (const adoption of result.adoptions) {
     const { error } = await supabase.from("vaccine").update({ ndc: adoption.newNdc }).eq("id", adoption.vaccineId);
     if (error) {

@@ -52,4 +52,19 @@ describe("parseQuantityCell", () => {
     expect(parseQuantityCell(NaN)).toEqual({ value: null, unit: null });
     expect(parseQuantityCell(Infinity)).toEqual({ value: null, unit: null });
   });
+
+  // Review fix (V-onhand-ndc-units): a BOH/stock-size cell is a physical
+  // quantity — a negative number is never valid and must not silently
+  // flow into computeDoses/downstream math.
+  describe("negative values (review fix)", () => {
+    it("rejects a negative number cell", () => {
+      expect(parseQuantityCell(-5)).toEqual({ value: null, unit: null });
+    });
+
+    it("rejects a negative numeric string, with or without a unit", () => {
+      expect(parseQuantityCell("-5")).toEqual({ value: null, unit: null });
+      expect(parseQuantityCell("-5 EA")).toEqual({ value: null, unit: null });
+      expect(parseQuantityCell("-4.5ML")).toEqual({ value: null, unit: null });
+    });
+  });
 });

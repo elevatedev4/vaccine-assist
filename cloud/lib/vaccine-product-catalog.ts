@@ -397,14 +397,14 @@ export function normalizeProductBaseName(name: string): string {
  *      kept for any future row that needs a prefix rule
  *      normalizeProductBaseName's season-only stripping doesn't cover.
  */
-export function findInCatalog(
+export function findCatalogEntry(
   catalog: readonly ProductCatalogEntry[],
   { name, ndc }: { name?: string | null; ndc?: string | null }
-): ProductLookupResult | null {
+): ProductCatalogEntry | null {
   const normalizedNdc = normalizeNdc(ndc ?? null);
   if (normalizedNdc) {
     const byNdc = catalog.find((entry) => entry.match.ndc && normalizeNdc(entry.match.ndc) === normalizedNdc);
-    if (byNdc) return toResult(byNdc);
+    if (byNdc) return byNdc;
 
     // Alt-NDC fallback (see ProductCatalogMatch.altNdcs) — only reached
     // once every entry's own PRIMARY match.ndc has already missed, so a
@@ -413,13 +413,13 @@ export function findInCatalog(
     const byAltNdc = catalog.find((entry) =>
       entry.match.altNdcs?.some((alt) => normalizeNdc(alt) === normalizedNdc)
     );
-    if (byAltNdc) return toResult(byAltNdc);
+    if (byAltNdc) return byAltNdc;
   }
 
   const trimmedName = (name ?? "").trim().toLowerCase();
   if (trimmedName) {
     const byName = catalog.find((entry) => entry.match.name && entry.match.name.trim().toLowerCase() === trimmedName);
-    if (byName) return toResult(byName);
+    if (byName) return byName;
 
     const normalizedIncoming = normalizeProductBaseName(trimmedName);
     if (normalizedIncoming) {
@@ -432,16 +432,31 @@ export function findInCatalog(
           ? normalizedIncoming.startsWith(normalizedCatalog)
           : normalizedCatalog.startsWith(normalizedIncoming);
       });
-      if (byBaseName) return toResult(byBaseName);
+      if (byBaseName) return byBaseName;
     }
 
     const byPrefix = catalog.find(
       (entry) => entry.match.namePrefix && trimmedName.startsWith(entry.match.namePrefix.trim().toLowerCase())
     );
-    if (byPrefix) return toResult(byPrefix);
+    if (byPrefix) return byPrefix;
   }
 
   return null;
+}
+
+/**
+ * Same matching rules as findCatalogEntry, but returns the display-ready
+ * ProductLookupResult (dosesPerPackage/packageNdc/etc.) instead of the
+ * raw entry — split out so tests can exercise the matching rules against
+ * a fixture catalog without needing real rows in the (intentionally
+ * empty) seed table below.
+ */
+export function findInCatalog(
+  catalog: readonly ProductCatalogEntry[],
+  args: { name?: string | null; ndc?: string | null }
+): ProductLookupResult | null {
+  const entry = findCatalogEntry(catalog, args);
+  return entry ? toResult(entry) : null;
 }
 
 /**
@@ -452,6 +467,75 @@ export function findInCatalog(
  */
 export function lookupProduct(args: { name?: string | null; ndc?: string | null }): ProductLookupResult | null {
   return findInCatalog(CATALOG, args);
+}
+
+/**
+ * NDC-reconciliation guard (V-onhand-ndc-units review fix, reviewer
+ * repro: Abrysvo's 10-count row has ndc "00069-2465-10"; a report line
+ * carrying "00069246501" — the SEPARATE 1-count product's own NDC,
+ * listed as an altNdc on the 10-count entry purely so on-hand matching
+ * still sums it into the same product — was about to get "adopted" onto
+ * the 10-count row's vaccine.ndc, silently overwriting the correct NDC
+ * with a DIFFERENT real product's NDC). True when `candidateNdc` is a
+ * recognized ALT ndc (ProductCatalogMatch.altNdcs) for the SAME product
+ * `owner` resolves to — an altNdc is a known OLD/VARIANT identifier
+ * tolerated for matching, never the product's real/current NDC, so
+ * lib/on-hand/ndc-reconcile.ts must never treat one as a correction.
+ */
+export function isKnownAltNdc(
+  catalog: readonly ProductCatalogEntry[],
+  owner: { name?: string | null; ndc?: string | null },
+  candidateNdc: string | null | undefined
+): boolean {
+  const normalizedCandidate = normalizeNdc(candidateNdc ?? null);
+  if (!normalizedCandidate) return false;
+  const entry = findCatalogEntry(catalog, owner);
+  if (!entry) return false;
+  return (entry.match.altNdcs ?? []).some((alt) => normalizeNdc(alt) === normalizedCandidate);
+}
+
+/** Real-catalog-bound convenience wrapper for isKnownAltNdc, same split
+ * as lookupProduct/findInCatalog above. */
+export function isKnownAltNdcForProduct(
+  owner: { name?: string | null; ndc?: string | null },
+  candidateNdc: string | null | undefined
+): boolean {
+  return isKnownAltNdc(CATALOG, owner, candidateNdc);
+}
+
+/**
+ * NDC-reconciliation guard (V-onhand-ndc-units review fix): true when
+ * `candidateNdc` is the PRIMARY or an ALT ndc of some catalog entry
+ * OTHER than the one `owner` resolves to — i.e. this app's own static
+ * research already knows the NDC identifies a DIFFERENT product, so
+ * lib/on-hand/ndc-reconcile.ts must never adopt it onto `owner`'s
+ * vaccine.ndc even when nothing else in the current batch/DB catches
+ * the conflict.
+ */
+export function belongsToOtherCatalogProduct(
+  catalog: readonly ProductCatalogEntry[],
+  owner: { name?: string | null; ndc?: string | null },
+  candidateNdc: string | null | undefined
+): boolean {
+  const normalizedCandidate = normalizeNdc(candidateNdc ?? null);
+  if (!normalizedCandidate) return false;
+  const ownerEntry = findCatalogEntry(catalog, owner);
+  for (const entry of catalog) {
+    if (entry === ownerEntry) continue;
+    const primary = normalizeNdc(entry.match.ndc ?? null);
+    if (primary && primary === normalizedCandidate) return true;
+    if ((entry.match.altNdcs ?? []).some((alt) => normalizeNdc(alt) === normalizedCandidate)) return true;
+  }
+  return false;
+}
+
+/** Real-catalog-bound convenience wrapper for belongsToOtherCatalogProduct,
+ * same split as lookupProduct/findInCatalog above. */
+export function ndcBelongsToOtherProduct(
+  owner: { name?: string | null; ndc?: string | null },
+  candidateNdc: string | null | undefined
+): boolean {
+  return belongsToOtherCatalogProduct(CATALOG, owner, candidateNdc);
 }
 
 /**

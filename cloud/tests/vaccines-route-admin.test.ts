@@ -479,6 +479,35 @@ describe("POST /api/vaccines", () => {
     expect(getSupabaseServerClient).not.toHaveBeenCalled();
   });
 
+  // Review fix (V-onhand-ndc-units): deriveShortCode("!!!") strips every
+  // non-alphanumeric character and trims, producing "" — a symbols-only
+  // or non-Latin-only name has no letters/digits deriveShortCode can
+  // build a short_code out of at all, so this must 400 BEFORE ever
+  // touching Supabase, not insert a row with an empty short_code.
+  it("rejects a symbols-only name (derives an empty short_code) without touching Supabase", async () => {
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "!!!" }),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-Latin-only name (derives an empty short_code) without touching Supabase", async () => {
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "疫苗" }),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
   it("rejects a name over 120 characters", async () => {
     const response = await POST(
       authedRequest("/api/vaccines", {
