@@ -1,13 +1,16 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
 import { isLotRowDue, pickCurrentActiveLot, resolveLotRowHighlight } from "@/lib/lots-table";
-import { dedupeLotsByNumber, formatNdcDisplay } from "@/lib/lots-grouping";
+import { dedupeLotsByNumber, partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { buildProductViews, type ProductView } from "@/lib/product-view";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
+import { formatNdcDashed } from "@/lib/ndc";
+import { isoToMaskedDate } from "@/lib/date-mask";
+import { decideDateAutosave, decideLotNumberAutosave } from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
@@ -123,6 +126,10 @@ const styles = {
   menuItemButton: { display: "block", width: "100%", textAlign: "left" as const, padding: "0.2rem 0", fontSize: "13px", background: "none", border: "none", cursor: "pointer", color: "#b00020" },
 } as const;
 
+// V-T-ordering-lots-round4 (Will: "autosave anytime new typing occurs")
+// — how long a row's fields must sit idle before an autosave fires.
+const AUTOSAVE_DEBOUNCE_MS = 600;
+
 export default function LotsPage() {
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -134,12 +141,27 @@ export default function LotsPage() {
   const [vaccines, setVaccines] = useState<VaccineOption[]>([]);
   const [lots, setLots] = useState<LotRow[]>([]);
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
+  // The draft snapshot as last confirmed PERSISTED (loaded from the
+  // server, or a successful autosave) — compared against the live
+  // `drafts` entry by lib/lots-autosave.ts's decide* functions to tell
+  // "changed since last save" from "debounce refired with nothing new."
+  const [lastSaved, setLastSaved] = useState<Record<string, RowDraft>>({});
+  // Raw MM/DD/YYYY-in-progress display text per date field, from
+  // DateTextInput's onRawTextChange — needed for the autosave decision
+  // (decideDateAutosave), since draft.expiration/beyondUseDate only ever
+  // hold a complete ISO value or "", collapsing "still typing" and
+  // "8 digits but not a real date" into the same value.
+  const [rawDateText, setRawDateText] = useState<Record<string, { expiration: string; beyondUseDate: string }>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [beyondUseDateSupported, setBeyondUseDateSupported] = useState(true);
   const [budEnabledKeys, setBudEnabledKeys] = useState<Set<string>>(new Set());
 
-  const [savingKey, setSavingKey] = useState<string | null>(null);
+  // V-T-ordering-lots-round4: no more explicit Save button, so more than
+  // one row can be mid-autosave at once (e.g. tabbing quickly through
+  // several rows) — keyed by productKey rather than a single "the one row
+  // currently saving" string.
+  const [savingByKey, setSavingByKey] = useState<Record<string, boolean>>({});
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [rowSaved, setRowSaved] = useState<Record<string, boolean>>({});
 
@@ -147,6 +169,20 @@ export default function LotsPage() {
   const [activeErrorByKey, setActiveErrorByKey] = useState<Record<string, string>>({});
   const [budBusyKey, setBudBusyKey] = useState<string | null>(null);
   const [budErrorByKey, setBudErrorByKey] = useState<Record<string, string>>({});
+
+  // Autosave bookkeeping (refs, not state — purely internal timing/
+  // race-guard plumbing that should never itself trigger a re-render):
+  //  - autosaveTimersRef: the pending per-row debounce timer, if any.
+  //  - autosaveSeqRef: a per-row counter bumped on every autosave attempt
+  //    AND on Clear lot, so a response that lands after a newer attempt
+  //    (or after the row's lot was cleared) is recognized as stale and
+  //    ignored — "ignore stale responses, latest write wins."
+  //  - autosaveInFlightRef: true while a row's request is in flight, so a
+  //    debounce/blur that fires while one is already running re-arms the
+  //    timer instead of firing a second, racing request for the same row.
+  const autosaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const autosaveSeqRef = useRef<Record<string, number>>({});
+  const autosaveInFlightRef = useRef<Record<string, boolean>>({});
 
   // Clears this page's own fetched state on sign-out, whatever triggers
   // it (see top-nav.tsx's doc comment — sign-out now lives solely in
@@ -156,10 +192,19 @@ export default function LotsPage() {
     setVaccines([]);
     setLots([]);
     setDrafts({});
+    setLastSaved({});
+    setRawDateText({});
     setLoadError(null);
     setActiveErrorByKey({});
     setBudErrorByKey({});
     setBudEnabledKeys(new Set());
+    setSavingByKey({});
+    setRowErrors({});
+    setRowSaved({});
+    for (const timer of Object.values(autosaveTimersRef.current)) clearTimeout(timer);
+    autosaveTimersRef.current = {};
+    autosaveSeqRef.current = {};
+    autosaveInFlightRef.current = {};
   }
 
   useEffect(() => {
@@ -207,33 +252,17 @@ export default function LotsPage() {
    * derived from. */
   const productViews = useMemo(() => buildProductViews(vaccines), [vaccines]);
 
-  /** Groups product views into COVID/Flu/Other sections (same order
-   * lib/ordering-group.ts's Ordering-tab display already uses), each
-   * with active rows (alphabetical) first and inactive rows
-   * (alphabetical, greyed) at the bottom — V-T-ordering-lots-round3:
-   * "Inactive products still listed under their group but greyed ...
-   * greyed rows at the bottom of each group." */
-  const groupedProducts = useMemo(() => {
-    const byGroup = new Map<string, ProductView[]>();
-    for (const view of productViews) {
-      const list = byGroup.get(view.group);
-      if (list) list.push(view);
-      else byGroup.set(view.group, [view]);
-    }
-    const order = ORDERING_GROUP_DISPLAY_ORDER.filter((group) => byGroup.has(group));
-    for (const group of byGroup.keys()) {
-      if (!order.includes(group)) order.push(group);
-    }
-    const byName = (a: ProductView, b: ProductView) => a.displayName.localeCompare(b.displayName);
-    return order.map((group) => {
-      const items = byGroup.get(group) ?? [];
-      return {
-        group,
-        active: items.filter((v) => v.active).sort(byName),
-        inactive: items.filter((v) => !v.active).sort(byName),
-      };
-    });
-  }, [productViews]);
+  /** Groups product views into COVID/Flu/Other ACTIVE sections (same
+   * order lib/ordering-group.ts's Ordering-tab display already uses),
+   * plus ONE flat, alphabetized list of every INACTIVE product regardless
+   * of group — V-T-ordering-lots-round4, Will: "Filter inactives to the
+   * bottom of the page" (replacing the previous round's per-group
+   * inactive placement). See lib/lots-grouping.ts's
+   * partitionProductsForLotsPage for the actual (unit-tested) logic. */
+  const { sections: groupedActiveProducts, inactive: inactiveProducts } = useMemo(
+    () => partitionProductsForLotsPage(productViews, ORDERING_GROUP_DISPLAY_ORDER),
+    [productViews]
+  );
 
   const loadAll = useCallback(async (token: string) => {
     setLoading(true);
@@ -266,10 +295,22 @@ export default function LotsPage() {
       );
       const loadedLots: LotRow[] = lotsData.lots ?? [];
       const loadedViews = buildProductViews(loadedVaccines);
+      const loadedDrafts = draftsFromProducts(loadedViews, loadedLots);
 
       setVaccines(loadedVaccines);
       setLots(loadedLots);
-      setDrafts(draftsFromProducts(loadedViews, loadedLots));
+      setDrafts(loadedDrafts);
+      // The freshly-loaded drafts ARE the last-saved snapshot (nothing's
+      // been typed yet) — autosave compares future edits against this.
+      setLastSaved(loadedDrafts);
+      setRawDateText(
+        Object.fromEntries(
+          Object.entries(loadedDrafts).map(([key, draft]) => [
+            key,
+            { expiration: isoToMaskedDate(draft.expiration), beyondUseDate: isoToMaskedDate(draft.beyondUseDate) },
+          ])
+        )
+      );
       setBeyondUseDateSupported(lotsData.beyondUseDateSupported !== false);
 
       // BUD enablement is a secondary setting — a failure here doesn't
@@ -322,36 +363,106 @@ export default function LotsPage() {
     setRowSaved((prev) => ({ ...prev, [key]: false }));
   }
 
+  function clearAutosaveTimer(key: string) {
+    const timer = autosaveTimersRef.current[key];
+    if (timer) {
+      clearTimeout(timer);
+      delete autosaveTimersRef.current[key];
+    }
+  }
+
+  /** Resets/restarts a row's ~600ms-after-last-keystroke autosave timer —
+   * called from every field's onChange, so typing in ANY of the row's
+   * fields (lot #, expiration, beyond-use date) pushes the same shared
+   * per-row debounce back out, and runAutosave (below) re-evaluates every
+   * field once it settles. */
+  function scheduleAutosave(view: ProductView) {
+    clearAutosaveTimer(view.productKey);
+    autosaveTimersRef.current[view.productKey] = setTimeout(() => {
+      delete autosaveTimersRef.current[view.productKey];
+      void runAutosave(view);
+    }, AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  /** Flushes a row's pending debounced save immediately — wired to each
+   * field's onBlur (Will's brief: "debounce ~600ms after the last
+   * keystroke, also flush on blur"). */
+  function flushAutosaveNow(view: ProductView) {
+    clearAutosaveTimer(view.productKey);
+    void runAutosave(view);
+  }
+
   /**
-   * Saves a product row's lot fields across EVERY dose vaccine_id in the
-   * group, server-side (POST/PATCH /api/lots — see that route's doc
-   * comment). No current lot yet (matchLotNumber null) creates one on
-   * every vaccine_id at once; an existing lot is edited by matching its
-   * OLD lot_number (draft.matchLotNumber, from before this edit) on
-   * every vaccine_id, so a lot_number rename still finds the right row
-   * on each dose.
+   * Autosave orchestrator for one product row (V-T-ordering-lots-round4,
+   * Will: "make it autosave anytime new typing occurs, with date
+   * validation happening on the date fields prior to saving"). Runs
+   * lib/lots-autosave.ts's pure decide* functions against the row's
+   * current draft vs. its last-persisted snapshot (`lastSaved`) to decide
+   * whether there's an eligible, changed field to send — a lot number
+   * that's non-empty and different, or a date field that's a complete,
+   * valid calendar date and different. `draft.lotNumber`/`draft.expiration`
+   * must BOTH currently hold a usable value for the request to actually
+   * fire (an incomplete/invalid date collapses draft.expiration to "" via
+   * DateTextInput's own onChange contract, the same gate the old explicit
+   * Save button relied on) — otherwise this is a silent no-op, not an
+   * error, since the user may simply still be typing the other field.
+   *
+   * Reuses the SAME POST (no lot yet) / PATCH (upsert against
+   * matchLotNumber) fan-out calls the old Save button used. At most one
+   * request is in flight per row at a time (autosaveInFlightRef) — a
+   * debounce/blur firing while one is already running just re-arms the
+   * timer instead of racing a second request for the same row — and a
+   * per-row sequence number (autosaveSeqRef) makes a genuinely stale
+   * response (e.g. the row's lot was cleared while this request was in
+   * flight) a no-op instead of clobbering newer state: "ignore stale
+   * responses, latest write wins."
    */
-  async function handleSaveRow(view: ProductView) {
+  async function runAutosave(view: ProductView) {
     if (!session) return;
-    const draft = drafts[view.productKey];
-    if (!draft || !draft.lotNumber.trim() || !draft.expiration) {
-      setRowErrors((prev) => ({ ...prev, [view.productKey]: "Lot number and expiration are required." }));
+    const key = view.productKey;
+
+    if (autosaveInFlightRef.current[key]) {
+      scheduleAutosave(view);
       return;
     }
 
-    setSavingKey(view.productKey);
-    setRowErrors((prev) => ({ ...prev, [view.productKey]: "" }));
-    setRowSaved((prev) => ({ ...prev, [view.productKey]: false }));
+    const draft = drafts[key];
+    const saved = lastSaved[key];
+    if (!draft || !saved) return;
+
+    const rawText = rawDateText[key] ?? {
+      expiration: isoToMaskedDate(saved.expiration),
+      beyondUseDate: isoToMaskedDate(saved.beyondUseDate),
+    };
+
+    const lotDecision = decideLotNumberAutosave(draft.lotNumber, saved.lotNumber);
+    const expirationDecision = decideDateAutosave(rawText.expiration, isoToMaskedDate(saved.expiration));
+    const budEnabledForThisProduct = budEnabledKeys.has(key);
+    const beyondUseDecision = budEnabledForThisProduct
+      ? decideDateAutosave(rawText.beyondUseDate, isoToMaskedDate(saved.beyondUseDate))
+      : "unchanged";
+
+    const hasEligibleChange = lotDecision === "save" || expirationDecision === "save" || beyondUseDecision === "save";
+    const hasRequiredFields = draft.lotNumber.trim().length > 0 && draft.expiration !== "";
+    if (!hasEligibleChange || !hasRequiredFields) return;
+
+    const seq = (autosaveSeqRef.current[key] ?? 0) + 1;
+    autosaveSeqRef.current[key] = seq;
+    autosaveInFlightRef.current[key] = true;
+
+    setSavingByKey((prev) => ({ ...prev, [key]: true }));
+    setRowErrors((prev) => ({ ...prev, [key]: "" }));
+    setRowSaved((prev) => ({ ...prev, [key]: false }));
     try {
       const lotNumber = draft.lotNumber.trim();
       const response = await fetch("/api/lots", {
-        method: draft.matchLotNumber ? "PATCH" : "POST",
+        method: saved.matchLotNumber ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
         body: JSON.stringify(
-          draft.matchLotNumber
+          saved.matchLotNumber
             ? {
                 vaccineIds: view.vaccineIds,
-                matchLotNumber: draft.matchLotNumber,
+                matchLotNumber: saved.matchLotNumber,
                 lot_number: lotNumber,
                 expiration: draft.expiration,
                 beyond_use_date: draft.beyondUseDate || null,
@@ -365,8 +476,11 @@ export default function LotsPage() {
         ),
       });
       const data = await response.json();
+
+      if (autosaveSeqRef.current[key] !== seq) return; // superseded — ignore this stale response
+
       if (!response.ok) {
-        setRowErrors((prev) => ({ ...prev, [view.productKey]: data.error ?? "Failed to save lot." }));
+        setRowErrors((prev) => ({ ...prev, [key]: data.error ?? "Failed to save lot." }));
         return;
       }
 
@@ -374,40 +488,55 @@ export default function LotsPage() {
 
       const savedLots: LotRow[] = data.lots ?? [];
       const groupVaccineIds = new Set(view.vaccineIds);
-      const oldLotNumber = draft.matchLotNumber;
+      const oldLotNumber = saved.matchLotNumber;
       setLots((prev) => {
         const withoutOld = oldLotNumber
           ? prev.filter((l) => !(groupVaccineIds.has(l.vaccine_id) && l.lot_number === oldLotNumber))
           : prev;
         return [...withoutOld, ...savedLots];
       });
-      setDrafts((prev) => ({
-        ...prev,
-        [view.productKey]: {
-          matchLotNumber: lotNumber,
-          lotNumber,
-          expiration: draft.expiration,
-          beyondUseDate: draft.beyondUseDate,
-        },
-      }));
-      setRowSaved((prev) => ({ ...prev, [view.productKey]: true }));
+
+      const nextSaved: RowDraft = {
+        matchLotNumber: lotNumber,
+        lotNumber,
+        expiration: draft.expiration,
+        beyondUseDate: draft.beyondUseDate,
+      };
+      setLastSaved((prev) => ({ ...prev, [key]: nextSaved }));
+      // Only update matchLotNumber on the live draft — never overwrite
+      // lotNumber/expiration/beyondUseDate here, in case the user kept
+      // typing further changes while this request was in flight.
+      setDrafts((prev) => ({ ...prev, [key]: { ...prev[key], matchLotNumber: lotNumber } }));
+      setRowSaved((prev) => ({ ...prev, [key]: true }));
     } catch (err) {
-      setRowErrors((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to save lot." }));
+      if (autosaveSeqRef.current[key] !== seq) return;
+      setRowErrors((prev) => ({ ...prev, [key]: err instanceof Error ? err.message : "Failed to save lot." }));
     } finally {
-      setSavingKey(null);
+      autosaveInFlightRef.current[key] = false;
+      if (autosaveSeqRef.current[key] === seq) {
+        setSavingByKey((prev) => ({ ...prev, [key]: false }));
+      }
     }
   }
 
-  /** Deletes a product row's current lot across every dose vaccine_id at
-   * once (DELETE /api/lots, vaccineIds + lot_number). Only ever called
-   * when draft.matchLotNumber is set (button is disabled otherwise) —
-   * nothing to delete for a product with no lot yet. */
+  /** Clears a product row's current lot across every dose vaccine_id at
+   * once (DELETE /api/lots, vaccineIds + lot_number) — the ⚙ menu's
+   * "Clear lot" action (renamed from "Delete lot", V-T-ordering-lots-
+   * round4 — label only, behavior unchanged). Only ever called when
+   * draft.matchLotNumber is set (button is disabled otherwise) — nothing
+   * to clear for a product with no lot yet. */
   async function handleDeleteRow(view: ProductView) {
     if (!session) return;
     const draft = drafts[view.productKey];
     if (!draft?.matchLotNumber) return;
 
-    setSavingKey(view.productKey);
+    // Cancel any pending autosave for this row and bump its sequence
+    // number so an autosave response already in flight can't re-create
+    // the lot this Clear is about to remove.
+    clearAutosaveTimer(view.productKey);
+    autosaveSeqRef.current[view.productKey] = (autosaveSeqRef.current[view.productKey] ?? 0) + 1;
+
+    setSavingByKey((prev) => ({ ...prev, [view.productKey]: true }));
     setRowErrors((prev) => ({ ...prev, [view.productKey]: "" }));
     setRowSaved((prev) => ({ ...prev, [view.productKey]: false }));
     try {
@@ -418,28 +547,28 @@ export default function LotsPage() {
       });
       const data = await response.json();
       if (!response.ok) {
-        setRowErrors((prev) => ({ ...prev, [view.productKey]: data.error ?? "Failed to delete lot." }));
+        setRowErrors((prev) => ({ ...prev, [view.productKey]: data.error ?? "Failed to clear lot." }));
         return;
       }
 
       const groupVaccineIds = new Set(view.vaccineIds);
       const deletedLotNumber = draft.matchLotNumber;
       setLots((prev) => prev.filter((l) => !(groupVaccineIds.has(l.vaccine_id) && l.lot_number === deletedLotNumber)));
-      setDrafts((prev) => ({
-        ...prev,
-        [view.productKey]: { matchLotNumber: null, lotNumber: "", expiration: "", beyondUseDate: "" },
-      }));
+      const cleared: RowDraft = { matchLotNumber: null, lotNumber: "", expiration: "", beyondUseDate: "" };
+      setDrafts((prev) => ({ ...prev, [view.productKey]: cleared }));
+      setLastSaved((prev) => ({ ...prev, [view.productKey]: cleared }));
+      setRawDateText((prev) => ({ ...prev, [view.productKey]: { expiration: "", beyondUseDate: "" } }));
     } catch (err) {
-      setRowErrors((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to delete lot." }));
+      setRowErrors((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to clear lot." }));
     } finally {
-      setSavingKey(null);
+      setSavingByKey((prev) => ({ ...prev, [view.productKey]: false }));
     }
   }
 
   /** PATCH /api/vaccines/{id} {active} on EVERY dose vaccine_id in the
    * product — looped client-side (same per-vaccine endpoint the desktop
    * Active-vaccines tab already uses). Optimistic local update with
-   * revert-on-failure, matching handleSaveRow's own busy/error pattern. */
+   * revert-on-failure, matching runAutosave's own busy/error pattern. */
   async function handleToggleActive(view: ProductView, nextActive: boolean) {
     if (!session) return;
     setActiveBusyKey(view.productKey);
@@ -526,7 +655,7 @@ export default function LotsPage() {
     );
     const rowError = rowErrors[view.productKey];
     const saved = rowSaved[view.productKey];
-    const saving = savingKey === view.productKey;
+    const saving = !!savingByKey[view.productKey];
     const activeError = activeErrorByKey[view.productKey];
     const activeBusy = activeBusyKey === view.productKey;
     const budError = budErrorByKey[view.productKey];
@@ -542,7 +671,7 @@ export default function LotsPage() {
     return (
       <tr key={view.productKey} style={rowStyle}>
         <td style={styles.td}>{view.displayName}</td>
-        <td style={styles.td}>{formatNdcDisplay(view.ndc)}</td>
+        <td style={styles.td}>{formatNdcDashed(view.ndc) || "—"}</td>
         <td style={styles.tdRight}>{view.packageSize ?? "—"}</td>
         <td style={styles.td}>
           <input
@@ -550,14 +679,28 @@ export default function LotsPage() {
             type="text"
             aria-label={`${view.displayName} lot number`}
             value={draft.lotNumber}
-            onChange={(e) => updateDraft(view.productKey, { lotNumber: e.target.value })}
+            onChange={(e) => {
+              updateDraft(view.productKey, { lotNumber: e.target.value });
+              scheduleAutosave(view);
+            }}
+            onBlur={() => flushAutosaveNow(view)}
           />
         </td>
         <td style={styles.td}>
           <DateTextInput
             value={draft.expiration}
             ariaLabel={`${view.displayName} expiration`}
-            onChange={(value) => updateDraft(view.productKey, { expiration: value })}
+            onChange={(value) => {
+              updateDraft(view.productKey, { expiration: value });
+              scheduleAutosave(view);
+            }}
+            onRawTextChange={(text) =>
+              setRawDateText((prev) => ({
+                ...prev,
+                [view.productKey]: { ...prev[view.productKey], expiration: text },
+              }))
+            }
+            onBlur={() => flushAutosaveNow(view)}
             style={styles.input}
           />
         </td>
@@ -567,7 +710,17 @@ export default function LotsPage() {
               <DateTextInput
                 value={draft.beyondUseDate}
                 ariaLabel={`${view.displayName} beyond-use date`}
-                onChange={(value) => updateDraft(view.productKey, { beyondUseDate: value })}
+                onChange={(value) => {
+                  updateDraft(view.productKey, { beyondUseDate: value });
+                  scheduleAutosave(view);
+                }}
+                onRawTextChange={(text) =>
+                  setRawDateText((prev) => ({
+                    ...prev,
+                    [view.productKey]: { ...prev[view.productKey], beyondUseDate: text },
+                  }))
+                }
+                onBlur={() => flushAutosaveNow(view)}
                 style={styles.input}
               />
             ) : (
@@ -576,9 +729,6 @@ export default function LotsPage() {
           </td>
         )}
         <td style={styles.td}>
-          <button style={styles.button} type="button" onClick={() => void handleSaveRow(view)} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
-          </button>{" "}
           <details style={styles.menuDetails}>
             <summary style={styles.menuSummary} aria-label={`${view.displayName} settings`}>
               ⚙
@@ -612,14 +762,15 @@ export default function LotsPage() {
                 onClick={() => void handleDeleteRow(view)}
                 disabled={saving || !draft.matchLotNumber}
               >
-                Delete lot
+                Clear lot
               </button>
               {activeError && <div style={styles.error}>{activeError}</div>}
               {budError && <div style={styles.error}>{budError}</div>}
             </div>
-          </details>
+          </details>{" "}
+          {saving && <span style={styles.muted}>Saving…</span>}
           {rowError && <div style={styles.error}>{rowError}</div>}
-          {saved && !rowError && <div style={styles.success}>Saved.</div>}
+          {saved && !rowError && !saving && <div style={styles.success}>Saved.</div>}
         </td>
       </tr>
     );
@@ -648,7 +799,7 @@ export default function LotsPage() {
           </tr>
         </thead>
         <tbody>
-          {groupedProducts.map(({ group, active, inactive }) => (
+          {groupedActiveProducts.map(({ group, products }) => (
             <Fragment key={group}>
               <tr style={styles.groupRow}>
                 <td style={styles.td}>{group}</td>
@@ -659,10 +810,26 @@ export default function LotsPage() {
                 {beyondUseDateSupported && <td style={styles.td}>—</td>}
                 <td style={styles.td}></td>
               </tr>
-              {active.map(renderProductRow)}
-              {inactive.map(renderProductRow)}
+              {products.map(renderProductRow)}
             </Fragment>
           ))}
+          {/* V-T-ordering-lots-round4: ONE Inactive section for the whole
+              page, after every active group — not one inactive sub-list
+              per group like the previous round. */}
+          {inactiveProducts.length > 0 && (
+            <Fragment key="inactive">
+              <tr style={styles.groupRow}>
+                <td style={styles.td}>Inactive</td>
+                <td style={styles.td}>—</td>
+                <td style={styles.tdRight}>—</td>
+                <td style={styles.td}>—</td>
+                <td style={styles.td}>—</td>
+                {beyondUseDateSupported && <td style={styles.td}>—</td>}
+                <td style={styles.td}></td>
+              </tr>
+              {inactiveProducts.map(renderProductRow)}
+            </Fragment>
+          )}
         </tbody>
       </table>
     </main>

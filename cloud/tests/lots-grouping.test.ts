@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { dedupeLotsByNumber, formatNdcDisplay, groupVaccinesIntoProducts } from "@/lib/lots-grouping";
+import {
+  dedupeLotsByNumber,
+  formatNdcDisplay,
+  groupVaccinesIntoProducts,
+  partitionProductsForLotsPage,
+} from "@/lib/lots-grouping";
 
 describe("groupVaccinesIntoProducts", () => {
   it("groups same-NDC dose rows into one product (Engerix 20, three doses)", () => {
@@ -141,5 +146,64 @@ describe("dedupeLotsByNumber", () => {
 
   it("returns an empty array for no lots", () => {
     expect(dedupeLotsByNumber([])).toEqual([]);
+  });
+});
+
+// --- V-T-ordering-lots-round4 (Will: "Filter inactives to the bottom of
+// the page" — ONE inactive section for the whole page, not per group) ---
+describe("partitionProductsForLotsPage", () => {
+  const GROUP_ORDER = ["COVID", "Flu", "Other"];
+  type Fixture = { key: string; group: string; active: boolean; displayName: string };
+
+  const PRODUCTS: Fixture[] = [
+    { key: "flu-b", group: "Flu", active: true, displayName: "Zebra Flu" },
+    { key: "flu-a", group: "Flu", active: true, displayName: "Afluria" },
+    { key: "flu-inactive", group: "Flu", active: false, displayName: "Old Flu Shot" },
+    { key: "covid-a", group: "COVID", active: true, displayName: "Comirnaty" },
+    { key: "covid-inactive", group: "COVID", active: false, displayName: "Ancient COVID Shot" },
+    { key: "other-a", group: "Other", active: true, displayName: "Shingrix" },
+  ];
+
+  it("groups ACTIVE products by group, in groupOrder, alphabetical within each group", () => {
+    const { sections } = partitionProductsForLotsPage(PRODUCTS, GROUP_ORDER);
+    expect(sections.map((s) => s.group)).toEqual(["COVID", "Flu", "Other"]);
+    expect(sections.find((s) => s.group === "Flu")?.products.map((p) => p.key)).toEqual(["flu-a", "flu-b"]);
+    expect(sections.find((s) => s.group === "COVID")?.products.map((p) => p.key)).toEqual(["covid-a"]);
+    expect(sections.find((s) => s.group === "Other")?.products.map((p) => p.key)).toEqual(["other-a"]);
+  });
+
+  it("collects every inactive product from every group into ONE flat, alphabetically-sorted list", () => {
+    const { inactive } = partitionProductsForLotsPage(PRODUCTS, GROUP_ORDER);
+    expect(inactive.map((p) => p.key)).toEqual(["covid-inactive", "flu-inactive"]);
+  });
+
+  it("never includes an inactive product inside a group's active `sections` list", () => {
+    const { sections } = partitionProductsForLotsPage(PRODUCTS, GROUP_ORDER);
+    const allActiveKeys = sections.flatMap((s) => s.products.map((p) => p.key));
+    expect(allActiveKeys).not.toContain("flu-inactive");
+    expect(allActiveKeys).not.toContain("covid-inactive");
+  });
+
+  it("omits a group with no ACTIVE products from `sections` (its inactive members still land in `inactive`)", () => {
+    const onlyInactiveGroup: Fixture[] = [
+      { key: "other-inactive", group: "Other", active: false, displayName: "Retired Other" },
+      { key: "flu-a", group: "Flu", active: true, displayName: "Afluria" },
+    ];
+    const { sections, inactive } = partitionProductsForLotsPage(onlyInactiveGroup, GROUP_ORDER);
+    expect(sections.map((s) => s.group)).toEqual(["Flu"]);
+    expect(inactive.map((p) => p.key)).toEqual(["other-inactive"]);
+  });
+
+  it("appends a group name not present in groupOrder at the end (defensive)", () => {
+    const withUnknownGroup: Fixture[] = [
+      { key: "mystery", group: "Mystery", active: true, displayName: "Mystery Shot" },
+      { key: "flu-a", group: "Flu", active: true, displayName: "Afluria" },
+    ];
+    const { sections } = partitionProductsForLotsPage(withUnknownGroup, GROUP_ORDER);
+    expect(sections.map((s) => s.group)).toEqual(["Flu", "Mystery"]);
+  });
+
+  it("returns empty sections and inactive for an empty input", () => {
+    expect(partitionProductsForLotsPage([], GROUP_ORDER)).toEqual({ sections: [], inactive: [] });
   });
 });

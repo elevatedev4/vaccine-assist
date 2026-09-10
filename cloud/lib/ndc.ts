@@ -47,3 +47,32 @@ export function formatNdcForStorage(raw: string): string | null {
   const eleven = digits.length === 10 ? `0${digits}` : digits;
   return `${eleven.slice(0, 5)}-${eleven.slice(5, 9)}-${eleven.slice(9)}`;
 }
+
+/**
+ * Display-formats an NDC as "XXXXX-XXXX-XX" (5-4-2, dashed) — used for
+ * EVERY NDC shown on the Ordering and Lots pages (V-T-ordering-lots-
+ * round4, Will: "Make the NDCs follow this format: XXXXX-XXXX-XX") so the
+ * same product's NDC renders identically on both screens. Digits are
+ * extracted from whatever form the value arrives in (already-dashed or
+ * not) — a 10-digit result is left-padded with one leading zero first,
+ * the same documented judgment call formatNdcForStorage above makes (not
+ * a guaranteed-correct FDA NDC-11 conversion, just the common labeler-
+ * code-is-short case). Anything else (not 10 or 11 digits once
+ * non-digits are stripped) is returned UNCHANGED rather than guessed at —
+ * same "don't silently mis-segment" posture as lib/lots-grouping.ts's
+ * formatNdcDisplay. Null/undefined -> "" (callers that want a "—"
+ * placeholder for a missing NDC add that themselves, same as they already
+ * do for formatNdcDisplay).
+ */
+export function formatNdcDashed(value: string | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 11) {
+    return `${digits.slice(0, 5)}-${digits.slice(5, 9)}-${digits.slice(9)}`;
+  }
+  if (digits.length === 10) {
+    const eleven = `0${digits}`;
+    return `${eleven.slice(0, 5)}-${eleven.slice(5, 9)}-${eleven.slice(9)}`;
+  }
+  return value;
+}

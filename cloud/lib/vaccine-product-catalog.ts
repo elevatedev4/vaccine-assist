@@ -49,6 +49,16 @@ export type ProductCatalogMatch = {
   /** Case-insensitive startsWith fallback, tried after an exact `name`
    * miss — for a catalog name expected to change/version over time. */
   namePrefix?: string;
+  /** Additional NDCs (V-T-ordering-lots-round4, Abrysvo repack: the
+   * 10-count product's real on-file NDC changed, but on-hand (Pioneer
+   * BOH) lines carrying the OLD/retired NDC, or the separate 1-count
+   * product's own NDC, must still resolve to this row so they keep
+   * summing into the same product rather than going unmatched. Checked
+   * ONLY as a fallback, after every entry's own primary `match.ndc` has
+   * already missed (see findInCatalog below) — so a DIFFERENT catalog
+   * row whose primary `match.ndc` equals one of these values still wins
+   * that exact match first. */
+  altNdcs?: string[];
 };
 
 export type ProductCatalogEntry = {
@@ -77,11 +87,35 @@ export type ProductLookupResult = {
 // ---------------------------------------------------------------------
 const CATALOG: ProductCatalogEntry[] = [
   {
-    match: { ndc: "00069034401", name: "Abrysvo" },
+    // Repacked to the 10-count NDC (V-T-ordering-lots-round4, Will:
+    // "Abrysvo should be NDC 00069246510 and 10 count"). altNdcs keeps the
+    // OLD 1-count NDC ("00069034401", pre-repack) and the SEPARATE
+    // still-stocked 1-count product's own NDC ("00069246501", see the
+    // dedicated inactive row below) recognized as Abrysvo for on-hand
+    // (Pioneer BOH) matching, so those lines still sum in here — see
+    // ProductCatalogMatch.altNdcs's own doc comment for the matching
+    // order (primary match.ndc, on ANY row, always wins first).
+    match: { ndc: "00069246510", name: "Abrysvo", altNdcs: ["00069034401", "00069246501"] },
     productName: "Abrysvo",
     ageRange: "60+; pregnancy 32-36 wk",
+    dosesPerPackage: 10,
+    packageNdc: "00069-2465-10",
+    source: "pfizermedical.com/abrysvo/storage-handling",
+  },
+  {
+    // The 1-count Abrysvo product (V-T-ordering-lots-round4, Will: "There
+    // is also 00069246501 1 count (mark as inactive)") — a SEPARATE
+    // catalog row, not folded into the 10-count entry above, because the
+    // corresponding `vaccine` DB row is its own inactive row (created via
+    // POST /api/vaccines after this merge), not a dose of the same
+    // product. Its NDC is ALSO listed in the 10-count entry's altNdcs
+    // above so an on-hand line carrying it still sums into the active
+    // Abrysvo bucket even before/without that DB row existing.
+    match: { ndc: "00069246501" },
+    productName: "Abrysvo (1 ct)",
+    ageRange: "60+; pregnancy 32-36 wk",
     dosesPerPackage: 1,
-    packageNdc: "00069-0344-01",
+    packageNdc: "00069-2465-01",
     source: "pfizermedical.com/abrysvo/storage-handling",
   },
   {
@@ -371,6 +405,15 @@ export function findInCatalog(
   if (normalizedNdc) {
     const byNdc = catalog.find((entry) => entry.match.ndc && normalizeNdc(entry.match.ndc) === normalizedNdc);
     if (byNdc) return toResult(byNdc);
+
+    // Alt-NDC fallback (see ProductCatalogMatch.altNdcs) — only reached
+    // once every entry's own PRIMARY match.ndc has already missed, so a
+    // different row's exact match.ndc always takes precedence over
+    // another row's altNdcs.
+    const byAltNdc = catalog.find((entry) =>
+      entry.match.altNdcs?.some((alt) => normalizeNdc(alt) === normalizedNdc)
+    );
+    if (byAltNdc) return toResult(byAltNdc);
   }
 
   const trimmedName = (name ?? "").trim().toLowerCase();

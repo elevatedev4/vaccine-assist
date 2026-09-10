@@ -8,6 +8,7 @@ import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 import { computeOrderPackages } from "@/lib/vaccine-product-catalog";
 import { deriveProductViewFields } from "@/lib/product-view";
 import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
+import { formatNdcDashed } from "@/lib/ndc";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -741,10 +742,10 @@ export default function OrderingPage() {
             <th style={styles.th}>Vaccine</th>
             <th style={styles.th}>NDC</th>
             <th style={styles.thRight}>Pkg size</th>
-            <th style={styles.thRight}>Upcoming 7d</th>
-            <th style={styles.th}>On hand</th>
-            <th style={styles.thRight}>Recommended target</th>
-            <th style={styles.th}>Your target</th>
+            <th style={styles.thRight}>7d</th>
+            <th style={styles.thRight}>Rec. target</th>
+            <th style={styles.th}>Target</th>
+            <th style={styles.th}>BOH</th>
             <th style={styles.thRight}>Order (doses)</th>
             <th style={styles.thRight}>Order (pkg)</th>
           </tr>
@@ -765,19 +766,18 @@ export default function OrderingPage() {
                   <td style={styles.td}>—</td>
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>{totals.upcoming7d}</td>
-                  <td style={styles.td}>{totals.onHand}</td>
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.td}>—</td>
+                  <td style={styles.td}>{totals.onHand}</td>
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>—</td>
                 </tr>
                 {enrichedRows.map((row) => (
                   <tr key={row.key}>
                     <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
-                    <td style={styles.td}>{row.displayNdc ?? "—"}</td>
+                    <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                     <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
-                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>
                     <td style={styles.td}>
                       <TargetInput
@@ -787,6 +787,7 @@ export default function OrderingPage() {
                         onSave={(value) => (row.ndc ? saveTarget("ndc", row.ndc, value) : Promise.resolve(false))}
                       />
                     </td>
+                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.order}</td>
                     <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
                   </tr>
@@ -809,9 +810,9 @@ export default function OrderingPage() {
                   <th style={styles.th}>Vaccine</th>
                   <th style={styles.th}>NDC</th>
                   <th style={styles.thRight}>Pkg size</th>
-                  <th style={styles.thRight}>Upcoming 7d</th>
-                  <th style={styles.th}>On hand</th>
-                  <th style={styles.thRight}>Recommended target</th>
+                  <th style={styles.thRight}>7d</th>
+                  <th style={styles.thRight}>Rec. target</th>
+                  <th style={styles.th}>BOH</th>
                   <th style={styles.thRight}>Order (doses)</th>
                   <th style={styles.thRight}>Order (pkg)</th>
                 </tr>
@@ -820,11 +821,11 @@ export default function OrderingPage() {
                 {inactiveRows.map(enrichRow).map((row) => (
                   <tr key={row.key}>
                     <td style={styles.td}>{row.displayName}</td>
-                    <td style={styles.td}>{row.displayNdc ?? "—"}</td>
+                    <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                     <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
-                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>
+                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                     <td style={styles.tdRight}>{row.order}</td>
                     <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
                   </tr>

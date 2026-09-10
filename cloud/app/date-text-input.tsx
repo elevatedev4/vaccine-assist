@@ -18,21 +18,37 @@ import { digitsToIso, isoToMaskedDate, maskDateInput, normalizePastedDateText, o
  *
  * `onChange` fires on every keystroke with the current ISO value, or ""
  * while the field is empty/incomplete/invalid — callers that require a
- * complete date (e.g. the /lots Save button) already guard on a falsy
+ * complete date (e.g. the /lots autosave gate) already guard on a falsy
  * value the same way they did for the old type="date" input. A red
  * border (and aria-invalid) shows once the field has 8 digits typed but
  * they don't form a real calendar date (e.g. "02/30/2026") — Will's
  * brief: "invalid dates show a red border and don't save."
+ *
+ * `onRawTextChange` (V-T-ordering-lots-round4, optional, additive) fires
+ * alongside `onChange` with the field's raw masked "MM/DD/YYYY"-in-
+ * progress display text, NOT collapsed to "" for an incomplete/invalid
+ * date the way `onChange`'s ISO value is — the /lots autosave wiring
+ * needs this raw text to distinguish "still typing" from "8 digits but
+ * not a real date" via lib/lots-autosave.ts's decideDateAutosave, which
+ * `onChange` alone can't tell apart (both collapse to "").
+ *
+ * `onBlur` (optional, additive) fires on the underlying input's blur —
+ * used by /lots' autosave to flush a pending debounced save immediately
+ * when the field loses focus, same as every other autosaving field there.
  */
 export default function DateTextInput({
   value,
   onChange,
+  onRawTextChange,
+  onBlur,
   ariaLabel,
   disabled,
   style,
 }: {
   value: string;
   onChange: (isoOrEmpty: string) => void;
+  onRawTextChange?: (text: string) => void;
+  onBlur?: () => void;
   ariaLabel?: string;
   disabled?: boolean;
   style?: CSSProperties;
@@ -45,6 +61,7 @@ export default function DateTextInput({
 
   function commit(nextText: string) {
     setText(nextText);
+    onRawTextChange?.(nextText);
     const digits = onlyDigits(nextText);
     if (digits.length === 0) {
       onChange("");
@@ -76,6 +93,7 @@ export default function DateTextInput({
       value={text}
       onChange={handleChange}
       onPaste={handlePaste}
+      onBlur={onBlur}
       style={{ ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
     />
   );

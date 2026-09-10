@@ -185,3 +185,60 @@ export function dedupeLotsByNumber<T extends LotNumberLike>(lots: readonly T[]):
   }
   return Array.from(seen.values());
 }
+
+export type LotsPageSection<T> = { group: string; products: T[] };
+
+export type GroupedProductLike = { group: string; active: boolean; displayName: string };
+
+/**
+ * Splits/groups a flat list of already-computed product views for the
+ * /lots page's display order (V-T-ordering-lots-round4, Will: "Filter
+ * inactives to the bottom of the page" — replacing the previous round's
+ * per-GROUP inactive placement with ONE inactive section for the whole
+ * page). Generic over any product-view-shaped T (not lib/product-view.ts's
+ * ProductView directly — this file is imported BY product-view.ts, so
+ * importing that type back here would be circular) with at least
+ * `group`/`active`/`displayName` fields.
+ *
+ * Returns:
+ *   - `sections`: ACTIVE-only products, bucketed by `group` and ordered
+ *     per `groupOrder` (same COVID/Flu/Other display order Ordering
+ *     already uses) — a group name not present in `groupOrder` is
+ *     appended once at the end (defensive; shouldn't happen since
+ *     lib/ordering-group.ts only ever emits COVID/Flu/Other). Products
+ *     within each section are sorted alphabetically by displayName.
+ *   - `inactive`: every INACTIVE product from every group, combined into
+ *     one flat, alphabetically-sorted list — the page renders this as a
+ *     single "Inactive" section after every active group, not one
+ *     per-group inactive sub-list like the previous round.
+ */
+export function partitionProductsForLotsPage<T extends GroupedProductLike>(
+  products: readonly T[],
+  groupOrder: readonly string[]
+): { sections: LotsPageSection<T>[]; inactive: T[] } {
+  const activeByGroup = new Map<string, T[]>();
+  const inactive: T[] = [];
+
+  for (const product of products) {
+    if (!product.active) {
+      inactive.push(product);
+      continue;
+    }
+    const list = activeByGroup.get(product.group);
+    if (list) list.push(product);
+    else activeByGroup.set(product.group, [product]);
+  }
+
+  const order = [...groupOrder].filter((group) => activeByGroup.has(group));
+  for (const group of activeByGroup.keys()) {
+    if (!order.includes(group)) order.push(group);
+  }
+
+  const byName = (a: T, b: T) => a.displayName.localeCompare(b.displayName);
+  const sections = order.map((group) => ({
+    group,
+    products: [...(activeByGroup.get(group) ?? [])].sort(byName),
+  }));
+
+  return { sections, inactive: [...inactive].sort(byName) };
+}
