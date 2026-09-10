@@ -38,7 +38,9 @@ import DateTextInput from "@/app/date-text-input";
  *     Ordering), dark group-heading rows, no totals.
  *   - Compact spreadsheet styling matching Ordering's table (2px 6px
  *     padding, 13px font, thin 1px borders).
- *   - Columns: Product · NDC · Pkg size · Lot # · Expiration ·
+ *   - Columns: Product · NDC · Units/pkg (renamed from "Pkg size",
+ *     V-onhand-ndc-units — value unchanged, still the catalog's static
+ *     dosesPerPackage) · Lot # · Expiration ·
  *     [Beyond-use date, only when enabled for that specific product] ·
  *     ⚙ (+ Save). The Active checkbox and Delete-lot button that used to
  *     sit in the row are now inside the ⚙ menu, alongside a new "Show
@@ -874,7 +876,7 @@ export default function LotsPage() {
           <tr>
             <th style={styles.th}>Product</th>
             <th style={styles.th}>NDC</th>
-            <th style={styles.thRight}>Pkg size</th>
+            <th style={styles.thRight}>Units/pkg</th>
             <th style={styles.th}>Lot #</th>
             <th style={styles.th}>Expiration</th>
             {beyondUseDateSupported && <th style={styles.th}>Beyond-use date</th>}

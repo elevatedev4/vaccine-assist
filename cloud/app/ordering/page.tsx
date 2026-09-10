@@ -46,6 +46,14 @@ type RecommendationRow = {
   upcoming7d: number;
   onHand: number | null;
   onHandAsOf: string | null;
+  /** stock_size (+ unit recovered from raw_line, when present) of the
+   * latest matched on-hand batch line for this product — e.g. "1 EA",
+   * "0.5 ML" — or null when there's no on-hand row yet (V-onhand-ndc-units,
+   * Will: "display unit size for each item, new column, after NDC").
+   * Distinct from "Units/pkg" below (the catalog's static doses-per-
+   * package figure): this is the per-BOH-unit size the Pioneer report
+   * itself carries. */
+  unitSize: string | null;
   recommendedTarget: number;
   targetOnHand: number | null;
   effectiveTarget: number;
@@ -244,16 +252,17 @@ type EnrichedRow = RecommendationRow & {
    * "—"). Overrides (Your target) still key off row.ndc (the DB value),
    * unchanged. */
   displayNdc: string | null;
-  /** Doses per package (renamed "Pkg size" in the table — V-T-ordering-
-   * lots-round3), or null when the catalog has no row for this product
-   * yet ("—" in the table). */
+  /** Doses per package (rendered as "Units/pkg" in the table —
+   * V-T-ordering-lots-round3, renamed from "Pkg size" V-onhand-ndc-units:
+   * "Pkg size is now Units/pkg"), or null when the catalog has no row for
+   * this product yet ("—" in the table). */
   dosesPerPackage: number | null;
   /** ceil(order / dosesPerPackage), or null when dosesPerPackage is
    * unknown ("—" in the table). */
   orderPackages: number | null;
 };
 
-/** Adds the Pkg size + Order (pkg) + display-name/NDC fields to a
+/** Adds the Units/pkg + Order (pkg) + display-name/NDC fields to a
  * recommendation row, via the SHARED lib/product-view.ts lookup (same
  * fields the /lots page computes for the same product — V-T-ordering-
  * lots-round3) — pure/no I/O, so this can run per-row at render time. */
@@ -741,7 +750,8 @@ export default function OrderingPage() {
           <tr>
             <th style={styles.th}>Vaccine</th>
             <th style={styles.th}>NDC</th>
-            <th style={styles.thRight}>Pkg size</th>
+            <th style={styles.th}>Unit size</th>
+            <th style={styles.thRight}>Units/pkg</th>
             <th style={styles.thRight}>7d</th>
             <th style={styles.thRight}>Rec. target</th>
             <th style={styles.th}>Target</th>
@@ -764,6 +774,7 @@ export default function OrderingPage() {
                 <tr style={styles.groupRow}>
                   <td style={styles.td}>{group}</td>
                   <td style={styles.td}>—</td>
+                  <td style={styles.td}>—</td>
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>{totals.upcoming7d}</td>
                   <td style={styles.tdRight}>—</td>
@@ -776,6 +787,7 @@ export default function OrderingPage() {
                   <tr key={row.key}>
                     <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
                     <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
+                    <td style={styles.td}>{row.unitSize ?? "—"}</td>
                     <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>
@@ -809,7 +821,8 @@ export default function OrderingPage() {
                 <tr>
                   <th style={styles.th}>Vaccine</th>
                   <th style={styles.th}>NDC</th>
-                  <th style={styles.thRight}>Pkg size</th>
+                  <th style={styles.th}>Unit size</th>
+                  <th style={styles.thRight}>Units/pkg</th>
                   <th style={styles.thRight}>7d</th>
                   <th style={styles.thRight}>Rec. target</th>
                   <th style={styles.th}>BOH</th>
@@ -822,6 +835,7 @@ export default function OrderingPage() {
                   <tr key={row.key}>
                     <td style={styles.td}>{row.displayName}</td>
                     <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
+                    <td style={styles.td}>{row.unitSize ?? "—"}</td>
                     <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                     <td style={styles.tdRight}>{row.upcoming7d}</td>
                     <td style={styles.tdRight}>{row.recommendedTarget}</td>

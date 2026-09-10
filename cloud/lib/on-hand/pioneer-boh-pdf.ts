@@ -41,16 +41,18 @@
  *      product name onto a second line rather than widening the column
  *      — and is appended onto the previous row's vaccineNameRaw instead
  *      of becoming its own row.
- *   6. Numeric cells (Current BOH, Stock size) tolerate a trailing unit
- *      ("57.5 mL") and thousands separators ("1,200") — commas are
- *      stripped, then the leading numeric run is parsed, ignoring
- *      anything after it. A blank Stock size cell is NOT the same as a
- *      blank xlsx/csv stock-size cell (which computeDoses treats as
- *      "can't compute doses, flag unmatched"): the brief for this PDF
- *      path is explicit that a blank Stock size means "1 dose per
- *      unit" — Pioneer's PDF export appears to omit Stock size when
- *      it's trivially 1, unlike the xlsx/csv export which always prints
- *      it.
+ *   6. Numeric cells (Current BOH, Stock size) go through the SHARED
+ *      lib/on-hand/quantity-cell.ts parser (V-onhand-ndc-units) — the
+ *      same one the xlsx/csv matrix path (lib/on-hand/pioneer-boh.ts)
+ *      uses — which tolerates a trailing unit ("9 EA", "4.5 ML",
+ *      case-insensitive, space optional) and thousands separators
+ *      ("1,200"). rawLine stores each cell's ORIGINAL text (not the
+ *      parsed number), so a unit annotation stays recoverable later.
+ *      A blank Stock size cell defaults to 1 (dose = BOH per unit) —
+ *      Pioneer's PDF export appears to omit Stock size when it's
+ *      trivially 1 — logging a warning; the xlsx/csv matrix path now
+ *      defaults the same way, for consistency between the two ingest
+ *      paths.
  *
  * Output shape: PioneerBohRow[] (lib/on-hand/pioneer-boh.ts), the exact
  * same rows parsePioneerBohXlsx/parsePioneerBohDelimited build, so
@@ -143,6 +145,7 @@ import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { normalizeNdc } from "@/lib/ndc";
 import { MAX_UPLOAD_BYTES } from "@/lib/on-hand/upload";
 import { computeDoses, type PioneerBohRow } from "@/lib/on-hand/pioneer-boh";
+import { parseQuantityCell } from "@/lib/on-hand/quantity-cell";
 
 /** Same 2 MB cap the xlsx/csv attachment path enforces (MAX_UPLOAD_BYTES) —
  * a decoded-byte-size gate, checked before pdfjs ever sees the buffer. */
@@ -268,21 +271,8 @@ function assignCells(row: PdfTextItem[], columns: [HeaderKey, number][]): Record
   };
 }
 
-/** Parses a numeric cell that may carry thousands separators ("1,200")
- * and/or a trailing unit ("57.5 mL") — strips commas, then takes the
- * leading numeric run and ignores everything after it. Returns null for
- * a blank cell or one with no numeric content at all. */
-function parseNumericCell(text: string): number | null {
-  if (!text) return null;
-  const cleaned = text.replace(/,/g, "");
-  const match = cleaned.match(/-?\d+(?:\.\d+)?/);
-  if (!match) return null;
-  const parsed = Number(match[0]);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function buildRawLine(name: string, ndc: string | null, quantityRaw: number | null, stockSize: number | null): string {
-  return [name, ndc ?? "", quantityRaw ?? "", stockSize ?? ""].join(" | ");
+function buildRawLine(name: string, ndc: string | null, bohText: string, stockSizeText: string): string {
+  return [name, ndc ?? "", bohText, stockSizeText].join(" | ");
 }
 
 /** Returns the exception's constructor name only (e.g. "Error",
@@ -361,6 +351,12 @@ async function runParse(loadingTask: LoadingTask): Promise<PioneerBohPdfResult |
     let columns: [HeaderKey, number][] | null = null;
     let headerFound = false;
     let lastRow: PioneerBohRow | null = null;
+    // The ORIGINAL boh/stockSize cell text for `lastRow` (e.g. "9 EA") —
+    // tracked alongside lastRow (not stored on PioneerBohRow itself) so
+    // a wrapped item-name continuation (below) can rebuild rawLine with
+    // the same original text rather than the already-parsed numbers.
+    let lastRowBohText = "";
+    let lastRowStockSizeText = "";
 
     for (let pageNumber = 1; pageNumber <= numPages; pageNumber++) {
       const isLastPage = pageNumber === numPages;
@@ -439,24 +435,27 @@ async function runParse(loadingTask: LoadingTask): Promise<PioneerBohPdfResult |
             // Wrapped item name — continues the previous row rather
             // than starting a new one.
             lastRow.vaccineNameRaw = `${lastRow.vaccineNameRaw} ${name}`.trim();
-            lastRow.rawLine = buildRawLine(lastRow.vaccineNameRaw, lastRow.ndc, lastRow.quantityRaw, lastRow.stockSize);
+            lastRow.rawLine = buildRawLine(lastRow.vaccineNameRaw, lastRow.ndc, lastRowBohText, lastRowStockSizeText);
             i++;
             continue;
           }
         }
 
         const ndc = normalizeNdc(cells.ndc || null);
-        const quantityRaw = parseNumericCell(cells.boh);
-        const parsedStockSize = parseNumericCell(cells.stockSize);
+        const quantityRaw = parseQuantityCell(cells.boh).value;
+        const parsedStockSize = parseQuantityCell(cells.stockSize).value;
         // Blank Stock size on this PDF path means "1 dose per unit" —
-        // see the module doc comment; this is deliberately DIFFERENT
-        // from the xlsx/csv matrix path, where a blank stock size stays
-        // null (-> unmatched, flagged for manual review).
+        // see the module doc comment; the xlsx/csv matrix path
+        // (lib/on-hand/pioneer-boh.ts) now defaults the same way for
+        // consistency (V-onhand-ndc-units) — both log the default.
+        if (parsedStockSize === null) {
+          console.warn(`parsePioneerBohPdf: blank stock size for "${name}" — defaulting to 1`);
+        }
         const stockSize = parsedStockSize === null ? 1 : parsedStockSize;
         const doses = computeDoses(quantityRaw, stockSize);
 
         const newRow: PioneerBohRow = {
-          rawLine: buildRawLine(name, ndc, quantityRaw, stockSize),
+          rawLine: buildRawLine(name, ndc, cells.boh, cells.stockSize),
           vaccineNameRaw: name,
           ndc,
           quantityRaw,
@@ -465,6 +464,8 @@ async function runParse(loadingTask: LoadingTask): Promise<PioneerBohPdfResult |
         };
         rows.push(newRow);
         lastRow = newRow;
+        lastRowBohText = cells.boh;
+        lastRowStockSizeText = cells.stockSize;
         if (hasOtherData) lastNumericRowY = rowY;
         i++;
       }

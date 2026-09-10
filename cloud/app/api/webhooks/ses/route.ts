@@ -243,7 +243,8 @@ async function insertAndSummarize(
   supabase: ReturnType<typeof getSupabaseServerClient>,
   rows: MatchedOnHandRow[],
   addressId: string | undefined,
-  messageId?: string
+  messageId?: string,
+  catalog?: CatalogVaccine[]
 ): Promise<NextResponse> {
   if (rows.length === 0) {
     console.log("POST /api/webhooks/ses: parse outcome — 0 lines");
@@ -275,7 +276,7 @@ async function insertAndSummarize(
     }
   }
 
-  const { error: insertError } = await insertOnHandRows(supabase, rows, { addressId });
+  const { error: insertError } = await insertOnHandRows(supabase, rows, { addressId }, catalog);
   if (insertError) {
     console.error("POST /api/webhooks/ses: failed to insert on_hand_count rows", insertError);
     return NextResponse.json({ error: "Failed to store on-hand counts." }, { status: 500 });
@@ -335,7 +336,7 @@ async function processOnHandContent(content: string, addressId?: string, message
   // happens to be the table still gets NDC-matched instead of being
   // treated as garbled "VaccineName, Quantity" lines.
   const rows = parseOnHandUpload({ kind: "text", text: content }, catalogResult.catalog);
-  return insertAndSummarize(supabase, rows, addressId, messageId);
+  return insertAndSummarize(supabase, rows, addressId, messageId, catalogResult.catalog);
 }
 
 /**
@@ -408,7 +409,7 @@ async function processOnHandAttachment(
     console.log(
       `POST /api/webhooks/ses: pdf parsed pages=${pdfResult.pages} rows=${pdfResult.rows.length} headerFound=${pdfResult.headerFound}`
     );
-    return insertAndSummarize(supabase, matchPioneerBohRows(pdfResult.rows, catalog), addressId, messageId);
+    return insertAndSummarize(supabase, matchPioneerBohRows(pdfResult.rows, catalog), addressId, messageId, catalog);
   }
 
   const rows =
@@ -416,7 +417,7 @@ async function processOnHandAttachment(
       ? matchPioneerBohRows(parsePioneerBohXlsx(attachment.buffer), catalog)
       : matchPioneerBohRows(parsePioneerBohDelimited(attachment.text, attachment.text.includes("\t") ? "\t" : ","), catalog);
 
-  return insertAndSummarize(supabase, rows, addressId, messageId);
+  return insertAndSummarize(supabase, rows, addressId, messageId, catalog);
 }
 
 /**

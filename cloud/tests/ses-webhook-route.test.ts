@@ -77,7 +77,15 @@ function fakeSupabaseClient(
   return {
     from: (table: string) => {
       if (table === "vaccine") {
-        return { select: async () => ({ data: CATALOG, error: null }) };
+        // V-onhand-ndc-units: insertOnHandRows now also (best-effort)
+        // writes vaccine.ndc adoptions after a successful insert — the
+        // mock needs an `.update().eq()` chain too, not just
+        // `.select()`, for any attachment fixture whose report NDC
+        // differs from the catalog's on-file ndc.
+        return {
+          select: async () => ({ data: CATALOG, error: null }),
+          update: () => ({ eq: async () => ({ error: null }) }),
+        };
       }
       if (table === "on_hand_count") {
         return { insert };

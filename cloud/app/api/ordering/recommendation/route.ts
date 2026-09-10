@@ -21,6 +21,7 @@ import { computeEffectiveTargets, recommendedTarget, type TargetInput } from "@/
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
 import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradation";
 import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
+import { extractUnitFromRawLine } from "@/lib/on-hand/quantity-cell";
 
 /**
  * Ordering tab recommendation endpoint (V-ordering, 2026-08-19/20;
@@ -87,6 +88,7 @@ import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
  *         "upcoming7d": 12,
  *         "onHand": 8,
  *         "onHandAsOf": "2026-08-19T13:00:00.000Z" | null,
+ *         "unitSize": "1 EA" | "0.5 ML" | "1" | null,  // stock_size (+ unit recovered from raw_line, when present) of the latest matched batch line — V-onhand-ndc-units
  *         "recommendedTarget": 20,
  *         "targetOnHand": null,           // this row's own NDC override, or null
  *         "effectiveTarget": 20,
@@ -170,29 +172,34 @@ function isExcludedPfizerChildRow(name: string): boolean {
   return EXCLUDED_PFIZER_CHILD_NAME_PREFIXES.some((prefix) => lower.startsWith(prefix.toLowerCase()));
 }
 
-type OnHandEntry = { quantity: number | null; receivedAt: string };
+type OnHandEntry = { quantity: number | null; receivedAt: string; unitSize: string | null };
 
 /**
  * Fetches the latest matched on_hand_count rows, scoped to this
  * account's inbound address (plus legacy unattributed rows) when
  * `addressId` is given. Cascades through up to three query shapes so it
  * keeps working regardless of which of 0010 (inbound_email_address_id,
- * source) and 0011 (ndc) have been applied to this environment yet:
- *   1. select ..., ndc, source + scoped by address
- *   2. select ... (no ndc, no source) + scoped by address  [0010 and/or 0011 missing]
- *   3. select ... (no ndc, no source), unscoped            [0010 missing]
+ * source) and 0011 (ndc, stock_size) have been applied to this
+ * environment yet:
+ *   1. select ..., ndc, source, stock_size + scoped by address
+ *   2. select ... (no ndc/source/stock_size) + scoped by address  [0010 and/or 0011 missing]
+ *   3. select ... (no ndc/source/stock_size), unscoped            [0010 missing]
  * `source` (added by 0010, same table/migration as
  * inbound_email_address_id) is needed by the batch-sum logic below
  * (V-onhand-batch-sum) to tell an email batch from an upload batch — a
  * row with no `source` column available defaults to "email" downstream,
- * matching that column's own DB default.
+ * matching that column's own DB default. `raw_line` is always selected
+ * (0006, never gated behind a migration tier) — V-onhand-ndc-units'
+ * `unitSize` response field recovers a unit (EA/ML) from it (see
+ * lib/on-hand/quantity-cell.ts's extractUnitFromRawLine); `stock_size`
+ * is the other half of that field, gated behind 0011 same as `ndc`.
  */
 async function fetchOnHandRows(
   supabase: ReturnType<typeof getSupabaseServerClient>,
   addressId: string | null
 ): Promise<{ data: Array<Record<string, unknown>> | null; error: unknown }> {
-  const baseColumns = "vaccine_id, quantity, received_at";
-  const columnsWithNdcAndSource = `${baseColumns}, ndc, source`;
+  const baseColumns = "vaccine_id, quantity, received_at, raw_line";
+  const columnsWithNdcAndSource = `${baseColumns}, ndc, source, stock_size`;
 
   async function runQuery(columns: string, scoped: boolean) {
     let query = supabase.from("on_hand_count").select(columns).eq("matched", true);
@@ -422,7 +429,29 @@ export async function GET(request: Request) {
     // its own latest-batch total, computed the same way, independently.
     const BATCH_WINDOW_MS = 120_000; // 120 seconds
 
-    type RawOnHandRow = { key: string; quantity: number | null; receivedAt: string; source: string };
+    type RawOnHandRow = {
+      key: string;
+      quantity: number | null;
+      receivedAt: string;
+      source: string;
+      stockSize: number | null;
+      rawLine: string;
+    };
+
+    // unitSize (V-onhand-ndc-units, Will 2026-09-09/10: "display unit
+    // size for each item... Pkg size is now Units/pkg"): stock_size from
+    // whichever row this key's `newest` batch line is (same row
+    // `receivedAt`/`quantity` already come from below) plus the unit
+    // recovered from that SAME row's raw_line — not summed/averaged
+    // across a multi-line batch, since a per-dose stock size isn't an
+    // additive quantity the way BOH is; the newest line is the most
+    // representative single value when a product has more than one line
+    // in its latest batch.
+    function unitSizeFor(stockSize: number | null, rawLine: string): string | null {
+      if (stockSize === null) return null;
+      const unit = extractUnitFromRawLine(rawLine);
+      return unit ? `${stockSize} ${unit}` : `${stockSize}`;
+    }
 
     function computeLatestBatchOnHand(rows: RawOnHandRow[]): Map<string, OnHandEntry> {
       const byKey = new Map<string, RawOnHandRow[]>();
@@ -447,7 +476,11 @@ export async function GET(request: Request) {
           if (row.quantity === null) continue;
           quantity = (quantity ?? 0) + row.quantity;
         }
-        result.set(key, { quantity, receivedAt: newest.receivedAt });
+        result.set(key, {
+          quantity,
+          receivedAt: newest.receivedAt,
+          unitSize: unitSizeFor(newest.stockSize, newest.rawLine),
+        });
       }
       return result;
     }
@@ -486,13 +519,15 @@ export async function GET(request: Request) {
       // default to "email", the same default on_hand_count.source itself
       // carries (0010_inbound_email_address.sql).
       const source = (row.source as string | undefined) ?? "email";
+      const stockSize = (row.stock_size as number | null | undefined) ?? null;
+      const rawLine = (row.raw_line as string | undefined) ?? "";
       if (onHandLastReceivedAt === null) onHandLastReceivedAt = receivedAt;
 
       const vaccineId = row.vaccine_id as string | null;
       const groupKey = vaccineId
         ? vaccineIdToGroupKey.get(vaccineId)
         : ndcToGroupKey.get(normalizeNdc((row.ndc as string | null | undefined) ?? null) ?? "");
-      if (groupKey) productOnHandRows.push({ key: groupKey, quantity, receivedAt, source });
+      if (groupKey) productOnHandRows.push({ key: groupKey, quantity, receivedAt, source, stockSize, rawLine });
     }
 
     const latestOnHandByGroupKey = computeLatestBatchOnHand(productOnHandRows);
@@ -550,6 +585,7 @@ export async function GET(request: Request) {
       upcoming7d: number;
       onHand: number | null;
       onHandAsOf: string | null;
+      unitSize: string | null;
     };
 
     const builtRows: BuiltRow[] = collapsedGroups.map((group) => {
@@ -567,6 +603,7 @@ export async function GET(request: Request) {
         upcoming7d,
         onHand: onHandEntry?.quantity ?? null,
         onHandAsOf: onHandEntry?.receivedAt ?? null,
+        unitSize: onHandEntry?.unitSize ?? null,
       };
     });
 
@@ -599,6 +636,7 @@ export async function GET(request: Request) {
             upcoming7d: row.upcoming7d,
             onHand: row.onHand,
             onHandAsOf: row.onHandAsOf,
+            unitSize: row.unitSize,
             recommendedTarget: result.recommendedTarget,
             targetOnHand: row.ndc ? ndcOverrides[row.ndc] ?? null : null,
             effectiveTarget: result.effectiveTarget,
@@ -622,6 +660,7 @@ export async function GET(request: Request) {
         upcoming7d: row.upcoming7d,
         onHand: row.onHand,
         onHandAsOf: row.onHandAsOf,
+        unitSize: row.unitSize,
         recommendedTarget: recommended,
         targetOnHand: ndcOverride ?? null,
         effectiveTarget: effective,

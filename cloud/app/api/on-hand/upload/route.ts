@@ -111,7 +111,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ inserted: 0, unmatched: [] });
   }
 
-  const { error: insertError } = await insertOnHandRows(supabase, parsed, { addressId, source: "upload" });
+  const { error: insertError } = await insertOnHandRows(supabase, parsed, { addressId, source: "upload" }, catalog);
   if (insertError) {
     console.error("POST /api/on-hand/upload: failed to insert on_hand_count rows", insertError);
     return NextResponse.json({ error: "Failed to store the uploaded on-hand counts." }, { status: 500 });
