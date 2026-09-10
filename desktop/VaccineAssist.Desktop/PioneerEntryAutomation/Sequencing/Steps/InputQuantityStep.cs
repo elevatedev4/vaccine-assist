@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -32,11 +33,22 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// Models/Vaccine.cs's own doc comment). Now types whatever string is on
 /// file exactly as entered, no parsing/reformatting.
 ///
-/// NULL/BLANK QUANTITY: skips (succeeds, types nothing) rather than typing
-/// a placeholder — Models.Vaccine.Quantity is null when the
-/// vaccines.quantity migration (owned by a parallel change, see
-/// PioneerEntryAutomation/TODO.md's 2026-09-07 entry) hasn't run yet, or
-/// when a specific vaccine simply has no quantity on file yet.
+/// NULL/BLANK QUANTITY — REWORKED (V-..., 2026-09-10, Will 2026-09-09/10:
+/// "made it through to quantity (slowly) and stopped at quantity (not
+/// entered)"): every vaccine row currently has a null Quantity on file
+/// (the cloud vaccines API confirms this), so the OLD "skip silently"
+/// behavior below WAS the "stopped at quantity" symptom he saw — nothing
+/// was ever wrong, the step was quietly doing nothing every single run.
+/// Now prompts (PioneerEntryStepContext.RequestTextPrompt — see that
+/// property's own doc comment) instead of skipping: Continue types
+/// whatever was entered (same as if it had been on file all along) AND
+/// saves it back onto the vaccine's catalog record via
+/// PioneerEntryStepContext.SaveQuantityAsync, so the next run for this
+/// vaccine has it on file and never has to ask again. Cancel aborts the
+/// whole entry with a named reason. The prompt has no Skip option (unlike
+/// InputDirectionsStep) — there's no legitimate "leave the quantity field
+/// untouched and move on" outcome for a vaccine administration record the
+/// way there is for directions/SIG.
 /// </summary>
 public sealed class InputQuantityStep : IPioneerEntryStep
 {
@@ -46,13 +58,20 @@ public sealed class InputQuantityStep : IPioneerEntryStep
 
     public async Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(context.Payload.Quantity))
-        {
-            return new PioneerEntryStepResult(Name, Success: true, DryRun: context.DryRun,
-                "Skipped — no quantity on file for this vaccine (Models.Vaccine.Quantity is null/blank). Nothing typed into Pioneer.");
-        }
-
         var quantityText = context.Payload.Quantity;
+
+        if (string.IsNullOrWhiteSpace(quantityText))
+        {
+            var prompt = RequestQuantity(context);
+            if (prompt.Action != TextPromptAction.Continue)
+            {
+                return new PioneerEntryStepResult(Name, Success: false, DryRun: context.DryRun,
+                    "Cancelled — no quantity on file for this vaccine and the quantity prompt was cancelled. Entry stopped.");
+            }
+
+            quantityText = prompt.Value;
+            await SaveQuantityBackToVaccineAsync(context, quantityText);
+        }
 
         if (context.DryRun)
         {
@@ -71,5 +90,44 @@ public sealed class InputQuantityStep : IPioneerEntryStep
             log: context.Log, cancellationToken: cancellationToken);
 
         return new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message);
+    }
+
+    /// <summary>Shows the blank-quantity prompt — see
+    /// PioneerEntryStepContext.RequestTextPrompt's own doc comment for the
+    /// "fails closed to Cancel when unwired" posture. Shown regardless of
+    /// DryRun: a dry run is only about whether the FINAL typing into
+    /// PioneerRx happens for real, not about whether staff gets asked for
+    /// a value that's genuinely missing — this also lets the prompt be
+    /// exercised on a machine with no PioneerRx installed.</summary>
+    private static TextPromptResult RequestQuantity(PioneerEntryStepContext context)
+    {
+        if (context.RequestTextPrompt is null) return TextPromptResult.Cancelled;
+
+        var vaccineName = string.IsNullOrWhiteSpace(context.Payload.VaccineName) ? "this vaccine" : context.Payload.VaccineName;
+        return context.RequestTextPrompt(
+            $"Quantity needed for {vaccineName}",
+            "No quantity is on file for this vaccine. Enter the quantity to use for this administration:",
+            false);
+    }
+
+    /// <summary>Saves a quantity the prompt above just collected back onto
+    /// the vaccine's catalog record — a FAILED save must not abort the
+    /// entry (Will's brief, verbatim), so this only ever logs the outcome,
+    /// never returns/throws a failure the caller has to handle.</summary>
+    private async Task SaveQuantityBackToVaccineAsync(PioneerEntryStepContext context, string quantityText)
+    {
+        if (context.SaveQuantityAsync is null) return;
+
+        try
+        {
+            var saved = await context.SaveQuantityAsync(quantityText);
+            context.Log(saved
+                ? $"[{Name}] Saved quantity \"{quantityText}\" back onto the vaccine catalog record."
+                : $"[{Name}] Couldn't save quantity \"{quantityText}\" back onto the vaccine catalog record — continuing with entry anyway.");
+        }
+        catch (Exception ex)
+        {
+            context.Log($"[{Name}] Couldn't save quantity \"{quantityText}\" back onto the vaccine catalog record: {ex.Message} — continuing with entry anyway.");
+        }
     }
 }

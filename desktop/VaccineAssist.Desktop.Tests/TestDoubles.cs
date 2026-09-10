@@ -150,6 +150,30 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     public Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
 
+    /// <summary>Records every UpdateVaccineQuantityAsync/
+    /// UpdateVaccineDirectionsAsync call (V-..., 2026-09-10: the
+    /// blank-quantity/blank-directions prompt's "save it back" step) —
+    /// same recording pattern as CreatedLots/UpdatedLots above. Set
+    /// UpdateVaccineFieldException to make the next call throw, for
+    /// "a failed save must not abort the entry" coverage.</summary>
+    public List<(Guid Id, string Quantity)> SavedQuantities { get; } = new();
+    public List<(Guid Id, string Directions)> SavedDirections { get; } = new();
+    public Exception? UpdateVaccineFieldException { get; set; }
+
+    public Task<Vaccine> UpdateVaccineQuantityAsync(Guid id, string quantity, CancellationToken cancellationToken = default)
+    {
+        if (UpdateVaccineFieldException is not null) throw UpdateVaccineFieldException;
+        SavedQuantities.Add((id, quantity));
+        return Task.FromResult(new Vaccine { Id = id, Quantity = quantity });
+    }
+
+    public Task<Vaccine> UpdateVaccineDirectionsAsync(Guid id, string directions, CancellationToken cancellationToken = default)
+    {
+        if (UpdateVaccineFieldException is not null) throw UpdateVaccineFieldException;
+        SavedDirections.Add((id, directions));
+        return Task.FromResult(new Vaccine { Id = id, Directions = directions });
+    }
+
     public Task<IReadOnlyList<Vaccine>> GetEligibleVaccinesForAgeAsync(int ageYears, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Vaccine>>(
             EligibleVaccinesByAge.TryGetValue(ageYears, out var list) ? list : new List<Vaccine>());

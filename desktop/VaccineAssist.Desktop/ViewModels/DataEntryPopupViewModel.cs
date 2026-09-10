@@ -450,6 +450,18 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// </summary>
     public Func<string, bool>? ConfirmVarUpdateRequested { get; set; }
 
+    /// <summary>
+    /// V-..., 2026-09-10: set by DataEntryPopupWindow (the View) to show
+    /// the real blank-Quantity/blank-Directions prompt (Views/
+    /// TextEntryPromptWindow) — same "set by the View, fails closed when
+    /// unwired" shape as ConfirmVarUpdateRequested above. EnterIntoPioneerAsync
+    /// forwards this onto PioneerEntryStepContext.RequestTextPrompt when it
+    /// builds the context, so InputQuantityStep/InputDirectionsStep never
+    /// need to know about WPF at all — see those steps' own doc comments.
+    /// Args: title, message, allowSkip.
+    /// </summary>
+    public Func<string, string, bool, TextPromptResult>? RequestTextPromptRequested { get; set; }
+
     /// <summary>Inline "add a lot" mini-form (Views/DataEntryPopupWindow.xaml's
     /// expiration-gate block) — same required fields LotsViewModel's own
     /// add-a-lot form uses, scoped here to the currently selected vaccine
@@ -907,6 +919,29 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// V-..., 2026-09-10: shared body for PioneerEntryStepContext.SaveQuantityAsync/
+    /// SaveDirectionsAsync — a failed save must not abort the entry
+    /// (Will's brief, verbatim), so this swallows any exception and
+    /// returns false rather than letting it propagate; InputQuantityStep/
+    /// InputDirectionsStep log whichever outcome comes back. `save` is the
+    /// specific UpdateVaccineQuantityAsync/UpdateVaccineDirectionsAsync
+    /// call, already closed over this run's vaccine id and the new value.
+    /// </summary>
+    private static async Task<bool> SaveVaccineFieldAsync(Func<Task<Vaccine>> save)
+    {
+        try
+        {
+            await save();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("DataEntryPopupViewModel.SaveVaccineFieldAsync", ex);
+            return false;
+        }
+    }
+
     private async Task EnterIntoPioneerAsync()
     {
         if (!Gate.CanEnterIntoPioneer || SelectedVaccine is null) return;
@@ -946,6 +981,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             var payload = await BuildLivePayloadAsync();
             if (payload is null) return; // BuildLivePayloadAsync already set ErrorMessage
 
+            var vaccineId = SelectedVaccine.Id;
             var context = new PioneerEntryStepContext(payload, IsDryRun, message =>
             {
                 StepLog.Add(message);
@@ -953,7 +989,16 @@ public sealed class DataEntryPopupViewModel : ObservableObject
                 // logs" can still grab this after StepLog.Clear() wipes
                 // the on-screen list — see CopyLogsCommand's doc comment.
                 AppFileLog.Log($"[DataEntry] {message}");
-            });
+            })
+            {
+                // V-..., 2026-09-10: forwards the View's blank-value prompt
+                // (RequestTextPromptRequested) and closes the "save it back"
+                // delegates over THIS run's vaccine id — see
+                // PioneerEntryStepContext's own doc comments on all three.
+                RequestTextPrompt = RequestTextPromptRequested,
+                SaveQuantityAsync = quantity => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineQuantityAsync(vaccineId, quantity)),
+                SaveDirectionsAsync = directions => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineDirectionsAsync(vaccineId, directions)),
+            };
             var result = await PioneerEntrySequenceRunner.RunAsync(_sequence, context);
 
             StatusMessage = result.Success
@@ -1108,13 +1153,13 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         if (lot is not null)
         {
             return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText(),
-                Ndc: ndc, Quantity: quantity, Directions: directions);
+                Ndc: ndc, Quantity: quantity, Directions: directions, VaccineName: SelectedVaccine.Name);
         }
 
         if (SkipLotAndExpiration)
         {
             return new VaccineEntryPayload(SelectedVaccine.ShortCode, "", "", AdminSite.ToDisplayText(),
-                Ndc: ndc, SkipLotAndExpiration: true, Quantity: quantity, Directions: directions);
+                Ndc: ndc, SkipLotAndExpiration: true, Quantity: quantity, Directions: directions, VaccineName: SelectedVaccine.Name);
         }
 
         ErrorMessage = $"No unexpired lot on file for {SelectedVaccine.Name} — add one below, or choose \"Leave lot/expiration blank\" to continue without one.";

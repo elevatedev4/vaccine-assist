@@ -158,6 +158,15 @@ public class DataEntryPopupViewModelAutoValidateTests
         public Task<Vaccine> SetVaccineActiveAsync(Guid id, bool active, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        // V-..., 2026-09-10: not exercised by this file's tests (none of
+        // them call EnterIntoPioneerCommand — see the class doc comment) —
+        // throwing matches every other unused member here.
+        public Task<Vaccine> UpdateVaccineQuantityAsync(Guid id, string quantity, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Vaccine> UpdateVaccineDirectionsAsync(Guid id, string directions, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<IReadOnlyList<Vaccine>> GetEligibleVaccinesForAgeAsync(int ageYears, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
@@ -186,6 +195,15 @@ public class DataEntryPopupViewModelAutoValidateTests
         // touch the Lots screen) — throwing matches every other unused
         // member here.
         public Task<Lot> UpdateLotAsync(Guid id, string lotNumber, DateOnly expiration, DateOnly? beyondUseDate, string? note, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        // Pre-existing gap (not touched by V-..., 2026-09-10's own change)
+        // — added while fixing the build: this fake was missing
+        // IVaccineApiService.DeleteLotAsync entirely, which fails the
+        // whole Tests assembly's compile. Not exercised by this file's
+        // tests either way — same throwing posture as every other unused
+        // member here.
+        public Task DeleteLotAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<EligibilityResult> EvaluateEligibilityAsync(Guid vaccineId, int ageYears, bool? isPregnant = null, CancellationToken cancellationToken = default)
