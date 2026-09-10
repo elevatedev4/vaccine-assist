@@ -14,7 +14,7 @@ vi.mock("@/lib/supabase/server", () => ({
   getSupabaseServerClient: vi.fn(),
 }));
 
-import { GET } from "@/app/api/vaccines/route";
+import { GET, POST } from "@/app/api/vaccines/route";
 import { PATCH } from "@/app/api/vaccines/[id]/route";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -366,6 +366,137 @@ describe("PATCH /api/vaccines/[id]", () => {
     const body = await response.json();
     expect(body.quantityDirectionsSupported).toBe(false);
   });
+});
+
+// --- V-T-ordering-lots-round4: POST /api/vaccines (create one vaccine row,
+// used by the manager to create Abrysvo's inactive 1-count product) ------
+describe("POST /api/vaccines", () => {
+  afterEach(() => {
+    vi.mocked(getSupabaseServerClient).mockReset();
+  });
+
+  function noExistingMatchesFrom() {
+    return {
+      select: () => ({ ilike: async () => ({ data: [], error: null }) }),
+    };
+  }
+
+  it("creates a vaccine with just a name, defaulting active to true and ndc to null", async () => {
+    const single = vi.fn(async () => ({
+      data: { id: "v1", name: "Abrysvo (1 ct)", ndc: null, active: true },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const insert = vi.fn(() => ({ select }));
+    let call = 0;
+    const from = vi.fn(() => {
+      call += 1;
+      if (call === 1) return noExistingMatchesFrom();
+      return { insert };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Abrysvo (1 ct)" }),
+      })
+    );
+
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.vaccine).toEqual({ id: "v1", name: "Abrysvo (1 ct)", ndc: null, active: true });
+    expect(insert).toHaveBeenCalledWith({ name: "Abrysvo (1 ct)", ndc: null, active: true });
+  });
+
+  it("trims the name and formats a valid ndc via lib/ndc.ts's formatNdcForStorage", async () => {
+    const single = vi.fn(async () => ({ data: { id: "v1" }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const insert = vi.fn(() => ({ select }));
+    let call = 0;
+    const from = vi.fn(() => {
+      call += 1;
+      if (call === 1) return noExistingMatchesFrom();
+      return { insert };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "  Abrysvo (1 ct)  ", ndc: "00069246501", active: false }),
+      })
+    );
+
+    expect(insert).toHaveBeenCalledWith({ name: "Abrysvo (1 ct)", ndc: "00069-2465-01", active: false });
+  });
+
+  it("rejects a missing/empty name without touching Supabase", async () => {
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "   " }),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a name over 120 characters", async () => {
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "x".repeat(121) }),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects an ndc that isn't 10-11 digits", async () => {
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Test Vaccine", ndc: "123" }),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-boolean active value", async () => {
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Test Vaccine", active: "yes" }),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a duplicate name (case-insensitive) with 409, without inserting", async () => {
+    const from = vi.fn(() => ({
+      select: () => ({ ilike: async () => ({ data: [{ id: "v0", name: "abrysvo" }], error: null }) }),
+    }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Abrysvo" }),
+      })
+    );
+    expect(response.status).toBe(409);
+  });
+
 });
 
 describe("GET /api/vaccines — quantityDirectionsSupported degradation", () => {

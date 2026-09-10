@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
+import { formatNdcForStorage } from "@/lib/ndc";
 
 /**
  * REST endpoint for the desktop app's Vaccines screen (what we offer).
@@ -94,6 +95,86 @@ export async function GET(request: Request) {
     }));
 
     return NextResponse.json({ vaccines: vaccinesWithLotFlag, quantityDirectionsSupported });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Supabase is not configured." },
+      { status: 503 }
+    );
+  }
+}
+
+/**
+ * POST /api/vaccines — creates one vaccine row (V-T-ordering-lots-round4,
+ * Will: Abrysvo's 1-count product needs its own DB row, created "via the
+ * API after merge" rather than hand-inserted, and this is that endpoint).
+ * Body: { name: string (required, trimmed, <=120 chars), ndc?: string |
+ * null (validated/formatted by lib/ndc.ts's formatNdcForStorage — the
+ * SAME helper PATCH /api/vaccines/[id] uses for its own `ndc` field, so a
+ * new row's NDC is stored in the identical dashed 5-4-2 form), active?:
+ * boolean (default true) }. Same auth guard as every other /api/vaccines*
+ * route. Rejects a duplicate name (case-insensitive, trimmed) with 409 —
+ * this table has no unique constraint on `name`, so the check is done
+ * here rather than relying on the database to reject it. Returns
+ * { vaccine } 201.
+ */
+export async function POST(request: Request) {
+  const auth = await requireAuthenticatedUser(request);
+  if ("error" in auth) return auth.error;
+
+  try {
+    const body = await request.json();
+    const { name, ndc, active } = body ?? {};
+
+    if (typeof name !== "string" || !name.trim()) {
+      return NextResponse.json({ error: "name is required." }, { status: 400 });
+    }
+    const trimmedName = name.trim();
+    if (trimmedName.length > 120) {
+      return NextResponse.json({ error: "name must be 120 characters or fewer." }, { status: 400 });
+    }
+
+    let formattedNdc: string | null = null;
+    if (ndc !== undefined && ndc !== null) {
+      if (typeof ndc !== "string") {
+        return NextResponse.json({ error: "ndc must be a string or null." }, { status: 400 });
+      }
+      formattedNdc = formatNdcForStorage(ndc);
+      if (!formattedNdc) {
+        return NextResponse.json({ error: "ndc must be 10-11 digits (dashes optional)." }, { status: 400 });
+      }
+    }
+
+    if (active !== undefined && typeof active !== "boolean") {
+      return NextResponse.json({ error: "active must be a boolean." }, { status: 400 });
+    }
+
+    const supabase = getSupabaseServerClient();
+
+    const { data: existing, error: existingError } = await supabase
+      .from("vaccine")
+      .select("id, name")
+      .ilike("name", trimmedName);
+    if (existingError) {
+      console.error("POST /api/vaccines: Supabase error checking for duplicates", existingError);
+      return NextResponse.json({ error: "Failed to create vaccine." }, { status: 500 });
+    }
+    if ((existing ?? []).some((row) => row.name.trim().toLowerCase() === trimmedName.toLowerCase())) {
+      return NextResponse.json({ error: "A vaccine with this name already exists." }, { status: 409 });
+    }
+
+    const insertPayload: Record<string, unknown> = {
+      name: trimmedName,
+      ndc: formattedNdc,
+      active: active ?? true,
+    };
+
+    const { data, error } = await supabase.from("vaccine").insert(insertPayload).select().single();
+    if (error) {
+      console.error("POST /api/vaccines: Supabase error", error);
+      return NextResponse.json({ error: "Failed to create vaccine." }, { status: 500 });
+    }
+
+    return NextResponse.json({ vaccine: data }, { status: 201 });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

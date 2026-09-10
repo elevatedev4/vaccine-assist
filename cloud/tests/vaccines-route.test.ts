@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GET } from "@/app/api/vaccines/route";
+import { GET, POST } from "@/app/api/vaccines/route";
 import { PATCH } from "@/app/api/vaccines/[id]/route";
 
 // Only exercises the auth gate, not the route logic — a request with no
@@ -15,6 +15,17 @@ describe("/api/vaccines auth gate", () => {
 
   it("GET ?includeInactive=true rejects a request with no Authorization header", async () => {
     const response = await GET(new Request("http://localhost/api/vaccines?includeInactive=true"));
+    expect(response.status).toBe(401);
+  });
+
+  it("POST rejects a request with no Authorization header", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Test Vaccine" }),
+      })
+    );
     expect(response.status).toBe(401);
   });
 

@@ -84,6 +84,54 @@ describe("vaccine-product-catalog seed data (V-T26 item 7)", () => {
   });
 });
 
+// --- V-T-ordering-lots-round4 (Will: "Abrysvo should be NDC 00069246510
+// and 10 count. There is also 00069246501 1 count (mark as inactive).") ---
+describe("Abrysvo repack (10-count primary, 1-count separate row + altNdcs)", () => {
+  it("resolves the new 10-count NDC to the 10-count Abrysvo entry", () => {
+    const product = lookupProduct({ ndc: "00069246510", name: "Abrysvo" });
+    expect(product).toMatchObject({ productName: "Abrysvo", dosesPerPackage: 10, packageNdc: "00069-2465-10" });
+  });
+
+  it("still resolves by the plain 'Abrysvo' name to the 10-count entry", () => {
+    expect(lookupProduct({ name: "Abrysvo" })).toMatchObject({ productName: "Abrysvo", dosesPerPackage: 10 });
+  });
+
+  it("resolves the 1-count product's OWN NDC to its own separate entry, not the 10-count", () => {
+    const product = lookupProduct({ ndc: "00069246501" });
+    expect(product).toMatchObject({ productName: "Abrysvo (1 ct)", dosesPerPackage: 1, packageNdc: "00069-2465-01" });
+  });
+
+  it("still recognizes the OLD (pre-repack) 1-count NDC as Abrysvo, via altNdcs, so on-hand lines keep summing in", () => {
+    const product = lookupProduct({ ndc: "00069034401" });
+    expect(product).toMatchObject({ productName: "Abrysvo", dosesPerPackage: 10 });
+  });
+});
+
+describe("findInCatalog: altNdcs fallback", () => {
+  const FIXTURE: ProductCatalogEntry[] = [
+    { match: { ndc: "00006-4121-02", altNdcs: ["11111-1111-11"] }, productName: "Gardasil 9", dosesPerPackage: 10 },
+    { match: { ndc: "11111-1111-11" }, productName: "Other Product", dosesPerPackage: 5 },
+  ];
+
+  it("a different entry's own PRIMARY match.ndc wins over another entry's altNdcs for the same NDC", () => {
+    expect(findInCatalog(FIXTURE, { ndc: "11111-1111-11" })?.productName).toBe("Other Product");
+  });
+
+  it("falls back to altNdcs when no entry's primary match.ndc matches", () => {
+    const soloAlt: ProductCatalogEntry[] = [
+      { match: { ndc: "00006-4121-02", altNdcs: ["22222-2222-22"] }, productName: "Gardasil 9", dosesPerPackage: 10 },
+    ];
+    expect(findInCatalog(soloAlt, { ndc: "22222-2222-22" })?.productName).toBe("Gardasil 9");
+  });
+
+  it("matches an altNdc regardless of dashed/undashed form", () => {
+    const soloAlt: ProductCatalogEntry[] = [
+      { match: { ndc: "00006-4121-02", altNdcs: ["22222-2222-22"] }, productName: "Gardasil 9", dosesPerPackage: 10 },
+    ];
+    expect(findInCatalog(soloAlt, { ndc: "22222222222" })?.productName).toBe("Gardasil 9");
+  });
+});
+
 describe("findInCatalog", () => {
   const FIXTURE: ProductCatalogEntry[] = [
     { match: { ndc: "00006-4121-02" }, productName: "Gardasil 9", ageRange: "9-45", dosesPerPackage: 10, packageNdc: "00006-4121-10" },
