@@ -10,7 +10,7 @@ import { buildProductViews, type ProductView } from "@/lib/product-view";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 import { formatNdcDashed } from "@/lib/ndc";
 import { isoToMaskedDate } from "@/lib/date-mask";
-import { decideDateAutosave, decideLotNumberAutosave } from "@/lib/lots-autosave";
+import { createDebouncedRunner, decideDateAutosave, decideLotNumberAutosave, type DebouncedRunner } from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
@@ -170,9 +170,29 @@ export default function LotsPage() {
   const [budBusyKey, setBudBusyKey] = useState<string | null>(null);
   const [budErrorByKey, setBudErrorByKey] = useState<Record<string, string>>({});
 
+  // Review follow-up (reviewer, 2026-09-10): runAutosave used to read
+  // `drafts`/`lastSaved`/`rawDateText`/`budEnabledKeys` straight from
+  // component state, closed over at whatever render happened to be
+  // current when scheduleAutosave's setTimeout was ARMED — one render
+  // behind the very keystroke that armed it, since that keystroke's own
+  // setDrafts/setRawDateText hadn't committed yet. Only the LAST-armed
+  // timer per row ever survives to fire, so this silently dropped the
+  // final keystroke of any typing burst before a pause (e.g. "LOT2026A"
+  // autosaved as "LOT2026"). These refs are kept in sync SYNCHRONOUSLY at
+  // every state-mutation call site below (not via a useEffect, which
+  // would still be timing-dependent) — runAutosave reads from `.current`
+  // instead, so it always sees the value as of when it actually RUNS, not
+  // as of when the timer that led to it was scheduled.
+  const draftsRef = useRef<Record<string, RowDraft>>({});
+  const lastSavedRef = useRef<Record<string, RowDraft>>({});
+  const rawDateTextRef = useRef<Record<string, { expiration: string; beyondUseDate: string }>>({});
+  const budEnabledKeysRef = useRef<Set<string>>(new Set());
+
   // Autosave bookkeeping (refs, not state — purely internal timing/
   // race-guard plumbing that should never itself trigger a re-render):
-  //  - autosaveTimersRef: the pending per-row debounce timer, if any.
+  //  - autosaveRunnersRef: one lib/lots-autosave.ts createDebouncedRunner
+  //    per row (productKey), reused across keystrokes so scheduling a new
+  //    debounce correctly cancels that SAME row's pending one.
   //  - autosaveSeqRef: a per-row counter bumped on every autosave attempt
   //    AND on Clear lot, so a response that lands after a newer attempt
   //    (or after the row's lot was cleared) is recognized as stale and
@@ -180,7 +200,7 @@ export default function LotsPage() {
   //  - autosaveInFlightRef: true while a row's request is in flight, so a
   //    debounce/blur that fires while one is already running re-arms the
   //    timer instead of firing a second, racing request for the same row.
-  const autosaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const autosaveRunnersRef = useRef<Record<string, DebouncedRunner>>({});
   const autosaveSeqRef = useRef<Record<string, number>>({});
   const autosaveInFlightRef = useRef<Record<string, boolean>>({});
 
@@ -192,17 +212,21 @@ export default function LotsPage() {
     setVaccines([]);
     setLots([]);
     setDrafts({});
+    draftsRef.current = {};
     setLastSaved({});
+    lastSavedRef.current = {};
     setRawDateText({});
+    rawDateTextRef.current = {};
     setLoadError(null);
     setActiveErrorByKey({});
     setBudErrorByKey({});
     setBudEnabledKeys(new Set());
+    budEnabledKeysRef.current = new Set();
     setSavingByKey({});
     setRowErrors({});
     setRowSaved({});
-    for (const timer of Object.values(autosaveTimersRef.current)) clearTimeout(timer);
-    autosaveTimersRef.current = {};
+    for (const runner of Object.values(autosaveRunnersRef.current)) runner.cancel();
+    autosaveRunnersRef.current = {};
     autosaveSeqRef.current = {};
     autosaveInFlightRef.current = {};
   }
@@ -297,20 +321,23 @@ export default function LotsPage() {
       const loadedViews = buildProductViews(loadedVaccines);
       const loadedDrafts = draftsFromProducts(loadedViews, loadedLots);
 
+      const loadedRawDateText = Object.fromEntries(
+        Object.entries(loadedDrafts).map(([key, draft]) => [
+          key,
+          { expiration: isoToMaskedDate(draft.expiration), beyondUseDate: isoToMaskedDate(draft.beyondUseDate) },
+        ])
+      );
+
       setVaccines(loadedVaccines);
       setLots(loadedLots);
       setDrafts(loadedDrafts);
+      draftsRef.current = loadedDrafts;
       // The freshly-loaded drafts ARE the last-saved snapshot (nothing's
       // been typed yet) — autosave compares future edits against this.
       setLastSaved(loadedDrafts);
-      setRawDateText(
-        Object.fromEntries(
-          Object.entries(loadedDrafts).map(([key, draft]) => [
-            key,
-            { expiration: isoToMaskedDate(draft.expiration), beyondUseDate: isoToMaskedDate(draft.beyondUseDate) },
-          ])
-        )
-      );
+      lastSavedRef.current = loadedDrafts;
+      setRawDateText(loadedRawDateText);
+      rawDateTextRef.current = loadedRawDateText;
       setBeyondUseDateSupported(lotsData.beyondUseDateSupported !== false);
 
       // BUD enablement is a secondary setting — a failure here doesn't
@@ -318,9 +345,12 @@ export default function LotsPage() {
       // "nothing enabled" (no BUD field editable) until the next reload.
       if (settingsRes.ok) {
         const settingsData = await settingsRes.json();
-        setBudEnabledKeys(new Set<string>(settingsData.budEnabledProductKeys ?? []));
+        const loadedBudKeys = new Set<string>(settingsData.budEnabledProductKeys ?? []);
+        setBudEnabledKeys(loadedBudKeys);
+        budEnabledKeysRef.current = loadedBudKeys;
       } else {
         setBudEnabledKeys(new Set());
+        budEnabledKeysRef.current = new Set();
       }
 
       setRowErrors({});
@@ -359,16 +389,41 @@ export default function LotsPage() {
   }
 
   function updateDraft(key: string, patch: Partial<RowDraft>) {
-    setDrafts((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
+    setDrafts((prev) => {
+      const next = { ...prev, [key]: { ...prev[key], ...patch } };
+      draftsRef.current = next; // see draftsRef's own doc comment above
+      return next;
+    });
     setRowSaved((prev) => ({ ...prev, [key]: false }));
   }
 
-  function clearAutosaveTimer(key: string) {
-    const timer = autosaveTimersRef.current[key];
-    if (timer) {
-      clearTimeout(timer);
-      delete autosaveTimersRef.current[key];
+  /** Mirrors DateTextInput's onRawTextChange into both state (so a
+   * re-render, if any, reflects it) and rawDateTextRef (so runAutosave
+   * reads it fresh regardless of which render's debounce timer fires) —
+   * see rawDateTextRef's own doc comment above. */
+  function updateRawDateText(key: string, patch: Partial<{ expiration: string; beyondUseDate: string }>) {
+    setRawDateText((prev) => {
+      const next = { ...prev, [key]: { ...prev[key], ...patch } };
+      rawDateTextRef.current = next;
+      return next;
+    });
+  }
+
+  /** Lazily creates (and thereafter reuses) this row's debounce timer —
+   * MUST be the same object across calls so a later schedule() correctly
+   * cancels that row's earlier pending one (see
+   * lib/lots-autosave.ts's createDebouncedRunner). `run` reads
+   * everything it needs from the *Ref refs above at CALL time, so which
+   * render happened to create this runner doesn't matter — only draftsRef
+   * etc.'s value at the moment the timer actually fires does. */
+  function getAutosaveRunner(view: ProductView): DebouncedRunner {
+    const key = view.productKey;
+    let runner = autosaveRunnersRef.current[key];
+    if (!runner) {
+      runner = createDebouncedRunner(() => void runAutosave(view), AUTOSAVE_DEBOUNCE_MS);
+      autosaveRunnersRef.current[key] = runner;
     }
+    return runner;
   }
 
   /** Resets/restarts a row's ~600ms-after-last-keystroke autosave timer —
@@ -377,19 +432,14 @@ export default function LotsPage() {
    * per-row debounce back out, and runAutosave (below) re-evaluates every
    * field once it settles. */
   function scheduleAutosave(view: ProductView) {
-    clearAutosaveTimer(view.productKey);
-    autosaveTimersRef.current[view.productKey] = setTimeout(() => {
-      delete autosaveTimersRef.current[view.productKey];
-      void runAutosave(view);
-    }, AUTOSAVE_DEBOUNCE_MS);
+    getAutosaveRunner(view).schedule();
   }
 
   /** Flushes a row's pending debounced save immediately — wired to each
    * field's onBlur (Will's brief: "debounce ~600ms after the last
    * keystroke, also flush on blur"). */
   function flushAutosaveNow(view: ProductView) {
-    clearAutosaveTimer(view.productKey);
-    void runAutosave(view);
+    getAutosaveRunner(view).flushNow();
   }
 
   /**
@@ -397,15 +447,24 @@ export default function LotsPage() {
    * Will: "make it autosave anytime new typing occurs, with date
    * validation happening on the date fields prior to saving"). Runs
    * lib/lots-autosave.ts's pure decide* functions against the row's
-   * current draft vs. its last-persisted snapshot (`lastSaved`) to decide
-   * whether there's an eligible, changed field to send — a lot number
-   * that's non-empty and different, or a date field that's a complete,
-   * valid calendar date and different. `draft.lotNumber`/`draft.expiration`
+   * current draft vs. its last-persisted snapshot to decide whether
+   * there's an eligible, changed field to send — a lot number that's
+   * non-empty and different, or a date field that's a complete, valid
+   * calendar date and different. `draft.lotNumber`/`draft.expiration`
    * must BOTH currently hold a usable value for the request to actually
    * fire (an incomplete/invalid date collapses draft.expiration to "" via
    * DateTextInput's own onChange contract, the same gate the old explicit
    * Save button relied on) — otherwise this is a silent no-op, not an
    * error, since the user may simply still be typing the other field.
+   *
+   * Reads `draft`/`saved`/raw date text/BUD-enablement from the *Ref
+   * refs above, NOT from `drafts`/`lastSaved`/`rawDateText`/
+   * `budEnabledKeys` state directly — this function is called from a
+   * debounce timer that may fire long after the render that scheduled
+   * it, and reading component state here would close over a stale
+   * snapshot from THAT render (review follow-up, reviewer 2026-09-10 —
+   * see draftsRef's doc comment above and lib/lots-autosave.ts's
+   * createDebouncedRunner doc comment for the bug this fixes).
    *
    * Reuses the SAME POST (no lot yet) / PATCH (upsert against
    * matchLotNumber) fan-out calls the old Save button used. At most one
@@ -426,18 +485,18 @@ export default function LotsPage() {
       return;
     }
 
-    const draft = drafts[key];
-    const saved = lastSaved[key];
+    const draft = draftsRef.current[key];
+    const saved = lastSavedRef.current[key];
     if (!draft || !saved) return;
 
-    const rawText = rawDateText[key] ?? {
+    const rawText = rawDateTextRef.current[key] ?? {
       expiration: isoToMaskedDate(saved.expiration),
       beyondUseDate: isoToMaskedDate(saved.beyondUseDate),
     };
 
     const lotDecision = decideLotNumberAutosave(draft.lotNumber, saved.lotNumber);
     const expirationDecision = decideDateAutosave(rawText.expiration, isoToMaskedDate(saved.expiration));
-    const budEnabledForThisProduct = budEnabledKeys.has(key);
+    const budEnabledForThisProduct = budEnabledKeysRef.current.has(key);
     const beyondUseDecision = budEnabledForThisProduct
       ? decideDateAutosave(rawText.beyondUseDate, isoToMaskedDate(saved.beyondUseDate))
       : "unchanged";
@@ -502,11 +561,19 @@ export default function LotsPage() {
         expiration: draft.expiration,
         beyondUseDate: draft.beyondUseDate,
       };
-      setLastSaved((prev) => ({ ...prev, [key]: nextSaved }));
+      setLastSaved((prev) => {
+        const next = { ...prev, [key]: nextSaved };
+        lastSavedRef.current = next;
+        return next;
+      });
       // Only update matchLotNumber on the live draft — never overwrite
       // lotNumber/expiration/beyondUseDate here, in case the user kept
       // typing further changes while this request was in flight.
-      setDrafts((prev) => ({ ...prev, [key]: { ...prev[key], matchLotNumber: lotNumber } }));
+      setDrafts((prev) => {
+        const next = { ...prev, [key]: { ...prev[key], matchLotNumber: lotNumber } };
+        draftsRef.current = next;
+        return next;
+      });
       setRowSaved((prev) => ({ ...prev, [key]: true }));
     } catch (err) {
       if (autosaveSeqRef.current[key] !== seq) return;
@@ -533,7 +600,7 @@ export default function LotsPage() {
     // Cancel any pending autosave for this row and bump its sequence
     // number so an autosave response already in flight can't re-create
     // the lot this Clear is about to remove.
-    clearAutosaveTimer(view.productKey);
+    autosaveRunnersRef.current[view.productKey]?.cancel();
     autosaveSeqRef.current[view.productKey] = (autosaveSeqRef.current[view.productKey] ?? 0) + 1;
 
     setSavingByKey((prev) => ({ ...prev, [view.productKey]: true }));
@@ -555,9 +622,21 @@ export default function LotsPage() {
       const deletedLotNumber = draft.matchLotNumber;
       setLots((prev) => prev.filter((l) => !(groupVaccineIds.has(l.vaccine_id) && l.lot_number === deletedLotNumber)));
       const cleared: RowDraft = { matchLotNumber: null, lotNumber: "", expiration: "", beyondUseDate: "" };
-      setDrafts((prev) => ({ ...prev, [view.productKey]: cleared }));
-      setLastSaved((prev) => ({ ...prev, [view.productKey]: cleared }));
-      setRawDateText((prev) => ({ ...prev, [view.productKey]: { expiration: "", beyondUseDate: "" } }));
+      setDrafts((prev) => {
+        const next = { ...prev, [view.productKey]: cleared };
+        draftsRef.current = next;
+        return next;
+      });
+      setLastSaved((prev) => {
+        const next = { ...prev, [view.productKey]: cleared };
+        lastSavedRef.current = next;
+        return next;
+      });
+      setRawDateText((prev) => {
+        const next = { ...prev, [view.productKey]: { expiration: "", beyondUseDate: "" } };
+        rawDateTextRef.current = next;
+        return next;
+      });
     } catch (err) {
       setRowErrors((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to clear lot." }));
     } finally {
@@ -618,7 +697,9 @@ export default function LotsPage() {
         setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: data.error ?? "Failed to update." }));
         return;
       }
-      setBudEnabledKeys(new Set<string>(data.budEnabledProductKeys ?? nextKeys));
+      const confirmedKeys = new Set<string>(data.budEnabledProductKeys ?? nextKeys);
+      setBudEnabledKeys(confirmedKeys);
+      budEnabledKeysRef.current = confirmedKeys;
     } catch (err) {
       setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to update." }));
     } finally {
@@ -694,12 +775,7 @@ export default function LotsPage() {
               updateDraft(view.productKey, { expiration: value });
               scheduleAutosave(view);
             }}
-            onRawTextChange={(text) =>
-              setRawDateText((prev) => ({
-                ...prev,
-                [view.productKey]: { ...prev[view.productKey], expiration: text },
-              }))
-            }
+            onRawTextChange={(text) => updateRawDateText(view.productKey, { expiration: text })}
             onBlur={() => flushAutosaveNow(view)}
             style={styles.input}
           />
@@ -714,12 +790,7 @@ export default function LotsPage() {
                   updateDraft(view.productKey, { beyondUseDate: value });
                   scheduleAutosave(view);
                 }}
-                onRawTextChange={(text) =>
-                  setRawDateText((prev) => ({
-                    ...prev,
-                    [view.productKey]: { ...prev[view.productKey], beyondUseDate: text },
-                  }))
-                }
+                onRawTextChange={(text) => updateRawDateText(view.productKey, { beyondUseDate: text })}
                 onBlur={() => flushAutosaveNow(view)}
                 style={styles.input}
               />

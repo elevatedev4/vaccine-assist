@@ -51,3 +51,64 @@ export function decideLotNumberAutosave(text: string, previousSavedText: string)
   if (text === previousSavedText) return "unchanged";
   return text.trim().length > 0 ? "save" : "empty";
 }
+
+export type DebouncedRunner = {
+  /** (Re-)arms the debounce: cancels any pending timer for this runner
+   * and starts a fresh delayMs countdown. */
+  schedule: () => void;
+  /** Cancels any pending timer and calls `run()` immediately. */
+  flushNow: () => void;
+  /** Cancels any pending timer without calling `run()`. */
+  cancel: () => void;
+};
+
+/**
+ * Generic debounce timer scheduler (V-T-ordering-lots-round4 review
+ * follow-up, reviewer 2026-09-10): /lots' first autosave wiring called a
+ * `runAutosave(view)` closure that read `drafts`/`lastSaved`/
+ * `rawDateText`/`budEnabledKeys` straight from component state at the
+ * moment the timer's callback was DEFINED (i.e. at schedule() time, one
+ * render behind the keystroke that just called schedule() — React state
+ * updates from that same keystroke hadn't committed yet). Because every
+ * later keystroke cancels the previous timer and reschedules from its
+ * OWN still-one-render-behind closure, only the LAST-scheduled timer ever
+ * survives to fire, and even it reads a snapshot missing the keystroke
+ * that scheduled it — e.g. typing "LOT2026A" then pausing would autosave
+ * "LOT2026", silently dropping the final character.
+ *
+ * This helper fixes that by construction: it owns ONLY the timer
+ * bookkeeping (delay, cancel-and-reschedule, flush-now) and calls the
+ * caller-supplied `run` callback with no snapshot of its own — `run` is
+ * invoked fresh at FIRE time (whenever that turns out to be), so as long
+ * as `run` itself reads the latest state at CALL time (e.g. from a ref
+ * that's kept in sync on every change, not from a value captured in an
+ * outer closure), the value it sees is always current. Kept
+ * dependency-free of React so the timing contract itself — "the callback
+ * sees state as of when it actually fires, not as of when it was
+ * scheduled" — is directly unit-testable without a DOM/React harness.
+ */
+export function createDebouncedRunner(run: () => void, delayMs: number): DebouncedRunner {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancel() {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  function schedule() {
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      run();
+    }, delayMs);
+  }
+
+  function flushNow() {
+    cancel();
+    run();
+  }
+
+  return { schedule, flushNow, cancel };
+}
