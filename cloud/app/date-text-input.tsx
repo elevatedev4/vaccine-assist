@@ -27,9 +27,10 @@ import {
  * while the field is empty/incomplete/invalid — callers that require a
  * complete date (e.g. the /lots autosave gate) already guard on a falsy
  * value the same way they did for the old type="date" input. A red
- * border (and aria-invalid) shows once the field has 8 digits typed but
- * they don't form a real calendar date (e.g. "02/30/2026") — Will's
- * brief: "invalid dates show a red border and don't save."
+ * border shows once the field is invalid per `dateInputValidationMessage`
+ * — either 8 digits typed that don't form a real calendar date (e.g.
+ * "02/30/2026"), or the field is blurred with 1-7 digits still in it
+ * (Will's brief: "invalid dates show a red border ... don't save").
  *
  * `onRawTextChange` (V-T-ordering-lots-round4, optional, additive) fires
  * alongside `onChange` with the field's raw masked "MM/DD/YYYY"-in-
@@ -43,22 +44,16 @@ import {
  * used by /lots' autosave to flush a pending debounced save immediately
  * when the field loses focus, same as every other autosaving field there.
  *
- * V-T-lots-ux-round3 (Will verbatim: "I just typed '01' in a date and it
- * didn't show an error, it just didn't do anything"): a partial date
- * (1-7 digits) used to just collapse to "" with zero feedback, identical
- * to an untouched field. Now, once the field is BLURRED with 1-7 digits
- * still in it, a red border plus "Enter the full date as MM/DD/YYYY"
- * text shows underneath (never while still focused/typing — see
- * lib/date-mask.ts's dateInputValidationMessage, the pure/unit-tested
- * decision for exactly this). The existing "8 digits but not a real
- * date -> red border" behavior is unchanged, just now paired with a
- * "Not a valid date" message. The message renders IN FLOW under the
- * input in a reserved ~13px line (blank when there's no message) —
- * reviewer follow-up 2026-09-11: an earlier absolutely-positioned
- * version could overlap the /lots table's next row in its compact
- * (2px/13px) styling; rendering in flow with a reserved height instead
- * means a message appearing/disappearing never shifts row height AND
- * never covers anything.
+ * Round (2026-09-11, Will verbatim: "the spacing in the table is now
+ * weird ... make it more compact like it was, and the expiration dates
+ * aren't lined up with the lots ... Don't need error text. Just make the
+ * box red bordered if there is an error. It's self explanatory."): a
+ * prior round added an in-flow message line under the input, which
+ * reserved extra height on every date cell and misaligned /lots' rows.
+ * That message rendering is gone — this is a bare `<input>` again, exactly
+ * as compact as before it was added. The validation message is still
+ * computed (via `dateInputValidationMessage`, still unit-tested) to drive
+ * the red border, and surfaces on hover via the input's `title` instead.
  */
 export default function DateTextInput({
   value,
@@ -118,42 +113,20 @@ export default function DateTextInput({
   const invalid = message !== null;
 
   return (
-    <span style={{ display: "block", width: "100%" }}>
-      <input
-        type="text"
-        inputMode="numeric"
-        placeholder="MM/DD/YYYY"
-        aria-label={ariaLabel}
-        aria-invalid={invalid || undefined}
-        disabled={disabled}
-        value={text}
-        onChange={handleChange}
-        onPaste={handlePaste}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        style={{ ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
-      />
-      {/* Reviewer follow-up (2026-09-11): this used to be position:
-          absolute over the row below, which an opaque 11px label at
-          zIndex 5 could visibly stomp on in /lots' compact (2px/13px)
-          table rows. Rendered IN FLOW instead — a reserved ~13px line
-          that's always present (blank when there's no message) so a
-          message appearing/disappearing never shifts row height, and
-          nothing ever overlaps the next row. */}
-      <span
-        style={{
-          display: "block",
-          minHeight: 13,
-          fontSize: "10px",
-          lineHeight: "13px",
-          color: "#b00020",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {message ?? ""}
-      </span>
-    </span>
+    <input
+      type="text"
+      inputMode="numeric"
+      placeholder="MM/DD/YYYY"
+      aria-label={ariaLabel}
+      aria-invalid={invalid || undefined}
+      title={message ?? undefined}
+      disabled={disabled}
+      value={text}
+      onChange={handleChange}
+      onPaste={handlePaste}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+      style={{ ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
+    />
   );
 }
