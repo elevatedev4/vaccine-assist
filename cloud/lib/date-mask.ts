@@ -153,3 +153,29 @@ export function normalizePastedDateText(text: string): string {
   if (separated) return formatDigitsAsMaskedDate(separated);
   return maskDateInput(text);
 }
+
+export type DateFieldFocusState = "focused" | "blurred";
+
+/**
+ * Validation message DateTextInput shows under the field (V-T-lots-ux-
+ * round3, Will verbatim: "I just typed '01' in a date and it didn't
+ * show an error, it just didn't do anything" — a partial date used to
+ * collapse to "" with no feedback at all, same as an untouched field).
+ *
+ *   - 0 digits (empty): never an error — blank clears are valid
+ *     wherever clearing is allowed; don't change that semantics.
+ *   - 1-7 digits while still focused: no message — don't nag mid-typing.
+ *   - 1-7 digits once blurred: "Enter the full date as MM/DD/YYYY" —
+ *     this is Will's exact bug.
+ *   - exactly 8 digits that don't form a real calendar date: "Not a
+ *     valid date", shown immediately regardless of focus (same timing
+ *     as the existing red-border behavior).
+ *   - exactly 8 digits that DO form a real date: no message.
+ */
+export function dateInputValidationMessage(digits: string, focus: DateFieldFocusState): string | null {
+  if (digits.length === 0) return null;
+  if (digits.length < 8) {
+    return focus === "blurred" ? "Enter the full date as MM/DD/YYYY" : null;
+  }
+  return digitsToIso(digits) ? null : "Not a valid date";
+}
