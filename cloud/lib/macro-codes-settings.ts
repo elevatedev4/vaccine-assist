@@ -55,3 +55,43 @@ export async function getMacroDoseCounts(
   }
   return { doseCounts: {}, pending: false };
 }
+
+/**
+ * Applies a PARTIAL update (`patch`, e.g. `{ "ndc:shingrix": 3 }` — just
+ * the one product a viewer just changed) on top of whatever's currently
+ * saved, then writes the merged whole map back. This is a read-merge-
+ * write, not an atomic DB-level merge, but it's what fixes the race
+ * PUT previously had: two devices each PUTting a stale FULL local copy
+ * of the map (one editing product A, the other product B) could
+ * silently clobber each other's change. Sending only the changed key
+ * and merging server-side means either device's write only ever
+ * touches its own key, however stale its view of everyone else's.
+ *
+ * Reads via getMacroDoseCounts (same fallback/throw posture), merges,
+ * then upserts. Returns the MERGED map (not just `patch`) so the caller
+ * can set its local state to the authoritative saved value. Throws on a
+ * genuine (non-missing-table) error from either the read or the write.
+ */
+export async function updateMacroDoseCounts(
+  supabase: ReturnType<typeof getSupabaseServerClient>,
+  patch: Readonly<Record<string, number>>
+): Promise<MacroDoseCountsResult> {
+  const current = await getMacroDoseCounts(supabase);
+  const merged = { ...current.doseCounts, ...patch };
+
+  const { error } = await supabase
+    .from("app_setting")
+    .upsert(
+      { key: MACRO_DOSE_COUNTS_SETTING_KEY, value: merged, updated_at: new Date().toISOString() },
+      { onConflict: "key" }
+    );
+
+  if (error) {
+    if (isMissingTableError(error)) {
+      return { doseCounts: merged, pending: true };
+    }
+    throw error;
+  }
+
+  return { doseCounts: merged, pending: false };
+}

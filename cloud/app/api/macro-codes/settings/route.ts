@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
-import { isMissingTableError } from "@/lib/schema-degradation";
 import {
-  MACRO_DOSE_COUNTS_SETTING_KEY,
   getMacroDoseCounts,
   isValidDoseCountsMap,
+  updateMacroDoseCounts,
 } from "@/lib/macro-codes-settings";
 
 /**
@@ -17,8 +16,14 @@ import {
  *
  * RESPONSE CONTRACTS:
  *   GET -> { doseCounts: Record<string, number>, pending: boolean }
- *   PUT body { doseCounts: Record<string, number> }
- *       -> { doseCounts } on success
+ *   PUT body { doseCounts: Record<string, number> } — a PARTIAL patch
+ *       (typically just the one product the client just changed; a
+ *       full map is also accepted, it's just merged the same way) —
+ *       MERGED server-side on top of whatever's currently saved (see
+ *       lib/macro-codes-settings.ts's updateMacroDoseCounts doc comment
+ *       for why: two devices each PUTting a stale full local copy could
+ *       otherwise clobber each other's change to a DIFFERENT product)
+ *       -> { doseCounts: <merged map> } on success
  *       or, before app_setting exists: { pending: true } (200, not an
  *          error — same "don't crash, just don't persist yet" posture
  *          as PUT /api/lots/settings)
@@ -74,20 +79,12 @@ export async function PUT(request: Request) {
     );
   }
 
-  const { error } = await supabase
-    .from("app_setting")
-    .upsert(
-      { key: MACRO_DOSE_COUNTS_SETTING_KEY, value: doseCounts, updated_at: new Date().toISOString() },
-      { onConflict: "key" }
-    );
-
-  if (error) {
-    if (isMissingTableError(error)) {
-      return NextResponse.json({ pending: true });
-    }
-    console.error("PUT /api/macro-codes/settings: failed to save macro_dose_counts", error);
+  try {
+    const { doseCounts: merged, pending } = await updateMacroDoseCounts(supabase, doseCounts);
+    if (pending) return NextResponse.json({ pending: true });
+    return NextResponse.json({ doseCounts: merged });
+  } catch (err) {
+    console.error("PUT /api/macro-codes/settings: failed to save macro_dose_counts", err);
     return NextResponse.json({ error: "Failed to save the setting." }, { status: 500 });
   }
-
-  return NextResponse.json({ doseCounts });
 }

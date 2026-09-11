@@ -97,7 +97,7 @@ describe("PUT /api/macro-codes/settings", () => {
     vi.mocked(getSupabaseServerClient).mockReset();
   });
 
-  it("saves a valid doseCounts map", async () => {
+  it("saves a valid doseCounts map when nothing was previously saved", async () => {
     const upsert = vi.fn(async (row: unknown) => {
       expect(row).toMatchObject({ key: "macro_dose_counts", value: { "ndc:shingrix": 3 } });
       return { error: null };
@@ -109,6 +109,40 @@ describe("PUT /api/macro-codes/settings", () => {
     const body = await response.json();
     expect(body.doseCounts).toEqual({ "ndc:shingrix": 3 });
     expect(upsert).toHaveBeenCalled();
+  });
+
+  it("merges a partial patch onto the existing saved map instead of replacing it (race-safety: two devices editing different products)", async () => {
+    const upsert = vi.fn(async (row: unknown) => {
+      expect(row).toMatchObject({ key: "macro_dose_counts", value: { "ndc:shingrix": 3, "ndc:gardasil": 2 } });
+      return { error: null };
+    });
+    // Another device already saved shingrix's count; this PUT only
+    // carries gardasil's change.
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ storedValue: { "ndc:shingrix": 3 }, upsert }) as never);
+
+    const response = await PUT(putRequest({ doseCounts: { "ndc:gardasil": 2 } }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.doseCounts).toEqual({ "ndc:shingrix": 3, "ndc:gardasil": 2 });
+    expect(upsert).toHaveBeenCalled();
+  });
+
+  it("a patch overwriting an already-saved key's value wins for that key only, leaving other keys untouched", async () => {
+    const upsert = vi.fn(async () => ({ error: null }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue(
+      fakeSupabase({ storedValue: { "ndc:shingrix": 2, "ndc:gardasil": 3 }, upsert }) as never
+    );
+
+    const response = await PUT(putRequest({ doseCounts: { "ndc:shingrix": 4 } }));
+    const body = await response.json();
+    expect(body.doseCounts).toEqual({ "ndc:shingrix": 4, "ndc:gardasil": 3 });
+  });
+
+  it("returns 500 when reading the existing map fails for a genuine (non-missing-table) reason", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ selectError: new Error("connection reset") }) as never);
+
+    const response = await PUT(putRequest({ doseCounts: { "ndc:shingrix": 3 } }));
+    expect(response.status).toBe(500);
   });
 
   it("rejects an out-of-range dose count", async () => {

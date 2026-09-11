@@ -63,6 +63,15 @@ const styles = {
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" as const, border: "1px solid #bbb" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" },
   checkboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
+  copyFallback: { marginTop: "0.25rem" },
+  copyFallbackInput: {
+    fontFamily: "ui-monospace, monospace",
+    fontSize: "0.8rem",
+    width: "100%",
+    padding: "2px 4px",
+    boxSizing: "border-box" as const,
+    border: "1px solid #b00020",
+  },
 } as const;
 
 /** Copies text via the Clipboard API, falling back to a hidden
@@ -93,6 +102,26 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+/** Read-only, auto-selected text field shown when copyToClipboard
+ * returns false — the code is still visible/selectable so a manual
+ * Cmd/Ctrl+C still works even though the programmatic copy didn't. */
+function CopyFallback({ code }: { code: string }) {
+  return (
+    <p style={styles.copyFallback}>
+      <span style={styles.error}>Couldn&apos;t copy — select and copy manually:</span>
+      <br />
+      <input
+        type="text"
+        readOnly
+        autoFocus
+        value={code}
+        style={styles.copyFallbackInput}
+        onFocus={(e) => e.currentTarget.select()}
+      />
+    </p>
+  );
+}
+
 function missingNote(row: MacroRow): string | null {
   if (row.complete || row.shortCode === null) return null;
   const missingLot = !row.lotNumber;
@@ -118,6 +147,7 @@ export default function MacroCodesPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [copyFailure, setCopyFailure] = useState<{ key: string; code: string } | null>(null);
   const [savingDoses, setSavingDoses] = useState<Record<string, boolean>>({});
 
   type ModalState = {
@@ -127,6 +157,15 @@ export default function MacroCodesPage() {
     saveToSystem: boolean;
     submitting: boolean;
     error: string | null;
+    /** Set once the copy-first step below has run, so the UI can show
+     * "already copied" / the manual-copy fallback independently of
+     * whatever happens afterward with the save request. */
+    copyResult: { copied: boolean; code: string } | null;
+    /** True once POST /api/lots has already succeeded for this modal —
+     * a failed copy leaves the modal open so the user can retry Submit
+     * (to re-attempt the copy), and this stops that retry from firing a
+     * second, duplicate lot save. */
+    saved: boolean;
   };
   const [modal, setModal] = useState<ModalState | null>(null);
 
@@ -233,16 +272,30 @@ export default function MacroCodesPage() {
     return `${row.productKey}:${row.doseNumber}`;
   }
 
+  /** Closes the modal — used by Cancel, Escape, and an overlay click,
+   * but not while a submit is in flight (matches Cancel's own disabled-
+   * while-submitting behavior, so a save request can't be abandoned
+   * mid-flight from underneath itself). */
+  function requestCloseModal() {
+    setModal((current) => (current && !current.submitting ? null : current));
+  }
+
   async function handleCopy(row: MacroRow) {
     if (!row.macro || !row.shortCode) return;
     if (row.complete) {
+      const key = rowKey(row);
       const ok = await copyToClipboard(row.macro);
       if (ok) {
-        setCopiedKey(rowKey(row));
-        setTimeout(() => setCopiedKey((current) => (current === rowKey(row) ? null : current)), 1500);
+        setCopyFailure(null);
+        setCopiedKey(key);
+        setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1500);
+      } else {
+        setCopiedKey(null);
+        setCopyFailure({ key, code: row.macro });
       }
       return;
     }
+    setCopyFailure(null);
     setModal({
       row,
       lotNumber: row.lotNumber ?? "",
@@ -250,25 +303,36 @@ export default function MacroCodesPage() {
       saveToSystem: row.packageSize !== 1,
       submitting: false,
       error: null,
+      copyResult: null,
+      saved: false,
     });
   }
 
   async function handleDosesChange(productKey: string, value: number) {
     if (!session) return;
-    const next = { ...doseCounts, [productKey]: value };
-    setDoseCounts(next);
+    const previous = doseCounts;
+    // Optimistic local update for a snappy control; the PUT below sends
+    // ONLY this product's changed key and the server merges it onto
+    // whatever's currently saved (see the route's doc comment) so a
+    // second device editing a DIFFERENT product's dose count at the
+    // same time can't clobber this write or be clobbered by it.
+    setDoseCounts((current) => ({ ...current, [productKey]: value }));
     setSavingDoses((prev) => ({ ...prev, [productKey]: true }));
     try {
       const response = await fetch("/api/macro-codes/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-        body: JSON.stringify({ doseCounts: next }),
+        body: JSON.stringify({ doseCounts: { [productKey]: value } }),
       });
+      const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
+        setDoseCounts(previous);
         setLoadError(body.error ?? "Could not save the dose count.");
+        return;
       }
+      if (body.doseCounts) setDoseCounts(body.doseCounts);
     } catch (err) {
+      setDoseCounts(previous);
       setLoadError(err instanceof Error ? err.message : "Could not save the dose count.");
     } finally {
       setSavingDoses((prev) => ({ ...prev, [productKey]: false }));
@@ -281,9 +345,30 @@ export default function MacroCodesPage() {
     const trimmedLot = modal.lotNumber.trim();
     if (!trimmedLot || !modal.expirationIso) return;
 
-    setModal({ ...modal, submitting: true, error: null });
+    const finalCode = modal.row.shortCode
+      ? buildMacroCode({
+          shortCode: modal.row.shortCode,
+          doseNumber: modal.row.doseNumber,
+          doseCount: 1,
+          lotNumber: trimmedLot,
+          expirationIso: modal.expirationIso,
+        }).text
+      : null;
 
-    if (modal.saveToSystem) {
+    // Copy FIRST, before any await touches the network — Safari/iOS
+    // revokes clipboard permission for a handler that has already
+    // awaited a fetch, so on the default path (save checkbox checked)
+    // copying AFTER the save+refetch silently failed there. The very
+    // first await in this whole handler is this one.
+    const copied = finalCode ? await copyToClipboard(finalCode) : false;
+
+    setModal({ ...modal, submitting: true, error: null, copyResult: finalCode ? { copied, code: finalCode } : null });
+
+    // Skip the save if a previous submit for this same modal already
+    // saved it (see ModalState.saved's doc comment) — only a failed
+    // copy leaves the modal open for a retry, and retrying should only
+    // re-attempt the copy, not insert a second lot.
+    if (modal.saveToSystem && !modal.saved) {
       try {
         const response = await fetch("/api/lots", {
           method: "POST",
@@ -297,9 +382,15 @@ export default function MacroCodesPage() {
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
-          setModal((current) => (current ? { ...current, submitting: false, error: body.error ?? "Could not save the lot." } : current));
+          // Save failed — keep the modal open with the error, but the
+          // copy (or copy-fallback UI) above still reflects what
+          // already happened to the clipboard.
+          setModal((current) =>
+            current ? { ...current, submitting: false, error: body.error ?? "Could not save the lot." } : current
+          );
           return;
         }
+        setModal((current) => (current ? { ...current, saved: true } : current));
         await refetchLots(session.accessToken);
       } catch (err) {
         setModal((current) =>
@@ -309,18 +400,28 @@ export default function MacroCodesPage() {
       }
     }
 
-    const finalCode = modal.row.shortCode
-      ? buildMacroCode({
-          shortCode: modal.row.shortCode,
-          doseNumber: modal.row.doseNumber,
-          doseCount: 1,
-          lotNumber: trimmedLot,
-          expirationIso: modal.expirationIso,
-        }).text
-      : null;
-    if (finalCode) await copyToClipboard(finalCode);
-    setModal(null);
+    if (copied) {
+      setModal(null);
+    } else {
+      // Leave the modal open showing the manual-copy fallback rather
+      // than closing on a copy that didn't actually happen.
+      setModal((current) => (current ? { ...current, submitting: false } : current));
+    }
   }
+
+  // Escape closes the modal, same pattern as top-nav.tsx's account menu
+  // (document-level keydown listener, only attached while open).
+  useEffect(() => {
+    if (!modal) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") requestCloseModal();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modal !== null]);
 
   if (!authChecked) {
     return <AuthLoading />;
@@ -424,9 +525,12 @@ export default function MacroCodesPage() {
                     </td>
                     <td style={styles.td}>
                       {!isNoShortCode && (
-                        <button type="button" style={styles.button} onClick={() => void handleCopy(row)}>
-                          {copiedKey === key ? "Copied" : "Copy"}
-                        </button>
+                        <>
+                          <button type="button" style={styles.button} onClick={() => void handleCopy(row)}>
+                            {copiedKey === key ? "Copied" : "Copy"}
+                          </button>
+                          {copyFailure?.key === key && <CopyFallback code={copyFailure.code} />}
+                        </>
                       )}
                     </td>
                   </tr>
@@ -438,11 +542,22 @@ export default function MacroCodesPage() {
       )}
 
       {modal && (
-        <div style={styles.modalOverlay} role="dialog" aria-modal="true">
+        <div
+          style={styles.modalOverlay}
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            // Overlay click closes; a click that started inside the
+            // card (bubbling up) has e.target !== the overlay itself,
+            // so it's excluded here without needing stopPropagation.
+            if (e.target === e.currentTarget) requestCloseModal();
+          }}
+        >
           <div style={styles.modalCard}>
             <h2 style={{ marginTop: 0 }}>
               Enter lot / exp for {modal.row.displayName} dose {modal.row.doseNumber}
             </h2>
+            {modal.copyResult && !modal.copyResult.copied && <CopyFallback code={modal.copyResult.code} />}
             <form onSubmit={handleModalSubmit}>
               <label style={styles.label} htmlFor="macro-modal-lot">
                 Lot number
@@ -483,10 +598,15 @@ export default function MacroCodesPage() {
                 </span>
               </label>
 
-              {modal.error && <p style={styles.error}>{modal.error}</p>}
+              {modal.error && (
+                <p style={styles.error}>
+                  {modal.error}
+                  {modal.copyResult?.copied && " (the code was already copied to your clipboard)"}
+                </p>
+              )}
 
               <p style={{ textAlign: "right", marginBottom: 0 }}>
-                <button type="button" style={styles.button} onClick={() => setModal(null)} disabled={modal.submitting}>
+                <button type="button" style={styles.button} onClick={requestCloseModal} disabled={modal.submitting}>
                   Cancel
                 </button>{" "}
                 <button
