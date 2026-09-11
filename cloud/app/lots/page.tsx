@@ -110,7 +110,7 @@ const styles = {
   // always "MM/DD/YYYY" (10 chars) plus a little breathing room, a lot
   // number is free text but rarely runs past a dozen-odd characters.
   lotInput: { width: "14ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
-  dateInput: { width: "11ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  dateInput: { width: "12ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   dueRow: { background: "#fde8e8" },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
