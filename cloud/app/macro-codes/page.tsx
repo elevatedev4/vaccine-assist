@@ -5,43 +5,80 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { buildProductViews } from "@/lib/product-view";
 import { buildMacroCode, buildMacroRows, type MacroLotLike, type MacroRow, type MacroRowVaccine } from "@/lib/macro-codes";
+import { macroProductColor } from "@/lib/macro-colors";
+import { formatNdcDisplay } from "@/lib/lots-grouping";
+import type { MacroSection } from "@/lib/macro-catalog";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
 /**
- * /macro-codes tab (Will's brief, verbatim): "add new tab 'Macro codes'
- * that follows the setup of the attached excel file and allows for
- * one-click copying of the macro code for each dose. If an item is
- * missing lot/exp, add a note at the end that shows the lot is missing.
- * when they try to copy it make a popup for them to enter the lot/exp,
- * then copy the code with the correct lot/exp. Include a checkbox
- * before submit that allows them to save the lot/exp in the system, but
- * not recommended if the item is pkg size 1. If pkg size is not 1,
- * automatically have the box checked for them."
+ * /macro-codes tab, round 2 (Will's brief, verbatim highlights): "Remove
+ * the entry box for dose. It's always set already... Hide the short
+ * code and macro code in a little settings dropdown at the far right...
+ * follow the same format as the excel file... a section for covid/flu
+ * vaccines for age 3-11 and then for 12+, then a section for all the
+ * vaccines... type of vaccine, then the name of the product, then dose,
+ * then the copy button, very succinct and compact. Include the cash
+ * price too. Use color coding to differentiate the vaccines."
  *
- * Pure row-building logic lives in lib/macro-codes.ts (unit-tested);
- * this page is just data loading + the copy/modal UI, styled
- * consistently with /lots (system font, compact spreadsheet table).
- * Saving a lot from the modal fans out to every dose vaccine_id of the
- * product (POST /api/lots vaccine_ids) — the SAME fan-out /lots already
- * uses, so a save here keeps the /lots page and desktop app in sync.
+ * Pure row-building + catalog/section/color logic lives in
+ * lib/macro-codes.ts / lib/macro-catalog.ts / lib/macro-colors.ts
+ * (all unit-tested); this page is just data loading + the compact
+ * section layout + the copy/modal UI. Saving a lot from the modal fans
+ * out to every dose vaccine_id of the product (POST /api/lots
+ * vaccine_ids) — the SAME fan-out /lots already uses, so a save here
+ * keeps the /lots page and desktop app in sync.
  */
 
 type VaccineRow = MacroRowVaccine;
 type LotRow = { id: string; vaccine_id: string; lot_number: string; expiration: string; status: string };
 
 const styles = {
-  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1000 },
-  button: { padding: "0.3rem 0.7rem", fontSize: "13px" },
+  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 900 },
+  button: { padding: "0.3rem 0.6rem", fontSize: "13px", minWidth: 68 },
   error: { color: "#b00020", fontSize: "0.8rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
-  note: { color: "#b00020", fontSize: "0.78rem", fontStyle: "italic" as const, marginLeft: "0.5rem" },
-  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "13px", lineHeight: 1.2, marginTop: "0.75rem" },
+  note: { color: "#b00020", fontSize: "0.72rem", fontStyle: "italic" as const, marginLeft: "0.4rem", whiteSpace: "nowrap" as const },
+  sectionHeading: { fontSize: "0.95rem", fontWeight: 700, margin: "1.25rem 0 0.35rem" },
+  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "12.5px", lineHeight: 1.2 },
   th: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
-  td: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #eee", verticalAlign: "top" as const },
-  groupRow: { background: "#d9dde3", fontWeight: 600 },
-  macroCode: { fontFamily: "ui-monospace, monospace", fontSize: "0.85rem" },
-  dosesInput: { width: 40, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "12px", marginLeft: "0.4rem" },
+  td: { textAlign: "left" as const, padding: "2px 6px", verticalAlign: "middle" as const },
+  type: { fontWeight: 600 },
+  cashPrice: { whiteSpace: "nowrap" as const },
+  copyCell: { display: "flex", alignItems: "center", gap: "0.3rem" },
+  copyFallback: { marginTop: "0.25rem" },
+  copyFallbackInput: {
+    fontFamily: "ui-monospace, monospace",
+    fontSize: "0.8rem",
+    width: "100%",
+    padding: "2px 4px",
+    boxSizing: "border-box" as const,
+    border: "1px solid #b00020",
+  },
+  // ⚙ settings menu — a native <details>/<summary> disclosure. Native
+  // <details> does NOT close itself on an outside click, so a document
+  // pointerdown listener (armed only while any menu is open — same
+  // pattern as /lots' row cog menus and app/top-nav.tsx's account menu)
+  // closes every open .macro-settings-menu whose element doesn't
+  // contain the click, plus Escape.
+  menuDetails: { display: "inline-block", position: "relative" as const },
+  menuSummary: { cursor: "pointer", listStyle: "none" as const, padding: "0 4px", border: "1px solid #ccc", borderRadius: 3, fontSize: "11px" },
+  menuPanel: {
+    position: "absolute" as const,
+    right: 0,
+    top: "100%",
+    zIndex: 10,
+    background: "#fff",
+    border: "1px solid #ccc",
+    borderRadius: 4,
+    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+    padding: "0.5rem",
+    minWidth: 200,
+    fontSize: "12px",
+  },
+  menuRow: { display: "flex", justifyContent: "space-between", gap: "0.75rem", padding: "1px 0" },
+  menuLabel: { color: "#555" },
+  menuValue: { fontFamily: "ui-monospace, monospace" },
   modalOverlay: {
     position: "fixed" as const,
     inset: 0,
@@ -63,16 +100,14 @@ const styles = {
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" as const, border: "1px solid #bbb" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" },
   checkboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
-  copyFallback: { marginTop: "0.25rem" },
-  copyFallbackInput: {
-    fontFamily: "ui-monospace, monospace",
-    fontSize: "0.8rem",
-    width: "100%",
-    padding: "2px 4px",
-    boxSizing: "border-box" as const,
-    border: "1px solid #b00020",
-  },
 } as const;
+
+const SECTION_DEFS: readonly { key: MacroSection | "all"; heading: string }[] = [
+  { key: "age3to11", heading: "COVID / Flu — Age 3-11" },
+  { key: "age12plus", heading: "COVID / Flu — Age 12+" },
+  { key: "altFlu", heading: "Alternative flu shots" },
+  { key: "all", heading: "All vaccines" },
+];
 
 /** Copies text via the Clipboard API, falling back to a hidden
  * textarea + execCommand for non-secure (http, non-localhost) contexts
@@ -132,6 +167,11 @@ function missingNote(row: MacroRow): string | null {
   return null;
 }
 
+function formatCashPrice(cents: number | null): string {
+  if (cents === null) return "";
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 export default function MacroCodesPage() {
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -142,13 +182,12 @@ export default function MacroCodesPage() {
 
   const [vaccines, setVaccines] = useState<VaccineRow[]>([]);
   const [lots, setLots] = useState<LotRow[]>([]);
-  const [doseCounts, setDoseCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copyFailure, setCopyFailure] = useState<{ key: string; code: string } | null>(null);
-  const [savingDoses, setSavingDoses] = useState<Record<string, boolean>>({});
+  const [anyMenuOpen, setAnyMenuOpen] = useState(false);
 
   type ModalState = {
     row: MacroRow;
@@ -172,7 +211,6 @@ export default function MacroCodesPage() {
   function resetAfterSignOut() {
     setVaccines([]);
     setLots([]);
-    setDoseCounts({});
     setLoadError(null);
   }
 
@@ -198,12 +236,11 @@ export default function MacroCodesPage() {
     setLoadError(null);
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [vaccinesRes, lotsRes, settingsRes] = await Promise.all([
+      const [vaccinesRes, lotsRes] = await Promise.all([
         fetch("/api/vaccines?includeInactive=true", { headers }),
         fetch("/api/lots", { headers }),
-        fetch("/api/macro-codes/settings", { headers }),
       ]);
-      const [vaccinesData, lotsData, settingsData] = await Promise.all([vaccinesRes.json(), lotsRes.json(), settingsRes.json()]);
+      const [vaccinesData, lotsData] = await Promise.all([vaccinesRes.json(), lotsRes.json()]);
 
       if (!vaccinesRes.ok) {
         setLoadError(vaccinesData.error ?? "Could not load vaccines.");
@@ -216,7 +253,6 @@ export default function MacroCodesPage() {
 
       setVaccines(vaccinesData.vaccines ?? []);
       setLots(lotsData.lots ?? []);
-      if (settingsRes.ok) setDoseCounts(settingsData.doseCounts ?? {});
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not load macro codes.");
     } finally {
@@ -264,12 +300,52 @@ export default function MacroCodesPage() {
   }, [lots]);
 
   const rows = useMemo(
-    () => buildMacroRows(productViews, vaccines, activeLotsByVaccineId, doseCounts),
-    [productViews, vaccines, activeLotsByVaccineId, doseCounts]
+    () => buildMacroRows(productViews, vaccines, activeLotsByVaccineId),
+    [productViews, vaccines, activeLotsByVaccineId]
   );
 
   function rowKey(row: MacroRow): string {
     return `${row.productKey}:${row.doseNumber}`;
+  }
+
+  // Closes every open ⚙ menu on an outside click/tap, and on Escape —
+  // same pattern as /lots' row cog menus.
+  useEffect(() => {
+    if (!anyMenuOpen) return;
+
+    function closeMenusNotContaining(target: Node | null) {
+      let stillOpen = false;
+      document.querySelectorAll<HTMLDetailsElement>(".macro-settings-menu").forEach((el) => {
+        if (!el.open) return;
+        if (target && el.contains(target)) {
+          stillOpen = true;
+          return;
+        }
+        el.open = false;
+      });
+      setAnyMenuOpen(stillOpen);
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      closeMenusNotContaining(event.target as Node);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeMenusNotContaining(null);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [anyMenuOpen]);
+
+  function handleSettingsMenuToggle() {
+    const stillOpen = Array.from(document.querySelectorAll<HTMLDetailsElement>(".macro-settings-menu")).some(
+      (el) => el.open
+    );
+    setAnyMenuOpen(stillOpen);
   }
 
   /** Closes the modal — used by Cancel, Escape, and an overlay click,
@@ -306,37 +382,6 @@ export default function MacroCodesPage() {
       copyResult: null,
       saved: false,
     });
-  }
-
-  async function handleDosesChange(productKey: string, value: number) {
-    if (!session) return;
-    const previous = doseCounts;
-    // Optimistic local update for a snappy control; the PUT below sends
-    // ONLY this product's changed key and the server merges it onto
-    // whatever's currently saved (see the route's doc comment) so a
-    // second device editing a DIFFERENT product's dose count at the
-    // same time can't clobber this write or be clobbered by it.
-    setDoseCounts((current) => ({ ...current, [productKey]: value }));
-    setSavingDoses((prev) => ({ ...prev, [productKey]: true }));
-    try {
-      const response = await fetch("/api/macro-codes/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-        body: JSON.stringify({ doseCounts: { [productKey]: value } }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setDoseCounts(previous);
-        setLoadError(body.error ?? "Could not save the dose count.");
-        return;
-      }
-      if (body.doseCounts) setDoseCounts(body.doseCounts);
-    } catch (err) {
-      setDoseCounts(previous);
-      setLoadError(err instanceof Error ? err.message : "Could not save the dose count.");
-    } finally {
-      setSavingDoses((prev) => ({ ...prev, [productKey]: false }));
-    }
   }
 
   async function handleModalSubmit(event: FormEvent) {
@@ -442,8 +487,81 @@ export default function MacroCodesPage() {
     );
   }
 
-  let lastProductKey: string | null = null;
-  let lastGroup: string | null = null;
+  function renderRow(row: MacroRow, sectionKey: string) {
+    const key = `${sectionKey}:${rowKey(row)}`;
+    const note = missingNote(row);
+    const isNoShortCode = row.shortCode === null;
+    const color = macroProductColor(row.productKey);
+    const copyKey = rowKey(row);
+
+    return (
+      <tr key={key} style={{ background: color.background }}>
+        <td style={{ ...styles.td, ...styles.type, color: color.text }}>{row.catalogType}</td>
+        <td style={styles.td}>{row.displayName}</td>
+        <td style={styles.td}>Dose {row.doseNumber}</td>
+        <td style={{ ...styles.td, ...styles.cashPrice }}>{formatCashPrice(row.cashPriceCents)}</td>
+        <td style={styles.td}>
+          {isNoShortCode ? (
+            <em style={styles.muted}>no short code set</em>
+          ) : (
+            <span style={styles.copyCell}>
+              <button type="button" style={styles.button} onClick={() => void handleCopy(row)}>
+                {copiedKey === copyKey ? "Copied" : "Copy"}
+              </button>
+              {note && <span style={styles.note}>{note}</span>}
+              {copyFailure?.key === copyKey && <CopyFallback code={copyFailure.code} />}
+            </span>
+          )}
+        </td>
+        <td style={{ ...styles.td, textAlign: "right" }}>
+          {!isNoShortCode && (
+            <details className="macro-settings-menu" style={styles.menuDetails} onToggle={handleSettingsMenuToggle}>
+              <summary style={styles.menuSummary} aria-label={`${row.displayName} dose ${row.doseNumber} details`}>
+                ⚙
+              </summary>
+              <div style={styles.menuPanel}>
+                <div style={styles.menuRow}>
+                  <span style={styles.menuLabel}>Short code</span>
+                  <span style={styles.menuValue}>{row.shortCode}</span>
+                </div>
+                <div style={styles.menuRow}>
+                  <span style={styles.menuLabel}>Macro text</span>
+                  <span style={styles.menuValue}>{row.macro}</span>
+                </div>
+                <div style={styles.menuRow}>
+                  <span style={styles.menuLabel}>NDC</span>
+                  <span style={styles.menuValue}>{formatNdcDisplay(row.ndc)}</span>
+                </div>
+              </div>
+            </details>
+          )}
+        </td>
+      </tr>
+    );
+  }
+
+  function renderSectionTable(sectionRows: MacroRow[], sectionKey: string) {
+    if (sectionRows.length === 0) return null;
+    return (
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            <th style={styles.th}>Type</th>
+            <th style={styles.th}>Vaccine</th>
+            <th style={styles.th}>Dose</th>
+            <th style={styles.th}>Cash price</th>
+            <th style={styles.th}></th>
+            <th style={styles.th}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {sectionRows.map((row) => (
+            <Fragment key={`${sectionKey}:${rowKey(row)}`}>{renderRow(row, sectionKey)}</Fragment>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
 
   return (
     <main style={styles.main}>
@@ -453,93 +571,17 @@ export default function MacroCodesPage() {
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
 
-      {!loading && rows.length > 0 && (
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Vaccine</th>
-              <th style={styles.th}>Dose</th>
-              <th style={styles.th}>Short code</th>
-              <th style={styles.th}>Macro</th>
-              <th style={styles.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const key = rowKey(row);
-              const showGroupHeading = row.doseNumber === 1 && row.productKey !== lastProductKey;
-              const showDosesInput = row.doseNumber === 1;
-              const note = missingNote(row);
-              const isNoShortCode = row.shortCode === null;
-
-              // Group headings mirror /lots and /ordering: derived from
-              // the product's group, injected once per group transition.
-              const productGroup = productViews.find((p) => p.productKey === row.productKey)?.group ?? "Other";
-              const groupHeadingRow =
-                showGroupHeading && productGroup !== lastGroup ? (
-                  <tr key={`group-${productGroup}-${row.productKey}`} style={styles.groupRow}>
-                    <td style={styles.td} colSpan={5}>
-                      {productGroup}
-                    </td>
-                  </tr>
-                ) : null;
-              if (showGroupHeading) lastGroup = productGroup;
-              lastProductKey = row.productKey;
-
-              return (
-                <Fragment key={key}>
-                  {groupHeadingRow}
-                  <tr>
-                    <td style={styles.td}>{row.displayName}</td>
-                    <td style={styles.td}>
-                      {row.doseNumber} of {row.doseCount}
-                      {showDosesInput && (
-                        <input
-                          type="number"
-                          min={1}
-                          max={4}
-                          value={row.doseCount}
-                          disabled={savingDoses[row.productKey]}
-                          onChange={(e) => {
-                            const parsed = Number.parseInt(e.target.value, 10);
-                            if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 4) {
-                              void handleDosesChange(row.productKey, parsed);
-                            }
-                          }}
-                          style={styles.dosesInput}
-                          aria-label={`Doses for ${row.displayName}`}
-                          title="Doses in this series"
-                        />
-                      )}
-                    </td>
-                    <td style={styles.td}>{row.shortCode ?? "—"}</td>
-                    <td style={styles.td}>
-                      {isNoShortCode ? (
-                        <em style={styles.muted}>no short code set</em>
-                      ) : (
-                        <>
-                          <span style={styles.macroCode}>{row.macro}</span>
-                          {note && <span style={styles.note}>{note}</span>}
-                        </>
-                      )}
-                    </td>
-                    <td style={styles.td}>
-                      {!isNoShortCode && (
-                        <>
-                          <button type="button" style={styles.button} onClick={() => void handleCopy(row)}>
-                            {copiedKey === key ? "Copied" : "Copy"}
-                          </button>
-                          {copyFailure?.key === key && <CopyFallback code={copyFailure.code} />}
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
+      {!loading &&
+        SECTION_DEFS.map(({ key, heading }) => {
+          const sectionRows = key === "all" ? rows : rows.filter((row) => row.sections.includes(key));
+          if (sectionRows.length === 0) return null;
+          return (
+            <section key={key}>
+              <h2 style={styles.sectionHeading}>{heading}</h2>
+              {renderSectionTable(sectionRows, key)}
+            </section>
+          );
+        })}
 
       {modal && (
         <div

@@ -1,6 +1,7 @@
 import { pickCurrentActiveLot, type LotStatusLike } from "@/lib/lots-table";
 import { partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
+import { lookupMacroCatalog, MACRO_CATALOG_OTHER, type MacroSection } from "@/lib/macro-catalog";
 import type { ProductView } from "@/lib/product-view";
 
 /**
@@ -10,32 +11,25 @@ import type { ProductView } from "@/lib/product-view";
  * Kept dependency-free of React/Supabase so it's directly unit-testable,
  * same posture as lib/lots-table.ts / lib/lots-grouping.ts.
  *
- * SOURCE-OF-TRUTH DISCOVERY (report this uncertainty back): the
- * formulary seed (supabase/seed/vaccines.sql, generated straight from
- * the pharmacy's real "Macro codes" Excel sheet — see
- * scripts/parse-formulary.mjs) already stores each per-dose `vaccine`
- * row's `short_code` as the FULL macro-code prefix for that specific
- * dose — e.g. Engerix's three dose rows carry short_code "engerix1" /
- * "engerix2" / "engerix3" outright, Shingrix's two rows carry
- * "shingrix1" / "shingrix2", etc. — NOT a shared undecorated base code
- * with the dose suffix added on afterward. So whenever a real `vaccine`
- * row exists for a given dose number, buildMacroRows below uses that
- * row's own short_code VERBATIM (via buildMacroCode with doseCount
- * forced to 1, i.e. no further suffixing) rather than re-appending a
- * dose suffix on top of it, which would double it up (e.g.
- * "engerix1" + "1" -> "engerix11"). buildMacroCode's own dose-suffix
- * behavior (suffix appended when doseCount > 1) is still real and
- * unit-tested as a pure function in isolation, and buildMacroRows DOES
- * use it for one deliberate fallback: if a product's configured dose
- * count (macro_dose_counts) is ever raised past the number of real
- * per-dose vaccine rows currently seeded for that product, a dose
- * number with no matching row gets a SYNTHESIZED code by stripping the
- * lowest real dose's own trailing dose-number digit (if present) to
- * recover a base, then handing that base + the target dose number to
- * buildMacroCode. This never fires with the shipped defaults (every
- * DEFAULT_DOSE_COUNTS entry matches today's actual seeded row count
- * exactly) — it only matters if Will raises a product's Doses setting
- * beyond what's currently in the `vaccine` table.
+ * ROUND 2 (Will's verbatim feedback): "Remove the entry box for dose.
+ * It's always set already... Shingrix is currently showing up with 4
+ * lines due to some weird error... follow the same format as the excel
+ * file." This rewrite drops the round-1 "Doses" setting entirely
+ * (formerly lib/macro-codes-settings.ts + its API route, now deleted) —
+ * buildMacroRows below emits exactly one row per REAL `vaccine` row that
+ * carries a short_code, never a synthesized dose beyond what's actually
+ * seeded. The round-1 4-line Shingrix bug was that mechanism: a
+ * per-product "Doses" number input (persisted to app_setting as
+ * macro_dose_counts) could be raised past the product's real seeded row
+ * count — e.g. to 4 for Shingrix, which only ever has 2 real dose rows —
+ * and the old buildMacroRows synthesized the extra dose numbers with a
+ * blank/incomplete macro. Deleting the whole override mechanism removes
+ * that failure mode outright. As a second, independent safeguard (in
+ * case the underlying `vaccine` table itself ever grows a genuine
+ * duplicate row for one short_code — e.g. two rows during an NDC
+ * transition), buildMacroRows also de-dupes by short_code, preferring
+ * whichever duplicate is active AND has a lot on file (see
+ * pickBetterDuplicate below).
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -81,34 +75,6 @@ export function buildMacroCode({ shortCode, doseNumber, doseCount, lotNumber, ex
   return { text: `${code},${lot},${exp}`, complete: lot.length > 0 && exp.length > 0 };
 }
 
-/**
- * Default doses-per-series for a product, keyed by the short_code BASE
- * (case-insensitive prefix match against a member vaccine's own
- * short_code) — used whenever `macro_dose_counts` (app_setting) hasn't
- * been overridden for that product yet. Matches every multi-dose series
- * currently seeded (supabase/seed/vaccines.sql) plus two not-yet-seeded
- * ones Will's brief names explicitly (twinrix, heplisav) so the tab
- * behaves correctly the moment either is added to the formulary.
- */
-export const DEFAULT_DOSE_COUNTS: Readonly<Record<string, number>> = {
-  shingrix: 2,
-  engerix: 3,
-  gardasil: 3,
-  mmr: 2,
-  priorix: 2,
-  vaqtaadult: 2,
-  twinrix: 3,
-  heplisav: 2,
-};
-
-function defaultDoseCountForShortCode(shortCode: string): number {
-  const lower = shortCode.toLowerCase();
-  for (const [base, count] of Object.entries(DEFAULT_DOSE_COUNTS)) {
-    if (lower.startsWith(base)) return count;
-  }
-  return 1;
-}
-
 export type MacroRowVaccine = {
   id: string;
   name: string;
@@ -116,6 +82,7 @@ export type MacroRowVaccine = {
   dose: string | null;
   short_code: string | null;
   active: boolean;
+  cash_price_cents?: number | null;
 };
 
 export type MacroLotLike = LotStatusLike & { lot_number: string };
@@ -125,25 +92,61 @@ export type MacroRow = {
   displayName: string;
   ndc: string | null;
   packageSize: number | null;
+  cashPriceCents: number | null;
   doseNumber: number;
-  doseCount: number;
   shortCode: string | null;
   lotNumber: string | null;
   expirationIso: string | null;
   macro: string | null;
   complete: boolean;
+  /** Sheet "Type" column value (lib/macro-catalog.ts), e.g. "Shingles". */
+  catalogType: string;
+  /** Sort key matching the sheet's "All vaccines" row order — see
+   * lib/macro-catalog.ts. */
+  sheetOrder: number;
+  /** Which quick-view sections (age3to11/age12plus/altFlu) this row
+   * belongs to, per lib/macro-catalog.ts — empty when the product is
+   * only in "All vaccines". */
+  sections: readonly MacroSection[];
   /** Every dose vaccine_id for the WHOLE product (not just this dose) —
    * the fan-out target for a lot save, matching how /lots already
    * writes the same lot across every dose row of a product. */
   vaccineIds: string[];
 };
 
+function doseNumberOf(vaccine: MacroRowVaccine): number {
+  const parsed = Number.parseInt(vaccine.dose ?? "1", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
 /**
- * Builds the /macro-codes tab's rows: one per (active) product's dose,
- * ordered COVID -> Flu -> Other then alphabetically by display name
- * (lib/lots-grouping.ts's partitionProductsForLotsPage — the SAME
- * ordering /ordering and /lots already use), inactive products
- * excluded entirely.
+ * Picks the "real" row when two `vaccine` rows share the same
+ * short_code (a genuine data-hygiene issue, e.g. leftover rows from an
+ * NDC transition) — prefers active over inactive, then whichever has a
+ * current lot on file, then whichever came first. Never fires under
+ * normal operation (short_code is unique per real dose today); exists
+ * so a future duplicate can't silently double a product's row count
+ * again the way the round-1 dose-count override did.
+ */
+function pickBetterDuplicate(
+  candidate: MacroRowVaccine,
+  current: MacroRowVaccine,
+  activeLotsByVaccineId: Readonly<Record<string, readonly MacroLotLike[]>>
+): MacroRowVaccine {
+  if (candidate.active !== current.active) return candidate.active ? candidate : current;
+  const candidateHasLot = pickCurrentActiveLot(activeLotsByVaccineId[candidate.id] ?? []) !== null;
+  const currentHasLot = pickCurrentActiveLot(activeLotsByVaccineId[current.id] ?? []) !== null;
+  if (candidateHasLot !== currentHasLot) return candidateHasLot ? candidate : current;
+  return current; // keep first occurrence
+}
+
+/**
+ * Builds the /macro-codes tab's rows: exactly one row per REAL,
+ * short_code-bearing `vaccine` row of every active product (never a
+ * synthesized dose — see this file's header comment), each annotated
+ * with its macro-catalog type/section membership so the page can slot it
+ * into the right quick-view section(s). Final order: sheetOrder (the
+ * Excel sheet's row order), then dose number, then display name.
  *
  * `activeLotsByVaccineId` should map a vaccine_id to ALL of its lots
  * (any status) — this function applies lib/lots-table.ts's
@@ -153,16 +156,15 @@ export type MacroRow = {
 export function buildMacroRows(
   products: readonly ProductView[],
   vaccines: readonly MacroRowVaccine[],
-  activeLotsByVaccineId: Readonly<Record<string, readonly MacroLotLike[]>>,
-  doseCounts: Readonly<Record<string, number>>
+  activeLotsByVaccineId: Readonly<Record<string, readonly MacroLotLike[]>>
 ): MacroRow[] {
   const vaccineById = new Map(vaccines.map((v) => [v.id, v]));
   const { sections } = partitionProductsForLotsPage(products, ORDERING_GROUP_DISPLAY_ORDER);
-  const orderedActiveProducts = sections.flatMap((section) => section.products);
+  const activeProducts = sections.flatMap((section) => section.products);
 
   const rows: MacroRow[] = [];
 
-  for (const product of orderedActiveProducts) {
+  for (const product of activeProducts) {
     const memberVaccines = product.vaccineIds
       .map((id) => vaccineById.get(id))
       .filter((v): v is MacroRowVaccine => Boolean(v));
@@ -174,60 +176,62 @@ export function buildMacroRows(
         displayName: product.displayName,
         ndc: product.ndc,
         packageSize: product.packageSize,
+        cashPriceCents: null,
         doseNumber: 1,
-        doseCount: 1,
         shortCode: null,
         lotNumber: null,
         expirationIso: null,
         macro: null,
         complete: false,
+        catalogType: MACRO_CATALOG_OTHER.type,
+        sheetOrder: MACRO_CATALOG_OTHER.sheetOrder,
+        sections: MACRO_CATALOG_OTHER.sections,
         vaccineIds: product.vaccineIds,
       });
       continue;
     }
 
-    const byDoseNumber = new Map<number, MacroRowVaccine>();
+    // De-dupe by short_code (trimmed, case-insensitive) — see
+    // pickBetterDuplicate's doc comment.
+    const bestByShortCode = new Map<string, MacroRowVaccine>();
     for (const v of withShortCode) {
-      const parsed = Number.parseInt(v.dose ?? "1", 10);
-      const doseNumber = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-      if (!byDoseNumber.has(doseNumber)) byDoseNumber.set(doseNumber, v);
+      const key = v.short_code!.trim().toLowerCase();
+      const existing = bestByShortCode.get(key);
+      bestByShortCode.set(key, existing ? pickBetterDuplicate(v, existing, activeLotsByVaccineId) : v);
     }
+    const deduped = Array.from(bestByShortCode.values()).sort((a, b) => doseNumberOf(a) - doseNumberOf(b));
 
-    const lowestDose = Math.min(...byDoseNumber.keys());
-    const lowestShortCode = (byDoseNumber.get(lowestDose) as MacroRowVaccine).short_code!.trim();
-    const strippedBase = lowestShortCode.endsWith(String(lowestDose))
-      ? lowestShortCode.slice(0, -String(lowestDose).length)
-      : lowestShortCode;
-
-    const doseCount = doseCounts[product.productKey] ?? defaultDoseCountForShortCode(lowestShortCode);
-
-    for (let doseNumber = 1; doseNumber <= doseCount; doseNumber++) {
-      const realVaccine = byDoseNumber.get(doseNumber);
-      const lots = realVaccine ? activeLotsByVaccineId[realVaccine.id] ?? [] : [];
+    for (const realVaccine of deduped) {
+      const doseNumber = doseNumberOf(realVaccine);
+      const shortCode = realVaccine.short_code!.trim();
+      const lots = activeLotsByVaccineId[realVaccine.id] ?? [];
       const currentLot = pickCurrentActiveLot(lots);
       const lotNumber = currentLot?.lot_number ?? null;
       const expirationIso = currentLot?.expiration ?? null;
-
-      const macroResult = realVaccine
-        ? buildMacroCode({ shortCode: realVaccine.short_code!.trim(), doseNumber, doseCount: 1, lotNumber, expirationIso })
-        : buildMacroCode({ shortCode: strippedBase, doseNumber, doseCount, lotNumber, expirationIso });
+      const macroResult = buildMacroCode({ shortCode, doseNumber, doseCount: 1, lotNumber, expirationIso });
+      const catalogEntry = lookupMacroCatalog(shortCode);
 
       rows.push({
         productKey: product.productKey,
         displayName: product.displayName,
         ndc: product.ndc,
         packageSize: product.packageSize,
+        cashPriceCents: realVaccine.cash_price_cents ?? null,
         doseNumber,
-        doseCount,
-        shortCode: realVaccine ? realVaccine.short_code!.trim() : `${strippedBase}${doseNumber}`,
+        shortCode,
         lotNumber,
         expirationIso,
         macro: macroResult.text,
         complete: macroResult.complete,
+        catalogType: catalogEntry.type,
+        sheetOrder: catalogEntry.sheetOrder,
+        sections: catalogEntry.sections,
         vaccineIds: product.vaccineIds,
       });
     }
   }
 
-  return rows;
+  return rows.sort(
+    (a, b) => a.sheetOrder - b.sheetOrder || a.doseNumber - b.doseNumber || a.displayName.localeCompare(b.displayName)
+  );
 }
