@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Small error-toast stack (V-T-lots-ux-round3, Will verbatim: "Dont'
@@ -26,15 +26,40 @@ let nextToastId = 1;
 export function useErrorToasts() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  // Reviewer follow-up (2026-09-11): pushError's 8s auto-dismiss timer
+  // used to be a bare setTimeout with no handle kept anywhere — if the
+  // user navigated away from /lots within 8s of a failure, the timer
+  // still fired after unmount and called setToasts on an unmounted
+  // hook (plus leaked the timer forever). Mirrors app/lots/page.tsx's
+  // own autosave-timer cleanup: every pending timeout is tracked here,
+  // by toast id, and cleared either when that toast is dismissed
+  // (manually or by firing) or, for whatever's still pending, on
+  // unmount.
+  const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    return () => {
+      for (const timer of timersRef.current.values()) clearTimeout(timer);
+      timersRef.current.clear();
+    };
+  }, []);
+
   function pushError(text: string) {
     const id = nextToastId++;
     setToasts((prev) => [...prev, { id, text }]);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      timersRef.current.delete(id);
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, AUTO_DISMISS_MS);
+    timersRef.current.set(id, timer);
   }
 
   function dismiss(id: number) {
+    const timer = timersRef.current.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timersRef.current.delete(id);
+    }
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }
 

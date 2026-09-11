@@ -52,8 +52,13 @@ import {
  * lib/date-mask.ts's dateInputValidationMessage, the pure/unit-tested
  * decision for exactly this). The existing "8 digits but not a real
  * date -> red border" behavior is unchanged, just now paired with a
- * "Not a valid date" message. The message is absolutely positioned so a
- * shown/hidden error never shifts the table row height.
+ * "Not a valid date" message. The message renders IN FLOW under the
+ * input in a reserved ~13px line (blank when there's no message) —
+ * reviewer follow-up 2026-09-11: an earlier absolutely-positioned
+ * version could overlap the /lots table's next row in its compact
+ * (2px/13px) styling; rendering in flow with a reserved height instead
+ * means a message appearing/disappearing never shifts row height AND
+ * never covers anything.
  */
 export default function DateTextInput({
   value,
@@ -113,7 +118,7 @@ export default function DateTextInput({
   const invalid = message !== null;
 
   return (
-    <span style={{ position: "relative", display: "block", width: "100%" }}>
+    <span style={{ display: "block", width: "100%" }}>
       <input
         type="text"
         inputMode="numeric"
@@ -128,25 +133,27 @@ export default function DateTextInput({
         onBlur={handleBlur}
         style={{ ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
       />
-      {message && (
-        <span
-          style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            marginTop: 1,
-            fontSize: "11px",
-            lineHeight: "13px",
-            color: "#b00020",
-            whiteSpace: "nowrap",
-            background: "#fff",
-            padding: "0 2px",
-            zIndex: 5,
-          }}
-        >
-          {message}
-        </span>
-      )}
+      {/* Reviewer follow-up (2026-09-11): this used to be position:
+          absolute over the row below, which an opaque 11px label at
+          zIndex 5 could visibly stomp on in /lots' compact (2px/13px)
+          table rows. Rendered IN FLOW instead — a reserved ~13px line
+          that's always present (blank when there's no message) so a
+          message appearing/disappearing never shifts row height, and
+          nothing ever overlaps the next row. */}
+      <span
+        style={{
+          display: "block",
+          minHeight: 13,
+          fontSize: "10px",
+          lineHeight: "13px",
+          color: "#b00020",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {message ?? ""}
+      </span>
     </span>
   );
 }
