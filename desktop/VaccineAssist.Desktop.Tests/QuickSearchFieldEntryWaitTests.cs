@@ -107,6 +107,56 @@ public class QuickSearchFieldEntryWaitTests
     }
 
     [Fact]
+    public async Task SucceedsOnceEnabledAfterBeingFoundButDisabledAndLogsThatOnlyOnce()
+    {
+        // V-..., 2026-09-11 (owner's log, 17:15, build 7ab6500): the field
+        // EXISTED 416ms after F3 but ElementNotEnabledException was thrown
+        // trying to focus/type into it — PioneerRx hadn't finished
+        // initializing the Add New Rx form yet. WaitForFieldAsync's own
+        // TryFind local function (FlaUI/UIA-dependent, not directly
+        // testable here — see this class's own doc comment) now treats
+        // "found but disabled" the same way this fake tryFind does: log
+        // the "present but disabled" line exactly once, then keep
+        // returning null (not found) until the fake flips to enabled.
+        const int disabledTicks = 3;
+        var attempt = 0;
+        var loggedDisabledOnce = false;
+        var loggedDisabledCount = 0;
+        var logMessages = new List<string>();
+
+        void Log(string message)
+        {
+            logMessages.Add(message);
+            if (message.Contains("present but disabled")) loggedDisabledCount++;
+        }
+
+        string? TryFind()
+        {
+            attempt++;
+            var isEnabled = attempt > disabledTicks;
+            if (!isEnabled)
+            {
+                if (!loggedDisabledOnce)
+                {
+                    loggedDisabledOnce = true;
+                    Log("'uxPrescriberQuickSearch' present but disabled — waiting");
+                }
+                return null;
+            }
+            return "field-element";
+        }
+
+        var found = await QuickSearchFieldEntry.WaitForFieldCoreAsync<string>(
+            TryFind, "uxPrescriberQuickSearch", maxEmptyTicks: 10, NoOpWait, Log);
+
+        Assert.True(found);
+        Assert.Equal(disabledTicks + 1, attempt);
+        Assert.Equal(1, loggedDisabledCount);
+        Assert.Contains(logMessages, m => m.Contains("present but disabled"));
+        Assert.Contains(logMessages, m => m.Contains("waited")); // the success log WaitForFieldCoreAsync itself adds
+    }
+
+    [Fact]
     public async Task RespectsAnAlreadyCancelledToken()
     {
         using var cts = new CancellationTokenSource();
