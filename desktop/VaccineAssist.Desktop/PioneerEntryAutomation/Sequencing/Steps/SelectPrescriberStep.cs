@@ -67,6 +67,17 @@ public sealed class SelectPrescriberStep : IPioneerEntryStep
                 "No protocol physician alternate ID on the payload — entry should have been blocked before this sequence ran.");
         }
 
+        // V-..., 2026-09-11 (owner's log, 15:43, build ef5058f): FAILED at
+        // "Select prescriber" the same way InputLotAndExpirationStep failed
+        // at the lot field on 2026-09-10 before it was hardened — see
+        // QuickSearchFieldEntry.WaitForFieldAsync's own doc comment. Waits
+        // (up to DefaultFieldWaitTimeout) for uxPrescriberQuickSearch to
+        // actually appear before the one-shot TypeAndConfirmAsync lookup
+        // below ever runs.
+        await QuickSearchFieldEntry.WaitForFieldAsync(
+            context.AttachedWindow, PrescriberQuickSearchAutomationId, QuickSearchFieldEntry.DefaultFieldWaitTimeout,
+            context.Log, cancellationToken);
+
         var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
             context.AttachedWindow, PrescriberQuickSearchAutomationId, "prescriber",
             context.Payload.PhysicianAlternateId, EnterPresses, context.Log, cancellationToken);
