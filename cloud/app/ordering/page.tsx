@@ -755,7 +755,7 @@ export default function OrderingPage() {
             <th style={styles.thRight}>7d</th>
             <th style={styles.thRight}>Rec. target</th>
             <th style={styles.th}>Target</th>
-            <th style={styles.th}>BOH</th>
+            <th style={styles.th}>BOH (doses)</th>
             <th style={styles.thRight}>Order (doses)</th>
             <th style={styles.thRight}>Order (pkg)</th>
           </tr>
@@ -825,7 +825,7 @@ export default function OrderingPage() {
                   <th style={styles.thRight}>Units/pkg</th>
                   <th style={styles.thRight}>7d</th>
                   <th style={styles.thRight}>Rec. target</th>
-                  <th style={styles.th}>BOH</th>
+                  <th style={styles.th}>BOH (doses)</th>
                   <th style={styles.thRight}>Order (doses)</th>
                   <th style={styles.thRight}>Order (pkg)</th>
                 </tr>

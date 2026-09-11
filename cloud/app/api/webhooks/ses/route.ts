@@ -1,15 +1,23 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import {
   describeMimeStructure,
+  extractAllAttachmentPartsFromRawMime,
   extractAttachmentFromRawMime,
   extractTextFromRawMime,
   getHeader,
   splitHeaderBody,
   type ExtractedAttachment,
 } from "@/lib/ses-mime";
+import {
+  headerInfoFromMatrix,
+  isVaccinationLogHeaderLine,
+  matrixFromDelimitedText,
+  matrixFromXlsxBuffer,
+  persistInboundAttachment,
+} from "@/lib/inbound-attachments";
 import { isAllowedSnsHost, verifySnsSignature } from "@/lib/sns-signature";
 import { findAddressByToken, parseToken, touchLastReceived, type InboundEmailAddress } from "@/lib/on-hand/address";
 import { insertOnHandRows } from "@/lib/on-hand/insert";
@@ -479,6 +487,114 @@ async function resolveRecipientAddress(recipients: string[]): Promise<InboundEma
   return null;
 }
 
+/**
+ * Non-PHI email metadata for retention (V-inbound-attachment-retention,
+ * 2026-09-11) — `mail.timestamp` (falling back to "now" for a payload
+ * that omits it, e.g. hand-built test fixtures) and
+ * `mail.commonHeaders.from`/`.subject`. These are stored alongside a
+ * retained attachment (never logged — see retainAttachmentsBestEffort),
+ * unlike every other place in this route, which deliberately ignores
+ * `mail.commonHeaders` (see this file's top doc comment) since the BOH
+ * ingestion path never needed it before now.
+ */
+function extractEmailMeta(sesMessage: Record<string, unknown>): { receivedAt: string; from: string; subject: string } {
+  const mail = sesMessage.mail as Record<string, unknown> | undefined;
+  const commonHeaders = mail?.commonHeaders as Record<string, unknown> | undefined;
+  const timestamp = typeof mail?.timestamp === "string" ? mail.timestamp : undefined;
+  const fromList = commonHeaders?.from;
+  const from = Array.isArray(fromList) && typeof fromList[0] === "string" ? fromList[0] : "";
+  const subject = typeof commonHeaders?.subject === "string" ? commonHeaders.subject : "";
+  return { receivedAt: timestamp ?? new Date().toISOString(), from, subject };
+}
+
+/**
+ * Persists every attachment part found in `rawMime` (recognized or not
+ * — lib/ses-mime.ts's extractAllAttachmentPartsFromRawMime) BEFORE any
+ * BOH parsing is attempted, so a parser crash or a 0-match report never
+ * loses the underlying file (V-inbound-attachment-retention, Will
+ * 2026-09-11 — a real vaccination-log xlsx was lost this way). Entirely
+ * best-effort: every failure (Supabase unconfigured, a genuine insert
+ * error, an oversized payload) is caught and logged here and must NEVER
+ * change the webhook's response — SNS retry semantics are unaffected.
+ */
+async function retainAttachmentsBestEffort(
+  rawMime: string,
+  emailMeta: { receivedAt: string; from: string; subject: string }
+): Promise<void> {
+  const parts = extractAllAttachmentPartsFromRawMime(rawMime);
+  if (parts.length === 0) return;
+
+  let supabase: ReturnType<typeof getSupabaseServerClient>;
+  try {
+    supabase = getSupabaseServerClient();
+  } catch (err) {
+    console.warn("POST /api/webhooks/ses: skipping attachment retention — Supabase not configured", err);
+    return;
+  }
+
+  for (const part of parts) {
+    try {
+      const sha256 = createHash("sha256").update(part.buffer).digest("hex");
+      const result = await persistInboundAttachment(supabase, {
+        receivedAt: emailMeta.receivedAt,
+        from: emailMeta.from,
+        subject: emailMeta.subject,
+        filename: part.filename,
+        contentType: part.contentType,
+        bytes: part.buffer.length,
+        sha256,
+        base64: part.buffer.toString("base64"),
+      });
+      if (result.persisted) {
+        console.log(
+          `POST /api/webhooks/ses: retained inbound attachment filename="${part.filename}" bytes=${part.buffer.length}`
+        );
+      } else {
+        console.log(
+          `POST /api/webhooks/ses: attachment retention skipped filename="${part.filename}" reason=${result.reason}`
+        );
+      }
+    } catch (err) {
+      console.error(`POST /api/webhooks/ses: failed to persist inbound attachment filename="${part.filename}"`, err);
+    }
+  }
+}
+
+/**
+ * For an xlsx/csv attachment about to be BOH-parsed: logs its header row
+ * + row count (info level — never data rows, PHI/log discipline) and
+ * returns true when the header looks like PioneerRx's per-dose
+ * vaccination-log report (isVaccinationLogHeaderLine) rather than the
+ * BOH stock report, so the caller can skip the BOH parse/insert for this
+ * attachment instead of recording 0-match noise. Returns false (never
+ * throws) for a pdf attachment, an unparseable/empty matrix, or any
+ * exception inspecting it — BOH parsing proceeds as before in every one
+ * of those cases.
+ */
+function inspectAttachmentAndCheckVaccinationLog(attachment: ExtractedAttachment): boolean {
+  if (attachment.kind !== "xlsx" && attachment.kind !== "csv") return false;
+
+  try {
+    const matrix =
+      attachment.kind === "xlsx"
+        ? matrixFromXlsxBuffer(attachment.buffer)
+        : matrixFromDelimitedText(attachment.text, attachment.text.includes("\t") ? "\t" : ",");
+    const info = headerInfoFromMatrix(matrix);
+    if (!info) return false;
+
+    console.log(`POST /api/webhooks/ses: attachment header="${info.headerLine}" rowCount=${info.rowCount}`);
+
+    if (isVaccinationLogHeaderLine(info.headerLine)) {
+      console.log("POST /api/webhooks/ses: vaccination-log report detected (not BOH) — retained only");
+      return true;
+    }
+  } catch (err) {
+    console.warn("POST /api/webhooks/ses: failed to inspect attachment header — proceeding with BOH parse", err);
+  }
+
+  return false;
+}
+
 async function handleSnsRequest(request: Request, snsMessageType: string): Promise<NextResponse> {
   let body: Record<string, unknown>;
   try {
@@ -580,6 +696,13 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
       return NextResponse.json({ ignored: "unknown-recipient" });
     }
 
+    // V-inbound-attachment-retention (Will 2026-09-11): persist every
+    // attachment BEFORE any parsing is attempted — see
+    // retainAttachmentsBestEffort's doc comment — so a parser crash or a
+    // 0-match report never loses the underlying file the way today's
+    // vaccination-log xlsx was lost.
+    await retainAttachmentsBestEffort(rawMime, extractEmailMeta(sesMessage));
+
     // V-ordering-targets: try an xlsx/csv ATTACHMENT first (Pioneer's
     // real emailed report is most likely this same table its manual
     // export produces) — extractAttachmentFromRawMime returns null for
@@ -588,9 +711,12 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
     // existing plain-text path unchanged.
     const messageId = extractSesMessageId(sesMessage, body);
     const attachment = extractAttachmentFromRawMime(rawMime);
-    const response = attachment
-      ? await processOnHandAttachment(attachment, resolvedAddress.id, rawMime, messageId)
-      : await processOnHandContent(extractTextFromRawMime(rawMime), resolvedAddress.id, messageId);
+    const isVaccinationLog = attachment ? inspectAttachmentAndCheckVaccinationLog(attachment) : false;
+    const response = !attachment
+      ? await processOnHandContent(extractTextFromRawMime(rawMime), resolvedAddress.id, messageId)
+      : isVaccinationLog
+        ? NextResponse.json({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0, skipped: "vaccination-log" })
+        : await processOnHandAttachment(attachment, resolvedAddress.id, rawMime, messageId);
     // A duplicate delivery (insertAndSummarize's dedupe check) is still
     // status 200 — SNS must see success or it'll keep retrying — but
     // must NOT touch last_received_at (V-onhand-dedupe: "without ...

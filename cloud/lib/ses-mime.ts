@@ -377,6 +377,72 @@ export function extractAttachmentFromRawMime(raw: string): ExtractedAttachment |
   return null;
 }
 
+export type RawAttachmentPart = {
+  filename: string;
+  contentType: string;
+  buffer: Buffer;
+};
+
+/**
+ * Every MIME part that "looks like" an attachment (looksLikeAttachment,
+ * above) decoded to raw bytes — REGARDLESS of whether it's a recognized
+ * xlsx/csv/pdf type. Used for retention (V-inbound-attachment-retention,
+ * 2026-09-11: persist everything, even a type the BOH pipeline doesn't
+ * understand, so nothing is ever silently lost) as opposed to
+ * extractAttachmentFromRawMime's "first RECOGNIZED xlsx/csv/pdf part"
+ * scan, which is used for BOH parsing and is unchanged.
+ *
+ * Same oversize gate as extractAttachmentFromRawMime
+ * (MAX_ATTACHMENT_PART_CHARS, checked on the raw still-encoded text
+ * BEFORE any decode) — an oversized part is skipped (logged) here too,
+ * never decoded, for the same reason: this webhook is reachable by
+ * anyone who learns a per-account inbound address.
+ */
+export function extractAllAttachmentPartsFromRawMime(raw: string): RawAttachmentPart[] {
+  const top = splitHeaderBody(raw);
+  if (!top) return [];
+
+  const topContentTypeRaw = getHeader(top.headers, "Content-Type") ?? "text/plain";
+  if (!topContentTypeRaw.toLowerCase().includes("multipart")) return [];
+
+  const parts: MimeLeaf[] = [];
+  collectMimeParts(top.headers, top.body, 0, parts);
+
+  const results: RawAttachmentPart[] = [];
+  for (const part of parts) {
+    const filename = getAttachmentFilename(part.headers, part.contentTypeRaw);
+    if (!looksLikeAttachment(part, filename)) continue;
+
+    if (part.body.length > MAX_ATTACHMENT_PART_CHARS) {
+      console.warn(
+        `extractAllAttachmentPartsFromRawMime: skipping oversized attachment part for retention ` +
+          `(${part.body.length} raw chars > ${MAX_ATTACHMENT_PART_CHARS} max) name="${filename}"`
+      );
+      continue;
+    }
+
+    const encoding = (getHeader(part.headers, "Content-Transfer-Encoding") ?? "").toLowerCase().trim();
+    let buffer: Buffer;
+    if (encoding === "base64") {
+      try {
+        buffer = Buffer.from(part.body.replace(/\s/g, ""), "base64");
+      } catch {
+        continue;
+      }
+    } else {
+      buffer = Buffer.from(decodeByTransferEncoding(part.body, encoding), "utf-8");
+    }
+
+    results.push({
+      filename: filename || "attachment",
+      contentType: part.contentTypeRaw.split(";")[0].trim() || "application/octet-stream",
+      buffer,
+    });
+  }
+
+  return results;
+}
+
 /** Strips tags/entities from an HTML fragment down to plain-ish text —
  * only ever used as a last-resort fallback (see extractTextFromRawMime)
  * when no text/plain part exists, never for anything logged. */

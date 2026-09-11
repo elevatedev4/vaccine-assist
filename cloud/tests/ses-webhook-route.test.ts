@@ -555,6 +555,76 @@ describe("POST /api/webhooks/ses", () => {
       ]);
     });
 
+    // V-inbound-attachment-retention (Will 2026-09-11): a real Pioneer
+    // email attached a per-dose vaccination-log xlsx (first header cell
+    // "Completed date") instead of the BOH stock report — the BOH
+    // parser matched 0 of 76 lines and the file was lost since nothing
+    // raw was ever persisted. This attachment must now be (a) retained
+    // in app_setting and (b) skipped for BOH parsing/inserting instead
+    // of recording 0-match noise.
+    it("retains a vaccination-log xlsx attachment (header contains 'Completed date') and skips the BOH insert", async () => {
+      const sheet = utils.aoa_to_sheet([
+        ["Patient", "Vaccine", "Completed date", "Lot"],
+        ["Jane Synthetic", "Flu Quad 2025-26", "2026-09-10", "LOT123"],
+      ]);
+      const workbook = utils.book_new();
+      utils.book_append_sheet(workbook, sheet, "Sheet1");
+      const xlsxBuffer = write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+      const boundary = "BOUNDARY-VACCLOG";
+      const rawMime = [
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="vaccination-log.xlsx"',
+        'Content-Disposition: attachment; filename="vaccination-log.xlsx"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        xlsxBuffer.toString("base64"),
+        `--${boundary}--`,
+        "",
+      ].join(CRLF);
+
+      const insert = vi.fn(async () => ({ error: null }));
+      const store = new Map<string, unknown>();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert, DEFAULT_ADDRESS_ROW, undefined, { store }) as never);
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const response = await POST(
+        jsonRequest(
+          snsNotificationBody(
+            {},
+            {
+              content: Buffer.from(rawMime, "utf-8").toString("base64"),
+              mail: {
+                timestamp: "2026-09-11T20:39:00.000Z",
+                commonHeaders: { from: ["owner@pioneerrx.example"], subject: "AppExport: Vaccination Log" },
+              },
+            }
+          ),
+          { "x-amz-sns-message-type": "Notification" }
+        )
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ linesTotal: 0, matchedCount: 0, unmatchedCount: 0, skipped: "vaccination-log" });
+      expect(insert).not.toHaveBeenCalled();
+      expect(parsePioneerBohXlsx).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("vaccination-log report detected (not BOH) — retained only"));
+
+      // Retention persisted the raw attachment into app_setting BEFORE
+      // any BOH parsing was attempted.
+      const persistedKeys = [...store.keys()].filter((k) => k.startsWith("inbound_attachment:"));
+      expect(persistedKeys).toHaveLength(1);
+      const persisted = store.get(persistedKeys[0]) as { filename: string; base64: string; sha256: string };
+      expect(persisted.filename).toBe("vaccination-log.xlsx");
+      expect(persisted.base64).toBe(xlsxBuffer.toString("base64"));
+      expect(persisted.sha256).toHaveLength(64);
+
+      logSpy.mockRestore();
+    });
+
     // Security review fix (V-ordering-targets, 2026-09-08): this webhook
     // is reachable by anyone who learns a per-account inbound address,
     // and xlsx@0.18.5 (SheetJS, used by parsePioneerBohXlsx) carries two
