@@ -1,4 +1,7 @@
 using System;
+using System.Diagnostics;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using FlaUI.Core.AutomationElements;
@@ -29,7 +32,11 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// SetFocus() request FlaUI.Focus() sends, and PioneerRx's editable
 /// quick-search fields are exactly that kind of control.
 /// </summary>
-internal static class QuickSearchFieldEntry
+/// <remarks>Public rather than internal since this repo has no
+/// InternalsVisibleTo wired up (same reasoning as
+/// Uia/UiaTreeDumper.TruncateValue's own doc comment) — WaitForFieldCoreAsync
+/// below needs to be reachable from VaccineAssist.Desktop.Tests.</remarks>
+public static class QuickSearchFieldEntry
 {
     /// <summary>Poll interval between retries of a recoverable (timed-out)
     /// SetValue/FocusNative/ENTER attempt — see V-T28's AutoWatchRetry.
@@ -38,7 +45,93 @@ internal static class QuickSearchFieldEntry
     /// step beyond both living on the entry-sequence path).</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>
+    /// V-..., 2026-09-11 (owner's log, 15:43, build ef5058f): "Select
+    /// prescriber" FAILED the same way "Enter lot and expiration" did on
+    /// 2026-09-10 before InputLotAndExpirationStep was hardened — a single
+    /// instant FindFirstDescendant gives PioneerRx's Add New Rx screen no
+    /// time to finish rendering before giving up (see
+    /// SendF3AndDismissPreEntryDialogsStep.IsAddNewRxReady's own doc
+    /// comment: it fires the instant the next field is FIRST detectable,
+    /// not once the form has actually settled). The prescriber field never
+    /// got that fix; the very next field (drug/NDC,
+    /// uxPrescribedItemQuickSearch) is the identical one-shot shape, so it
+    /// gets the same wait pre-emptively rather than waiting for its own
+    /// failure log first. 15s default (WaitForFieldAsync below is called
+    /// with this), same budget as InputLotAndExpirationStep.LotFieldWaitTimeout
+    /// — kept as a SEPARATE constant here rather than referencing that
+    /// step's, so this class (already shared by all three field-typing
+    /// steps) doesn't take a dependency on one specific step's public
+    /// surface.
+    /// </summary>
+    public static readonly TimeSpan DefaultFieldWaitTimeout = TimeSpan.FromSeconds(15);
+
+    private static readonly TimeSpan FieldWaitPollInterval = TimeSpan.FromMilliseconds(250);
+
     public readonly record struct Outcome(bool Success, string Message);
+
+    /// <summary>
+    /// Re-focuses `window` (best-effort, never throws — same pattern as
+    /// InputLotAndExpirationStep.TryRefocusAttachedWindow) and then polls
+    /// for `automationId` to actually appear on it, up to `timeout` — the
+    /// live (FlaUI/UIA-dependent, not independently unit-testable — same
+    /// posture as InputLotAndExpirationStep.WaitForLotFieldAsync) wrapper
+    /// around the pure WaitForFieldCoreAsync below.
+    ///
+    /// Deliberately does NOT itself build a "field not found" failure
+    /// message: the caller's very next call to TypeAndConfirmAsync already
+    /// does its own FindFirstDescendant and produces that message
+    /// (unchanged wording) if the field still isn't there once this wait
+    /// gives up — so on timeout this method just returns false without
+    /// logging. On success it reports the wait via `log` (never on
+    /// timeout) so the step log shows how long PioneerRx actually took to
+    /// render the field.
+    /// </summary>
+    public static Task<bool> WaitForFieldAsync(
+        AutomationElement window, string automationId, TimeSpan timeout,
+        Action<string>? log = null, CancellationToken cancellationToken = default)
+    {
+        try { window.FocusNative(); } catch { /* best-effort, same as InputLotAndExpirationStep.TryRefocusAttachedWindow */ }
+
+        AutomationElement? TryFind()
+        {
+            try { return window.FindFirstDescendant(cf => cf.ByAutomationId(automationId)); }
+            catch { return null; }
+        }
+
+        var maxEmptyTicks = (int)Math.Ceiling(timeout.TotalMilliseconds / FieldWaitPollInterval.TotalMilliseconds);
+        return WaitForFieldCoreAsync(
+            TryFind, automationId, maxEmptyTicks,
+            () => Task.Delay(FieldWaitPollInterval, cancellationToken),
+            log, cancellationToken);
+    }
+
+    /// <summary>
+    /// PURE core of WaitForFieldAsync — reuses
+    /// SendF3AndDismissPreEntryDialogsStep.WaitForAsync's single-signal
+    /// overload (the shared polling primitive, not a new hand-rolled loop)
+    /// and adds the "log how long it took, only on success" behavior on
+    /// top. Generic (not AutomationElement-specific) so it's directly
+    /// unit-testable with a fake finder delegate — see
+    /// QuickSearchFieldEntryWaitTests.cs — same "pure logic split out for
+    /// testability" pattern as WaitForAsync itself.
+    /// </summary>
+    public static async Task<bool> WaitForFieldCoreAsync<T>(
+        Func<T?> tryFind, string automationId, int maxEmptyTicks, Func<Task> waitTick,
+        Action<string>? log, CancellationToken cancellationToken = default)
+        where T : class
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var found = await SendF3AndDismissPreEntryDialogsStep.WaitForAsync(tryFind, maxEmptyTicks, waitTick, cancellationToken);
+
+        if (found is null)
+        {
+            return false;
+        }
+
+        log?.Invoke($"waited {stopwatch.ElapsedMilliseconds}ms for '{automationId}' to appear.");
+        return true;
+    }
 
     /// <summary>
     /// V-T28 (Will, 2026-09-09): "Made it to the start of data entry into
@@ -124,9 +217,41 @@ internal static class QuickSearchFieldEntry
         }
         catch (Exception ex)
         {
-            return new Outcome(false, $"Failed to enter the {fieldLabel} (AutomationId '{automationId}'): {ex.Message}");
+            return new Outcome(false, $"Failed to enter the {fieldLabel} (AutomationId '{automationId}'): {DescribeException(ex)}");
         }
 
         return new Outcome(true, $"Entered {fieldLabel} \"{value}\" and pressed ENTER {enterPresses} time(s).");
+    }
+
+    /// <summary>
+    /// V-..., 2026-09-11 (owner's log, 15:43): the "Select prescriber"
+    /// failure line ended right after the colon — "FAILED — Failed to
+    /// enter the prescriber (AutomationId 'uxPrescriberQuickSearch'):" with
+    /// nothing after it, meaning ex.Message came back empty (or the first
+    /// line of a multi-line message was blank). Builds
+    /// "{ExceptionTypeName}: {first non-blank line of Message}" instead of
+    /// interpolating ex.Message directly, so the next failure always has
+    /// SOMETHING to go on even when Message itself is empty — and appends
+    /// the HResult in hex for a COMException specifically, since FlaUI/UIA
+    /// failures are frequently COMExceptions whose HResult is the only
+    /// useful signal when Message is blank. Never throws. Public (not
+    /// private) — same "no InternalsVisibleTo, so testable pure logic goes
+    /// public" reasoning as this class's own accessibility and
+    /// WaitForFieldCoreAsync above — so it's directly unit-testable with
+    /// plain Exception instances (no FlaUI/UIA dependency at all); see
+    /// QuickSearchFieldEntryWaitTests.cs.
+    /// </summary>
+    public static string DescribeException(Exception ex)
+    {
+        var typeName = ex.GetType().Name;
+        var firstLine = (ex.Message ?? string.Empty)
+            .Split('\n')
+            .Select(line => line.TrimEnd('\r').Trim())
+            .FirstOrDefault(line => line.Length > 0);
+        var text = firstLine ?? "<empty message>";
+        var hresultSuffix = ex is COMException
+            ? $" (HResult 0x{ex.HResult:X8})"
+            : string.Empty;
+        return $"{typeName}: {text}{hresultSuffix}";
     }
 }

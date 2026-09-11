@@ -65,6 +65,14 @@ public sealed class InputVaccineCodeStep : IPioneerEntryStep
                 "This vaccine has no NDC on file (Models.Vaccine.Ndc) — add one in the vaccine catalog before entering it into PioneerRx.");
         }
 
+        // V-..., 2026-09-11: same one-shot-lookup-too-early fix as
+        // SelectPrescriberStep (this is the very next step, and
+        // uxPrescribedItemQuickSearch is the identical field shape — see
+        // QuickSearchFieldEntry.WaitForFieldAsync's own doc comment).
+        await QuickSearchFieldEntry.WaitForFieldAsync(
+            context.AttachedWindow, PrescribedItemQuickSearchAutomationId, QuickSearchFieldEntry.DefaultFieldWaitTimeout,
+            context.Log, cancellationToken);
+
         var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
             context.AttachedWindow, PrescribedItemQuickSearchAutomationId, "drug/NDC",
             context.Payload.Ndc, EnterPresses, context.Log, cancellationToken);
