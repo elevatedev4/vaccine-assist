@@ -78,6 +78,18 @@ describe("GET /api/inbound/attachments/[key]", () => {
     expect(getSupabaseServerClient).not.toHaveBeenCalled();
   });
 
+  // Review fix (2026-09-11): decodeURIComponent throws URIError on a
+  // malformed %-escape — must come back as 404, not an uncaught 500,
+  // and must never reach Supabase.
+  it("returns 404 (not a 500) for a malformed %-escape in the key, without ever calling Supabase", async () => {
+    const response = await GET(authedRequest("/api/inbound/attachments/%E0%A4%A"), {
+      params: Promise.resolve({ key: "%E0%A4%A" }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
   it("returns 404 (not 503/500) for an unknown but properly-prefixed key", async () => {
     const maybeSingle = vi.fn(async () => ({ data: null, error: null }));
     const eq = vi.fn(() => ({ maybeSingle }));

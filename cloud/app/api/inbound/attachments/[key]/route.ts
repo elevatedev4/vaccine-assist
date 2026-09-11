@@ -27,7 +27,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ key:
   if ("error" in auth) return auth.error;
 
   const { key: rawKey } = await params;
-  const key = decodeURIComponent(rawKey);
+
+  // Review fix (2026-09-11): a malformed %-escape (e.g. "%E0%A4%A") makes
+  // decodeURIComponent throw URIError — treat that exactly like an
+  // unrecognized key (404) rather than letting it become an uncaught 500,
+  // and BEFORE the prefix check / any Supabase access below.
+  let key: string;
+  try {
+    key = decodeURIComponent(rawKey);
+  } catch {
+    return NextResponse.json({ error: "Attachment not found." }, { status: 404 });
+  }
 
   if (!key.startsWith(INBOUND_ATTACHMENT_KEY_PREFIX)) {
     return NextResponse.json({ error: "Attachment not found." }, { status: 404 });
