@@ -44,6 +44,16 @@ import {
  * used by /lots' autosave to flush a pending debounced save immediately
  * when the field loses focus, same as every other autosaving field there.
  *
+ * `onInvalidBlur` (V-T-lots-round4, optional, additive, Will verbatim:
+ * "If user tabs off of errored field, add a popup saying invalid data
+ * entry") fires on blur, in addition to `onBlur`, ONLY when the field's
+ * digits are invalid per `dateInputValidationMessage` at that moment
+ * (1-7 digits, or 8 digits that don't form a real calendar date) —
+ * passed that message string. It fires once per blur event, never on
+ * every keystroke, since it's wired into the blur handler rather than
+ * the render-time `message`/`invalid` computation that already drives
+ * the red border.
+ *
  * Round (2026-09-11, Will verbatim: "the spacing in the table is now
  * weird ... make it more compact like it was, and the expiration dates
  * aren't lined up with the lots ... Don't need error text. Just make the
@@ -60,6 +70,7 @@ export default function DateTextInput({
   onChange,
   onRawTextChange,
   onBlur,
+  onInvalidBlur,
   ariaLabel,
   disabled,
   style,
@@ -68,6 +79,7 @@ export default function DateTextInput({
   onChange: (isoOrEmpty: string) => void;
   onRawTextChange?: (text: string) => void;
   onBlur?: () => void;
+  onInvalidBlur?: (message: string) => void;
   ariaLabel?: string;
   disabled?: boolean;
   style?: CSSProperties;
@@ -106,6 +118,8 @@ export default function DateTextInput({
   function handleBlur() {
     setFocused(false);
     onBlur?.();
+    const blurredMessage = dateInputValidationMessage(onlyDigits(text), "blurred");
+    if (blurredMessage !== null) onInvalidBlur?.(blurredMessage);
   }
 
   const digits = onlyDigits(text);
@@ -126,7 +140,7 @@ export default function DateTextInput({
       onPaste={handlePaste}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      style={{ ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
+      style={{ width: style?.width ?? "12ch", ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
     />
   );
 }

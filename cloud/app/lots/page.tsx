@@ -7,6 +7,7 @@ import { todayInChicago } from "@/lib/chicago-date";
 import { isLotRowDue, pickCurrentActiveLot, resolveLotRowHighlight } from "@/lib/lots-table";
 import { dedupeLotsByNumber, partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { buildProductViews, type ProductView } from "@/lib/product-view";
+import { lotsDisplayName } from "@/lib/lots-display-name";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 import { formatNdcDashed } from "@/lib/ndc";
 import { isoToMaskedDate } from "@/lib/date-mask";
@@ -103,7 +104,13 @@ const styles = {
   // heading color to make it easier to distinguish").
   groupRow: { background: "#d9dde3", fontWeight: 600 },
   inactiveRow: { color: "#999" },
-  input: { width: "100%", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  // V-T-lots-round4 (Will verbatim: "Decrease the size of the boxes to
+  // match their content better. The date ones are far too long.") —
+  // sized to content instead of stretching to the full <td>: a date is
+  // always "MM/DD/YYYY" (10 chars) plus a little breathing room, a lot
+  // number is free text but rarely runs past a dozen-odd characters.
+  lotInput: { width: "14ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  dateInput: { width: "12ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   dueRow: { background: "#fde8e8" },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
@@ -833,12 +840,12 @@ export default function LotsPage() {
 
     return (
       <tr key={view.productKey} style={rowStyle}>
-        <td style={styles.td}>{view.displayName}</td>
+        <td style={styles.td}>{lotsDisplayName(view.displayName)}</td>
         <td style={styles.td}>{formatNdcDashed(view.ndc) || "—"}</td>
         <td style={styles.tdRight}>{view.packageSize ?? "—"}</td>
         <td style={styles.td}>
           <input
-            style={styles.input}
+            style={styles.lotInput}
             type="text"
             aria-label={`${view.displayName} lot number`}
             value={draft.lotNumber}
@@ -859,7 +866,10 @@ export default function LotsPage() {
             }}
             onRawTextChange={(text) => updateRawDateText(view.productKey, { expiration: text })}
             onBlur={() => flushAutosaveNow(view)}
-            style={styles.input}
+            onInvalidBlur={(message) =>
+              pushError(`Invalid data entry — Expiration for ${lotsDisplayName(view.displayName)}: ${message}`)
+            }
+            style={styles.dateInput}
           />
         </td>
         {beyondUseDateSupported && (
@@ -874,7 +884,10 @@ export default function LotsPage() {
                 }}
                 onRawTextChange={(text) => updateRawDateText(view.productKey, { beyondUseDate: text })}
                 onBlur={() => flushAutosaveNow(view)}
-                style={styles.input}
+                onInvalidBlur={(message) =>
+                  pushError(`Invalid data entry — Beyond-use date for ${lotsDisplayName(view.displayName)}: ${message}`)
+                }
+                style={styles.dateInput}
               />
             ) : (
               <span style={styles.muted}>—</span>
