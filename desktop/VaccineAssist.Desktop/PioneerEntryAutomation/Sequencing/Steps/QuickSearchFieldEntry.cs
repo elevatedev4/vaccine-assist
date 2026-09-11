@@ -75,8 +75,10 @@ public static class QuickSearchFieldEntry
     /// InputLotAndExpirationStep.TryRefocusAttachedWindow) and then polls
     /// for `automationId` to actually appear on it, up to `timeout` — the
     /// live (FlaUI/UIA-dependent, not independently unit-testable — same
-    /// posture as InputLotAndExpirationStep.WaitForLotFieldAsync) wrapper
-    /// around the pure WaitForFieldCoreAsync below.
+    /// posture as every other live UIA branch in this sequence) wrapper
+    /// around the pure WaitForFieldCoreAsync below. Also used directly by
+    /// InputLotAndExpirationStep for its uxLotNumber wait (V-...,
+    /// 2026-09-11 — previously its own hand-rolled poll).
     ///
     /// Deliberately does NOT itself build a "field not found" failure
     /// message: the caller's very next call to TypeAndConfirmAsync already
@@ -86,6 +88,17 @@ public static class QuickSearchFieldEntry
     /// logging. On success it reports the wait via `log` (never on
     /// timeout) so the step log shows how long PioneerRx actually took to
     /// render the field.
+    ///
+    /// V-..., 2026-09-11 (owner's log, 17:15, build 7ab6500 which added
+    /// this very method): "waited 416ms for 'uxPrescriberQuickSearch' to
+    /// appear" immediately followed by "FAILED ... ElementNotEnabledException"
+    /// — the field EXISTS well before PioneerRx has finished initializing
+    /// the Add New Rx form, so FindFirstDescendant alone isn't a strong
+    /// enough "ready" signal. TryFind below now also requires
+    /// Properties.IsEnabled.ValueOrDefault before treating the field as
+    /// found, logging once (not per-tick) when it sees the field present
+    /// but still disabled so the next log line shows how long PioneerRx
+    /// actually takes to enable it.
     /// </summary>
     public static Task<bool> WaitForFieldAsync(
         AutomationElement window, string automationId, TimeSpan timeout,
@@ -93,10 +106,31 @@ public static class QuickSearchFieldEntry
     {
         try { window.FocusNative(); } catch { /* best-effort, same as InputLotAndExpirationStep.TryRefocusAttachedWindow */ }
 
+        var loggedDisabled = false;
+
         AutomationElement? TryFind()
         {
-            try { return window.FindFirstDescendant(cf => cf.ByAutomationId(automationId)); }
+            AutomationElement? candidate;
+            try { candidate = window.FindFirstDescendant(cf => cf.ByAutomationId(automationId)); }
             catch { return null; }
+
+            if (candidate is null) return null;
+
+            bool isEnabled;
+            try { isEnabled = candidate.Properties.IsEnabled.ValueOrDefault; }
+            catch { return null; } // best-effort — same "any exception = not ready yet" posture as the FindFirstDescendant catch above
+
+            if (!isEnabled)
+            {
+                if (!loggedDisabled)
+                {
+                    loggedDisabled = true;
+                    log?.Invoke($"'{automationId}' present but disabled — waiting");
+                }
+                return null;
+            }
+
+            return candidate;
         }
 
         var maxEmptyTicks = (int)Math.Ceiling(timeout.TotalMilliseconds / FieldWaitPollInterval.TotalMilliseconds);

@@ -52,13 +52,16 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
     /// panel before giving up. This step now re-focuses the attached
     /// window (see TryRefocusAttachedWindow) and polls for uxLotNumber to
     /// actually appear, up to this budget, before ever calling
-    /// QuickSearchFieldEntry — reusing SendF3AndDismissPreEntryDialogsStep's
-    /// own WaitForAsync polling primitive (see WaitForLotFieldAsync)
-    /// rather than inventing a second one.
+    /// QuickSearchFieldEntry.TypeAndConfirmAsync.
+    ///
+    /// V-..., 2026-09-11: the poll itself is now
+    /// QuickSearchFieldEntry.WaitForFieldAsync (the same "found AND
+    /// enabled" wait SelectPrescriberStep/InputVaccineCodeStep use) rather
+    /// than a hand-rolled SendF3AndDismissPreEntryDialogsStep.WaitForAsync
+    /// call — see QuickSearchFieldEntry.WaitForFieldAsync's own doc comment
+    /// for why "found" alone stopped being a strong enough signal.
     /// </summary>
     public static readonly TimeSpan LotFieldWaitTimeout = TimeSpan.FromSeconds(15);
-
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     public string Name => "Enter lot and expiration";
 
@@ -91,8 +94,16 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
 
         TryRefocusAttachedWindow(context.AttachedWindow);
 
-        var lotField = await WaitForLotFieldAsync(context.AttachedWindow, cancellationToken);
-        if (lotField is null)
+        // V-..., 2026-09-11: now routed through QuickSearchFieldEntry's
+        // shared field wait (see its own doc comment) instead of a
+        // hand-rolled poll, so the lot field gets the same "found AND
+        // enabled" check as the prescriber/NDC fields — the returned
+        // AutomationElement was never actually used below beyond the null
+        // check, so this is a drop-in swap.
+        var lotFieldFound = await QuickSearchFieldEntry.WaitForFieldAsync(
+            context.AttachedWindow, LotNumberAutomationId, LotFieldWaitTimeout,
+            context.Log, cancellationToken);
+        if (!lotFieldFound)
         {
             return BuildLotFieldNotFoundResult(context.AttachedWindow);
         }
@@ -151,37 +162,17 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
         try { window.FocusNative(); } catch { /* best-effort */ }
     }
 
-    /// <summary>Polls for uxLotNumber to appear on `window`, up to
-    /// LotFieldWaitTimeout, reusing
-    /// SendF3AndDismissPreEntryDialogsStep.WaitForAsync's single-signal
-    /// overload (the "existing UIA wait helper") instead of a new
-    /// hand-rolled loop.</summary>
-    private static Task<AutomationElement?> WaitForLotFieldAsync(AutomationElement window, CancellationToken cancellationToken)
-    {
-        var maxEmptyTicks = (int)Math.Ceiling(LotFieldWaitTimeout.TotalMilliseconds / PollInterval.TotalMilliseconds);
-        return SendF3AndDismissPreEntryDialogsStep.WaitForAsync(
-            () => TryFindLotField(window),
-            maxEmptyTicks,
-            () => Task.Delay(PollInterval, cancellationToken),
-            cancellationToken);
-    }
-
-    private static AutomationElement? TryFindLotField(AutomationElement window)
-    {
-        try { return window.FindFirstDescendant(cf => cf.ByAutomationId(LotNumberAutomationId)); }
-        catch { return null; }
-    }
-
     /// <summary>
     /// V-..., 2026-09-10 (Will's brief: "the failure message must name the
     /// window title actually attached and list the AutomationIds of the
     /// top-level edit controls found ... so we can map the real field next
-    /// time — and write the UIA dump"): built only once WaitForLotFieldAsync
-    /// has genuinely timed out — names the attached window's own title,
-    /// lists up to 20 Edit-control AutomationIds actually found on it (so a
-    /// mismatched field name is diagnosable without a live UIA dump
-    /// session), and writes a full UIA tree dump the same way
-    /// SendF3AndDismissPreEntryDialogsStep.SafeDumpUiaTree already does.
+    /// time — and write the UIA dump"): built only once
+    /// QuickSearchFieldEntry.WaitForFieldAsync has genuinely timed out —
+    /// names the attached window's own title, lists up to 20 Edit-control
+    /// AutomationIds actually found on it (so a mismatched field name is
+    /// diagnosable without a live UIA dump session), and writes a full UIA
+    /// tree dump the same way SendF3AndDismissPreEntryDialogsStep.SafeDumpUiaTree
+    /// already does.
     /// </summary>
     private static PioneerEntryStepResult BuildLotFieldNotFoundResult(AutomationElement window)
     {
@@ -191,7 +182,7 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
         var editIds = DescribeEditControlAutomationIds(window, maxEditIdsListed);
         var dump = SafeDumpUiaTree();
 
-        var reason = $"Couldn't find the lot number field (AutomationId '{LotNumberAutomationId}') on the attached " +
+        var reason = $"Couldn't find (or PioneerRx never enabled) the lot number field (AutomationId '{LotNumberAutomationId}') on the attached " +
             $"PioneerRx window (\"{windowTitle}\") after waiting up to {LotFieldWaitTimeout.TotalSeconds:0}s — confirm the " +
             "patient's Rx Profile or an in-progress Add New Rx is the active screen.";
         reason += editIds.Count > 0

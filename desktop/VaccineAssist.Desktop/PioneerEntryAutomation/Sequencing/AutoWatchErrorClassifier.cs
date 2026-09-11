@@ -1,4 +1,5 @@
 using System;
+using FlaUI.Core.Exceptions;
 
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 
@@ -58,6 +59,19 @@ public static class AutoWatchErrorClassifier
         for (var current = ex; current is not null; current = current.InnerException)
         {
             if (current is TimeoutException) return true;
+
+            // V-..., 2026-09-11 (owner's log, 17:15, build 7ab6500): the
+            // prescriber field existed 416ms after F3 but threw this on
+            // FocusNative/SetValue — PioneerRx hadn't finished enabling it
+            // yet. QuickSearchFieldEntry.WaitForFieldAsync now waits for
+            // Properties.IsEnabled before treating a field as found, but the
+            // field can still flip disabled again in the gap between that
+            // wait and TypeAndConfirmAsync's actual SetValue — treating this
+            // as recoverable lets the existing AutoWatchRetry loop keep
+            // retrying within its budget instead of failing loud on a
+            // one-tick race.
+            if (current is ElementNotEnabledException) return true;
+
             if (IsTimeoutHResult(current.HResult)) return true;
 
             // Belt-and-suspenders: some COM interop paths surface a plain

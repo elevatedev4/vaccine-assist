@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using FlaUI.Core.Exceptions;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 using Xunit;
 
@@ -55,6 +56,19 @@ public class AutoWatchErrorClassifierTests
         // HResult but a message that still reads like Will's report.
         var ex = new InvalidOperationException("The wait operation timed out.");
         Assert.True(AutoWatchErrorClassifier.IsRecoverable(ex));
+    }
+
+    [Fact]
+    public void ElementNotEnabledExceptionIsRecoverable()
+    {
+        // V-..., 2026-09-11 (owner's log, 17:15, build 7ab6500): the
+        // prescriber field ('uxPrescriberQuickSearch') existed 416ms after
+        // F3 but FocusNative/SetValue threw this because PioneerRx hadn't
+        // finished enabling it yet. Treated as recoverable so a field that
+        // flips disabled again between WaitForFieldAsync's check and the
+        // actual SetValue keeps retrying within AutoWatchRetry's budget
+        // instead of failing loud on a one-tick race.
+        Assert.True(AutoWatchErrorClassifier.IsRecoverable(new ElementNotEnabledException()));
     }
 
     [Fact]
