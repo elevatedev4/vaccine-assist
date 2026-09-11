@@ -111,6 +111,8 @@ export async function persistInboundAttachment(
   attachment: RetainedAttachment
 ): Promise<PersistResult> {
   if (attachment.base64.length > MAX_RETAINED_BASE64_CHARS) {
+    // PHI/log discipline: filename + char count only, never the base64
+    // payload or anything decoded from it.
     console.warn(
       `persistInboundAttachment: skipping oversized attachment "${attachment.filename}" ` +
         `(${attachment.base64.length} base64 chars > ${MAX_RETAINED_BASE64_CHARS} max)`
@@ -178,11 +180,22 @@ export async function listInboundAttachments(
 /** Fetch one retained attachment's full row (base64 included) by exact
  * key — used by GET /api/inbound/attachments/[key]. Returns null for an
  * unknown key or a not-yet-migrated database (never throws for either);
- * throws on any other Supabase error. */
+ * throws on any other Supabase error.
+ *
+ * SECURITY (review fix, 2026-09-11): `app_setting` is a SHARED table —
+ * it also holds ordering.walk_in_pct, lots.bud_enabled_products, etc.
+ * `key` here ultimately comes from a caller-supplied URL path segment
+ * (the [key] route param), so this REFUSES to even query the table
+ * unless `key` carries the `inbound_attachment:` prefix, returning null
+ * exactly like an unknown key. Without this check, any authenticated
+ * caller could read an unrelated setting row through the attachment
+ * download endpoint by passing its key instead of an attachment key. */
 export async function getInboundAttachmentByKey(
   supabase: ReturnType<typeof getSupabaseServerClient>,
   key: string
 ): Promise<RetainedAttachment | null> {
+  if (!key.startsWith(INBOUND_ATTACHMENT_KEY_PREFIX)) return null;
+
   const { data, error } = await supabase.from("app_setting").select("value").eq("key", key).maybeSingle();
 
   if (error) {

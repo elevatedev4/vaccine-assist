@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { utils, write } from "xlsx";
 import {
   MAX_RETAINED_ATTACHMENTS,
   buildAttachmentKey,
+  getInboundAttachmentByKey,
   headerInfoFromMatrix,
   isVaccinationLogHeaderLine,
   matrixFromDelimitedText,
@@ -10,6 +11,7 @@ import {
   sanitizeFilenameForKey,
   selectKeysToEvict,
 } from "@/lib/inbound-attachments";
+import type { getSupabaseServerClient } from "@/lib/supabase/server";
 
 describe("sanitizeFilenameForKey", () => {
   it("keeps a plain filename unchanged", () => {
@@ -122,5 +124,52 @@ describe("isVaccinationLogHeaderLine", () => {
   it("is case-insensitive", () => {
     expect(isVaccinationLogHeaderLine("Patient | COMPLETED DATE | Vaccine")).toBe(true);
     expect(isVaccinationLogHeaderLine("Item Name | NDC/UPC | Current BOH")).toBe(false);
+  });
+});
+
+// Security review fix (2026-09-11): app_setting is a SHARED table (also
+// holds ordering.walk_in_pct, lots.bud_enabled_products, ...) — a `key`
+// without the inbound_attachment: prefix must be refused WITHOUT ever
+// querying Supabase, not just filtered out after the fact, so an
+// unrelated setting can never be read through the attachment-download
+// path. See also tests/inbound-attachments-route.test.ts for the same
+// guard exercised at the route layer.
+describe("getInboundAttachmentByKey", () => {
+  function fakeSupabase(row: { value: unknown } | null) {
+    const maybeSingle = vi.fn(async () => ({ data: row, error: null }));
+    const eq = vi.fn(() => ({ maybeSingle }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    return { client: { from } as unknown as ReturnType<typeof getSupabaseServerClient>, from, eq, maybeSingle };
+  }
+
+  it("runs the lookup for a properly-prefixed key", async () => {
+    const attachment = {
+      receivedAt: "2026-09-11T20:39:00.000Z",
+      from: "",
+      subject: "",
+      filename: "f.xlsx",
+      contentType: "application/octet-stream",
+      bytes: 1,
+      sha256: "a",
+      base64: "YQ==",
+    };
+    const key = "inbound_attachment:2026-09-11T20:39:00.000Z:f.xlsx";
+    const { client, from, eq } = fakeSupabase({ value: attachment });
+
+    const result = await getInboundAttachmentByKey(client, key);
+
+    expect(result).toEqual(attachment);
+    expect(from).toHaveBeenCalledWith("app_setting");
+    expect(eq).toHaveBeenCalledWith("key", key);
+  });
+
+  it("returns null for a non-prefixed key WITHOUT touching Supabase at all", async () => {
+    const { client, from } = fakeSupabase(null);
+
+    const result = await getInboundAttachmentByKey(client, "ordering.walk_in_pct");
+
+    expect(result).toBeNull();
+    expect(from).not.toHaveBeenCalled();
   });
 });
