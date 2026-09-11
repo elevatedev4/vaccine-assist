@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties } from "react";
-import { digitsToIso, isoToMaskedDate, maskDateInput, normalizePastedDateText, onlyDigits } from "@/lib/date-mask";
+import {
+  dateInputValidationMessage,
+  digitsToIso,
+  isoToMaskedDate,
+  maskDateInput,
+  normalizePastedDateText,
+  onlyDigits,
+} from "@/lib/date-mask";
 
 /**
  * Typed MM/DD/YYYY date field — replaces every native
@@ -35,6 +42,18 @@ import { digitsToIso, isoToMaskedDate, maskDateInput, normalizePastedDateText, o
  * `onBlur` (optional, additive) fires on the underlying input's blur —
  * used by /lots' autosave to flush a pending debounced save immediately
  * when the field loses focus, same as every other autosaving field there.
+ *
+ * V-T-lots-ux-round3 (Will verbatim: "I just typed '01' in a date and it
+ * didn't show an error, it just didn't do anything"): a partial date
+ * (1-7 digits) used to just collapse to "" with zero feedback, identical
+ * to an untouched field. Now, once the field is BLURRED with 1-7 digits
+ * still in it, a red border plus "Enter the full date as MM/DD/YYYY"
+ * text shows underneath (never while still focused/typing — see
+ * lib/date-mask.ts's dateInputValidationMessage, the pure/unit-tested
+ * decision for exactly this). The existing "8 digits but not a real
+ * date -> red border" behavior is unchanged, just now paired with a
+ * "Not a valid date" message. The message is absolutely positioned so a
+ * shown/hidden error never shifts the table row height.
  */
 export default function DateTextInput({
   value,
@@ -54,6 +73,7 @@ export default function DateTextInput({
   style?: CSSProperties;
 }) {
   const [text, setText] = useState(() => isoToMaskedDate(value));
+  const [focused, setFocused] = useState(false);
 
   useEffect(() => {
     setText(isoToMaskedDate(value));
@@ -79,22 +99,54 @@ export default function DateTextInput({
     commit(normalizePastedDateText(e.clipboardData.getData("text")));
   }
 
+  function handleFocus() {
+    setFocused(true);
+  }
+
+  function handleBlur() {
+    setFocused(false);
+    onBlur?.();
+  }
+
   const digits = onlyDigits(text);
-  const invalid = digits.length === 8 && digitsToIso(digits) === null;
+  const message = dateInputValidationMessage(digits, focused ? "focused" : "blurred");
+  const invalid = message !== null;
 
   return (
-    <input
-      type="text"
-      inputMode="numeric"
-      placeholder="MM/DD/YYYY"
-      aria-label={ariaLabel}
-      aria-invalid={invalid || undefined}
-      disabled={disabled}
-      value={text}
-      onChange={handleChange}
-      onPaste={handlePaste}
-      onBlur={onBlur}
-      style={{ ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
-    />
+    <span style={{ position: "relative", display: "block", width: "100%" }}>
+      <input
+        type="text"
+        inputMode="numeric"
+        placeholder="MM/DD/YYYY"
+        aria-label={ariaLabel}
+        aria-invalid={invalid || undefined}
+        disabled={disabled}
+        value={text}
+        onChange={handleChange}
+        onPaste={handlePaste}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        style={{ ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
+      />
+      {message && (
+        <span
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            marginTop: 1,
+            fontSize: "11px",
+            lineHeight: "13px",
+            color: "#b00020",
+            whiteSpace: "nowrap",
+            background: "#fff",
+            padding: "0 2px",
+            zIndex: 5,
+          }}
+        >
+          {message}
+        </span>
+      )}
+    </span>
   );
 }

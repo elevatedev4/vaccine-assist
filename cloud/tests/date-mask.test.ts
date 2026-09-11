@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  dateInputValidationMessage,
   digitsToIso,
   formatDigitsAsMaskedDate,
   isValidCalendarDate,
@@ -146,5 +147,38 @@ describe("normalizePastedDateText — Will's three documented paste shapes", () 
 
   it("'20280916' -> '09/16/2028'", () => {
     expect(normalizePastedDateText("20280916")).toBe("09/16/2028");
+  });
+});
+
+// V-T-lots-ux-round3 (Will verbatim: "I just typed '01' in a date and it
+// didn't show an error, it just didn't do anything") — a partial date
+// used to silently collapse to no feedback. See this helper's own doc
+// comment for the full decision table.
+describe("dateInputValidationMessage", () => {
+  it("shows no message for an empty field regardless of focus", () => {
+    expect(dateInputValidationMessage("", "focused")).toBeNull();
+    expect(dateInputValidationMessage("", "blurred")).toBeNull();
+  });
+
+  it("shows no message for 1-7 digits while still focused (don't nag mid-typing)", () => {
+    expect(dateInputValidationMessage("0", "focused")).toBeNull();
+    expect(dateInputValidationMessage("01", "focused")).toBeNull();
+    expect(dateInputValidationMessage("0916202", "focused")).toBeNull();
+  });
+
+  it("shows the 'enter full date' message for 1-7 digits once blurred (Will's exact bug)", () => {
+    expect(dateInputValidationMessage("01", "blurred")).toBe("Enter the full date as MM/DD/YYYY");
+    expect(dateInputValidationMessage("0916202", "blurred")).toBe("Enter the full date as MM/DD/YYYY");
+  });
+
+  it("shows 'Not a valid date' for 8 digits that aren't a real calendar date, focused or blurred", () => {
+    expect(dateInputValidationMessage("02302026", "focused")).toBe("Not a valid date");
+    expect(dateInputValidationMessage("02302026", "blurred")).toBe("Not a valid date");
+    expect(dateInputValidationMessage("13012028", "blurred")).toBe("Not a valid date");
+  });
+
+  it("shows no message for 8 digits that form a real calendar date", () => {
+    expect(dateInputValidationMessage("09162028", "focused")).toBeNull();
+    expect(dateInputValidationMessage("09162028", "blurred")).toBeNull();
   });
 });

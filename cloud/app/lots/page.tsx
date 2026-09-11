@@ -13,6 +13,7 @@ import { isoToMaskedDate } from "@/lib/date-mask";
 import { createDebouncedRunner, decideDateAutosave, decideLotNumberAutosave, type DebouncedRunner } from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
+import ErrorToast, { useErrorToasts } from "@/app/error-toast";
 
 /**
  * /lots page, round 3 (V-T-ordering-lots-round3, Will 2026-09-09
@@ -91,7 +92,6 @@ const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1100 },
   button: { padding: "0.3rem 0.7rem", fontSize: "13px" },
   error: { color: "#b00020", fontSize: "0.75rem" },
-  success: { color: "#0a7d27", fontSize: "0.75rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
   note: { color: "#8a5300", fontSize: "0.8rem", fontStyle: "italic" },
   table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "13px", lineHeight: 1.2 },
@@ -107,8 +107,12 @@ const styles = {
   dueRow: { background: "#fde8e8" },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
-  // ⚙ settings menu — a native <details>/<summary> disclosure so no
-  // extra click-outside-to-close JS is needed.
+  // ⚙ settings menu — a native <details>/<summary> disclosure. Native
+  // <details> does NOT close itself on an outside click, so a document
+  // pointerdown listener (armed only while any menu is open — same
+  // pattern as app/top-nav.tsx's account menu) closes every open
+  // .lots-cog-menu whose element doesn't contain the click, plus
+  // Escape. See anyMenuOpen/handleCogMenuToggle below.
   menuDetails: { display: "inline-block", position: "relative" as const },
   menuSummary: { cursor: "pointer", listStyle: "none" as const, padding: "0 4px", border: "1px solid #ccc", borderRadius: 3 },
   menuPanel: {
@@ -165,12 +169,22 @@ export default function LotsPage() {
   // currently saving" string.
   const [savingByKey, setSavingByKey] = useState<Record<string, boolean>>({});
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
-  const [rowSaved, setRowSaved] = useState<Record<string, boolean>>({});
 
   const [activeBusyKey, setActiveBusyKey] = useState<string | null>(null);
   const [activeErrorByKey, setActiveErrorByKey] = useState<Record<string, string>>({});
   const [budBusyKey, setBudBusyKey] = useState<string | null>(null);
   const [budErrorByKey, setBudErrorByKey] = useState<Record<string, string>>({});
+
+  // V-T-lots-ux-round3 (Will verbatim: "Popup if there is an error") —
+  // any autosave/clear-lot/settings failure also raises a toast here,
+  // in addition to the inline red row-error text that stays put.
+  const { toasts, pushError, dismiss } = useErrorToasts();
+
+  // V-T-lots-ux-round3 (Will verbatim: "on the settings menu for each
+  // item, if you click off the menu, hide the menu"): true whenever at
+  // least one row's ⚙ <details> is open — only while true is the
+  // document pointerdown/keydown listener below armed (see effect).
+  const [anyMenuOpen, setAnyMenuOpen] = useState(false);
 
   // Review follow-up (reviewer, 2026-09-10): runAutosave used to read
   // `drafts`/`lastSaved`/`rawDateText`/`budEnabledKeys` straight from
@@ -218,6 +232,51 @@ export default function LotsPage() {
     };
   }, []);
 
+  // Closes every open ⚙ menu on an outside click/tap, and on Escape —
+  // reuses the exact pattern from app/top-nav.tsx's account menu, just
+  // over the (potentially many) `.lots-cog-menu` <details> elements
+  // instead of a single ref. Only armed while anyMenuOpen is true.
+  useEffect(() => {
+    if (!anyMenuOpen) return;
+
+    function closeMenusNotContaining(target: Node | null) {
+      let stillOpen = false;
+      document.querySelectorAll<HTMLDetailsElement>(".lots-cog-menu").forEach((el) => {
+        if (!el.open) return;
+        if (target && el.contains(target)) {
+          stillOpen = true;
+          return;
+        }
+        el.open = false;
+      });
+      setAnyMenuOpen(stillOpen);
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      closeMenusNotContaining(event.target as Node);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeMenusNotContaining(null);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [anyMenuOpen]);
+
+  /** Wired to each row's ⚙ <details onToggle>` — recomputes anyMenuOpen
+   * from the live DOM rather than tracking per-row open state, since any
+   * number of rows can have their menu open at once. */
+  function handleCogMenuToggle() {
+    const stillOpen = Array.from(document.querySelectorAll<HTMLDetailsElement>(".lots-cog-menu")).some(
+      (el) => el.open
+    );
+    setAnyMenuOpen(stillOpen);
+  }
+
   // Clears this page's own fetched state on sign-out, whatever triggers
   // it (see top-nav.tsx's doc comment — sign-out now lives solely in
   // TopNav's account menu, and every page's session subscription still
@@ -238,7 +297,6 @@ export default function LotsPage() {
     budEnabledKeysRef.current = new Set();
     setSavingByKey({});
     setRowErrors({});
-    setRowSaved({});
     for (const runner of Object.values(autosaveRunnersRef.current)) runner.cancel();
     autosaveRunnersRef.current = {};
     autosaveSeqRef.current = {};
@@ -368,7 +426,6 @@ export default function LotsPage() {
       }
 
       setRowErrors({});
-      setRowSaved({});
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not load lots.");
     } finally {
@@ -408,7 +465,6 @@ export default function LotsPage() {
       draftsRef.current = next; // see draftsRef's own doc comment above
       return next;
     });
-    setRowSaved((prev) => ({ ...prev, [key]: false }));
   }
 
   /** Mirrors DateTextInput's onRawTextChange into both state (so a
@@ -525,7 +581,6 @@ export default function LotsPage() {
 
     setSavingByKey((prev) => ({ ...prev, [key]: true }));
     setRowErrors((prev) => ({ ...prev, [key]: "" }));
-    setRowSaved((prev) => ({ ...prev, [key]: false }));
     try {
       const lotNumber = draft.lotNumber.trim();
       const response = await fetch("/api/lots", {
@@ -553,7 +608,9 @@ export default function LotsPage() {
       if (autosaveSeqRef.current[key] !== seq) return; // superseded — ignore this stale response
 
       if (!response.ok) {
-        setRowErrors((prev) => ({ ...prev, [key]: data.error ?? "Failed to save lot." }));
+        const message = data.error ?? "Failed to save lot.";
+        setRowErrors((prev) => ({ ...prev, [key]: message }));
+        pushError(`Couldn't save lot info for ${view.displayName} — ${message}`);
         return;
       }
 
@@ -588,10 +645,11 @@ export default function LotsPage() {
         draftsRef.current = next;
         return next;
       });
-      setRowSaved((prev) => ({ ...prev, [key]: true }));
     } catch (err) {
       if (autosaveSeqRef.current[key] !== seq) return;
-      setRowErrors((prev) => ({ ...prev, [key]: err instanceof Error ? err.message : "Failed to save lot." }));
+      const message = err instanceof Error ? err.message : "Failed to save lot.";
+      setRowErrors((prev) => ({ ...prev, [key]: message }));
+      pushError(`Couldn't save lot info for ${view.displayName} — ${message}`);
     } finally {
       autosaveInFlightRef.current[key] = false;
       if (autosaveSeqRef.current[key] === seq) {
@@ -619,7 +677,6 @@ export default function LotsPage() {
 
     setSavingByKey((prev) => ({ ...prev, [view.productKey]: true }));
     setRowErrors((prev) => ({ ...prev, [view.productKey]: "" }));
-    setRowSaved((prev) => ({ ...prev, [view.productKey]: false }));
     try {
       const response = await fetch("/api/lots", {
         method: "DELETE",
@@ -628,7 +685,9 @@ export default function LotsPage() {
       });
       const data = await response.json();
       if (!response.ok) {
-        setRowErrors((prev) => ({ ...prev, [view.productKey]: data.error ?? "Failed to clear lot." }));
+        const message = data.error ?? "Failed to clear lot.";
+        setRowErrors((prev) => ({ ...prev, [view.productKey]: message }));
+        pushError(`Couldn't clear lot for ${view.displayName} — ${message}`);
         return;
       }
 
@@ -652,7 +711,9 @@ export default function LotsPage() {
         return next;
       });
     } catch (err) {
-      setRowErrors((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to clear lot." }));
+      const message = err instanceof Error ? err.message : "Failed to clear lot.";
+      setRowErrors((prev) => ({ ...prev, [view.productKey]: message }));
+      pushError(`Couldn't clear lot for ${view.displayName} — ${message}`);
     } finally {
       setSavingByKey((prev) => ({ ...prev, [view.productKey]: false }));
     }
@@ -678,13 +739,17 @@ export default function LotsPage() {
       );
       const failed = responses.find(({ response }) => !response.ok);
       if (failed) {
-        setActiveErrorByKey((prev) => ({ ...prev, [view.productKey]: failed.data.error ?? "Failed to update." }));
+        const message = failed.data.error ?? "Failed to update.";
+        setActiveErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
+        pushError(`Couldn't update active status for ${view.displayName} — ${message}`);
         return;
       }
       const groupVaccineIds = new Set(view.vaccineIds);
       setVaccines((prev) => prev.map((v) => (groupVaccineIds.has(v.id) ? { ...v, active: nextActive } : v)));
     } catch (err) {
-      setActiveErrorByKey((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to update." }));
+      const message = err instanceof Error ? err.message : "Failed to update.";
+      setActiveErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
+      pushError(`Couldn't update active status for ${view.displayName} — ${message}`);
     } finally {
       setActiveBusyKey(null);
     }
@@ -708,14 +773,18 @@ export default function LotsPage() {
       });
       const data = await response.json();
       if (!response.ok) {
-        setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: data.error ?? "Failed to update." }));
+        const message = data.error ?? "Failed to update.";
+        setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
+        pushError(`Couldn't update beyond-use date setting for ${view.displayName} — ${message}`);
         return;
       }
       const confirmedKeys = new Set<string>(data.budEnabledProductKeys ?? nextKeys);
       setBudEnabledKeys(confirmedKeys);
       budEnabledKeysRef.current = confirmedKeys;
     } catch (err) {
-      setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: err instanceof Error ? err.message : "Failed to update." }));
+      const message = err instanceof Error ? err.message : "Failed to update.";
+      setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
+      pushError(`Couldn't update beyond-use date setting for ${view.displayName} — ${message}`);
     } finally {
       setBudBusyKey(null);
     }
@@ -749,7 +818,6 @@ export default function LotsPage() {
       today
     );
     const rowError = rowErrors[view.productKey];
-    const saved = rowSaved[view.productKey];
     const saving = !!savingByKey[view.productKey];
     const activeError = activeErrorByKey[view.productKey];
     const activeBusy = activeBusyKey === view.productKey;
@@ -814,7 +882,7 @@ export default function LotsPage() {
           </td>
         )}
         <td style={styles.td}>
-          <details style={styles.menuDetails}>
+          <details className="lots-cog-menu" style={styles.menuDetails} onToggle={handleCogMenuToggle}>
             <summary style={styles.menuSummary} aria-label={`${view.displayName} settings`}>
               ⚙
             </summary>
@@ -855,7 +923,6 @@ export default function LotsPage() {
           </details>{" "}
           {saving && <span style={styles.muted}>Saving…</span>}
           {rowError && <div style={styles.error}>{rowError}</div>}
-          {saved && !rowError && !saving && <div style={styles.success}>Saved.</div>}
         </td>
       </tr>
     );
@@ -863,6 +930,7 @@ export default function LotsPage() {
 
   return (
     <main style={styles.main}>
+      <ErrorToast toasts={toasts} onDismiss={dismiss} />
       <h1>Lots</h1>
 
       {!beyondUseDateSupported && (
