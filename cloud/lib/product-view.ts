@@ -2,6 +2,7 @@ import { groupVaccinesIntoProducts, type LotsCatalogVaccine } from "@/lib/lots-g
 import { displayNameFor, lookupProduct } from "@/lib/vaccine-product-catalog";
 import { getOrderingGroup } from "@/lib/ordering-group";
 import { normalizeNdc } from "@/lib/ndc";
+import { lotsDisplayName } from "@/lib/lots-display-name";
 
 /**
  * Shared product view (V-T-ordering-lots-round3, Will 2026-09-09
@@ -9,12 +10,15 @@ import { normalizeNdc } from "@/lib/ndc";
  * column..."; Lots: "Make sure the data on the ordering/lots page
  * matches (NDC, name, etc) and is consistent always. It should pull
  * from the same database... Follow same groupings everywhere,
- * including on lots"). Both /ordering and /lots must show the SAME
- * name, NDC, package size, and COVID/Flu/Other group for the same
- * product, so this file is the one place that computes those four
- * fields — every caller (both pages' components, and
- * lib/on-hand/pioneer-boh.ts's NDC matching) goes through it rather
- * than re-deriving any of them locally.
+ * including on lots"; extended V-T-ordering-unify, Will 2026-09-11:
+ * "All these different tabs are just displaying different aspects of
+ * the same products, not showing different products altogether.").
+ * /ordering, /lots, /macro-codes, and /entry-values must all show the
+ * SAME (already age/noise-stripped) name, NDC, package size, and
+ * COVID/Flu/Other group for the same product, so this file is the one
+ * place that computes those four fields — every caller (all four
+ * pages' components, and lib/on-hand/pioneer-boh.ts's NDC matching)
+ * goes through it rather than re-deriving any of them locally.
  *
  * Two entry points, because the two pages start from differently-shaped
  * inputs:
@@ -38,9 +42,22 @@ import { normalizeNdc } from "@/lib/ndc";
 export type NdcSource = "db" | "catalog" | null;
 
 export type ProductViewFields = {
-  /** productName (+ age range) from the researched static catalog
-   * (lib/vaccine-product-catalog.ts) when known, else today's plain
-   * vaccine/group name. */
+  /** The ONE display name for this product, shown on every tab
+   * (Ordering, Lots, Macro codes, Entry values): productName from the
+   * researched static catalog (lib/vaccine-product-catalog.ts) when
+   * known, else today's plain vaccine/group name — then run through
+   * lib/lots-display-name.ts's lotsDisplayName to strip age/eligibility
+   * noise (ages, "high-risk", "immunocompromised", pregnancy-week notes,
+   * a redundant bare season, the word "Formula") while keeping SKU
+   * qualifiers that distinguish otherwise-identical catalog rows (PFS
+   * vs MDV, "1 ct", "adult", dose strength, etc — see that file's
+   * header). Owner's ask (V-T-ordering-unify, Will 2026-09-11): "Remove
+   * all the ages and extra characters from the product names like we've
+   * done in other tabs. This data should all be the same throughout."
+   * Previously this stripping ran ONLY on /lots (via a separate
+   * lotsDisplayName(view.displayName) call in app/lots/page.tsx); it's
+   * now baked in here so every caller gets the identical string from
+   * the identical place. */
   displayName: string;
   /** The product's NDC: the `vaccine` row's own DB ndc when present,
    * else the researched catalog packageNdc, else null when neither
@@ -73,7 +90,7 @@ export type ProductView = ProductViewFields & {
  */
 export function deriveProductViewFields(name: string, dbNdc: string | null): ProductViewFields {
   const catalogMatch = lookupProduct({ name, ndc: dbNdc });
-  const displayName = displayNameFor(name, dbNdc);
+  const displayName = lotsDisplayName(displayNameFor(name, dbNdc));
 
   let ndc = dbNdc;
   let ndcSource: NdcSource = dbNdc ? "db" : null;

@@ -7,7 +7,6 @@ import { todayInChicago } from "@/lib/chicago-date";
 import { isLotRowDue, pickCurrentActiveLot, resolveLotRowHighlight } from "@/lib/lots-table";
 import { dedupeLotsByNumber, partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { buildProductViews, type ProductView } from "@/lib/product-view";
-import { lotsDisplayName } from "@/lib/lots-display-name";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 import { formatNdcDashed } from "@/lib/ndc";
 import { isoToMaskedDate } from "@/lib/date-mask";
@@ -840,7 +839,7 @@ export default function LotsPage() {
 
     return (
       <tr key={view.productKey} style={rowStyle}>
-        <td style={styles.td}>{lotsDisplayName(view.displayName)}</td>
+        <td style={styles.td}>{view.displayName}</td>
         <td style={styles.td}>{formatNdcDashed(view.ndc) || "—"}</td>
         <td style={styles.tdRight}>{view.packageSize ?? "—"}</td>
         <td style={styles.td}>
@@ -867,7 +866,7 @@ export default function LotsPage() {
             onRawTextChange={(text) => updateRawDateText(view.productKey, { expiration: text })}
             onBlur={() => flushAutosaveNow(view)}
             onInvalidBlur={(message) =>
-              pushError(`Invalid data entry — Expiration for ${lotsDisplayName(view.displayName)}: ${message}`)
+              pushError(`Invalid data entry — Expiration for ${view.displayName}: ${message}`)
             }
             style={styles.dateInput}
           />
@@ -885,7 +884,7 @@ export default function LotsPage() {
                 onRawTextChange={(text) => updateRawDateText(view.productKey, { beyondUseDate: text })}
                 onBlur={() => flushAutosaveNow(view)}
                 onInvalidBlur={(message) =>
-                  pushError(`Invalid data entry — Beyond-use date for ${lotsDisplayName(view.displayName)}: ${message}`)
+                  pushError(`Invalid data entry — Beyond-use date for ${view.displayName}: ${message}`)
                 }
                 style={styles.dateInput}
               />
