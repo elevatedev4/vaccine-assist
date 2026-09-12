@@ -622,6 +622,79 @@ describe("POST /api/webhooks/ses", () => {
       expect(persisted.base64).toBe(xlsxBuffer.toString("base64"));
       expect(persisted.sha256).toHaveLength(64);
 
+      // V-administered-ingest (2026-09-12): this fixture's columns
+      // (Patient/Vaccine/Completed date/Lot) aren't the real report's
+      // shape (Completed date/Item), so nothing parses into a row — the
+      // point here is only that ingest RAN (logged 0/0/0) and wrote no
+      // administered:* day key, not that it found data. The real-shape
+      // case is covered by the "ingests real-shaped rows" test below.
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining("administered ingest: 0 rows, 0 matched, 0 days touched")
+      );
+      expect([...store.keys()].some((k) => k.startsWith("administered:"))).toBe(false);
+
+      logSpy.mockRestore();
+    });
+
+    // V-administered-ingest (Will 2026-09-12): the real report's shape
+    // ("Completed date | Item") — proves the webhook ingests it into
+    // administered:<date> immediately, not just on-demand via
+    // POST /api/administered/reprocess.
+    it("ingests a real-shaped vaccination-log attachment into administered:<date>", async () => {
+      const sheet = utils.aoa_to_sheet([
+        ["Completed date", "Item", ""],
+        [46275.6416666667, "Flu Quad 2025-26", ""], // matches CATALOG's v-flu
+        [46275.5, "Some Unmatched Vaccine", ""],
+      ]);
+      const workbook = utils.book_new();
+      utils.book_append_sheet(workbook, sheet, "Sheet1");
+      const xlsxBuffer = write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+      const boundary = "BOUNDARY-VACCLOG2";
+      const rawMime = [
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; name="AppExport.xlsx"',
+        'Content-Disposition: attachment; filename="AppExport.xlsx"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        xlsxBuffer.toString("base64"),
+        `--${boundary}--`,
+        "",
+      ].join(CRLF);
+
+      const insert = vi.fn(async () => ({ error: null }));
+      const store = new Map<string, unknown>();
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseClient(insert, DEFAULT_ADDRESS_ROW, undefined, { store }) as never);
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const response = await POST(
+        jsonRequest(
+          snsNotificationBody(
+            {},
+            {
+              content: Buffer.from(rawMime, "utf-8").toString("base64"),
+              mail: { timestamp: "2026-09-12T08:01:00.000Z" },
+            }
+          ),
+          { "x-amz-sns-message-type": "Notification" }
+        )
+      );
+
+      expect(response.status).toBe(200);
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining("administered ingest: 2 rows, 1 matched, 1 days touched")
+      );
+
+      const dayKey = "administered:2026-09-10";
+      expect(store.has(dayKey)).toBe(true);
+      const day = store.get(dayKey) as { rows: { itemName: string; vaccineId: string | null }[]; sources: string[] };
+      expect(day.rows).toHaveLength(2);
+      expect(day.rows.find((r) => r.itemName === "Flu Quad 2025-26")?.vaccineId).toBe("v-flu");
+      expect(day.rows.find((r) => r.itemName === "Some Unmatched Vaccine")?.vaccineId).toBeNull();
+      expect(day.sources).toEqual(["ses:msg-1"]);
+
       logSpy.mockRestore();
     });
 

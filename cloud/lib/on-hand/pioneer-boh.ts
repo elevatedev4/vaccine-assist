@@ -283,6 +283,22 @@ function matchByPioneerNameAlias(rawName: string, catalog: CatalogVaccine[]): Ca
 }
 
 /**
+ * The NAME-ONLY half of matchPioneerBohRows' matching order below (steps
+ * 3-4: Pioneer's item-name aliases, then the shared free-text matcher) —
+ * extracted (V-administered-ingest, Will 2026-09-12) so
+ * lib/administered/match.ts can resolve the vaccination log's "Item"
+ * column ("Fluad Trivalent 2026-27", "Comirnaty 2026-27 12+", ...) the
+ * SAME way the BOH report's "Item Name" column resolves when it has no
+ * NDC cell to match on first. matchPioneerBohRows below calls this too,
+ * so the two report shapes can never silently drift apart on name
+ * matching. NDC matching (steps 1-2) stays out of this function
+ * entirely — the vaccination log has no NDC column at all.
+ */
+export function matchPioneerItemName(rawName: string, catalog: CatalogVaccine[]): CatalogVaccine | null {
+  return matchByPioneerNameAlias(rawName, catalog) ?? matchVaccineName(rawName, catalog);
+}
+
+/**
  * Matches parsed Pioneer rows against the vaccine catalog, in order:
  *   1. Exact DB-ndc match (digits-only comparison — lib/ndc.ts).
  *   2. The researched static catalog's packageNdc for that same catalog
@@ -326,11 +342,7 @@ export function matchPioneerBohRows(rows: PioneerBohRow[], catalog: CatalogVacci
       }
     }
     if (!vaccineId) {
-      const byAlias = matchByPioneerNameAlias(row.vaccineNameRaw, catalog);
-      if (byAlias) vaccineId = byAlias.id;
-    }
-    if (!vaccineId) {
-      const byName = matchVaccineName(row.vaccineNameRaw, catalog);
+      const byName = matchPioneerItemName(row.vaccineNameRaw, catalog);
       if (byName) vaccineId = byName.id;
     }
 

@@ -30,6 +30,7 @@ import {
   type MatchedOnHandRow,
 } from "@/lib/on-hand/pioneer-boh";
 import { parsePioneerBohPdf } from "@/lib/on-hand/pioneer-boh-pdf";
+import { ingestVaccinationLogMatrix } from "@/lib/administered/ingest";
 import type { CatalogVaccine } from "@/lib/vaccine-matching";
 import {
   computeBatchContentHash,
@@ -595,6 +596,57 @@ function inspectAttachmentAndCheckVaccinationLog(attachment: ExtractedAttachment
   return false;
 }
 
+/**
+ * V-administered-ingest (Will 2026-09-12): once
+ * inspectAttachmentAndCheckVaccinationLog has already confirmed this
+ * attachment is the per-dose vaccination log (and retention has already
+ * persisted the raw file — see retainAttachmentsBestEffort above), parse
+ * -> match -> store it via lib/administered/ingest.ts's single entry
+ * point, so app/api/administered/summary reflects the new file without
+ * Will having to run POST /api/administered/reprocess manually every
+ * day. Entirely best-effort, same posture as retainAttachmentsBestEffort:
+ * every failure (Supabase unconfigured, a genuine parse/match/store
+ * error) is caught and logged HERE and must never change the webhook's
+ * response — SNS retry semantics are unaffected, and a bad ingest never
+ * loses the underlying file (it's already retained by this point).
+ *
+ * `sourceKey` is tagged `ses:<messageId>` rather than the real
+ * `inbound_attachment:...` key retention used — ExtractedAttachment (the
+ * "one best attachment" shape this route already extracted before
+ * calling this) doesn't carry the original filename needed to rebuild
+ * that exact key, only extractAllAttachmentPartsFromRawMime's per-part
+ * result does. This is fine: sources are provenance metadata only — the
+ * dedupe that actually prevents double-counting (lib/administered/store.ts's
+ * mergeRows, keyed on (at, itemName)) never reads this field. The
+ * reprocess route below tags with the real inbound_attachment key since
+ * it reads attachments back out of retention, where the filename is
+ * available.
+ */
+async function ingestVaccinationLogAttachment(attachment: ExtractedAttachment, messageId: string | undefined): Promise<void> {
+  if (attachment.kind !== "xlsx" && attachment.kind !== "csv") return;
+
+  try {
+    const matrix =
+      attachment.kind === "xlsx"
+        ? matrixFromXlsxBuffer(attachment.buffer)
+        : matrixFromDelimitedText(attachment.text, attachment.text.includes("\t") ? "\t" : ",");
+
+    const supabase = getSupabaseServerClient();
+    const catalogResult = await loadCatalogOrError(supabase);
+    if ("error" in catalogResult) {
+      console.error("POST /api/webhooks/ses: administered ingest skipped — failed to load vaccine catalog");
+      return;
+    }
+
+    const result = await ingestVaccinationLogMatrix(supabase, matrix, catalogResult.catalog, `ses:${messageId ?? "unknown"}`);
+    console.log(
+      `POST /api/webhooks/ses: administered ingest: ${result.rows} rows, ${result.matched} matched, ${result.days.length} days touched`
+    );
+  } catch (err) {
+    console.error("POST /api/webhooks/ses: administered ingest failed", err);
+  }
+}
+
 async function handleSnsRequest(request: Request, snsMessageType: string): Promise<NextResponse> {
   let body: Record<string, unknown>;
   try {
@@ -712,6 +764,9 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
     const messageId = extractSesMessageId(sesMessage, body);
     const attachment = extractAttachmentFromRawMime(rawMime);
     const isVaccinationLog = attachment ? inspectAttachmentAndCheckVaccinationLog(attachment) : false;
+    if (isVaccinationLog && attachment) {
+      await ingestVaccinationLogAttachment(attachment, messageId);
+    }
     const response = !attachment
       ? await processOnHandContent(extractTextFromRawMime(rawMime), resolvedAddress.id, messageId)
       : isVaccinationLog
