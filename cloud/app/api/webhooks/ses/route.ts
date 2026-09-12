@@ -640,7 +640,7 @@ async function ingestVaccinationLogAttachment(attachment: ExtractedAttachment, m
 
     const result = await ingestVaccinationLogMatrix(supabase, matrix, catalogResult.catalog, `ses:${messageId ?? "unknown"}`);
     console.log(
-      `POST /api/webhooks/ses: administered ingest: ${result.rows} rows, ${result.matched} matched, ${result.days.length} days touched`
+      `POST /api/webhooks/ses: administered ingest: ${result.rows} rows, ${result.matched} matched, ${result.days.length} days touched, ${result.skipped} skipped`
     );
   } catch (err) {
     console.error("POST /api/webhooks/ses: administered ingest failed", err);
@@ -765,6 +765,16 @@ async function handleSnsRequest(request: Request, snsMessageType: string): Promi
     const attachment = extractAttachmentFromRawMime(rawMime);
     const isVaccinationLog = attachment ? inspectAttachmentAndCheckVaccinationLog(attachment) : false;
     if (isVaccinationLog && attachment) {
+      // Review note (2026-09-12): unlike the BOH path below, this call
+      // does NOT go through the messageId ring buffer / content-hash
+      // dedupe (isMessageIdProcessed / isDuplicateContentHash) — a
+      // redelivery of the same SES message is safe anyway because
+      // ingestVaccinationLogAttachment's parse is deterministic: the same
+      // file always produces rows in the same order, so each row gets
+      // the same (at, itemName, occurrence) key (see
+      // lib/administered/store.ts's mergeRows/occurrence doc comment),
+      // and re-ingesting just re-upserts identical rows under identical
+      // keys. No separate messageId/content-hash guard is needed here.
       await ingestVaccinationLogAttachment(attachment, messageId);
     }
     const response = !attachment

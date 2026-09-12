@@ -16,10 +16,21 @@ export async function ingestVaccinationLogMatrix(
   matrix: unknown[][],
   catalog: CatalogVaccine[],
   sourceKey: string
-): Promise<IngestResult & { matched: number }> {
-  const parsedRows = parseVaccinationLog(matrix);
+): Promise<IngestResult & { matched: number; skipped: number }> {
+  const { rows: parsedRows, skipped, skippedSamples } = parseVaccinationLog(matrix);
+  if (skipped > 0) {
+    // Review fix (2026-09-12): these rows were previously dropped
+    // silently. Logged once per ingest call, never per row — a ragged
+    // file could otherwise flood the log. Only date+item strings are
+    // logged (see parse.ts's SkippedVaccinationLogRow) — this report
+    // carries no patient data, but the restraint is kept anyway.
+    console.warn(
+      `ingestVaccinationLogMatrix: skipped ${skipped} row(s) with an unparseable date or blank item name`,
+      skippedSamples
+    );
+  }
   const matchedRows = matchAdministeredRows(parsedRows, catalog);
   const matched = matchedRows.filter((row) => row.vaccineId !== null).length;
   const result = await ingestAdministeredRows(supabase, matchedRows, sourceKey);
-  return { ...result, matched };
+  return { ...result, matched, skipped };
 }

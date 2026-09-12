@@ -89,4 +89,21 @@ describe("GET /api/administered/summary", () => {
     const response = await GET(authedRequest("/api/administered/summary"));
     expect(response.status).toBe(503);
   });
+
+  // Mirrors tests/administered-reprocess-route.test.ts's "requires auth"
+  // case: this file mocks requireAuthenticatedUser to succeed by default
+  // (see the vi.mock at the top), so an unauthenticated request is
+  // exercised the same way — overriding it once to return the error
+  // shape requireAuthenticatedUser produces for a missing/invalid
+  // Authorization header.
+  it("requires auth — an unauthenticated GET returns 401", async () => {
+    const { requireAuthenticatedUser } = await import("@/lib/auth");
+    vi.mocked(requireAuthenticatedUser).mockResolvedValueOnce({
+      error: new Response(null, { status: 401 }) as never,
+    } as never);
+
+    const response = await GET(new Request("http://localhost/api/administered/summary"));
+    expect(response.status).toBe(401);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
 });

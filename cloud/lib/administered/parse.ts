@@ -38,6 +38,24 @@ export type VaccinationLogRow = {
   itemName: string;
 };
 
+/** A row parseVaccinationLog dropped for an unparseable date or a blank
+ * item name — just the two raw cell strings (never the whole row), safe
+ * to log: this report carries no patient data, but the same restraint
+ * matters if a future column ever does. */
+export type SkippedVaccinationLogRow = { date: string; item: string };
+
+export type ParseVaccinationLogResult = {
+  rows: VaccinationLogRow[];
+  /** Count of rows dropped for an unparseable date or a blank item name
+   * (V-administered-followups, Will 2026-09-12) — previously silent. */
+  skipped: number;
+  /** Up to the first 3 skipped rows, in file order, for ingest.ts's
+   * once-per-ingest console.warn. */
+  skippedSamples: SkippedVaccinationLogRow[];
+};
+
+const MAX_SKIPPED_SAMPLES = 3;
+
 function cellToString(cell: unknown): string {
   if (cell === null || cell === undefined) return "";
   return String(cell).trim();
@@ -184,22 +202,34 @@ function parseDateCell(cell: unknown): { completedAt: string; dateLocal: string 
  * lenient (drop the bad row, don't throw) since a single ragged row must
  * never lose the other 108 in the same file. Tolerates the report's
  * trailing empty 3rd column (only cells[0]/cells[1] are read).
+ *
+ * A dropped row (unparseable date or blank item name) is counted in
+ * `skipped` and, for the first MAX_SKIPPED_SAMPLES, recorded in
+ * `skippedSamples` — previously these were silently discarded (V-admin
+ * followups review fix, Will 2026-09-12).
  */
-export function parseVaccinationLog(matrix: unknown[][]): VaccinationLogRow[] {
+export function parseVaccinationLog(matrix: unknown[][]): ParseVaccinationLogResult {
   const rows: VaccinationLogRow[] = [];
+  const skippedSamples: SkippedVaccinationLogRow[] = [];
+  let skipped = 0;
 
   for (const cells of matrix) {
     if (!cells || cells.length === 0) continue;
     if (isHeaderRow(cells)) continue;
 
     const itemName = cellToString(cells[1]);
-    if (!itemName) continue;
-
     const parsedDate = parseDateCell(cells[0]);
-    if (!parsedDate) continue;
+
+    if (!itemName || !parsedDate) {
+      skipped += 1;
+      if (skippedSamples.length < MAX_SKIPPED_SAMPLES) {
+        skippedSamples.push({ date: cellToString(cells[0]), item: itemName });
+      }
+      continue;
+    }
 
     rows.push({ completedAt: parsedDate.completedAt, dateLocal: parsedDate.dateLocal, itemName });
   }
 
-  return rows;
+  return { rows, skipped, skippedSamples };
 }

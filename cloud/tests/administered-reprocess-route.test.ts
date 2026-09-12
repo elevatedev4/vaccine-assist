@@ -109,7 +109,7 @@ describe("POST /api/administered/reprocess", () => {
     const response = await POST(authedRequest());
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ processed: 1, rows: 2, matched: 1, days: 1 });
+    expect(body).toEqual({ processed: 1, rows: 2, matched: 1, days: 1, skipped: 0 });
 
     const day = store.get("administered:2026-09-10") as { rows: unknown[]; sources: string[] };
     expect(day.rows).toHaveLength(2);
@@ -152,7 +152,7 @@ describe("POST /api/administered/reprocess", () => {
 
     const response = await POST(authedRequest());
     const body = await response.json();
-    expect(body).toEqual({ processed: 0, rows: 0, matched: 0, days: 0 });
+    expect(body).toEqual({ processed: 0, rows: 0, matched: 0, days: 0, skipped: 0 });
   });
 
   it("requires auth", async () => {
