@@ -11,6 +11,7 @@ import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 import { buildToOrderRows } from "@/lib/ordering-to-order";
+import { formatReloadDosesHistoryResult, type ReloadDosesHistoryResult } from "@/lib/ordering-reload-doses-history";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -416,6 +417,14 @@ export default function OrderingPage() {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
 
+  // V-ordering-reload-doses-history: ⚙ menu's "Reload doses history"
+  // action — re-runs POST /api/administered/reprocess (re-reads every
+  // retained Pioneer vaccination-log attachment) and reports the result
+  // in the same banner area as the Upload action's own result/error.
+  const [reloadingHistory, setReloadingHistory] = useState(false);
+  const [reloadHistoryError, setReloadHistoryError] = useState<string | null>(null);
+  const [reloadHistoryResult, setReloadHistoryResult] = useState<ReloadDosesHistoryResult | null>(null);
+
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
 
@@ -455,6 +464,9 @@ export default function OrderingPage() {
     setUploadError(null);
     setUploadResult(null);
     setAddressCopied(false);
+    setReloadingHistory(false);
+    setReloadHistoryError(null);
+    setReloadHistoryResult(null);
     setShowEmailModal(false);
     setInactiveExpanded(false);
     setWalkInPctText("");
@@ -605,6 +617,34 @@ export default function OrderingPage() {
       setUploadError(err instanceof Error ? err.message : "Could not upload the file.");
     } finally {
       setUploading(false);
+    }
+  }
+
+  // V-ordering-reload-doses-history: same auth/fetch pattern as the
+  // recommendation fetch / on-hand upload above — bearer token, no
+  // request body — then refresh the recommendation so "Last 7d given"
+  // reflects whatever the reprocess just (re)loaded.
+  async function handleReloadDosesHistory() {
+    if (!session) return;
+    setReloadingHistory(true);
+    setReloadHistoryError(null);
+    setReloadHistoryResult(null);
+    try {
+      const response = await fetch("/api/administered/reprocess", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.accessToken}` },
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        setReloadHistoryError(body.error ?? "Could not reload doses history.");
+        return;
+      }
+      setReloadHistoryResult({ rows: body.rows, days: body.days, processed: body.processed });
+      await loadRecommendation(session.accessToken);
+    } catch (err) {
+      setReloadHistoryError(err instanceof Error ? err.message : "Could not reload doses history.");
+    } finally {
+      setReloadingHistory(false);
     }
   }
 
@@ -883,6 +923,9 @@ export default function OrderingPage() {
                 {loading ? "Refreshing…" : "Refresh"}
               </button>
               {uploadControl}
+              <button style={styles.button} type="button" onClick={() => void handleReloadDosesHistory()} disabled={reloadingHistory}>
+                {reloadingHistory ? "Reloading…" : "Reload doses history"}
+              </button>
               {!copyConfirming ? (
                 <button
                   style={styles.button}
@@ -937,6 +980,7 @@ export default function OrderingPage() {
       {loadError && <p style={styles.error}>{loadError}</p>}
       {addressStatusError && <p style={styles.error}>{addressStatusError}</p>}
       {uploadError && <p style={styles.error}>{uploadError}</p>}
+      {reloadHistoryError && <p style={styles.error}>{reloadHistoryError}</p>}
       {copyError && <p style={styles.error}>{copyError}</p>}
       {copyResult && (
         <p style={styles.success}>
@@ -950,6 +994,7 @@ export default function OrderingPage() {
           {uploadResult.unmatched.length > 0 ? ` Unmatched: ${uploadResult.unmatched.join(", ")}.` : ""}
         </p>
       )}
+      {reloadHistoryResult && <p style={styles.success}>{formatReloadDosesHistoryResult(reloadHistoryResult)}</p>}
 
       {statusParts.length > 0 && <p style={styles.muted}>{statusParts.join(" · ")}</p>}
 
