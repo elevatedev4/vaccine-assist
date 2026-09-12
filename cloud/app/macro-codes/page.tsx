@@ -515,6 +515,14 @@ export default function MacroCodesPage() {
   }
 
   function handleRowKeyDown(event: ReactKeyboardEvent<HTMLTableRowElement>, row: MacroRow) {
+    // A keydown that originated inside the ⚙ settings cell (e.g. Enter/
+    // Space on the <summary> to toggle the native <details>) bubbles up
+    // to this row handler — ignore it here so the row's preventDefault
+    // doesn't kill the details toggle and so it doesn't also copy the
+    // row. The settings cell's own onKeyDown below stops propagation
+    // too, but this guard covers it regardless of ordering/future
+    // changes to that cell's markup.
+    if ((event.target as HTMLElement).closest(".macro-settings-cell")) return;
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     handleRowActivate(row);
@@ -556,7 +564,12 @@ export default function MacroCodesPage() {
             </>
           )}
         </td>
-        <td className="macro-settings-cell" style={{ ...styles.td, textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
+        <td
+          className="macro-settings-cell"
+          style={{ ...styles.td, textAlign: "right" }}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
           {!isNoShortCode && (
             <details className="macro-settings-menu" style={styles.menuDetails} onToggle={handleSettingsMenuToggle}>
               <summary style={styles.menuSummary} aria-label={`${row.displayName} dose ${row.doseNumber} details`}>

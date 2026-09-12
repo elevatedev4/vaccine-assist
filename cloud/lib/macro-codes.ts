@@ -271,15 +271,47 @@ function compareOtherOrder(a: MacroRow, b: MacroRow): number {
   return a.sheetOrder - b.sheetOrder || a.doseNumber - b.doseNumber || a.displayName.localeCompare(b.displayName);
 }
 
-/** Youngest-eligible-first order for the combined Flu/COVID family:
- * ageMinMonths, then catalog type, then product name, then dose. */
-function compareFluCovidOrder(a: MacroRow, b: MacroRow): number {
-  return (
-    a.ageMinMonths - b.ageMinMonths ||
-    a.catalogType.localeCompare(b.catalogType) ||
-    a.displayName.localeCompare(b.displayName) ||
-    a.doseNumber - b.doseNumber
-  );
+/**
+ * Type-group order for the combined Flu/COVID family (ROUND 3 REVIEW
+ * FIX): sorting individual rows by ageMinMonths alone scattered a
+ * multi-product Type into two separate runs whenever one of its
+ * products had a much-later age than its siblings (mFLUSIVA at 50+ vs.
+ * the rest of "Flu (regular)" at 6 mo+ — since fixed by giving it its
+ * own type, but this keeps any future same-shaped mismatch from
+ * recurring). Every catalog Type is kept as ONE contiguous block: the
+ * block order is the type's OWN minimum ageMinMonths (youngest-
+ * eligible-first), tie-broken by the type's minimum sheetOrder (the
+ * sheet's original hand-authored type order — this is what puts
+ * "Pfizer 12+" (sheetOrder 1) before "Moderna 12+" (sheetOrder 2)
+ * despite both being age 12+) and then alphabetically by type name (a
+ * final, deterministic guarantee that two types can never interleave
+ * even if both tie on age and sheetOrder). Within one type's block,
+ * rows sort by their own ageMinMonths, then product name, then dose.
+ */
+function sortFluCovidByTypeGroup(rows: readonly MacroRow[]): MacroRow[] {
+  const typeGroupKey = new Map<string, { minAgeMinMonths: number; minSheetOrder: number }>();
+  for (const row of rows) {
+    const existing = typeGroupKey.get(row.catalogType);
+    if (!existing) {
+      typeGroupKey.set(row.catalogType, { minAgeMinMonths: row.ageMinMonths, minSheetOrder: row.sheetOrder });
+    } else {
+      existing.minAgeMinMonths = Math.min(existing.minAgeMinMonths, row.ageMinMonths);
+      existing.minSheetOrder = Math.min(existing.minSheetOrder, row.sheetOrder);
+    }
+  }
+
+  return [...rows].sort((a, b) => {
+    const keyA = typeGroupKey.get(a.catalogType)!;
+    const keyB = typeGroupKey.get(b.catalogType)!;
+    return (
+      keyA.minAgeMinMonths - keyB.minAgeMinMonths ||
+      keyA.minSheetOrder - keyB.minSheetOrder ||
+      a.catalogType.localeCompare(b.catalogType) ||
+      a.ageMinMonths - b.ageMinMonths ||
+      a.displayName.localeCompare(b.displayName) ||
+      a.doseNumber - b.doseNumber
+    );
+  });
 }
 
 export type MacroGroupedRow = MacroRow & {
@@ -305,7 +337,7 @@ export type MacroGroupedRow = MacroRow & {
  */
 export function groupMacroRowsForFamily(rows: readonly MacroRow[], family: MacroFamily): MacroGroupedRow[] {
   const filtered = rows.filter((row) => row.family === family);
-  const sorted = [...filtered].sort(family === "fluCovid" ? compareFluCovidOrder : compareOtherOrder);
+  const sorted = family === "fluCovid" ? sortFluCovidByTypeGroup(filtered) : [...filtered].sort(compareOtherOrder);
 
   let lastType: string | null = null;
   let lastProductKey: string | null = null;

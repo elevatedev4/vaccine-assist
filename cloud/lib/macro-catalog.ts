@@ -73,6 +73,13 @@ const FLU_COVID_TYPES: ReadonlySet<string> = new Set([
   "Flu (regular)",
   "Flu (65+)",
   "Flu (nasal)",
+  // ROUND 3 REVIEW FIX: mFLUSIVA is its own quick-view type — it was
+  // previously lumped into "Flu (regular)" (age 6 mo+), which put it
+  // FAR from its own age (50+) once the fluCovid family started sorting
+  // by age-then-type-group, splitting "Flu (regular)" into two
+  // non-contiguous runs. Giving it its own type keeps every type a
+  // single contiguous block regardless of age ordering.
+  "Flu mRNA (50+)",
 ]);
 
 /** Derives a product's family from its catalog Type — the single place
@@ -95,7 +102,7 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
   spikevax6mo11: { type: "Moderna 3-11", sheetOrder: 3, age: "3–11", ageMinMonths: 36 },
   flucelvaxmdv: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
   flucelvaxpfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
-  mflusiva: { type: "Flu (regular)", sheetOrder: 4, age: "50+", ageMinMonths: 600 },
+  mflusiva: { type: "Flu mRNA (50+)", sheetOrder: 20, age: "50+", ageMinMonths: 600 },
   afluriapfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
   fluad: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageMinMonths: 780 },
   fluzonehd: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageMinMonths: 780 },

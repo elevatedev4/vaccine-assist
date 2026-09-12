@@ -319,6 +319,62 @@ describe("groupMacroRowsForFamily", () => {
     expect(grouped.map((r) => r.displayName)).toEqual(["FluMist", "Comirnaty", "mFLUSIVA", "Fluad"]);
   });
 
+  it("REVIEW FIX: every real flu/COVID short code keeps its Type as one contiguous run, in age-then-sheet-order type-group order", () => {
+    // Every real catalog short code that's family fluCovid today (see
+    // lib/macro-catalog.ts) — NOT a synthetic subset — one product per
+    // code so a Type spanning multiple products (Flu (regular): 3 codes;
+    // Flu (65+): 2 codes) is exercised too. Regression coverage for the
+    // round-3 review bug: sorting by ageMinMonths alone split "Flu
+    // (regular)" into two runs because mFLUSIVA (50+) sorted far from
+    // its 6-mo+ siblings.
+    const realFluCovidCodes = [
+      { code: "comirnaty12", name: "Comirnaty" },
+      { code: "mnexspike", name: "mNEXSPIKE" },
+      { code: "spikevax6mo11", name: "Spikevax" },
+      { code: "flucelvaxmdv", name: "Flucelvax MDV" },
+      { code: "flucelvaxpfs", name: "Flucelvax PFS" },
+      { code: "afluriapfs", name: "Afluria PFS" },
+      { code: "mflusiva", name: "mFLUSIVA" },
+      { code: "fluad", name: "Fluad" },
+      { code: "fluzonehd", name: "Fluzone HD" },
+      { code: "flumist", name: "FluMist" },
+    ];
+    const products: ProductView[] = realFluCovidCodes.map(({ code, name }) =>
+      view({ productKey: `name:${code}`, displayName: name, vaccineIds: [code] })
+    );
+    const vaccines: MacroRowVaccine[] = realFluCovidCodes.map(({ code, name }) =>
+      vaccine({ id: code, name, short_code: code })
+    );
+
+    const rows = buildMacroRows(products, vaccines, {});
+    expect(rows).toHaveLength(realFluCovidCodes.length);
+    expect(rows.every((r) => r.family === "fluCovid")).toBe(true);
+
+    const grouped = groupMacroRowsForFamily(rows, "fluCovid");
+    expect(grouped).toHaveLength(realFluCovidCodes.length);
+
+    // Reduce the grouped rows to the sequence of contiguous Type runs
+    // (consecutive rows sharing a catalogType collapse to one entry) —
+    // if a Type were split into two runs, it would appear twice here.
+    const typeRuns: string[] = [];
+    for (const row of grouped) {
+      if (typeRuns[typeRuns.length - 1] !== row.catalogType) typeRuns.push(row.catalogType);
+    }
+    expect(typeRuns).toEqual([
+      "Flu (regular)",
+      "Flu (nasal)",
+      "Moderna 3-11",
+      "Pfizer 12+",
+      "Moderna 12+",
+      "Flu mRNA (50+)",
+      "Flu (65+)",
+    ]);
+
+    // Every Type appears exactly once in the run list — i.e. never
+    // split into two separate blocks.
+    expect(new Set(typeRuns).size).toBe(typeRuns.length);
+  });
+
   it("flags showType/showProduct only on the first row of each Type/product run (HPV combined, not repeated)", () => {
     const products: ProductView[] = [
       view({ productKey: "ndc:gardasil", displayName: "Gardasil", vaccineIds: ["g1", "g2", "g3"] }),

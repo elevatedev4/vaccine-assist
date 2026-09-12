@@ -21,7 +21,7 @@ describe("macroBaseShortCode", () => {
 
 describe("macroFamilyForType", () => {
   it("classifies every flu/COVID sheet Type as fluCovid", () => {
-    for (const type of ["Pfizer 12+", "Moderna 12+", "Moderna 3-11", "Flu (regular)", "Flu (65+)", "Flu (nasal)"]) {
+    for (const type of ["Pfizer 12+", "Moderna 12+", "Moderna 3-11", "Flu (regular)", "Flu (65+)", "Flu (nasal)", "Flu mRNA (50+)"]) {
       expect(macroFamilyForType(type)).toBe("fluCovid");
     }
   });
@@ -47,7 +47,11 @@ describe("lookupMacroCatalog", () => {
   });
 
   it("puts mFLUSIVA and FluMist in the fluCovid family (round-3: 'Add mFLUSIVA and FluMist to the flu/covid section')", () => {
-    expect(lookupMacroCatalog("mflusiva")).toMatchObject({ type: "Flu (regular)", family: "fluCovid", age: "50+", ageMinMonths: 600 });
+    // mFLUSIVA gets its OWN type ("Flu mRNA (50+)"), not "Flu (regular)"
+    // — a round-3 REVIEW fix: sharing "Flu (regular)" with the 6-mo+
+    // products scattered that Type into two non-contiguous runs once
+    // the fluCovid family started sorting by age.
+    expect(lookupMacroCatalog("mflusiva")).toMatchObject({ type: "Flu mRNA (50+)", family: "fluCovid", age: "50+", ageMinMonths: 600 });
     expect(lookupMacroCatalog("flumist")).toMatchObject({ type: "Flu (nasal)", family: "fluCovid", age: "2–49", ageMinMonths: 24 });
   });
 
