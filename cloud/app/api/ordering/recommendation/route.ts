@@ -17,11 +17,12 @@ import { normalizeNdc } from "@/lib/ndc";
 import { collapseVaccinesByNdc, type CollapsibleVaccine } from "@/lib/ordering-ndc-collapse";
 import { getOrderingGroup } from "@/lib/ordering-group";
 import { matchFluAgeBandToVaccine, type FluMappingCatalogVaccine } from "@/lib/ordering-flu-mapping";
-import { computeEffectiveTargets, recommendedTarget, type TargetInput } from "@/lib/ordering-targets";
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
 import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradation";
 import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
 import { extractUnitFromRawLine } from "@/lib/on-hand/quantity-cell";
+import { computeDemandTarget } from "@/lib/ordering-recommendation";
+import { administeredSummary } from "@/lib/administered/store";
 
 /**
  * Ordering tab recommendation endpoint (V-ordering, 2026-08-19/20;
@@ -66,17 +67,43 @@ import { extractUnitFromRawLine } from "@/lib/on-hand/quantity-cell";
  *     lib/vaccine-group-catalog.ts's fine-grained groups, which the
  *     /data-entry guided flow and /physicians tab keep using unchanged.
  *
- * NO administered-doses field: there is no administration-tracking
- * table/endpoint anywhere in this schema — see lib/ordering-recommendation.ts.
+ * TREND-AWARE DEMAND (V-ordering-trend, Will 2026-09-12: "We need our
+ * ordering algorithm to be cognizant of how many vaccines we've done in
+ * the last week and recommend that we keep up with the trends, since we
+ * take walk-ins and not just schedule."): each row's `recommendedTarget`
+ * is now max(scheduledDemand, trendDemand) — see
+ * lib/ordering-recommendation.ts's computeDemandTarget doc comment for
+ * why trendDemand (given7d, walk-ins already baked in) gets no
+ * additional walk-in buffer. `given7d` comes from ONE
+ * administeredSummary(supabase, { days: 7, until: yesterday }) call
+ * (lib/administered/store.ts, owned by feat/administered-ingest — this
+ * route only reads it), mapped onto each collapsed product the same way
+ * upcoming7d is (summed across the product's own vaccine ids). A failed
+ * summary call (table not migrated yet, etc.) degrades every row's
+ * given7d to 0 and sets the top-level `trendUnavailable: true` flag —
+ * this route must never break the page over trend data being
+ * unavailable.
  *
- * RESPONSE CONTRACT (V-ordering-targets, updated V-T26 — supersedes the
- * prior flat per-vaccine shape; the desktop app is not part of this
- * change, only cloud/app/ordering/page.tsx consumes this):
+ * Since this replaced the previous computeEffectiveTargets call (whose
+ * group-apportionment branch was already permanently dead here — V-T26
+ * item 6 always passes an EMPTY group-overrides map, see the old comment
+ * this replaced), an NDC-scoped "Your target" override still wins
+ * outright over BOTH demand estimates for every row (active or
+ * inactive) — same override precedence as before, just computed inline
+ * below instead of via lib/ordering-targets.ts. That file/route (GET/PUT
+ * /api/ordering/targets) is untouched and still the source of the NDC
+ * overrides read here.
+ *
+ * RESPONSE CONTRACT (V-ordering-targets, updated V-T26, updated
+ * V-ordering-trend — supersedes the prior flat per-vaccine shape; the
+ * desktop app is not part of this change, only cloud/app/ordering/page.tsx
+ * consumes this):
  *   {
  *     "onHandLastReceivedAt": "2026-08-19T13:00:00.000Z" | null,
  *     "targetsPending": false,   // true before 0011 has been applied
  *     "walkInPct": 25,           // the effective walk-up % this response was computed with
  *     "walkInPctPending": false, // true before 0012 has been applied (walkInPct is the default, 25)
+ *     "trendUnavailable": false, // true when administeredSummary threw — every row's given7d is 0 for this response
  *     "groupTargets": { "Flu": 200 },  // group-scoped overrides still on file, by group display name — NOT applied to any row below, see doc comment above
  *     "rows": [
  *       {
@@ -86,14 +113,17 @@ import { extractUnitFromRawLine } from "@/lib/on-hand/quantity-cell";
  *         "group": "Other",               // "COVID" | "Flu" | "Other"
  *         "active": true,
  *         "upcoming7d": 12,
+ *         "given7d": 9,                   // doses administered over the last 7 COMPLETE days (0 when trendUnavailable, or none ingested yet)
  *         "onHand": 8,
  *         "onHandAsOf": "2026-08-19T13:00:00.000Z" | null,
  *         "unitSize": "1 EA" | "0.5 ML" | "1" | null,  // stock_size (+ unit recovered from raw_line, when present) of the latest matched batch line — V-onhand-ndc-units
- *         "recommendedTarget": 20,
+ *         "scheduledDemand": 15,          // upcoming7d + its walk-in buffer (the old "recommendedTarget" formula)
+ *         "trendDemand": 9,               // given7d, unbuffered
+ *         "recommendedTarget": 15,        // max(scheduledDemand, trendDemand), BEFORE any override
  *         "targetOnHand": null,           // this row's own NDC override, or null
- *         "effectiveTarget": 20,
- *         "targetSource": "recommended",  // "ndc" | "group" | "recommended" ("group" can no longer actually occur — group overrides are ignored — but the type is kept for API stability)
- *         "order": 12
+ *         "effectiveTarget": 15,
+ *         "targetSource": "scheduled",    // "override" | "scheduled" | "trend"
+ *         "order": 7
  *       }
  *     ]
  *   }
@@ -373,6 +403,30 @@ export async function GET(request: Request) {
     // upcoming7d simply stays 0, same "not configured yet" tolerance as
     // the rest of this app (see app/api/acuity/poll/route.ts).
 
+    // given7d (V-ordering-trend, Will 2026-09-12): last week's ACTUAL
+    // administered pace, per catalog vaccine id — ONE
+    // administeredSummary call over the last 7 COMPLETE Chicago days
+    // (until = yesterday, so a partial "today" never makes the trend
+    // look artificially low). This route only READS
+    // lib/administered/store.ts (owned by feat/administered-ingest); it
+    // never writes to it. Degrades to every row's given7d = 0 plus the
+    // top-level `trendUnavailable: true` flag on ANY failure (missing
+    // table before that branch is merged/migrated, a genuine Supabase
+    // error, etc.) — trend data being unavailable must never break this
+    // page, same posture as every other degrade in this route.
+    const givenByVaccineId = new Map<string, number>();
+    let trendUnavailable = false;
+    try {
+      const yesterday = addDaysToChicagoDate(todayInChicago(), -1);
+      const summary = await administeredSummary(supabase, { days: 7, until: yesterday });
+      for (const [vaccineId, count] of Object.entries(summary.byVaccineId)) {
+        givenByVaccineId.set(vaccineId, count);
+      }
+    } catch (err) {
+      console.error("GET /api/ordering/recommendation: administeredSummary failed", err);
+      trendUnavailable = true;
+    }
+
     // V-onhand-account-address (Will 2026-09-08): scope on-hand rows to
     // THIS account's inbound address, OR (transitionally) a legacy row
     // with no address at all. addressId stays null (falling back to the
@@ -559,11 +613,10 @@ export async function GET(request: Request) {
     }
 
     // Walk-up % (V-T26 item 1, Will 2026-09-09): the effective rate
-    // every recommendedTarget/computeEffectiveTargets call below uses,
-    // replacing the previously hard-coded 25% — degrades to
-    // DEFAULT_WALK_IN_PCT (25) with walkInPctPending:true before 0012
-    // has been applied, never an error (same posture as targetsPending
-    // above).
+    // every scheduledDemand call below uses, replacing the previously
+    // hard-coded 25% — degrades to DEFAULT_WALK_IN_PCT (25) with
+    // walkInPctPending:true before 0012 has been applied, never an
+    // error (same posture as targetsPending above).
     let walkInPct: number;
     let walkInPctPending: boolean;
     try {
@@ -583,6 +636,7 @@ export async function GET(request: Request) {
       group: string;
       active: boolean;
       upcoming7d: number;
+      given7d: number;
       onHand: number | null;
       onHandAsOf: string | null;
       unitSize: string | null;
@@ -590,6 +644,7 @@ export async function GET(request: Request) {
 
     const builtRows: BuiltRow[] = collapsedGroups.map((group) => {
       const upcoming7d = group.vaccineIds.reduce((sum, id) => sum + (upcomingByVaccineId.get(id) ?? 0), 0);
+      const given7d = group.vaccineIds.reduce((sum, id) => sum + (givenByVaccineId.get(id) ?? 0), 0);
       const onHandEntry = onHandFor(group);
       return {
         key: group.key,
@@ -601,56 +656,36 @@ export async function GET(request: Request) {
         group: getOrderingGroup(group.vaccineName),
         active: group.active,
         upcoming7d,
+        given7d,
         onHand: onHandEntry?.quantity ?? null,
         onHandAsOf: onHandEntry?.receivedAt ?? null,
         unitSize: onHandEntry?.unitSize ?? null,
       };
     });
 
-    // Group apportionment (lib/ordering-targets.ts) considers ONLY
-    // active rows (Will's brief) — inactive rows still get a
-    // recommended/order figure, just never participate in (or benefit
-    // from) a group-level split. V-T26 item 6 (Will 2026-09-09: "Remove
-    // group target for now"): group overrides are passed as an EMPTY
-    // map here, not `groupOverrides` — any scope='group' row still on
-    // file (see the targets fetch above) is loaded but deliberately
-    // never applied, so it can no longer affect any row's effective
-    // target/order (Will's brief: "ignore scope='group' rows in the
-    // effective-target computation; don't delete them").
-    const activeTargetInputs: TargetInput[] = builtRows
-      .filter((row) => row.active)
-      .map((row) => ({ key: row.key, ndc: row.ndc, group: row.group, upcoming7d: row.upcoming7d, onHand: row.onHand }));
-    const activeResults = computeEffectiveTargets(activeTargetInputs, { ndc: ndcOverrides, group: {} }, walkInRate);
-    const activeResultByKey = new Map(activeResults.map((result) => [result.key, result]));
-
+    // Per-row target (V-ordering-trend): max(scheduledDemand, trendDemand)
+    // — see lib/ordering-recommendation.ts's computeDemandTarget — with
+    // an NDC-scoped "Your target" override still winning outright over
+    // BOTH estimates, for active AND inactive rows alike. This replaces
+    // the previous call into lib/ordering-targets.ts's
+    // computeEffectiveTargets: that function's GROUP-apportionment
+    // branch was already permanently dead here (V-T26 item 6 always
+    // passed an EMPTY group-overrides map — "Remove group target for
+    // now" — so no scope='group' row has ever actually apportioned
+    // anything through this route), so folding its remaining
+    // (NDC-override-wins, else-recommended) behavior in here directly
+    // is behavior-preserving for everything except the new
+    // trend-awareness itself. `ordering_target`'s scope='group' rows are
+    // still read above (groupOverrides) and returned in `groupTargets`
+    // for API stability (Will's brief: "don't delete them"), just never
+    // applied to any row.
     const rows = builtRows.map((row) => {
-      if (row.active) {
-        const result = activeResultByKey.get(row.key);
-        if (result) {
-          return {
-            key: row.key,
-            vaccineName: row.vaccineName,
-            ndc: row.ndc,
-            group: row.group,
-            active: row.active,
-            upcoming7d: row.upcoming7d,
-            onHand: row.onHand,
-            onHandAsOf: row.onHandAsOf,
-            unitSize: row.unitSize,
-            recommendedTarget: result.recommendedTarget,
-            targetOnHand: row.ndc ? ndcOverrides[row.ndc] ?? null : null,
-            effectiveTarget: result.effectiveTarget,
-            targetSource: result.targetSource,
-            order: result.order,
-          };
-        }
-      }
-
-      // Inactive row (or, defensively, a missing active-result lookup):
-      // NDC override only, no group apportionment.
-      const recommended = recommendedTarget(row.upcoming7d, walkInRate);
+      const demand = computeDemandTarget(row.upcoming7d, row.given7d, walkInRate);
       const ndcOverride = row.ndc ? ndcOverrides[row.ndc] : undefined;
-      const effective = ndcOverride ?? recommended;
+      const effectiveTarget = ndcOverride ?? demand.demandTarget;
+      const targetSource: "override" | "scheduled" | "trend" =
+        ndcOverride !== undefined ? "override" : demand.targetSource;
+
       return {
         key: row.key,
         vaccineName: row.vaccineName,
@@ -658,14 +693,17 @@ export async function GET(request: Request) {
         group: row.group,
         active: row.active,
         upcoming7d: row.upcoming7d,
+        given7d: row.given7d,
         onHand: row.onHand,
         onHandAsOf: row.onHandAsOf,
         unitSize: row.unitSize,
-        recommendedTarget: recommended,
+        scheduledDemand: demand.scheduledDemand,
+        trendDemand: demand.trendDemand,
+        recommendedTarget: demand.demandTarget,
         targetOnHand: ndcOverride ?? null,
-        effectiveTarget: effective,
-        targetSource: (ndcOverride !== undefined ? "ndc" : "recommended") as "ndc" | "recommended",
-        order: Math.max(0, effective - (row.onHand ?? 0)),
+        effectiveTarget,
+        targetSource,
+        order: Math.max(0, effectiveTarget - (row.onHand ?? 0)),
       };
     });
 
@@ -674,6 +712,7 @@ export async function GET(request: Request) {
       targetsPending,
       walkInPct,
       walkInPctPending,
+      trendUnavailable,
       groupTargets: groupOverrides,
       rows,
     });

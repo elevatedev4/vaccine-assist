@@ -57,6 +57,58 @@ export function buildRecommendationRow(input: RecommendationInput, rate: number 
 }
 
 /**
+ * Demand model, trend-aware (V-ordering-trend, Will 2026-09-12: "We need
+ * our ordering algorithm to be cognizant of how many vaccines we've done
+ * in the last week and recommend that we keep up with the trends, since
+ * we take walk-ins and not just schedule.").
+ *
+ * Two competing estimates of "how much of this product will we need in
+ * the next 7 days":
+ *   - scheduledDemand: the EXISTING schedule-driven estimate — upcoming7d
+ *     (booked Acuity appointments) plus its walk-in buffer, numerically
+ *     identical to lib/ordering-targets.ts's recommendedTarget().
+ *   - trendDemand: given7d itself, no additional buffer — Will's own
+ *     framing is that last week's ACTUAL administered-doses pace already
+ *     reflects real walk-in volume (a walk-in isn't scheduled, but it
+ *     still shows up in what got administered), so buffering it again
+ *     would double-count walk-ins.
+ *
+ * The resulting demandTarget is whichever of the two is larger — a slow
+ * week of bookings with a hot walk-in trend still orders enough to keep
+ * up, and a heavy-bookings week with no trend history isn't dragged down
+ * by an all-zero/undefined given7d (ties, and given7d<=0, fall to
+ * "scheduled" — see the tests: this keeps every existing scheduled-only
+ * caller's numbers byte-identical when given7d is 0 or omitted).
+ */
+export type DemandTargetSource = "scheduled" | "trend";
+
+export type DemandTargetResult = {
+  given7d: number;
+  scheduledDemand: number;
+  trendDemand: number;
+  /** max(scheduledDemand, trendDemand) — the trend-aware target BEFORE
+   * any "Your target" override is applied; callers combine this with
+   * their own override precedence (see the recommendation route). */
+  demandTarget: number;
+  /** Which of the two estimates determined demandTarget. */
+  targetSource: DemandTargetSource;
+};
+
+export function computeDemandTarget(
+  upcoming7d: number,
+  given7d: number = 0,
+  rate: number = WALK_IN_BUFFER_RATE
+): DemandTargetResult {
+  const scheduledDemand = upcoming7d + walkInBuffer(upcoming7d, rate);
+  const trendDemand = given7d;
+
+  if (trendDemand > scheduledDemand) {
+    return { given7d, scheduledDemand, trendDemand, demandTarget: trendDemand, targetSource: "trend" };
+  }
+  return { given7d, scheduledDemand, trendDemand, demandTarget: scheduledDemand, targetSource: "scheduled" };
+}
+
+/**
  * Ordering-page "Surplus" column (Will 2026-09-11): how far BOH sits above
  * or below the row's selected target (its "Your target" override when set,
  * else the recommended target — see the page's `effectiveTarget` field).

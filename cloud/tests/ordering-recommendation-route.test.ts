@@ -25,10 +25,30 @@ vi.mock("@/lib/acuity-client", async () => {
   };
 });
 
+// V-ordering-trend (Will 2026-09-12): mocked here (this route only READS
+// lib/administered/store.ts, owned by feat/administered-ingest — this
+// worktree must not touch that file) so every existing test below gets a
+// clean, deterministic given7d=0/trendUnavailable=false by default
+// without depending on incidental app_setting query collisions; trend-
+// specific tests further down override this per-test with
+// mockResolvedValue/mockRejectedValue.
+vi.mock("@/lib/administered/store", () => ({
+  administeredSummary: vi.fn(async () => ({
+    days: 7,
+    since: "2026-09-01",
+    until: "2026-09-07",
+    byVaccineId: {},
+    byItemName: {},
+    unmatched: 0,
+    total: 0,
+  })),
+}));
+
 import { GET } from "@/app/api/ordering/recommendation/route";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { getAcuityCredentials } from "@/lib/acuity-credentials";
 import { fetchAppointmentTypes, fetchAppointmentsForRange, AcuityApiError } from "@/lib/acuity-client";
+import { administeredSummary } from "@/lib/administered/store";
 
 const CATALOG = [
   { id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true },
@@ -170,6 +190,18 @@ describe("GET /api/ordering/recommendation", () => {
     vi.mocked(getAcuityCredentials).mockReset();
     vi.mocked(fetchAppointmentTypes).mockReset();
     vi.mocked(fetchAppointmentsForRange).mockReset();
+    // Restore the clean default (see the vi.mock factory above) so a
+    // trend-specific test's mockResolvedValue/mockRejectedValue override
+    // never leaks into the next test.
+    vi.mocked(administeredSummary).mockReset().mockResolvedValue({
+      days: 7,
+      since: "2026-09-01",
+      until: "2026-09-07",
+      byVaccineId: {},
+      byItemName: {},
+      unmatched: 0,
+      total: 0,
+    });
   });
 
   it("returns rows for every active vaccine with upcoming7d=0 when Acuity isn't configured, and null on-hand when none received yet", async () => {
@@ -193,7 +225,7 @@ describe("GET /api/ordering/recommendation", () => {
       recommendedTarget: 0,
       targetOnHand: null,
       effectiveTarget: 0,
-      targetSource: "recommended",
+      targetSource: "scheduled",
       order: 0,
     });
   });
@@ -595,7 +627,7 @@ describe("GET /api/ordering/recommendation", () => {
     expect(body.rows[0]).toMatchObject({
       targetOnHand: 50,
       effectiveTarget: 50,
-      targetSource: "ndc",
+      targetSource: "override",
       order: 45, // 50 - 5
     });
   });
@@ -609,7 +641,7 @@ describe("GET /api/ordering/recommendation", () => {
     expect(body.targetsPending).toBe(true);
     // Falls back to the plain recommendation with no overrides applied.
     const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
-    expect(fluRow.targetSource).toBe("recommended");
+    expect(fluRow.targetSource).toBe("scheduled");
   });
 
   it("(review fix, item 7) returns 503 when the address lookup fails with something OTHER than a missing-table error", async () => {
@@ -1061,10 +1093,150 @@ describe("GET /api/ordering/recommendation", () => {
       // both fall back to their own plain recommendedTarget (0 upcoming
       // -> recommendedTarget 0, not some slice of 500).
       for (const row of body.rows) {
-        expect(row.targetSource).toBe("recommended");
+        expect(row.targetSource).toBe("scheduled");
         expect(row.effectiveTarget).toBe(0);
         expect(row.order).toBe(0);
       }
+    });
+  });
+
+  // --- V-ordering-trend additions (Will 2026-09-12) --------------------
+
+  describe("trend-aware demand (given7d)", () => {
+    it("maps administeredSummary's byVaccineId onto the matching product and picks scheduledDemand when it's larger", async () => {
+      const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+      vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+      vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+      const appointment = (date: string) => ({
+        date,
+        appointmentTypeId: 1,
+        hourOfDay: 10,
+        vaccineNames: ["Flu Quad 2025-26"],
+        testNames: [],
+        covidBrand: "any" as const,
+        covidAgeBucket: "unknown" as const,
+        fluAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
+      });
+      // upcoming7d=20 -> scheduledDemand=25 (buffer=5); given7d=9 loses.
+      vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+        appointments: Array.from({ length: 20 }, () => appointment("2026-09-05")),
+        possiblyTruncated: false,
+      });
+      vi.mocked(administeredSummary).mockResolvedValue({
+        days: 7,
+        since: "2026-09-01",
+        until: "2026-09-07",
+        byVaccineId: { "v-flu": 9 },
+        byItemName: { "Flu Quad 2025-26": 9 },
+        unmatched: 0,
+        total: 9,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+      expect(body.trendUnavailable).toBe(false);
+
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.given7d).toBe(9);
+      expect(fluRow.scheduledDemand).toBe(25);
+      expect(fluRow.trendDemand).toBe(9);
+      expect(fluRow.recommendedTarget).toBe(25);
+      expect(fluRow.targetSource).toBe("scheduled");
+      expect(fluRow.order).toBe(25);
+    });
+
+    it("picks trendDemand (given7d) over scheduledDemand when last week's actual pace was higher — walk-ins kept up with", async () => {
+      const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+      // Acuity not configured -> upcoming7d=0 -> scheduledDemand=0.
+      vi.mocked(administeredSummary).mockResolvedValue({
+        days: 7,
+        since: "2026-09-01",
+        until: "2026-09-07",
+        byVaccineId: { "v-flu": 40 },
+        byItemName: { "Flu Quad 2025-26": 40 },
+        unmatched: 0,
+        total: 40,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.given7d).toBe(40);
+      expect(fluRow.scheduledDemand).toBe(0);
+      expect(fluRow.trendDemand).toBe(40);
+      expect(fluRow.recommendedTarget).toBe(40);
+      expect(fluRow.targetSource).toBe("trend");
+      expect(fluRow.order).toBe(40);
+    });
+
+    it("sums given7d across every vaccine id collapsed into one NDC-grouped product row", async () => {
+      const catalog = [
+        { id: "v-gard1", name: "Gardasil", short_code: "gardasil1", ndc: "00006-4121-02", active: true },
+        { id: "v-gard2", name: "Gardasil", short_code: "gardasil2", ndc: "00006-4121-02", active: true },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+      vi.mocked(administeredSummary).mockResolvedValue({
+        days: 7,
+        since: "2026-09-01",
+        until: "2026-09-07",
+        byVaccineId: { "v-gard1": 3, "v-gard2": 5 },
+        byItemName: {},
+        unmatched: 0,
+        total: 8,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "00006412102");
+      expect(row.given7d).toBe(8);
+    });
+
+    it("an NDC-scoped override still wins outright over BOTH scheduledDemand and trendDemand", async () => {
+      const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: "12345-6789-01", active: true }];
+      const targetRows: FakeTargetRow[] = [{ scope: "ndc", key: "12345678901", target_on_hand: 7 }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog, "missing-table", targetRows) as never);
+      vi.mocked(administeredSummary).mockResolvedValue({
+        days: 7,
+        since: "2026-09-01",
+        until: "2026-09-07",
+        byVaccineId: { "v-flu": 40 }, // trendDemand=40 would otherwise win
+        byItemName: {},
+        unmatched: 0,
+        total: 40,
+      });
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      expect(body.rows[0]).toMatchObject({
+        given7d: 40,
+        trendDemand: 40,
+        targetOnHand: 7,
+        effectiveTarget: 7,
+        targetSource: "override",
+        order: 7,
+      });
+    });
+
+    it("degrades to given7d=0 and trendUnavailable:true (never breaks the page) when administeredSummary throws", async () => {
+      const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+      vi.mocked(administeredSummary).mockRejectedValue(new Error("connection reset"));
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.trendUnavailable).toBe(true);
+      const fluRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-flu");
+      expect(fluRow.given7d).toBe(0);
+      expect(fluRow.trendDemand).toBe(0);
+      expect(fluRow.targetSource).toBe("scheduled");
     });
   });
 });
