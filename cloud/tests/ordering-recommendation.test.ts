@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildRecommendationRow, computeRecommendedOrder, walkInBuffer } from "@/lib/ordering-recommendation";
+import {
+  buildRecommendationRow,
+  computeRecommendedOrder,
+  formatSurplus,
+  surplusVsTarget,
+  walkInBuffer,
+} from "@/lib/ordering-recommendation";
 
 describe("walkInBuffer", () => {
   it("returns 0 when there are no upcoming appointments", () => {
@@ -80,5 +86,45 @@ describe("buildRecommendationRow", () => {
     expect(row.onHand).toBeNull();
     expect(row.onHandAsOf).toBeNull();
     expect(row.recommendedOrder).toBe(4); // 3 + 1 (min buffer) - 0
+  });
+});
+
+describe("surplusVsTarget", () => {
+  it("returns a positive surplus when on-hand exceeds target", () => {
+    expect(surplusVsTarget({ onHand: 20, target: 8 })).toBe(12);
+  });
+
+  it("returns a negative deficit when on-hand is below target", () => {
+    expect(surplusVsTarget({ onHand: 3, target: 10 })).toBe(-7);
+  });
+
+  it("returns 0 when on-hand exactly matches target", () => {
+    expect(surplusVsTarget({ onHand: 5, target: 5 })).toBe(0);
+  });
+
+  it("returns null when on-hand is unknown", () => {
+    expect(surplusVsTarget({ onHand: null, target: 5 })).toBeNull();
+  });
+
+  it("returns null when target is unknown", () => {
+    expect(surplusVsTarget({ onHand: 5, target: null })).toBeNull();
+  });
+
+  it("returns null when both are unknown", () => {
+    expect(surplusVsTarget({ onHand: null, target: null })).toBeNull();
+  });
+});
+
+describe("formatSurplus", () => {
+  it("formats a positive surplus with a leading plus", () => {
+    expect(formatSurplus(12)).toBe("+12");
+  });
+
+  it("formats a deficit with a real minus sign (U+2212)", () => {
+    expect(formatSurplus(-3)).toBe("−3");
+  });
+
+  it("formats zero as a bare 0", () => {
+    expect(formatSurplus(0)).toBe("0");
   });
 });
