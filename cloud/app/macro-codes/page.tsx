@@ -1,63 +1,94 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { buildProductViews } from "@/lib/product-view";
 import {
   buildMacroCode,
   buildMacroRows,
-  groupMacroRowsForFamily,
-  type MacroFamily,
-  type MacroGroupedRow,
+  groupMacroRowsBySection,
+  type MacroDoseButton,
   type MacroLotLike,
+  type MacroProductGroup,
   type MacroRow,
   type MacroRowVaccine,
+  type MacroSection,
+  type MacroSectionGroup,
 } from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
 /**
- * /macro-codes tab, round 3 (Will's brief, verbatim highlights):
- * "Remove 'Dose ' from the dose data, it's redundant... For multi-dose
- * series, combine the heading instead of listing it multiple times.
- * Add a border around the sections to differentiate the vaccines from
- * one another... if it's the same product, no need to list it multiple
- * times. Remove the colors, they are hindering not helping. Remove
- * helper text... Make the 'All vaccines' section be 'Other vaccines'
- * and don't include flu/covid. Add mFLUSIVA and FluMist to the
- * flu/covid section... Arrange them by age. Add an age column... Make
- * it so if they click anywhere on the row it will copy and the
- * settings button should be outside that on the right side and just
- * show up on hover. Price should also not be repeated... include with
- * the product."
+ * /macro-codes tab, round 4 (Will's brief, verbatim): "Remove the age
+ * ranges and extraneous data from product names, as I've asked for
+ * multiple times. Move age range and price to the end of the row. Have
+ * a section (Flu, Pneumonia, RSV, etc) and then have the product
+ * name/dose be inside a colored button 'Shingrix 1' 'Shingrix 2'
+ * 'Abrysvo' 'Comirnaty 12+' 'mNEXSPIKE 12+', etc. Showing the product
+ * name and dose number if there are multiple doses."
  *
- * Pure row-building + catalog/family/grouping logic lives in
- * lib/macro-codes.ts / lib/macro-catalog.ts (both unit-tested); this
- * page is just data loading + the compact, bordered-by-Type table
- * layout + the click-row-to-copy/modal UI.
+ * One compact row per PRODUCT within each section: a colored button per
+ * real dose row (label rules in lib/macro-codes.ts's doseButtonLabel),
+ * then the product's age range and cash price at the row's end, then
+ * one small ⚙ disclosure covering every dose of that product. Clicking
+ * a dose button copies that dose's macro (or opens the lot/exp modal
+ * when incomplete) — same copy-first-then-save modal logic as round 3,
+ * unchanged. Names come pre-cleaned from lib/product-view.ts's
+ * buildProductViews; pure row-building/grouping logic lives in
+ * lib/macro-codes.ts / lib/macro-catalog.ts (both unit-tested).
  */
 
 type VaccineRow = MacroRowVaccine;
 type LotRow = { id: string; vaccine_id: string; lot_number: string; expiration: string; status: string };
 
+type SectionColors = { bg: string; border: string; text: string };
+
+/** One hue per section (Will's brief: "Colors: one hue per SECTION...
+ * readable text, subtle (light background + darker border/text)").
+ * Every MacroSection has an explicit entry so the palette is fully
+ * deterministic — no runtime hashing/cycling logic to get wrong. */
+const SECTION_COLORS: Readonly<Record<MacroSection, SectionColors>> = {
+  Flu: { bg: "#e8f1fd", border: "#7fa8dd", text: "#1a4c8f" },
+  COVID: { bg: "#f2ebfa", border: "#a67fd6", text: "#5a2d92" },
+  Pneumonia: { bg: "#fdf1e3", border: "#e0a55e", text: "#8f5a17" },
+  RSV: { bg: "#e5f7f4", border: "#5cc0b3", text: "#136a5e" },
+  Shingles: { bg: "#fdecec", border: "#e07a7a", text: "#8f1f1f" },
+  "Hep B": { bg: "#eaf7e8", border: "#7bc069", text: "#2d6b1e" },
+  Tetanus: { bg: "#eceffb", border: "#8d97d4", text: "#32389b" },
+  HPV: { bg: "#fbeaf3", border: "#d97fb0", text: "#96285f" },
+  Meningitis: { bg: "#e7f6fb", border: "#63b6d5", text: "#155e78" },
+  "Hep A": { bg: "#f3f0e6", border: "#b7a468", text: "#6b5a1c" },
+  Typhoid: { bg: "#eef3f5", border: "#8ea6af", text: "#33505c" },
+  MMR: { bg: "#f6ece6", border: "#c98f68", text: "#7a4419" },
+  Other: { bg: "#f2f2f2", border: "#aaaaaa", text: "#4d4d4d" },
+};
+
 const styles = {
-  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 900 },
-  button: { padding: "0.3rem 0.6rem", fontSize: "13px", minWidth: 68 },
+  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1000 },
   error: { color: "#b00020", fontSize: "0.8rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
-  note: { color: "#b00020", fontSize: "0.7rem", fontStyle: "italic" as const, whiteSpace: "nowrap" as const },
-  sectionHeading: { fontSize: "0.95rem", fontWeight: 700, margin: "1.25rem 0 0.35rem" },
-  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "12.5px", lineHeight: 1.15 },
-  th: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
-  td: { textAlign: "left" as const, padding: "1px 6px", verticalAlign: "middle" as const },
-  typeCell: { fontWeight: 600, verticalAlign: "top" as const, whiteSpace: "nowrap" as const },
-  ageCell: { whiteSpace: "nowrap" as const, color: "#444" },
-  productCell: { whiteSpace: "nowrap" as const },
-  copyHint: { color: "#888", fontWeight: 400 as const },
-  copiedFlag: { color: "#1a7f37", fontWeight: 600 },
-  copyFallback: { marginTop: "0.25rem" },
+  sectionHeading: {
+    fontSize: "0.95rem",
+    fontWeight: 700,
+    margin: "1rem 0 0.3rem",
+    paddingBottom: "0.15rem",
+    borderBottom: "1px solid #ccc",
+  },
+  productRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "0.6rem",
+    padding: "3px 0",
+    borderBottom: "1px solid #eee",
+  },
+  doseButtons: { display: "flex", flexWrap: "wrap" as const, gap: "0.3rem", alignItems: "center" },
+  rowMeta: { display: "flex", alignItems: "center", gap: "0.6rem", whiteSpace: "nowrap" as const, flexShrink: 0 },
+  ageText: { fontSize: "12px", color: "#555" },
+  priceText: { fontSize: "12px", color: "#333", fontWeight: 600, minWidth: "4.5em", textAlign: "right" as const },
+  copyFallback: { margin: "0.15rem 0 0.4rem", width: "100%" },
   copyFallbackInput: {
     fontFamily: "ui-monospace, monospace",
     fontSize: "0.8rem",
@@ -66,12 +97,11 @@ const styles = {
     boxSizing: "border-box" as const,
     border: "1px solid #b00020",
   },
-  // ⚙ settings menu — a native <details>/<summary> disclosure. Native
-  // <details> does NOT close itself on an outside click, so a document
-  // pointerdown listener (armed only while any menu is open — same
-  // pattern as /lots' row cog menus and app/top-nav.tsx's account menu)
-  // closes every open .macro-settings-menu whose element doesn't
-  // contain the click, plus Escape.
+  // ⚙ settings menu — a native <details>/<summary> disclosure, same
+  // pattern as round 3 (and /lots' row cog menus): a document
+  // pointerdown listener (armed only while any menu is open) closes
+  // every open .macro-settings-menu whose element doesn't contain the
+  // click, plus Escape.
   menuDetails: { display: "inline-block", position: "relative" as const },
   menuSummary: { cursor: "pointer", listStyle: "none" as const, padding: "0 4px", border: "1px solid #ccc", borderRadius: 3, fontSize: "11px" },
   menuPanel: {
@@ -84,9 +114,10 @@ const styles = {
     borderRadius: 4,
     boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
     padding: "0.5rem",
-    minWidth: 200,
+    minWidth: 220,
     fontSize: "12px",
   },
+  menuDoseGroup: { padding: "2px 0", borderTop: "1px solid #eee", marginTop: "2px" },
   menuRow: { display: "flex", justifyContent: "space-between", gap: "0.75rem", padding: "1px 0" },
   menuLabel: { color: "#555" },
   menuValue: { fontFamily: "ui-monospace, monospace" },
@@ -111,12 +142,15 @@ const styles = {
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" as const, border: "1px solid #bbb" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" },
   checkboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
+  button: { padding: "0.3rem 0.6rem", fontSize: "13px" },
 } as const;
 
-const FAMILY_DEFS: readonly { key: MacroFamily; heading: string }[] = [
-  { key: "fluCovid", heading: "Flu / COVID" },
-  { key: "other", heading: "Other vaccines" },
-];
+/** "Copied ✓" is 8 characters — a button's reserved width is at least
+ * that (plus a little breathing room) so swapping the label to the
+ * copied flag never shifts layout, per Will's brief ("'Copied ✓'
+ * feedback on the button for 1.5s without layout shift"). */
+const COPIED_FLAG = "Copied ✓";
+const MIN_BUTTON_CH = COPIED_FLAG.length + 1;
 
 /** Copies text via the Clipboard API, falling back to a hidden
  * textarea + execCommand for non-secure (http, non-localhost) contexts
@@ -313,13 +347,7 @@ export default function MacroCodesPage() {
     [productViews, vaccines, activeLotsByVaccineId]
   );
 
-  const groupedByFamily = useMemo(() => {
-    const map: Record<MacroFamily, MacroGroupedRow[]> = { fluCovid: [], other: [] };
-    for (const { key } of FAMILY_DEFS) {
-      map[key] = groupMacroRowsForFamily(rows, key);
-    }
-    return map;
-  }, [rows]);
+  const sections = useMemo(() => groupMacroRowsBySection(rows), [rows]);
 
   function rowKey(row: MacroRow): string {
     return `${row.productKey}:${row.doseNumber}`;
@@ -504,118 +532,111 @@ export default function MacroCodesPage() {
     );
   }
 
-  /** Row click/keyboard handler — clicking or pressing Enter/Space
-   * anywhere on the row copies (or opens the modal for an incomplete
-   * row), per Will's round-3 brief ("if they click anywhere on the row
-   * it will copy"). The ⚙ settings cell stops propagation so it never
-   * triggers this. */
-  function handleRowActivate(row: MacroRow) {
-    if (row.shortCode === null) return;
-    void handleCopy(row);
-  }
-
-  function handleRowKeyDown(event: ReactKeyboardEvent<HTMLTableRowElement>, row: MacroRow) {
-    // A keydown that originated inside the ⚙ settings cell (e.g. Enter/
-    // Space on the <summary> to toggle the native <details>) bubbles up
-    // to this row handler — ignore it here so the row's preventDefault
-    // doesn't kill the details toggle and so it doesn't also copy the
-    // row. The settings cell's own onKeyDown below stops propagation
-    // too, but this guard covers it regardless of ordering/future
-    // changes to that cell's markup.
-    if ((event.target as HTMLElement).closest(".macro-settings-cell")) return;
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    handleRowActivate(row);
-  }
-
-  function renderRow(row: MacroGroupedRow, familyKey: string) {
-    const key = `${familyKey}:${rowKey(row)}`;
-    const note = missingNote(row);
+  function renderDoseButton(dose: MacroDoseButton, colors: SectionColors) {
+    const { row, label } = dose;
+    const key = rowKey(row);
     const isNoShortCode = row.shortCode === null;
-    const copyKey = rowKey(row);
-    const isCopied = copiedKey === copyKey;
-    const price = formatCashPrice(row.cashPriceCents);
-    const doseLabel = row.doseCount > 1 ? String(row.doseNumber) : "";
+    const isCopied = copiedKey === key;
+    const note = missingNote(row);
 
     return (
-      <tr
-        key={key}
-        className={`macro-row${row.showType ? " macro-row--type-start" : ""}`}
-        role={isNoShortCode ? undefined : "button"}
-        tabIndex={isNoShortCode ? undefined : 0}
-        aria-label={isNoShortCode ? undefined : `Copy ${row.displayName} dose ${row.doseNumber} macro code`}
-        onClick={() => handleRowActivate(row)}
-        onKeyDown={(e) => handleRowKeyDown(e, row)}
-      >
-        <td style={{ ...styles.td, ...styles.typeCell }}>{row.showType ? row.catalogType : ""}</td>
-        <td style={{ ...styles.td, ...styles.ageCell }}>{row.showProduct ? row.age : ""}</td>
-        <td style={{ ...styles.td, ...styles.productCell }}>
-          {row.showProduct ? (price ? `${row.displayName} · ${price}` : row.displayName) : ""}
-        </td>
-        <td style={styles.td}>{doseLabel}</td>
-        <td style={styles.td}>
-          {isNoShortCode ? (
-            <em style={styles.muted}>no short code set</em>
-          ) : (
-            <>
-              {isCopied ? <span style={styles.copiedFlag}>Copied ✓</span> : <span style={styles.copyHint}>Copy</span>}
-              {note && <span style={{ ...styles.note, marginLeft: "0.4rem" }}>{note}</span>}
-              {copyFailure?.key === copyKey && <CopyFallback code={copyFailure.code} />}
-            </>
-          )}
-        </td>
-        <td
-          className="macro-settings-cell"
-          style={{ ...styles.td, textAlign: "right" }}
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => e.stopPropagation()}
+      <span key={key} style={{ position: "relative", display: "inline-block" }}>
+        <button
+          type="button"
+          disabled={isNoShortCode}
+          onClick={() => void handleCopy(row)}
+          title={isNoShortCode ? "no short code set" : note ? note : `Copy ${label} macro code`}
+          className="macro-dose-button"
+          style={{
+            border: `1px solid ${isNoShortCode ? "#ccc" : colors.border}`,
+            background: isNoShortCode ? "#f2f2f2" : colors.bg,
+            color: isNoShortCode ? "#888" : colors.text,
+            borderRadius: 5,
+            padding: "0.3rem 0.6rem",
+            fontSize: "12.5px",
+            fontWeight: 600,
+            cursor: isNoShortCode ? "default" : "pointer",
+            minWidth: `${Math.max(label.length, MIN_BUTTON_CH)}ch`,
+            textAlign: "center",
+          }}
         >
-          {!isNoShortCode && (
-            <details className="macro-settings-menu" style={styles.menuDetails} onToggle={handleSettingsMenuToggle}>
-              <summary style={styles.menuSummary} aria-label={`${row.displayName} dose ${row.doseNumber} details`}>
-                ⚙
-              </summary>
-              <div style={styles.menuPanel}>
-                <div style={styles.menuRow}>
-                  <span style={styles.menuLabel}>Short code</span>
-                  <span style={styles.menuValue}>{row.shortCode}</span>
-                </div>
-                <div style={styles.menuRow}>
-                  <span style={styles.menuLabel}>Macro text</span>
-                  <span style={styles.menuValue}>{row.macro}</span>
-                </div>
-                <div style={styles.menuRow}>
-                  <span style={styles.menuLabel}>NDC</span>
-                  <span style={styles.menuValue}>{formatNdcDisplay(row.ndc)}</span>
-                </div>
-              </div>
-            </details>
-          )}
-        </td>
-      </tr>
+          {isCopied ? COPIED_FLAG : label}
+        </button>
+        {!isNoShortCode && note && (
+          <span
+            aria-hidden="true"
+            title={note}
+            style={{
+              position: "absolute",
+              top: -2,
+              right: -2,
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: "#c62828",
+              border: "1px solid #fff",
+            }}
+          />
+        )}
+        {copyFailure?.key === key && <CopyFallback code={copyFailure.code} />}
+      </span>
     );
   }
 
-  function renderFamilyTable(familyRows: MacroGroupedRow[], familyKey: string) {
-    if (familyRows.length === 0) return null;
+  function renderSettingsMenu(product: MacroProductGroup) {
+    const realDoses = product.doses.filter((d) => d.row.shortCode !== null);
+    if (realDoses.length === 0) return null;
+    const ndc = formatNdcDisplay(realDoses[0].row.ndc);
+
     return (
-      <table className="macro-table" style={styles.table}>
-        <thead>
-          <tr>
-            <th style={styles.th}>Type</th>
-            <th style={styles.th}>Age</th>
-            <th style={styles.th}>Product</th>
-            <th style={styles.th}>Dose</th>
-            <th style={styles.th}></th>
-            <th style={styles.th}></th>
-          </tr>
-        </thead>
-        <tbody>
-          {familyRows.map((row) => (
-            <Fragment key={`${familyKey}:${rowKey(row)}`}>{renderRow(row, familyKey)}</Fragment>
+      <details className="macro-settings-menu" style={styles.menuDetails} onToggle={handleSettingsMenuToggle}>
+        <summary style={styles.menuSummary} aria-label={`${product.displayName} details`}>
+          ⚙
+        </summary>
+        <div style={styles.menuPanel}>
+          <div style={styles.menuRow}>
+            <span style={styles.menuLabel}>NDC</span>
+            <span style={styles.menuValue}>{ndc}</span>
+          </div>
+          {realDoses.map((dose) => (
+            <div key={rowKey(dose.row)} style={styles.menuDoseGroup}>
+              <div style={styles.menuRow}>
+                <span style={styles.menuLabel}>{realDoses.length > 1 ? `Dose ${dose.row.doseNumber} code` : "Short code"}</span>
+                <span style={styles.menuValue}>{dose.row.shortCode}</span>
+              </div>
+              <div style={styles.menuRow}>
+                <span style={styles.menuLabel}>{realDoses.length > 1 ? `Dose ${dose.row.doseNumber} macro` : "Macro text"}</span>
+                <span style={styles.menuValue}>{dose.row.macro}</span>
+              </div>
+            </div>
           ))}
-        </tbody>
-      </table>
+        </div>
+      </details>
+    );
+  }
+
+  function renderProductRow(product: MacroProductGroup, section: MacroSection) {
+    const colors = SECTION_COLORS[section];
+    const price = formatCashPrice(product.cashPriceCents);
+
+    return (
+      <div key={product.productKey} className="macro-row" style={styles.productRow}>
+        <div style={styles.doseButtons}>{product.doses.map((dose) => renderDoseButton(dose, colors))}</div>
+        <div className="macro-settings-cell" style={styles.rowMeta}>
+          <span style={styles.ageText}>{product.age}</span>
+          <span style={styles.priceText}>{price}</span>
+          {renderSettingsMenu(product)}
+        </div>
+      </div>
+    );
+  }
+
+  function renderSection(section: MacroSectionGroup) {
+    return (
+      <section key={section.section}>
+        <h2 style={styles.sectionHeading}>{section.section}</h2>
+        {section.products.map((product) => renderProductRow(product, section.section))}
+      </section>
     );
   }
 
@@ -626,17 +647,7 @@ export default function MacroCodesPage() {
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
 
-      {!loading &&
-        FAMILY_DEFS.map(({ key, heading }) => {
-          const familyRows = groupedByFamily[key];
-          if (familyRows.length === 0) return null;
-          return (
-            <section key={key}>
-              <h2 style={styles.sectionHeading}>{heading}</h2>
-              {renderFamilyTable(familyRows, key)}
-            </section>
-          );
-        })}
+      {!loading && sections.map((section) => renderSection(section))}
 
       {modal && (
         <div
@@ -720,35 +731,27 @@ export default function MacroCodesPage() {
       )}
 
       {/* Row-level interaction styling that plain inline styles can't
-       * express (hover/focus states, and the ⚙ column's border-around-
-       * Type-block rule) — same "no external library" posture as
-       * app/appointments/explorer/page.tsx's <style> keyframes tag.
-       * The settings cell is opacity:0 by default and only appears on
-       * row hover/focus-within, EXCEPT on touch devices (no hover) where
-       * it's always visible, since a touch user can't "hover" to reveal
-       * it. macro-row--type-start draws the top border of each bordered
-       * Type block; the table's own bottom border plus this rule
-       * produces one full border around every Type group. */}
+       * express (hover/focus states) — same "no external library"
+       * posture as app/appointments/explorer/page.tsx's <style>
+       * keyframes tag. The ⚙ column is opacity:0 by default and only
+       * appears on row hover/focus-within, EXCEPT on touch devices (no
+       * hover) where it's always visible, since a touch user can't
+       * "hover" to reveal it. Dose buttons are real <button>s so
+       * Enter/Space work natively with no extra keyboard handling. */}
       <style>{`
-        .macro-table tbody tr.macro-row { cursor: pointer; }
-        .macro-table tbody tr.macro-row:hover,
-        .macro-table tbody tr.macro-row:focus-visible {
-          background: #f2f6fb;
+        .macro-dose-button:hover, .macro-dose-button:focus-visible {
+          filter: brightness(0.96);
           outline: none;
         }
-        .macro-table tbody tr.macro-row--type-start td {
-          border-top: 1px solid #ccc;
-        }
-        .macro-table tbody tr.macro-row:last-child td {
-          border-bottom: 1px solid #ccc;
-        }
-        .macro-settings-cell { opacity: 0; }
-        .macro-row:hover .macro-settings-cell,
-        .macro-row:focus-within .macro-settings-cell {
+        .macro-dose-button:disabled { cursor: default; }
+        .macro-settings-menu { opacity: 0; }
+        .macro-row:hover .macro-settings-menu,
+        .macro-row:focus-within .macro-settings-menu,
+        .macro-settings-menu[open] {
           opacity: 1;
         }
         @media (hover: none) {
-          .macro-settings-cell { opacity: 1; }
+          .macro-settings-menu { opacity: 1; }
         }
       `}</style>
     </main>
