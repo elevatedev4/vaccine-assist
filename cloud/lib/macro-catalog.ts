@@ -1,78 +1,133 @@
 /**
- * Static catalog for the /macro-codes tab's round-2 layout (Will's brief,
- * verbatim: "I had also asked you to follow the same format as the excel
- * file. I meant that. There should be a section for covid/flu vaccines
- * for age 3-11 and then for 12+, then a section for all the vaccines. It
- * should say the type of vaccine...").
+ * Static catalog for the /macro-codes tab.
  *
- * Built by hand from the "Macro codes" sheet's quick-view blocks (Age
- * 3-11 / Age 12+ / Alternative flu shots) and its main "All vaccines"
- * table's Type column + row order — see the brief's verbatim sheet
- * layout for the source. Keyed by short_code, lowercased. A single-dose
- * product's REAL short_code (e.g. "comirnaty12", "spikevax6mo11",
- * "prevnar20") is used as the key VERBATIM, digits and all — those
- * digits are part of the code itself (age range, package size), not an
- * appended dose suffix. A multi-dose product's real per-dose short_codes
- * (e.g. "shingrix1"/"shingrix2") are NOT individually keyed; instead
- * lookupMacroCatalog falls back to the digit-stripped BASE ("shingrix")
- * when the exact code isn't found — see macroBaseShortCode below and
- * this file's lookupMacroCatalog doc comment for why exact-match is
- * tried FIRST (it's what keeps "prevnar20"/"comirnaty12" from being
- * mis-stripped to "prevnar"/"comirnaty").
+ * ROUND 3 (Will's brief, verbatim highlights): "Make the 'All vaccines'
+ * section be 'Other vaccines' and don't include flu/covid. Add mFLUSIVA
+ * and FluMist to the flu/covid section. Eliminate the age range
+ * distinction in flu/covid and combine them. Arrange them by age. Add
+ * an age column to show the approved age range for the vaccines." This
+ * drops the round-2 "sections" (age3to11/age12plus/altFlu quick-view
+ * blocks) entirely in favor of a single `family` split — "fluCovid" vs
+ * "other" — plus a human-readable `age` label and a numeric
+ * `ageMinMonths` for sorting the fluCovid family by age.
+ *
+ * Built by hand from the "Macro codes" sheet's Type column + row order,
+ * and from Will's round-3 age table (verbatim per-product age ranges) —
+ * see the brief for the source. Keyed by short_code, lowercased. A
+ * single-dose product's REAL short_code (e.g. "comirnaty12",
+ * "spikevax6mo11", "prevnar20") is used as the key VERBATIM, digits and
+ * all — those digits are part of the code itself (age range, package
+ * size), not an appended dose suffix. A multi-dose product's real
+ * per-dose short_codes (e.g. "shingrix1"/"shingrix2") are NOT
+ * individually keyed; instead lookupMacroCatalog falls back to the
+ * digit-stripped BASE ("shingrix") when the exact code isn't found —
+ * see macroBaseShortCode below and this file's lookupMacroCatalog doc
+ * comment for why exact-match is tried FIRST (it's what keeps
+ * "prevnar20"/"comirnaty12" from being mis-stripped to
+ * "prevnar"/"comirnaty").
  */
 
-export type MacroSection = "age3to11" | "age12plus" | "altFlu";
+/** "fluCovid" = every product whose catalog Type is a flu or COVID
+ * type (Pfizer 12+, Moderna 12+, Moderna 3-11, Flu (regular),
+ * Flu (65+), Flu (nasal) — this includes mFLUSIVA and FluMist);
+ * "other" = everything else. Derived from `type` via
+ * macroFamilyForType so there's one place that decides membership. */
+export type MacroFamily = "fluCovid" | "other";
 
 export type MacroCatalogEntry = {
   /** The sheet's "Type" column value, e.g. "Pfizer 12+", "Shingles". */
   type: string;
-  /** Position in the sheet's "All vaccines" row order — lower sorts
-   * first. Unknown short codes get MACRO_CATALOG_OTHER_ORDER (last). */
+  /** Position in the sheet's "Other vaccines" row order — lower sorts
+   * first. Unknown short codes get MACRO_CATALOG_OTHER_ORDER (last).
+   * Not used for ordering the fluCovid family (that's by ageMinMonths). */
   sheetOrder: number;
-  /** Which of the sheet's quick-view blocks this product appears in.
-   * Empty for a product that's only in "All vaccines". */
-  sections: readonly MacroSection[];
+  /** Which quick-view family this product belongs to. */
+  family: MacroFamily;
+  /** Short, human-readable approved age range, e.g. "12+", "3–11",
+   * "6 mo+", "60+ (50–59 high-risk)". "" for an unrecognized code. */
+  age: string;
+  /** Numeric floor of `age`, in months, for sorting the fluCovid family
+   * youngest-eligible-first. An unrecognized code sorts last. */
+  ageMinMonths: number;
 };
 
 /** sheetOrder for a short code with no catalog entry — sorts after
- * every named type, per Will's "then a section for all the vaccines"
- * (unknowns still show, just last). */
+ * every named type in the "Other vaccines" section (unknowns still
+ * show, just last). */
 export const MACRO_CATALOG_OTHER_ORDER = Number.MAX_SAFE_INTEGER;
 
 export const MACRO_CATALOG_OTHER: MacroCatalogEntry = {
   type: "Other",
   sheetOrder: MACRO_CATALOG_OTHER_ORDER,
-  sections: [],
+  family: "other",
+  age: "",
+  ageMinMonths: Number.MAX_SAFE_INTEGER,
 };
 
+/** The sheet Type values that belong in the combined Flu/COVID section
+ * per Will's round-3 brief. Everything else is "other". */
+const FLU_COVID_TYPES: ReadonlySet<string> = new Set([
+  "Pfizer 12+",
+  "Moderna 12+",
+  "Moderna 3-11",
+  "Flu (regular)",
+  "Flu (65+)",
+  "Flu (nasal)",
+  // ROUND 3 REVIEW FIX: mFLUSIVA is its own quick-view type — it was
+  // previously lumped into "Flu (regular)" (age 6 mo+), which put it
+  // FAR from its own age (50+) once the fluCovid family started sorting
+  // by age-then-type-group, splitting "Flu (regular)" into two
+  // non-contiguous runs. Giving it its own type keeps every type a
+  // single contiguous block regardless of age ordering.
+  "Flu mRNA (50+)",
+]);
+
+/** Derives a product's family from its catalog Type — the single place
+ * that decides fluCovid-vs-other membership. Exported for its own unit
+ * test coverage. */
+export function macroFamilyForType(type: string): MacroFamily {
+  return FLU_COVID_TYPES.has(type) ? "fluCovid" : "other";
+}
+
+type RawCatalogEntry = { type: string; sheetOrder: number; age: string; ageMinMonths: number };
+
 /** Keyed by short_code (see this file's header for the exact-vs-base
- * key convention). Order here matches the sheet's "All vaccines" row
- * order — sheetOrder values below are just that position, 1-indexed. */
-const MACRO_CATALOG: Readonly<Record<string, MacroCatalogEntry>> = {
-  comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, sections: ["age12plus"] },
-  mnexspike: { type: "Moderna 12+", sheetOrder: 2, sections: ["age12plus"] },
-  spikevax6mo11: { type: "Moderna 3-11", sheetOrder: 3, sections: ["age3to11"] },
-  flucelvaxmdv: { type: "Flu (regular)", sheetOrder: 4, sections: [] },
-  flucelvaxpfs: { type: "Flu (regular)", sheetOrder: 4, sections: ["age3to11", "age12plus"] },
-  mflusiva: { type: "Flu (regular)", sheetOrder: 4, sections: ["altFlu"] },
-  afluriapfs: { type: "Flu (regular)", sheetOrder: 4, sections: [] },
-  fluad: { type: "Flu (65+)", sheetOrder: 5, sections: ["age12plus"] },
-  fluzonehd: { type: "Flu (65+)", sheetOrder: 5, sections: [] },
-  flumist: { type: "Flu (nasal)", sheetOrder: 6, sections: ["altFlu"] },
-  arexvy: { type: "RSV", sheetOrder: 7, sections: [] },
-  abrysvo: { type: "RSV (preg)", sheetOrder: 8, sections: [] },
-  shingrix: { type: "Shingles", sheetOrder: 9, sections: [] },
-  engerix: { type: "Hep B (adult)", sheetOrder: 10, sections: [] },
-  prevnar20: { type: "Pneumonia 20", sheetOrder: 11, sections: [] },
-  capvaxive: { type: "Pneumonia 21", sheetOrder: 12, sections: [] },
-  boostrix: { type: "Tetanus (TDaP)", sheetOrder: 13, sections: [] },
-  gardasil: { type: "HPV", sheetOrder: 14, sections: [] },
-  menveo: { type: "Meningitis", sheetOrder: 15, sections: [] },
-  vaqtaadult: { type: "Hepatitis A (19+)", sheetOrder: 16, sections: [] },
-  typhim: { type: "Typhoid", sheetOrder: 17, sections: [] },
-  mmr: { type: "MMR", sheetOrder: 18, sections: [] },
-  priorix: { type: "MMR", sheetOrder: 19, sections: [] },
+ * key convention). sheetOrder values are the "Other vaccines" section's
+ * row position (1-indexed); the fluCovid entries carry a sheetOrder too
+ * only for stability/tie-breaking, but display order for that family
+ * comes from ageMinMonths instead (see lib/macro-codes.ts). */
+const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
+  comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageMinMonths: 144 },
+  mnexspike: { type: "Moderna 12+", sheetOrder: 2, age: "12+", ageMinMonths: 144 },
+  spikevax6mo11: { type: "Moderna 3-11", sheetOrder: 3, age: "3–11", ageMinMonths: 36 },
+  flucelvaxmdv: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
+  flucelvaxpfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
+  mflusiva: { type: "Flu mRNA (50+)", sheetOrder: 20, age: "50+", ageMinMonths: 600 },
+  afluriapfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
+  fluad: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageMinMonths: 780 },
+  fluzonehd: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageMinMonths: 780 },
+  flumist: { type: "Flu (nasal)", sheetOrder: 6, age: "2–49", ageMinMonths: 24 },
+  arexvy: { type: "RSV", sheetOrder: 7, age: "60+ (50–59 high-risk)", ageMinMonths: 600 },
+  abrysvo: { type: "RSV (preg)", sheetOrder: 8, age: "60+ / preg 32–36 wk", ageMinMonths: 720 },
+  shingrix: { type: "Shingles", sheetOrder: 9, age: "50+ (19+ IC)", ageMinMonths: 228 },
+  engerix: { type: "Hep B (adult)", sheetOrder: 10, age: "20+", ageMinMonths: 240 },
+  prevnar20: { type: "Pneumonia 20", sheetOrder: 11, age: "19+ (2–18 high-risk)", ageMinMonths: 24 },
+  capvaxive: { type: "Pneumonia 21", sheetOrder: 12, age: "18+ (2–17 high-risk)", ageMinMonths: 24 },
+  boostrix: { type: "Tetanus (TDaP)", sheetOrder: 13, age: "10+", ageMinMonths: 120 },
+  gardasil: { type: "HPV", sheetOrder: 14, age: "9–45", ageMinMonths: 108 },
+  menveo: { type: "Meningitis", sheetOrder: 15, age: "2 mo–55", ageMinMonths: 2 },
+  vaqtaadult: { type: "Hepatitis A (19+)", sheetOrder: 16, age: "19+", ageMinMonths: 228 },
+  typhim: { type: "Typhoid", sheetOrder: 17, age: "2+", ageMinMonths: 24 },
+  mmr: { type: "MMR", sheetOrder: 18, age: "12 mo+", ageMinMonths: 12 },
+  priorix: { type: "MMR", sheetOrder: 19, age: "12 mo+", ageMinMonths: 12 },
 };
+
+const MACRO_CATALOG: Readonly<Record<string, MacroCatalogEntry>> = Object.fromEntries(
+  Object.entries(RAW_MACRO_CATALOG).map(([shortCode, entry]) => [
+    shortCode,
+    { ...entry, family: macroFamilyForType(entry.type) },
+  ])
+);
 
 /** Lowercases and strips a trailing run of digits, e.g. "shingrix1" ->
  * "shingrix", "engerix3" -> "engerix". Pure and exported for its own
