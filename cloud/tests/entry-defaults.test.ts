@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { defaultDirections, planFillBlanksDirections } from "@/lib/entry-defaults";
+import { defaultDirections, defaultQuantity, planFillDefaults, type FillDefaultsRow } from "@/lib/entry-defaults";
+
+function row(overrides: Partial<FillDefaultsRow>): FillDefaultsRow {
+  return {
+    id: "v1",
+    shortCode: null,
+    quantity: null,
+    directions: null,
+    doseNumber: 1,
+    doseCount: 1,
+    ...overrides,
+  };
+}
 
 describe("defaultDirections", () => {
   it("single-dose product: no 'Dose X' prefix", () => {
@@ -24,40 +36,162 @@ describe("defaultDirections", () => {
   });
 });
 
-describe("planFillBlanksDirections", () => {
-  it("plans a PATCH for a row with null directions", () => {
-    const patches = planFillBlanksDirections([{ id: "v1", directions: null, doseNumber: 1, doseCount: 1 }]);
-    expect(patches).toEqual([{ id: "v1", directions: "For administration by healthcare provider in pharmacy." }]);
+describe("defaultQuantity", () => {
+  it("returns null for a null/blank/unrecognized short_code", () => {
+    expect(defaultQuantity(null)).toBeNull();
+    expect(defaultQuantity(undefined)).toBeNull();
+    expect(defaultQuantity("")).toBeNull();
+    expect(defaultQuantity("   ")).toBeNull();
+    expect(defaultQuantity("not-a-real-code")).toBeNull();
   });
 
-  it("plans a PATCH for a row with whitespace-only directions", () => {
-    const patches = planFillBlanksDirections([{ id: "v1", directions: "   ", doseNumber: 1, doseCount: 1 }]);
-    expect(patches).toHaveLength(1);
-    expect(patches[0].id).toBe("v1");
+  it("resolves the special-cased quantities Will specified", () => {
+    expect(defaultQuantity("comirnaty12")).toBe("0.3");
+    expect(defaultQuantity("mnexspike")).toBe("0.2");
+    expect(defaultQuantity("spikevax6mo11")).toBe("0.25");
+    expect(defaultQuantity("flumist")).toBe("0.2");
+    expect(defaultQuantity("engerix")).toBe("1");
+    expect(defaultQuantity("vaqtaadult")).toBe("1");
+  });
+
+  it("resolves the catalog default of 0.5 for every other listed short_code", () => {
+    for (const code of [
+      "flucelvaxmdv",
+      "flucelvaxpfs",
+      "mflusiva",
+      "afluriapfs",
+      "fluad",
+      "fluzonehd",
+      "arexvy",
+      "abrysvo",
+      "shingrix",
+      "prevnar20",
+      "capvaxive",
+      "boostrix",
+      "gardasil",
+      "menveo",
+      "typhim",
+      "mmr",
+      "priorix",
+    ]) {
+      expect(defaultQuantity(code)).toBe("0.5");
+    }
+  });
+
+  it("falls back to the digit-stripped base for a multi-dose per-dose code, same as lookupMacroCatalog", () => {
+    expect(defaultQuantity("shingrix1")).toBe("0.5");
+    expect(defaultQuantity("shingrix2")).toBe("0.5");
+  });
+
+  it("is case-insensitive", () => {
+    expect(defaultQuantity("COMIRNATY12")).toBe("0.3");
+  });
+});
+
+describe("planFillDefaults with overwriteDirections: false (\"Fill blanks\")", () => {
+  it("plans quantity and directions for a fully-blank row with a known short_code", () => {
+    const patches = planFillDefaults([row({ id: "v1", shortCode: "comirnaty12" })], { overwriteDirections: false });
+    expect(patches).toEqual([
+      { id: "v1", quantity: "0.3", directions: "For administration by healthcare provider in pharmacy." },
+    ]);
+  });
+
+  it("never invents a quantity for an unrecognized short_code, but still fills directions", () => {
+    const patches = planFillDefaults([row({ id: "v1", shortCode: "unknown-code" })], { overwriteDirections: false });
+    expect(patches).toEqual([
+      { id: "v1", directions: "For administration by healthcare provider in pharmacy." },
+    ]);
+  });
+
+  it("never overwrites an existing quantity, even if it differs from the table", () => {
+    const patches = planFillDefaults([row({ id: "v1", shortCode: "comirnaty12", quantity: "0.2" })], {
+      overwriteDirections: false,
+    });
+    expect(patches[0].quantity).toBeUndefined();
+  });
+
+  it("never overwrites existing directions, even if they don't match today's default", () => {
+    const patches = planFillDefaults(
+      [row({ id: "v1", shortCode: "comirnaty12", directions: "inject 0.2ml into the muscle once." })],
+      { overwriteDirections: false }
+    );
+    expect(patches[0].directions).toBeUndefined();
+    // quantity still gets filled since it's blank.
+    expect(patches[0].quantity).toBe("0.3");
+  });
+
+  it("treats whitespace-only values as blank for both fields", () => {
+    const patches = planFillDefaults([row({ id: "v1", shortCode: "comirnaty12", quantity: "  ", directions: "  " })], {
+      overwriteDirections: false,
+    });
+    expect(patches).toEqual([
+      { id: "v1", quantity: "0.3", directions: "For administration by healthcare provider in pharmacy." },
+    ]);
   });
 
   it("uses the multi-dose default for a row whose doseCount > 1", () => {
-    const patches = planFillBlanksDirections([{ id: "shingrix2", directions: null, doseNumber: 2, doseCount: 2 }]);
+    const patches = planFillDefaults([row({ id: "shingrix2", shortCode: "shingrix2", doseNumber: 2, doseCount: 2 })], {
+      overwriteDirections: false,
+    });
     expect(patches[0].directions).toBe("Dose 2 — For administration by healthcare provider in pharmacy.");
+    expect(patches[0].quantity).toBe("0.5");
   });
 
-  it("never plans a PATCH for a row that already has non-blank directions, even if it wouldn't match today's default", () => {
-    const patches = planFillBlanksDirections([
-      { id: "comirnaty12", directions: "inject 0.2ml into the muscle once.", doseNumber: 1, doseCount: 1 },
-    ]);
+  it("omits a row entirely when neither field needs a patch", () => {
+    const patches = planFillDefaults(
+      [row({ id: "v1", shortCode: "comirnaty12", quantity: "0.3", directions: "already set" })],
+      { overwriteDirections: false }
+    );
     expect(patches).toEqual([]);
   });
 
-  it("only plans PATCHes for the blank rows out of a mixed list, preserving id order", () => {
-    const patches = planFillBlanksDirections([
-      { id: "a", directions: "already set", doseNumber: 1, doseCount: 1 },
-      { id: "b", directions: null, doseNumber: 1, doseCount: 2 },
-      { id: "c", directions: "", doseNumber: 2, doseCount: 2 },
-    ]);
+  it("only plans PATCHes for rows that need one out of a mixed list, preserving id order", () => {
+    const patches = planFillDefaults(
+      [
+        row({ id: "a", shortCode: "comirnaty12", quantity: "0.3", directions: "already set" }),
+        row({ id: "b", shortCode: "comirnaty12", directions: null }),
+        row({ id: "c", shortCode: null, directions: "" }),
+      ],
+      { overwriteDirections: false }
+    );
     expect(patches.map((p) => p.id)).toEqual(["b", "c"]);
   });
 
   it("returns an empty list when given no rows", () => {
-    expect(planFillBlanksDirections([])).toEqual([]);
+    expect(planFillDefaults([], { overwriteDirections: false })).toEqual([]);
+  });
+});
+
+describe("planFillDefaults with overwriteDirections: true (\"Reset all directions to standard\")", () => {
+  it("overwrites existing directions that differ from today's default", () => {
+    const patches = planFillDefaults(
+      [row({ id: "v1", shortCode: "comirnaty12", quantity: "0.3", directions: "inject 0.2ml into the muscle once." })],
+      { overwriteDirections: true }
+    );
+    expect(patches).toEqual([{ id: "v1", directions: "For administration by healthcare provider in pharmacy." }]);
+  });
+
+  it("still never overwrites an existing quantity", () => {
+    const patches = planFillDefaults([row({ id: "v1", shortCode: "comirnaty12", quantity: "0.2", directions: "custom" })], {
+      overwriteDirections: true,
+    });
+    expect(patches[0].quantity).toBeUndefined();
+  });
+
+  it("skips a row whose directions already match today's default", () => {
+    const patches = planFillDefaults(
+      [row({ id: "v1", shortCode: "comirnaty12", quantity: "0.3", directions: "For administration by healthcare provider in pharmacy." })],
+      { overwriteDirections: true }
+    );
+    expect(patches).toEqual([]);
+  });
+
+  it("still fills a blank quantity alongside an overwritten directions value", () => {
+    const patches = planFillDefaults([row({ id: "v1", shortCode: "comirnaty12", directions: "custom text" })], {
+      overwriteDirections: true,
+    });
+    expect(patches).toEqual([
+      { id: "v1", quantity: "0.3", directions: "For administration by healthcare provider in pharmacy." },
+    ]);
   });
 });

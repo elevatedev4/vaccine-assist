@@ -59,6 +59,52 @@ describe("GET /api/vaccines", () => {
     expect(body.vaccines[0].hasActiveLot).toBeUndefined();
   });
 
+  it("ROUND 2: annotates a blank-quantity row with quantity_default when its short_code has a table entry", async () => {
+    const order = vi.fn(async () => ({
+      data: [{ id: "v1", name: "Comirnaty", active: true, short_code: "comirnaty12", quantity: null }],
+      error: null,
+    }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest("/api/vaccines"));
+    const body = await response.json();
+    expect(body.vaccines[0].quantity_default).toBe("0.3");
+  });
+
+  it("ROUND 2: never invents quantity_default for an unrecognized short_code", async () => {
+    const order = vi.fn(async () => ({
+      data: [{ id: "v1", name: "Mystery Vax", active: true, short_code: "not-a-real-code", quantity: null }],
+      error: null,
+    }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest("/api/vaccines"));
+    const body = await response.json();
+    expect(body.vaccines[0].quantity_default).toBeUndefined();
+  });
+
+  it("ROUND 2: omits quantity_default when quantity is already on file, even if it differs from the table", async () => {
+    const order = vi.fn(async () => ({
+      data: [{ id: "v1", name: "Comirnaty", active: true, short_code: "comirnaty12", quantity: "0.2" }],
+      error: null,
+    }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest("/api/vaccines"));
+    const body = await response.json();
+    expect(body.vaccines[0].quantity_default).toBeUndefined();
+    expect(body.vaccines[0].quantity).toBe("0.2");
+  });
+
   it("?includeInactive=true returns both active and inactive vaccines with hasActiveLot populated from the lot table", async () => {
     const vaccines = [
       { id: "v1", name: "Flu", active: true },

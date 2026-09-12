@@ -61,6 +61,11 @@ describe("buildEntryValueRows", () => {
     expect(rows[0].directions).toBe("inject 0.3ml into the muscle once.");
   });
 
+  it("carries the row's own short_code through as shortCode", () => {
+    const rows = buildEntryValueRows([vaccine({ id: "c1", name: "Comirnaty", short_code: "comirnaty12" })]);
+    expect(rows[0].shortCode).toBe("comirnaty12");
+  });
+
   it("falls back to catalog type 'Other' (sorted last) for an unrecognized/missing short_code", () => {
     const rows = buildEntryValueRows([vaccine({ id: "u1", name: "Unknown Vax", short_code: null })]);
     expect(rows[0].catalogType).toBe("Other");

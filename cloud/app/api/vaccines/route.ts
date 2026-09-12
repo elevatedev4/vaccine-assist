@@ -4,7 +4,7 @@ import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
 import { formatNdcForStorage } from "@/lib/ndc";
 import { buildProductViews } from "@/lib/product-view";
-import { defaultDirections } from "@/lib/entry-defaults";
+import { defaultDirections, defaultQuantity } from "@/lib/entry-defaults";
 import { doseNumberOf } from "@/lib/entry-values";
 
 /**
@@ -33,11 +33,20 @@ import { doseNumberOf } from "@/lib/entry-values";
  *
  * V-entry-values (Will's brief): every row whose `directions` is
  * null/blank also gets a `directions_default` field — the SAME
- * lib/entry-defaults.ts helper the new /entry-values tab's "Fill blanks
- * with defaults" button uses — computed server-side so the desktop app
- * can adopt a sane default sig without ever having to duplicate that
- * logic itself. `directions` is never overwritten; a row with a
- * non-blank `directions` never gets `directions_default` at all.
+ * lib/entry-defaults.ts helper the new /entry-values tab's fill-defaults
+ * buttons use — computed server-side so the desktop app can adopt a
+ * sane default sig without ever having to duplicate that logic itself.
+ * `directions` is never overwritten; a row with a non-blank `directions`
+ * never gets `directions_default` at all.
+ *
+ * ROUND 2 (Will, verbatim): "the quantities are already in the
+ * software... use those" / "fill them in with the defaults, including
+ * the quantity" — every row whose `quantity` is null/blank ALSO gets a
+ * `quantity_default` field, from the SAME lib/entry-defaults.ts static
+ * table (defaultQuantity), keyed off the row's own `short_code`. Purely
+ * additive, same posture as `directions_default`: omitted entirely when
+ * `quantity` is already on file, and also omitted (not sent as null)
+ * when the short_code has no entry in the table — never invent a number.
  */
 const VACCINE_COLUMNS_BASE =
   "id, name, ndc, dose, short_code, cash_price_cents, active, created_at, updated_at";
@@ -54,13 +63,15 @@ type VaccineRow = Record<string, unknown> & {
 
 /**
  * Annotates each row with `directions_default` when its `directions` is
- * null/blank (see this file's header comment). Groups the WHOLE list
- * passed in via lib/product-view.ts's buildProductViews (the same
- * grouping every other tab uses) purely to compute each product's
- * doseCount — every row's own `dose` column still drives its own
- * doseNumber. Never mutates `directions` itself.
+ * null/blank, and `quantity_default` when its `quantity` is null/blank
+ * AND the row's short_code has an entry in the static table (see this
+ * file's header comment). Groups the WHOLE list passed in via
+ * lib/product-view.ts's buildProductViews (the same grouping every
+ * other tab uses) purely to compute each product's doseCount — every
+ * row's own `dose` column still drives its own doseNumber. Never
+ * mutates `directions`/`quantity` themselves.
  */
-function withDirectionsDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
+function withDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
   const products = buildProductViews(
     rows.map((row) => ({
       id: row.id,
@@ -75,11 +86,22 @@ function withDirectionsDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
   }
 
   return rows.map((row) => {
+    let result = row;
+
     const directions = row.directions;
-    if (directions && directions.trim().length > 0) return row;
-    const doseNumber = doseNumberOf((row.dose as string | null) ?? null);
-    const doseCount = doseCountById.get(row.id) ?? 1;
-    return { ...row, directions_default: defaultDirections({ doseNumber, doseCount }) };
+    if (!directions || directions.trim().length === 0) {
+      const doseNumber = doseNumberOf((row.dose as string | null) ?? null);
+      const doseCount = doseCountById.get(row.id) ?? 1;
+      result = { ...result, directions_default: defaultDirections({ doseNumber, doseCount }) };
+    }
+
+    const quantity = row.quantity as string | null | undefined;
+    if (!quantity || quantity.trim().length === 0) {
+      const quantityDefault = defaultQuantity((row.short_code as string | null | undefined) ?? null);
+      if (quantityDefault) result = { ...result, quantity_default: quantityDefault };
+    }
+
+    return result;
   });
 }
 
@@ -116,7 +138,7 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: "Failed to load vaccines." }, { status: 500 });
       }
 
-      const vaccines = quantityDirectionsSupported ? withDirectionsDefaults((data ?? []) as VaccineRow[]) : data;
+      const vaccines = quantityDirectionsSupported ? withDefaults((data ?? []) as VaccineRow[]) : data;
       return NextResponse.json({ vaccines, quantityDirectionsSupported });
     }
 
@@ -141,7 +163,7 @@ export async function GET(request: Request) {
     }
 
     const vaccinesAnnotated = quantityDirectionsSupported
-      ? withDirectionsDefaults((vaccines ?? []) as VaccineRow[])
+      ? withDefaults((vaccines ?? []) as VaccineRow[])
       : vaccines ?? [];
     const vaccineIdsWithActiveLot = new Set((activeLots ?? []).map((lot) => lot.vaccine_id));
     const vaccinesWithLotFlag = vaccinesAnnotated.map((vaccine) => ({
