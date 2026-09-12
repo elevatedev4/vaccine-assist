@@ -194,4 +194,28 @@ describe("planFillDefaults with overwriteDirections: true (\"Reset all direction
       { id: "v1", quantity: "0.3", directions: "For administration by healthcare provider in pharmacy." },
     ]);
   });
+
+  it("never double-prefixes a multi-dose row — replaces any existing 'Dose X' prefix variant wholesale, not additively", () => {
+    // Guard case (V-entry-values round 3, Will 2026-09-12): a row whose
+    // stored directions already carry SOME "Dose X" prefix (typed by
+    // hand, or from before today's em-dash convention) must end up with
+    // exactly ONE prefix after Reset — never "Dose 2 – Dose 2 — ...".
+    for (const existing of ["Dose 2 – custom note", "Dose 2 - custom note", "Dose 2: custom note", "dose 2 custom note"]) {
+      const patches = planFillDefaults(
+        [row({ id: "v1", shortCode: "shingrix2", doseNumber: 2, doseCount: 2, quantity: "0.5", directions: existing })],
+        { overwriteDirections: true }
+      );
+      expect(patches).toEqual([{ id: "v1", directions: "Dose 2 — For administration by healthcare provider in pharmacy." }]);
+      expect(patches[0].directions?.match(/Dose 2/g)).toHaveLength(1);
+    }
+  });
+
+  it("is idempotent — resetting an already-correct multi-dose row a second time plans no patch", () => {
+    const alreadyCorrect = "Dose 1 — For administration by healthcare provider in pharmacy.";
+    const patches = planFillDefaults(
+      [row({ id: "v1", shortCode: "shingrix1", doseNumber: 1, doseCount: 2, quantity: "0.5", directions: alreadyCorrect })],
+      { overwriteDirections: true }
+    );
+    expect(patches).toEqual([]);
+  });
 });

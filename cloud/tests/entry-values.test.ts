@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEntryValueRows, doseNumberOf, type EntryValueVaccine } from "@/lib/entry-values";
+import { buildEntryValueRows, doseColumnLabel, doseNumberOf, type EntryValueVaccine } from "@/lib/entry-values";
 
 function vaccine(overrides: Partial<EntryValueVaccine>): EntryValueVaccine {
   return {
@@ -26,6 +26,19 @@ describe("doseNumberOf", () => {
 
   it("defaults to 1 for an unparseable dose", () => {
     expect(doseNumberOf("not-a-number")).toBe(1);
+  });
+});
+
+describe("doseColumnLabel", () => {
+  it("renders a plain dose number without a 'Dose' word (the column already has that heading)", () => {
+    expect(doseColumnLabel(1)).toBe("1");
+    expect(doseColumnLabel(2)).toBe("2");
+    expect(doseColumnLabel(12)).toBe("12");
+  });
+
+  it("defensively strips a leading 'Dose ' if the input already carries it, case-insensitively", () => {
+    expect(doseColumnLabel("Dose 1")).toBe("1");
+    expect(doseColumnLabel("dose 2")).toBe("2");
   });
 });
 
