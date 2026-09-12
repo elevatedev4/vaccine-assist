@@ -61,6 +61,17 @@ export type { MacroSection } from "@/lib/macro-catalog";
  * product's catalog age to its button label (not just COVID's), and
  * the page no longer renders a separate age/price cell — see
  * app/macro-codes/page.tsx.
+ *
+ * ROUND 6 (bug fix, Will's live screenshot): the Shingles section
+ * showed two identical "Shingrix · 50+ (19+ IC)" buttons with no dose
+ * number. Upstream product grouping (lib/lots-grouping.ts) had split
+ * Shingrix's two seeded dose rows into two separate ProductViews, so
+ * buildMacroRows saw a doseCount of 1 for each and doseButtonLabel
+ * never appended a dose number to either. groupMacroRowsBySection now
+ * groups by cleaned display name within a section instead of by
+ * productKey, so any product split this way still numbers its buttons
+ * by dose order — fixing the root cause generically rather than
+ * special-casing Shingrix.
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -359,9 +370,21 @@ export function groupMacroRowsBySection(rows: readonly MacroRow[]): MacroSection
   for (const row of rows) {
     const productsInSection = bySection.get(row.section) ?? new Map<string, MacroRow[]>();
     bySection.set(row.section, productsInSection);
-    const productRows = productsInSection.get(row.productKey) ?? [];
+    // Grouped by cleaned display name (not productKey): upstream grouping
+    // (lib/lots-grouping.ts's groupVaccinesIntoProducts, keyed by the raw
+    // `vaccine` row's NDC/name) can split one product's dose rows into
+    // two separate ProductViews — e.g. Shingrix's two seeded dose rows
+    // carrying mismatched NDCs — which previously surfaced here as two
+    // single-dose product groups (doseCount 1 each, so doseButtonLabel
+    // never appended a dose number: two identical "Shingrix · 50+ (19+
+    // IC)" buttons instead of "Shingrix 1"/"Shingrix 2"). Re-grouping by
+    // name within a section fixes that at the root — any two rows the
+    // page would otherwise show side by side under the same product name
+    // get numbered by dose order — without special-casing Shingrix.
+    const nameKey = row.displayName.trim().toLowerCase();
+    const productRows = productsInSection.get(nameKey) ?? [];
     productRows.push(row);
-    productsInSection.set(row.productKey, productRows);
+    productsInSection.set(nameKey, productRows);
   }
 
   const sections: MacroSectionGroup[] = [];
