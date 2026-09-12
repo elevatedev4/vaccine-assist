@@ -1,15 +1,19 @@
 /**
  * Static catalog for the /macro-codes tab.
  *
- * ROUND 3 (Will's brief, verbatim highlights): "Make the 'All vaccines'
- * section be 'Other vaccines' and don't include flu/covid. Add mFLUSIVA
- * and FluMist to the flu/covid section. Eliminate the age range
- * distinction in flu/covid and combine them. Arrange them by age. Add
- * an age column to show the approved age range for the vaccines." This
- * drops the round-2 "sections" (age3to11/age12plus/altFlu quick-view
- * blocks) entirely in favor of a single `family` split — "fluCovid" vs
- * "other" — plus a human-readable `age` label and a numeric
- * `ageMinMonths` for sorting the fluCovid family by age.
+ * ROUND 4 (Will's brief, verbatim): "Remove the age ranges and
+ * extraneous data from product names... Move age range and price to the
+ * end of the row. Have a section (Flu, Pneumonia, RSV, etc) and then
+ * have the product name/dose be inside a colored button... Showing the
+ * product name and dose number if there are multiple doses." This
+ * replaces round-3's two-family split ("fluCovid" vs "other") with a
+ * per-catalog-Type `section` (Flu, COVID, Pneumonia, RSV, Shingles, Hep
+ * B, Tetanus, HPV, Meningitis, Hep A, Typhoid, MMR, Other) derived via
+ * the pure sectionForType below, so there's one place that decides
+ * section membership (same posture as round-3's now-removed
+ * macroFamilyForType). Names are no longer built here — round 4 uses
+ * the ALREADY-cleaned `displayName` from lib/product-view.ts's
+ * buildProductViews (see lib/macro-codes.ts).
  *
  * Built by hand from the "Macro codes" sheet's Type column + row order,
  * and from Will's round-3 age table (verbatim per-product age ranges) —
@@ -27,75 +31,119 @@
  * "prevnar"/"comirnaty").
  */
 
-/** "fluCovid" = every product whose catalog Type is a flu or COVID
- * type (Pfizer 12+, Moderna 12+, Moderna 3-11, Flu (regular),
- * Flu (65+), Flu (nasal) — this includes mFLUSIVA and FluMist);
- * "other" = everything else. Derived from `type` via
- * macroFamilyForType so there's one place that decides membership. */
-export type MacroFamily = "fluCovid" | "other";
+/** One of round 4's product-grouping sections. "Other" catches any
+ * short code with no catalog entry. Order matters — see
+ * MACRO_SECTION_ORDER below, which is the section display order Will
+ * asked for: "Flu, COVID, then the rest in sheet order." */
+export type MacroSection =
+  | "Flu"
+  | "COVID"
+  | "Pneumonia"
+  | "RSV"
+  | "Shingles"
+  | "Hep B"
+  | "Tetanus"
+  | "HPV"
+  | "Meningitis"
+  | "Hep A"
+  | "Typhoid"
+  | "MMR"
+  | "Other";
+
+/** Display order of the round-4 sections: Flu and COVID first (in that
+ * order, per Will's brief), then every other section in the sheet's
+ * original Type row order (RSV=7/8, Shingles=9, Hep B=10, Pneumonia=
+ * 11/12, Tetanus=13, HPV=14, Meningitis=15, Hep A=16, Typhoid=17, MMR=
+ * 18/19 — see RAW_MACRO_CATALOG's sheetOrder values), and "Other" last. */
+export const MACRO_SECTION_ORDER: readonly MacroSection[] = [
+  "Flu",
+  "COVID",
+  "RSV",
+  "Shingles",
+  "Hep B",
+  "Pneumonia",
+  "Tetanus",
+  "HPV",
+  "Meningitis",
+  "Hep A",
+  "Typhoid",
+  "MMR",
+  "Other",
+];
+
+/** Index of `section` in MACRO_SECTION_ORDER, for sorting sections into
+ * that display order. Unknown sections (shouldn't happen — MacroSection
+ * is a closed union) sort last, same as "Other". */
+export function macroSectionOrderIndex(section: MacroSection): number {
+  const index = MACRO_SECTION_ORDER.indexOf(section);
+  return index === -1 ? MACRO_SECTION_ORDER.length : index;
+}
+
+/** The sheet Type values that belong to each round-4 section. Every
+ * catalog Type must appear in exactly one of these sets; anything not
+ * listed (including a short code with no catalog entry at all) falls
+ * through to "Other" in sectionForType. */
+const SECTION_TYPES: Readonly<Record<Exclude<MacroSection, "Other">, ReadonlySet<string>>> = {
+  COVID: new Set(["Pfizer 12+", "Moderna 12+", "Moderna 3-11"]),
+  Flu: new Set(["Flu (regular)", "Flu (65+)", "Flu (nasal)", "Flu mRNA (50+)"]),
+  Pneumonia: new Set(["Pneumonia 20", "Pneumonia 21"]),
+  RSV: new Set(["RSV", "RSV (preg)"]),
+  Shingles: new Set(["Shingles"]),
+  "Hep B": new Set(["Hep B (adult)"]),
+  Tetanus: new Set(["Tetanus (TDaP)"]),
+  HPV: new Set(["HPV"]),
+  Meningitis: new Set(["Meningitis"]),
+  "Hep A": new Set(["Hepatitis A (19+)"]),
+  Typhoid: new Set(["Typhoid"]),
+  MMR: new Set(["MMR"]),
+};
+
+/** Derives a product's round-4 section from its catalog Type — the
+ * single place that decides section membership. Exported for its own
+ * unit test coverage. */
+export function sectionForType(type: string): MacroSection {
+  for (const [section, types] of Object.entries(SECTION_TYPES) as [Exclude<MacroSection, "Other">, ReadonlySet<string>][]) {
+    if (types.has(type)) return section;
+  }
+  return "Other";
+}
 
 export type MacroCatalogEntry = {
   /** The sheet's "Type" column value, e.g. "Pfizer 12+", "Shingles". */
   type: string;
-  /** Position in the sheet's "Other vaccines" row order — lower sorts
-   * first. Unknown short codes get MACRO_CATALOG_OTHER_ORDER (last).
-   * Not used for ordering the fluCovid family (that's by ageMinMonths). */
+  /** Position in the sheet's row order — lower sorts first. Unknown
+   * short codes get MACRO_CATALOG_OTHER_ORDER (last). Not used to order
+   * a section's products (see lib/macro-codes.ts — sorted by
+   * ageMinMonths, then sheetOrder, then name). */
   sheetOrder: number;
-  /** Which quick-view family this product belongs to. */
-  family: MacroFamily;
+  /** Which round-4 section this product belongs to. */
+  section: MacroSection;
   /** Short, human-readable approved age range, e.g. "12+", "3–11",
    * "6 mo+", "60+ (50–59 high-risk)". "" for an unrecognized code. */
   age: string;
-  /** Numeric floor of `age`, in months, for sorting the fluCovid family
+  /** Numeric floor of `age`, in months, for sorting a section's products
    * youngest-eligible-first. An unrecognized code sorts last. */
   ageMinMonths: number;
 };
 
 /** sheetOrder for a short code with no catalog entry — sorts after
- * every named type in the "Other vaccines" section (unknowns still
- * show, just last). */
+ * every named type (unknowns still show, just last). */
 export const MACRO_CATALOG_OTHER_ORDER = Number.MAX_SAFE_INTEGER;
 
 export const MACRO_CATALOG_OTHER: MacroCatalogEntry = {
   type: "Other",
   sheetOrder: MACRO_CATALOG_OTHER_ORDER,
-  family: "other",
+  section: "Other",
   age: "",
   ageMinMonths: Number.MAX_SAFE_INTEGER,
 };
 
-/** The sheet Type values that belong in the combined Flu/COVID section
- * per Will's round-3 brief. Everything else is "other". */
-const FLU_COVID_TYPES: ReadonlySet<string> = new Set([
-  "Pfizer 12+",
-  "Moderna 12+",
-  "Moderna 3-11",
-  "Flu (regular)",
-  "Flu (65+)",
-  "Flu (nasal)",
-  // ROUND 3 REVIEW FIX: mFLUSIVA is its own quick-view type — it was
-  // previously lumped into "Flu (regular)" (age 6 mo+), which put it
-  // FAR from its own age (50+) once the fluCovid family started sorting
-  // by age-then-type-group, splitting "Flu (regular)" into two
-  // non-contiguous runs. Giving it its own type keeps every type a
-  // single contiguous block regardless of age ordering.
-  "Flu mRNA (50+)",
-]);
-
-/** Derives a product's family from its catalog Type — the single place
- * that decides fluCovid-vs-other membership. Exported for its own unit
- * test coverage. */
-export function macroFamilyForType(type: string): MacroFamily {
-  return FLU_COVID_TYPES.has(type) ? "fluCovid" : "other";
-}
-
 type RawCatalogEntry = { type: string; sheetOrder: number; age: string; ageMinMonths: number };
 
 /** Keyed by short_code (see this file's header for the exact-vs-base
- * key convention). sheetOrder values are the "Other vaccines" section's
- * row position (1-indexed); the fluCovid entries carry a sheetOrder too
- * only for stability/tie-breaking, but display order for that family
- * comes from ageMinMonths instead (see lib/macro-codes.ts). */
+ * key convention). sheetOrder values are the sheet's original row
+ * position (1-indexed) and are kept for stability/tie-breaking even
+ * though section display order is now driven by MACRO_SECTION_ORDER. */
 const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
   comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageMinMonths: 144 },
   mnexspike: { type: "Moderna 12+", sheetOrder: 2, age: "12+", ageMinMonths: 144 },
@@ -125,7 +173,7 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
 const MACRO_CATALOG: Readonly<Record<string, MacroCatalogEntry>> = Object.fromEntries(
   Object.entries(RAW_MACRO_CATALOG).map(([shortCode, entry]) => [
     shortCode,
-    { ...entry, family: macroFamilyForType(entry.type) },
+    { ...entry, section: sectionForType(entry.type) },
   ])
 );
 

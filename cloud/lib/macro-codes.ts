@@ -1,10 +1,10 @@
 import { pickCurrentActiveLot, type LotStatusLike } from "@/lib/lots-table";
 import { partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
-import { lookupMacroCatalog, MACRO_CATALOG_OTHER, type MacroFamily } from "@/lib/macro-catalog";
+import { lookupMacroCatalog, MACRO_CATALOG_OTHER, MACRO_SECTION_ORDER, type MacroSection } from "@/lib/macro-catalog";
 import type { ProductView } from "@/lib/product-view";
 
-export type { MacroFamily } from "@/lib/macro-catalog";
+export type { MacroSection } from "@/lib/macro-catalog";
 
 /**
  * Pure logic for the /macro-codes tab (Will's brief, verbatim: "add new
@@ -39,10 +39,21 @@ export type { MacroFamily } from "@/lib/macro-catalog";
  * age... combine the HPV heading instead of listing it multiple
  * times... if it's the same product, no need to list it multiple
  * times." Drops the round-2 quick-view `sections` concept for a single
- * `family` split (lib/macro-catalog.ts) and adds groupMacroRowsForFamily
- * below, which sorts+annotates one family's rows so the page can render
- * one bordered Type block and one Age/Product+price line per product
- * instead of repeating them on every dose row.
+ * `family` split (lib/macro-catalog.ts).
+ *
+ * ROUND 4 (Will's verbatim feedback): "Remove the age ranges and
+ * extraneous data from product names... Move age range and price to the
+ * end of the row. Have a section (Flu, Pneumonia, RSV, etc) and then
+ * have the product name/dose be inside a colored button... Showing the
+ * product name and dose number if there are multiple doses." Replaces
+ * round-3's two-family split with lib/macro-catalog.ts's per-Type
+ * `section`, and replaces groupMacroRowsForFamily with
+ * groupMacroRowsBySection below: one row per PRODUCT (not per dose),
+ * each carrying its doses as an ordered array of button specs (label +
+ * the underlying MacroRow to copy/open-modal for), with age/price
+ * surfaced once per product for the page to render at the row's end.
+ * Names are no longer stripped here — they arrive already cleaned via
+ * ProductView.displayName (lib/product-view.ts's buildProductViews).
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -114,17 +125,17 @@ export type MacroRow = {
   complete: boolean;
   /** Sheet "Type" column value (lib/macro-catalog.ts), e.g. "Shingles". */
   catalogType: string;
-  /** Sort key matching the sheet's "Other vaccines" row order — see
-   * lib/macro-catalog.ts. Not used to order the fluCovid family, which
-   * sorts by ageMinMonths instead. */
+  /** Sort key matching the sheet's original row order — see
+   * lib/macro-catalog.ts. Used as a tie-break within a section (see
+   * groupMacroRowsBySection), after ageMinMonths. */
   sheetOrder: number;
-  /** "fluCovid" (combined Flu/COVID section) or "other" ("Other
-   * vaccines" section) — see lib/macro-catalog.ts's macroFamilyForType. */
-  family: MacroFamily;
+  /** Round-4 section (Flu, COVID, Pneumonia, RSV, ...) — see
+   * lib/macro-catalog.ts's sectionForType. */
+  section: MacroSection;
   /** Short approved-age-range label, e.g. "12+", "3–11", "6 mo+". ""
    * for an unrecognized short code. */
   age: string;
-  /** Numeric floor of `age` in months, for sorting the fluCovid family
+  /** Numeric floor of `age` in months, for sorting a section's products
    * youngest-eligible-first. Unrecognized codes sort last. */
   ageMinMonths: number;
   /** How many real dose rows this product has (1 for a single-dose
@@ -208,7 +219,7 @@ export function buildMacroRows(
         complete: false,
         catalogType: MACRO_CATALOG_OTHER.type,
         sheetOrder: MACRO_CATALOG_OTHER.sheetOrder,
-        family: MACRO_CATALOG_OTHER.family,
+        section: MACRO_CATALOG_OTHER.section,
         age: MACRO_CATALOG_OTHER.age,
         ageMinMonths: MACRO_CATALOG_OTHER.ageMinMonths,
         doseCount: 1,
@@ -252,7 +263,7 @@ export function buildMacroRows(
         complete: macroResult.complete,
         catalogType: catalogEntry.type,
         sheetOrder: catalogEntry.sheetOrder,
-        family: catalogEntry.family,
+        section: catalogEntry.section,
         age: catalogEntry.age,
         ageMinMonths: catalogEntry.ageMinMonths,
         doseCount,
@@ -264,88 +275,115 @@ export function buildMacroRows(
   return rows.sort(compareOtherOrder);
 }
 
-/** Default row order used by buildMacroRows itself, and by the "other"
- * family in groupMacroRowsForFamily below: the sheet's "Other vaccines"
- * row order, then dose number, then display name. */
+/** Default row order used by buildMacroRows' own final sort: the
+ * sheet's row order, then dose number, then display name. */
 function compareOtherOrder(a: MacroRow, b: MacroRow): number {
   return a.sheetOrder - b.sheetOrder || a.doseNumber - b.doseNumber || a.displayName.localeCompare(b.displayName);
 }
 
 /**
- * Type-group order for the combined Flu/COVID family (ROUND 3 REVIEW
- * FIX): sorting individual rows by ageMinMonths alone scattered a
- * multi-product Type into two separate runs whenever one of its
- * products had a much-later age than its siblings (mFLUSIVA at 50+ vs.
- * the rest of "Flu (regular)" at 6 mo+ — since fixed by giving it its
- * own type, but this keeps any future same-shaped mismatch from
- * recurring). Every catalog Type is kept as ONE contiguous block: the
- * block order is the type's OWN minimum ageMinMonths (youngest-
- * eligible-first), tie-broken by the type's minimum sheetOrder (the
- * sheet's original hand-authored type order — this is what puts
- * "Pfizer 12+" (sheetOrder 1) before "Moderna 12+" (sheetOrder 2)
- * despite both being age 12+) and then alphabetically by type name (a
- * final, deterministic guarantee that two types can never interleave
- * even if both tie on age and sheetOrder). Within one type's block,
- * rows sort by their own ageMinMonths, then product name, then dose.
+ * One clickable dose button's spec within a round-4 product row: the
+ * underlying MacroRow (for the click handler — copy or open the
+ * lot/exp modal, exactly as before) plus its pre-computed button label.
  */
-function sortFluCovidByTypeGroup(rows: readonly MacroRow[]): MacroRow[] {
-  const typeGroupKey = new Map<string, { minAgeMinMonths: number; minSheetOrder: number }>();
-  for (const row of rows) {
-    const existing = typeGroupKey.get(row.catalogType);
-    if (!existing) {
-      typeGroupKey.set(row.catalogType, { minAgeMinMonths: row.ageMinMonths, minSheetOrder: row.sheetOrder });
-    } else {
-      existing.minAgeMinMonths = Math.min(existing.minAgeMinMonths, row.ageMinMonths);
-      existing.minSheetOrder = Math.min(existing.minSheetOrder, row.sheetOrder);
-    }
-  }
+export type MacroDoseButton = {
+  row: MacroRow;
+  label: string;
+};
 
-  return [...rows].sort((a, b) => {
-    const keyA = typeGroupKey.get(a.catalogType)!;
-    const keyB = typeGroupKey.get(b.catalogType)!;
-    return (
-      keyA.minAgeMinMonths - keyB.minAgeMinMonths ||
-      keyA.minSheetOrder - keyB.minSheetOrder ||
-      a.catalogType.localeCompare(b.catalogType) ||
-      a.ageMinMonths - b.ageMinMonths ||
-      a.displayName.localeCompare(b.displayName) ||
-      a.doseNumber - b.doseNumber
-    );
-  });
-}
+/** One product's row within a round-4 section: its doses (one button
+ * spec per real dose row, dose-number order) plus the age/price shown
+ * once at the end of the row. */
+export type MacroProductGroup = {
+  productKey: string;
+  displayName: string;
+  /** Catalog age-range label (lib/macro-catalog.ts), e.g. "12+",
+   * "3–11". "" for an unrecognized/no-short-code product. */
+  age: string;
+  cashPriceCents: number | null;
+  doses: MacroDoseButton[];
+};
 
-export type MacroGroupedRow = MacroRow & {
-  /** True on the first row of a new catalog Type within the family —
-   * the UI draws one bordered Type block per run of these. */
-  showType: boolean;
-  /** True on the first row of a new product within its Type block (also
-   * true whenever showType is, since a new Type always starts a new
-   * product) — the UI shows the Age/Product+price cells only here and
-   * blanks them on the product's other dose rows. */
-  showProduct: boolean;
+/** One section's block: its heading (`section`) plus its products in
+ * round-4 display order (see groupMacroRowsBySection). */
+export type MacroSectionGroup = {
+  section: MacroSection;
+  products: MacroProductGroup[];
 };
 
 /**
- * Sorts and groups `rows` (from buildMacroRows) down to one family —
- * "fluCovid" (combined Flu/COVID section, ordered by approved age) or
- * "other" ("Other vaccines" section, ordered by the sheet) — and
- * annotates each row with showType/showProduct so the page can render
- * the Type heading and the Age/Product+price cells exactly once per
- * group instead of once per dose row (Will's round-3 brief: "combine
- * the HPV heading instead of listing it multiple times... if it's the
- * same product, no need to list it multiple times").
+ * Builds a round-4 dose button's label (Will's brief, verbatim): the
+ * product's displayName, PLUS " 12+"/" 3–11" etc. ONLY for a COVID
+ * product (from the catalog age label — e.g. "Comirnaty 12+",
+ * "mNEXSPIKE 12+", "Spikevax 3–11"), PLUS " N" (the dose number) when
+ * the product has more than one real dose row (e.g. "Shingrix 1"/
+ * "Shingrix 2"). A single-dose non-COVID product gets neither suffix
+ * (e.g. just "Abrysvo").
  */
-export function groupMacroRowsForFamily(rows: readonly MacroRow[], family: MacroFamily): MacroGroupedRow[] {
-  const filtered = rows.filter((row) => row.family === family);
-  const sorted = family === "fluCovid" ? sortFluCovidByTypeGroup(filtered) : [...filtered].sort(compareOtherOrder);
+function doseButtonLabel(row: MacroRow, doseCount: number): string {
+  let label = row.displayName;
+  if (row.section === "COVID" && row.age) label += ` ${row.age}`;
+  if (doseCount > 1) label += ` ${row.doseNumber}`;
+  return label;
+}
 
-  let lastType: string | null = null;
-  let lastProductKey: string | null = null;
-  return sorted.map((row) => {
-    const showType = row.catalogType !== lastType;
-    const showProduct = showType || row.productKey !== lastProductKey;
-    lastType = row.catalogType;
-    lastProductKey = row.productKey;
-    return { ...row, showType, showProduct };
-  });
+/**
+ * Sorts and groups `rows` (from buildMacroRows) into round-4's
+ * section -> product -> dose-buttons shape (Will's brief, verbatim):
+ * "Have a section (Flu, Pneumonia, RSV, etc) and then have the product
+ * name/dose be inside a colored button... Showing the product name and
+ * dose number if there are multiple doses." One MacroProductGroup per
+ * PRODUCT (not per dose row) within each section, each carrying its
+ * doses as ordered button specs; the page renders one button per dose
+ * plus the product's age/price once at the row's end.
+ *
+ * Section order is MACRO_SECTION_ORDER (Flu, COVID, then the rest in
+ * sheet order, Other last); an empty section is omitted. Within a
+ * section, products sort by ageMinMonths, then sheetOrder, then
+ * displayName (using the product's first/lowest-dose-number row as
+ * representative — every dose of one product shares the same catalog
+ * entry today).
+ */
+export function groupMacroRowsBySection(rows: readonly MacroRow[]): MacroSectionGroup[] {
+  const bySection = new Map<MacroSection, Map<string, MacroRow[]>>();
+  for (const row of rows) {
+    const productsInSection = bySection.get(row.section) ?? new Map<string, MacroRow[]>();
+    bySection.set(row.section, productsInSection);
+    const productRows = productsInSection.get(row.productKey) ?? [];
+    productRows.push(row);
+    productsInSection.set(row.productKey, productRows);
+  }
+
+  const sections: MacroSectionGroup[] = [];
+  for (const section of MACRO_SECTION_ORDER) {
+    const productsInSection = bySection.get(section);
+    if (!productsInSection || productsInSection.size === 0) continue;
+
+    const products: MacroProductGroup[] = Array.from(productsInSection.values()).map((productRows) => {
+      const sortedRows = [...productRows].sort((a, b) => a.doseNumber - b.doseNumber);
+      const doseCount = sortedRows.length;
+      const first = sortedRows[0];
+      return {
+        productKey: first.productKey,
+        displayName: first.displayName,
+        age: first.age,
+        cashPriceCents: first.cashPriceCents,
+        doses: sortedRows.map((row) => ({ row, label: doseButtonLabel(row, doseCount) })),
+      };
+    });
+
+    products.sort((a, b) => {
+      const rowA = a.doses[0].row;
+      const rowB = b.doses[0].row;
+      return (
+        rowA.ageMinMonths - rowB.ageMinMonths ||
+        rowA.sheetOrder - rowB.sheetOrder ||
+        a.displayName.localeCompare(b.displayName)
+      );
+    });
+
+    sections.push({ section, products });
+  }
+
+  return sections;
 }
