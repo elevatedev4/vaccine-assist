@@ -56,6 +56,7 @@ export async function POST(request: Request) {
   let processed = 0;
   let rows = 0;
   let matched = 0;
+  let skipped = 0;
   const daysTouched = new Set<string>();
 
   for (const meta of attachmentMetas) {
@@ -81,6 +82,7 @@ export async function POST(request: Request) {
       processed += 1;
       rows += result.rows;
       matched += result.matched;
+      skipped += result.skipped;
       for (const day of result.days) daysTouched.add(day);
     } catch (err) {
       console.error(`POST /api/administered/reprocess: ingest failed for key=${meta.key}`, err);
@@ -88,7 +90,7 @@ export async function POST(request: Request) {
   }
 
   console.log(
-    `POST /api/administered/reprocess: processed=${processed} rows=${rows} matched=${matched} days=${daysTouched.size}`
+    `POST /api/administered/reprocess: processed=${processed} rows=${rows} matched=${matched} days=${daysTouched.size} skipped=${skipped}`
   );
-  return NextResponse.json({ processed, rows, matched, days: daysTouched.size });
+  return NextResponse.json({ processed, rows, matched, days: daysTouched.size, skipped });
 }

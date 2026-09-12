@@ -195,6 +195,13 @@ function summaryWindow(days: number, until?: string): string[] {
  * days (see summaryWindow's window definition). A day with nothing
  * ingested yet (getAdministeredDay returns null — no email received, or
  * `app_setting` still missing) contributes zero, never throws.
+ *
+ * The per-day reads fire CONCURRENTLY (Promise.all) rather than one at a
+ * time — review fix, Will 2026-09-12: this was `days` sequential
+ * round-trips. The aggregation pass below still walks the results in
+ * `window` order (not arrival order) so byVaccineId/byItemName key
+ * insertion order — and therefore the JSON output — is byte-identical to
+ * the old sequential version.
  */
 export async function administeredSummary(
   supabase: ReturnType<typeof getSupabaseServerClient>,
@@ -206,8 +213,9 @@ export async function administeredSummary(
   let unmatched = 0;
   let total = 0;
 
-  for (const date of window) {
-    const day = await getAdministeredDay(supabase, date);
+  const daysData = await Promise.all(window.map((date) => getAdministeredDay(supabase, date)));
+
+  for (const day of daysData) {
     if (!day) continue;
     for (const row of day.rows) {
       total += 1;
