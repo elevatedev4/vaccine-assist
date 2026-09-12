@@ -8,6 +8,7 @@ import {
   buildMacroCode,
   buildMacroRows,
   groupMacroRowsBySection,
+  groupSectionsByTopGroup,
   type MacroDoseButton,
   type MacroLotLike,
   type MacroProductGroup,
@@ -15,32 +16,36 @@ import {
   type MacroRowVaccine,
   type MacroSection,
   type MacroSectionGroup,
+  type MacroTopGroupBlock,
 } from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
 /**
- * /macro-codes tab, round 5 (Will's brief, verbatim, 2026-09-12): "The
- * buttons are great, but the space is being used very inefficiently. I
- * need everything to fit on one screen so it can easily be accessed
- * and see everything. Add the approved age range to the end of the
- * product name inside the button. Hide prices for now. Make it all fit
- * better."
+ * /macro-codes tab, round 6 (Will's verbatim feedback, 2026-09-12,
+ * replying to the round-5 page): "'COVID/Flu' group. Pneumonia, RSV,
+ * Shingles, Tdap, HPV should go in the middle under 'Common', then all
+ * others under 'Other'. Ages go in parenthesis. Just put 'Engerix-B
+ * adult' for the name. I think the dose needs to say '(Dose X)' after
+ * the product name."
  *
- * One compact row per PRODUCT within each section: a colored button per
- * real dose row (label rules in lib/macro-codes.ts's doseButtonLabel,
- * which now appends every product's catalog age range, e.g. "Shingrix
- * 1 · 50+ (19+ IC)"), then one small inline ⚙ disclosure covering every
- * dose of that product — the age is now IN the button, so the row's
- * trailing meta cell only holds the ⚙. Cash price is hidden per Will's
- * ask above (data/plumbing kept, just not rendered — see
- * formatCashPrice's call site below). Sections lay out in a multi-
- * column flow (see .macro-columns in the <style> tag) so the whole
- * catalog fits one screen without scrolling at a typical pharmacy
- * desktop viewport. Clicking a dose button copies that dose's macro (or
- * opens the lot/exp modal when incomplete) — same copy-first-then-save
- * modal logic as round 3, unchanged. Names come pre-cleaned from
+ * Sections (Flu, COVID, RSV, Shingles, ...) now layer into three
+ * top-level groups — "COVID/Flu", "Common", "Other" — rendered as three
+ * columns (see .macro-groups / .macro-group-column in the <style> tag),
+ * each column stacking its member sections top to bottom; the grouping
+ * itself is lib/macro-codes.ts's groupSectionsByTopGroup /
+ * lib/macro-catalog.ts's topGroupForSection. Dose button labels are
+ * "<name> (Dose N) (<age>)" (lib/macro-codes.ts's doseButtonLabel) —
+ * dose only for multi-dose products, age only when the row has one, an
+ * age that already carries its own parenthetical flattened to a comma
+ * clause so a label never nests parens two deep. Engerix-B's name is
+ * "Engerix-B adult" on this page only (see macro-codes.ts's
+ * MACRO_DISPLAY_NAME_OVERRIDES). Everything else from round 5 is
+ * unchanged: one small inline ⚙ disclosure per product (covering every
+ * dose), cash price hidden (data/plumbing kept, just not rendered — see
+ * formatCashPrice's call site below), click-to-copy / lot-exp modal
+ * logic from round 3. Names come pre-cleaned from
  * lib/product-view.ts's buildProductViews; pure row-building/grouping
  * logic lives in lib/macro-codes.ts / lib/macro-catalog.ts (both unit-
  * tested).
@@ -76,11 +81,18 @@ const styles = {
   heading: { margin: "0 0 0.4rem", fontSize: "1.15rem" },
   error: { color: "#b00020", fontSize: "0.8rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
-  // Sections flow into columns (round 5: "make it all fit better") —
-  // see .macro-columns' column-count in the <style> tag below for the
-  // per-viewport-width column counts; each <section> gets break-inside:
-  // avoid there so a section's rows stay together in one column.
-  columns: { columnGap: "1.25rem" },
+  // Round 6: three top-level groups ("COVID/Flu" | "Common" | "Other"),
+  // one per column — see .macro-groups / .macro-group-column in the
+  // <style> tag below for the layout/responsive rules.
+  groups: { display: "flex", gap: "1.5rem", alignItems: "flex-start" },
+  groupColumn: { flex: "1 1 0", minWidth: 0 },
+  groupHeading: {
+    fontSize: "1rem",
+    fontWeight: 800,
+    margin: "0 0 0.35rem",
+    paddingBottom: "0.15rem",
+    borderBottom: "2px solid #999",
+  },
   sectionHeading: {
     fontSize: "0.8rem",
     fontWeight: 700,
@@ -361,6 +373,7 @@ export default function MacroCodesPage() {
   );
 
   const sections = useMemo(() => groupMacroRowsBySection(rows), [rows]);
+  const topGroups = useMemo(() => groupSectionsByTopGroup(sections), [sections]);
 
   function rowKey(row: MacroRow): string {
     return `${row.productKey}:${row.doseNumber}`;
@@ -663,6 +676,15 @@ export default function MacroCodesPage() {
     );
   }
 
+  function renderTopGroup(block: MacroTopGroupBlock) {
+    return (
+      <div key={block.group} className="macro-group-column" style={styles.groupColumn}>
+        <h2 style={styles.groupHeading}>{block.group}</h2>
+        {block.sections.map((section) => renderSection(section))}
+      </div>
+    );
+  }
+
   return (
     <main style={styles.main}>
       <h1 style={styles.heading}>Macro codes</h1>
@@ -671,8 +693,8 @@ export default function MacroCodesPage() {
       {loadError && <p style={styles.error}>{loadError}</p>}
 
       {!loading && (
-        <div className="macro-columns" style={styles.columns}>
-          {sections.map((section) => renderSection(section))}
+        <div className="macro-groups" style={styles.groups}>
+          {topGroups.map((block) => renderTopGroup(block))}
         </div>
       )}
 
@@ -766,31 +788,21 @@ export default function MacroCodesPage() {
        * "hover" to reveal it. Dose buttons are real <button>s so
        * Enter/Space work natively with no extra keyboard handling.
        *
-       * Round 5 (Will: "I need everything to fit on one screen"):
-       * .macro-columns is a CSS multi-column flow — plain inline styles
-       * can't express column-count media queries — so sections pack
-       * left-to-right, top-to-bottom into 4 columns on a typical
-       * pharmacy desktop monitor (narrowing to 3/2/1 down to phone
-       * width) instead of stacking in one long list. Each .macro-section
-       * gets break-inside: avoid so a section's own rows never split
-       * across two columns. */}
+       * Round 6: .macro-groups is the three-column ("COVID/Flu" |
+       * "Common" | "Other") layout replacing round 5's 4-column text
+       * flow — plain inline styles can't express the narrow-width
+       * media query, so the stack-to-one-column fallback below 1100px
+       * lives here. Each column stacks its own sections top to bottom
+       * (no multi-column text flow within a column). */}
       <style>{`
-        .macro-columns {
-          column-count: 4;
-          column-gap: 1.25rem;
-        }
-        @media (max-width: 1600px) {
-          .macro-columns { column-count: 3; }
+        .macro-groups {
+          flex-wrap: wrap;
         }
         @media (max-width: 1100px) {
-          .macro-columns { column-count: 2; }
-        }
-        @media (max-width: 650px) {
-          .macro-columns { column-count: 1; }
+          .macro-groups { flex-direction: column; }
+          .macro-group-column { width: 100%; }
         }
         .macro-section {
-          break-inside: avoid;
-          -webkit-column-break-inside: avoid;
           margin-bottom: 0.5rem;
         }
         .macro-dose-button:hover, .macro-dose-button:focus-visible {
