@@ -1,10 +1,19 @@
 import { pickCurrentActiveLot, type LotStatusLike } from "@/lib/lots-table";
 import { partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
-import { lookupMacroCatalog, MACRO_CATALOG_OTHER, MACRO_SECTION_ORDER, type MacroSection } from "@/lib/macro-catalog";
+import {
+  lookupMacroCatalog,
+  macroBaseShortCode,
+  MACRO_CATALOG_OTHER,
+  MACRO_SECTION_ORDER,
+  MACRO_TOP_GROUP_ORDER,
+  topGroupForSection,
+  type MacroSection,
+  type MacroTopGroup,
+} from "@/lib/macro-catalog";
 import type { ProductView } from "@/lib/product-view";
 
-export type { MacroSection } from "@/lib/macro-catalog";
+export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
 
 /**
  * Pure logic for the /macro-codes tab (Will's brief, verbatim: "add new
@@ -72,6 +81,25 @@ export type { MacroSection } from "@/lib/macro-catalog";
  * productKey, so any product split this way still numbers its buttons
  * by dose order — fixing the root cause generically rather than
  * special-casing Shingrix.
+ *
+ * ROUND 7 (Will's verbatim feedback, 2026-09-12 — Will's own "round 6"):
+ * "'COVID/Flu' group. Pneumonia, RSV, Shingles, Tdap, HPV should go in
+ * the middle under 'Common', then all others under 'Other'... Ages go
+ * in parenthesis. Just put 'Engerix-B adult' for the name. I think the
+ * dose needs to say '(Dose X)' after the product name." Three changes:
+ * (1) groupSectionsByTopGroup below layers round-4's sections into the
+ * three top-level groups (lib/macro-catalog.ts's MacroTopGroup) the page
+ * renders as its three columns; (2) doseButtonLabel now emits "<name>
+ * (Dose N) (<age>)" instead of round 5's "<name> N · <age>", flattening
+ * an age label that already carries its own parenthetical (e.g.
+ * Shingrix's "50+ (19+ IC)") to a trailing comma clause so a button
+ * never nests parens two deep; (3) macroDisplayNameFor renames Engerix-B
+ * to "Engerix-B adult" (dropping "20 mcg") for THIS page only — the
+ * shared /lots cleaner (lib/lots-display-name.ts) keeps "20 mcg" on
+ * purpose (a tested "unknown qualifier survives" guarantee, not just
+ * incidental collision-avoidance for this one product) so renaming it
+ * there would loosen that general contract fleet-wide for a one-page
+ * ask; see MACRO_DISPLAY_NAME_OVERRIDES below.
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -165,6 +193,18 @@ export type MacroRow = {
    * writes the same lot across every dose row of a product. */
   vaccineIds: string[];
 };
+
+/** Round-7 per-page display-name overrides (see this file's header) —
+ * keyed by the catalog's digit-stripped base short code (e.g.
+ * "engerix1"/"engerix2"/"engerix3" -> base "engerix"). Applied only to
+ * MacroRow.displayName, never to the shared ProductView.displayName. */
+const MACRO_DISPLAY_NAME_OVERRIDES: Readonly<Record<string, string>> = {
+  engerix: "Engerix-B adult",
+};
+
+function macroDisplayNameFor(defaultDisplayName: string, shortCode: string): string {
+  return MACRO_DISPLAY_NAME_OVERRIDES[macroBaseShortCode(shortCode)] ?? defaultDisplayName;
+}
 
 function doseNumberOf(vaccine: MacroRowVaccine): number {
   const parsed = Number.parseInt(vaccine.dose ?? "1", 10);
@@ -269,7 +309,7 @@ export function buildMacroRows(
 
       rows.push({
         productKey: product.productKey,
-        displayName: product.displayName,
+        displayName: macroDisplayNameFor(product.displayName, shortCode),
         ndc: product.ndc,
         packageSize: product.packageSize,
         cashPriceCents: realVaccine.cash_price_cents ?? null,
@@ -329,22 +369,31 @@ export type MacroSectionGroup = {
   products: MacroProductGroup[];
 };
 
+/** Flattens a single trailing parenthetical inside an age label to a
+ * comma clause — e.g. "50+ (19+ IC)" -> "50+, 19+ IC" — so a round-7
+ * button label never nests parens two deep ("Shingrix (Dose 1) (50+
+ * (19+ IC))"). An age with no parenthetical (e.g. "12+", "60+ / preg
+ * 32–36 wk") passes through unchanged. */
+function flattenAgeForLabel(age: string): string {
+  return age.replace(/\s*\(([^)]*)\)\s*$/, ", $1");
+}
+
 /**
- * Builds a round-5 dose button's label (Will's brief, verbatim: "Add
- * the approved age range to the end of the product name inside the
- * button"): the product's displayName, PLUS " N" (the dose number)
- * when the product has more than one real dose row (e.g. "Shingrix
- * 1"/"Shingrix 2"), PLUS " · <age>" (the catalog age-range label,
- * whatever text that row already carries — never invented here) for
- * every product that has one (e.g. "Shingrix 1 · 50+ (19+ IC)",
- * "Abrysvo · 60+ / preg 32–36 wk", "Comirnaty · 12+"). A product with
- * no catalog age (age === "", e.g. an unrecognized short code) gets no
- * suffix at all.
+ * Builds a round-7 dose button's label (Will's verbatim brief,
+ * 2026-09-12): "Ages go in parenthesis... I think the dose needs to say
+ * '(Dose X)' after the product name." The product's displayName, PLUS
+ * " (Dose N)" when the product has more than one real dose row (e.g.
+ * "Shingrix (Dose 1)"/"Shingrix (Dose 2)"), PLUS " (<age>)" (the
+ * catalog age-range label — flattened per flattenAgeForLabel above) for
+ * every product that has one (e.g. "Shingrix (Dose 1) (50+, 19+ IC)",
+ * "Abrysvo (60+ / preg 32–36 wk)", "Comirnaty 2026-2027 (12+)",
+ * "Boostrix (10+)"). A product with no catalog age (age === "", e.g. an
+ * unrecognized short code) gets no age suffix at all.
  */
 function doseButtonLabel(row: MacroRow, doseCount: number): string {
   let label = row.displayName;
-  if (doseCount > 1) label += ` ${row.doseNumber}`;
-  if (row.age) label += ` · ${row.age}`;
+  if (doseCount > 1) label += ` (Dose ${row.doseNumber})`;
+  if (row.age) label += ` (${flattenAgeForLabel(row.age)})`;
   return label;
 }
 
@@ -419,4 +468,35 @@ export function groupMacroRowsBySection(rows: readonly MacroRow[]): MacroSection
   }
 
   return sections;
+}
+
+/** One round-7 top-level group's block: its group heading plus its
+ * member section groups, in MACRO_SECTION_ORDER's relative order. */
+export type MacroTopGroupBlock = {
+  group: MacroTopGroup;
+  sections: MacroSectionGroup[];
+};
+
+/**
+ * Layers groupMacroRowsBySection's flat section list into round-7's
+ * three top-level groups (Will's verbatim brief, 2026-09-12): "'COVID/
+ * Flu' group. Pneumonia, RSV, Shingles, Tdap, HPV should go in the
+ * middle under 'Common', then all others under 'Other'." Group order is
+ * MACRO_TOP_GROUP_ORDER; within a group, sections keep the relative
+ * order groupMacroRowsBySection already gave them (MACRO_SECTION_ORDER).
+ * A group with no sections in it is omitted, same posture as an empty
+ * section being omitted above.
+ */
+export function groupSectionsByTopGroup(sections: readonly MacroSectionGroup[]): MacroTopGroupBlock[] {
+  const byGroup = new Map<MacroTopGroup, MacroSectionGroup[]>();
+  for (const section of sections) {
+    const group = topGroupForSection(section.section);
+    const list = byGroup.get(group) ?? [];
+    list.push(section);
+    byGroup.set(group, list);
+  }
+
+  return MACRO_TOP_GROUP_ORDER.map((group) => ({ group, sections: byGroup.get(group) ?? [] })).filter(
+    (block) => block.sections.length > 0
+  );
 }

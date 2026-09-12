@@ -79,6 +79,35 @@ export function macroSectionOrderIndex(section: MacroSection): number {
   return index === -1 ? MACRO_SECTION_ORDER.length : index;
 }
 
+/**
+ * ROUND 6 (Will's verbatim feedback, 2026-09-12, replying to the round-5
+ * page): "'COVID/Flu' group. Pneumonia, RSV, Shingles, Tdap, HPV should
+ * go in the middle under 'Common', then all others under 'Other'." Three
+ * top-level groups the /macro-codes page lays out as its three columns,
+ * each holding its member sections' family sub-headings in
+ * MACRO_SECTION_ORDER's order. "Tdap" is the Tetanus section (Boostrix).
+ */
+export type MacroTopGroup = "COVID/Flu" | "Common" | "Other";
+
+/** Column display order for the three top-level groups. */
+export const MACRO_TOP_GROUP_ORDER: readonly MacroTopGroup[] = ["COVID/Flu", "Common", "Other"];
+
+const TOP_GROUP_SECTIONS: Readonly<Record<Exclude<MacroTopGroup, "Other">, ReadonlySet<MacroSection>>> = {
+  "COVID/Flu": new Set(["Flu", "COVID"]),
+  Common: new Set(["Pneumonia", "RSV", "Shingles", "Tetanus", "HPV"]),
+};
+
+/** Derives a section's top-level group. Every section not explicitly
+ * listed in TOP_GROUP_SECTIONS (Hep B, Meningitis, Hep A, Typhoid, MMR,
+ * Other, and any future family) falls through to "Other" — same
+ * closed-mapping-with-a-catch-all posture as sectionForType above. */
+export function topGroupForSection(section: MacroSection): MacroTopGroup {
+  for (const [group, sections] of Object.entries(TOP_GROUP_SECTIONS) as [Exclude<MacroTopGroup, "Other">, ReadonlySet<MacroSection>][]) {
+    if (sections.has(section)) return group;
+  }
+  return "Other";
+}
+
 /** The sheet Type values that belong to each round-4 section. Every
  * catalog Type must appear in exactly one of these sets; anything not
  * listed (including a short code with no catalog entry at all) falls
