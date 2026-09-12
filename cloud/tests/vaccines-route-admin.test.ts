@@ -46,7 +46,11 @@ describe("GET /api/vaccines", () => {
     const response = await GET(authedRequest("/api/vaccines"));
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.vaccines).toEqual([{ id: "v1", name: "Flu", active: true }]);
+    // V-entry-values: a row with no `directions` on file also gets a
+    // computed `directions_default` (lib/entry-defaults.ts) alongside it.
+    expect(body.vaccines).toEqual([
+      { id: "v1", name: "Flu", active: true, directions_default: "For administration by healthcare provider in pharmacy." },
+    ]);
     // Regression guard: the default path must still filter on active=true
     // and must never touch the `lot` table (that join only runs for
     // includeInactive=true, see the other test below).
@@ -89,10 +93,13 @@ describe("GET /api/vaccines", () => {
     const response = await GET(authedRequest("/api/vaccines?includeInactive=true"));
     expect(response.status).toBe(200);
     const body = await response.json();
+    // V-entry-values: every row with no `directions` on file also gets a
+    // computed `directions_default` (lib/entry-defaults.ts) alongside it.
+    const directionsDefault = "For administration by healthcare provider in pharmacy.";
     expect(body.vaccines).toEqual([
-      { id: "v1", name: "Flu", active: true, hasActiveLot: true },
-      { id: "v2", name: "COVID", active: false, hasActiveLot: false },
-      { id: "v3", name: "Shingles", active: true, hasActiveLot: true },
+      { id: "v1", name: "Flu", active: true, hasActiveLot: true, directions_default: directionsDefault },
+      { id: "v2", name: "COVID", active: false, hasActiveLot: false, directions_default: directionsDefault },
+      { id: "v3", name: "Shingles", active: true, hasActiveLot: true, directions_default: directionsDefault },
     ]);
   });
 
