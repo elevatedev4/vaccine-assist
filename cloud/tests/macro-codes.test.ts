@@ -390,13 +390,13 @@ describe("groupMacroRowsBySection", () => {
   });
 
   describe("dose button labels", () => {
-    it("single-dose non-COVID product: just the display name, no suffix", () => {
+    it("single-dose non-COVID product: display name plus its catalog age suffix", () => {
       const products: ProductView[] = [view({ productKey: "name:abrysvo", displayName: "Abrysvo", vaccineIds: ["a1"] })];
       const vaccines: MacroRowVaccine[] = [vaccine({ id: "a1", name: "Abrysvo", short_code: "abrysvo" })];
       const rows = buildMacroRows(products, vaccines, {});
 
       const product = groupMacroRowsBySection(rows).find((s) => s.section === "RSV")!.products[0];
-      expect(product.doses.map((d) => d.label)).toEqual(["Abrysvo"]);
+      expect(product.doses.map((d) => d.label)).toEqual(["Abrysvo · 60+ / preg 32–36 wk"]);
     });
 
     it("single-dose COVID products: display name plus the catalog age suffix", () => {
@@ -414,12 +414,12 @@ describe("groupMacroRowsBySection", () => {
 
       const covid = groupMacroRowsBySection(rows).find((s) => s.section === "COVID")!;
       const labelsByName = Object.fromEntries(covid.products.map((p) => [p.displayName, p.doses.map((d) => d.label)]));
-      expect(labelsByName["Comirnaty"]).toEqual(["Comirnaty 12+"]);
-      expect(labelsByName["mNEXSPIKE"]).toEqual(["mNEXSPIKE 12+"]);
-      expect(labelsByName["Spikevax"]).toEqual(["Spikevax 3–11"]);
+      expect(labelsByName["Comirnaty"]).toEqual(["Comirnaty · 12+"]);
+      expect(labelsByName["mNEXSPIKE"]).toEqual(["mNEXSPIKE · 12+"]);
+      expect(labelsByName["Spikevax"]).toEqual(["Spikevax · 3–11"]);
     });
 
-    it("multi-dose non-COVID product: display name plus the dose number, no age suffix", () => {
+    it("multi-dose non-COVID product: display name plus the dose number, plus the age suffix", () => {
       const products: ProductView[] = [view({ productKey: "ndc:shingrix", displayName: "Shingrix", vaccineIds: ["s1", "s2"] })];
       const vaccines: MacroRowVaccine[] = [
         vaccine({ id: "s1", name: "Shingrix", dose: "1", short_code: "shingrix1" }),
@@ -428,7 +428,7 @@ describe("groupMacroRowsBySection", () => {
       const rows = buildMacroRows(products, vaccines, {});
 
       const product = groupMacroRowsBySection(rows).find((s) => s.section === "Shingles")!.products[0];
-      expect(product.doses.map((d) => d.label)).toEqual(["Shingrix 1", "Shingrix 2"]);
+      expect(product.doses.map((d) => d.label)).toEqual(["Shingrix 1 · 50+ (19+ IC)", "Shingrix 2 · 50+ (19+ IC)"]);
     });
 
     it("a product with no short code gets its plain display name as the (unclickable) label", () => {

@@ -21,23 +21,29 @@ import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
 /**
- * /macro-codes tab, round 4 (Will's brief, verbatim): "Remove the age
- * ranges and extraneous data from product names, as I've asked for
- * multiple times. Move age range and price to the end of the row. Have
- * a section (Flu, Pneumonia, RSV, etc) and then have the product
- * name/dose be inside a colored button 'Shingrix 1' 'Shingrix 2'
- * 'Abrysvo' 'Comirnaty 12+' 'mNEXSPIKE 12+', etc. Showing the product
- * name and dose number if there are multiple doses."
+ * /macro-codes tab, round 5 (Will's brief, verbatim, 2026-09-12): "The
+ * buttons are great, but the space is being used very inefficiently. I
+ * need everything to fit on one screen so it can easily be accessed
+ * and see everything. Add the approved age range to the end of the
+ * product name inside the button. Hide prices for now. Make it all fit
+ * better."
  *
  * One compact row per PRODUCT within each section: a colored button per
- * real dose row (label rules in lib/macro-codes.ts's doseButtonLabel),
- * then the product's age range and cash price at the row's end, then
- * one small ⚙ disclosure covering every dose of that product. Clicking
- * a dose button copies that dose's macro (or opens the lot/exp modal
- * when incomplete) — same copy-first-then-save modal logic as round 3,
- * unchanged. Names come pre-cleaned from lib/product-view.ts's
- * buildProductViews; pure row-building/grouping logic lives in
- * lib/macro-codes.ts / lib/macro-catalog.ts (both unit-tested).
+ * real dose row (label rules in lib/macro-codes.ts's doseButtonLabel,
+ * which now appends every product's catalog age range, e.g. "Shingrix
+ * 1 · 50+ (19+ IC)"), then one small inline ⚙ disclosure covering every
+ * dose of that product — the age is now IN the button, so the row's
+ * trailing meta cell only holds the ⚙. Cash price is hidden per Will's
+ * ask above (data/plumbing kept, just not rendered — see
+ * formatCashPrice's call site below). Sections lay out in a multi-
+ * column flow (see .macro-columns in the <style> tag) so the whole
+ * catalog fits one screen without scrolling at a typical pharmacy
+ * desktop viewport. Clicking a dose button copies that dose's macro (or
+ * opens the lot/exp modal when incomplete) — same copy-first-then-save
+ * modal logic as round 3, unchanged. Names come pre-cleaned from
+ * lib/product-view.ts's buildProductViews; pure row-building/grouping
+ * logic lives in lib/macro-codes.ts / lib/macro-catalog.ts (both unit-
+ * tested).
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -66,28 +72,32 @@ const SECTION_COLORS: Readonly<Record<MacroSection, SectionColors>> = {
 };
 
 const styles = {
-  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1000 },
+  main: { fontFamily: "system-ui, sans-serif", padding: "0.75rem 1rem", maxWidth: "100%" },
+  heading: { margin: "0 0 0.4rem", fontSize: "1.15rem" },
   error: { color: "#b00020", fontSize: "0.8rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
+  // Sections flow into columns (round 5: "make it all fit better") —
+  // see .macro-columns' column-count in the <style> tag below for the
+  // per-viewport-width column counts; each <section> gets break-inside:
+  // avoid there so a section's rows stay together in one column.
+  columns: { columnGap: "1.25rem" },
   sectionHeading: {
-    fontSize: "0.95rem",
+    fontSize: "0.8rem",
     fontWeight: 700,
-    margin: "1rem 0 0.3rem",
-    paddingBottom: "0.15rem",
+    margin: "0 0 0.15rem",
+    paddingBottom: "0.1rem",
     borderBottom: "1px solid #ccc",
   },
   productRow: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: "0.6rem",
-    padding: "3px 0",
+    gap: "0.3rem",
+    padding: "1px 0",
     borderBottom: "1px solid #eee",
   },
-  doseButtons: { display: "flex", flexWrap: "wrap" as const, gap: "0.3rem", alignItems: "center" },
-  rowMeta: { display: "flex", alignItems: "center", gap: "0.6rem", whiteSpace: "nowrap" as const, flexShrink: 0 },
-  ageText: { fontSize: "12px", color: "#555" },
-  priceText: { fontSize: "12px", color: "#333", fontWeight: 600, minWidth: "4.5em", textAlign: "right" as const },
+  doseButtons: { display: "flex", flexWrap: "wrap" as const, gap: "0.25rem", alignItems: "center" },
+  rowMeta: { display: "flex", alignItems: "center", gap: "0.3rem", whiteSpace: "nowrap" as const, flexShrink: 0 },
   copyFallback: { margin: "0.15rem 0 0.4rem", width: "100%" },
   copyFallbackInput: {
     fontFamily: "ui-monospace, monospace",
@@ -210,6 +220,9 @@ function missingNote(row: MacroRow): string | null {
   return null;
 }
 
+// Kept for when prices come back — hidden per Will 2026-09-12 ("Hide
+// prices for now"). Not called anywhere below; the cashPriceCents data
+// plumbing (MacroProductGroup.cashPriceCents) is untouched.
 function formatCashPrice(cents: number | null): string {
   if (cents === null) return "";
   return `$${(cents / 100).toFixed(2)}`;
@@ -552,12 +565,21 @@ export default function MacroCodesPage() {
             background: isNoShortCode ? "#f2f2f2" : colors.bg,
             color: isNoShortCode ? "#888" : colors.text,
             borderRadius: 5,
-            padding: "0.3rem 0.6rem",
-            fontSize: "12.5px",
+            // Age is now part of the label (round 5), so labels run
+            // longer — a fixed minHeight + horizontal-only padding keeps
+            // every button a consistent, clearly-clickable ~32px tall
+            // regardless of label length, instead of growing vertically.
+            minHeight: 32,
+            padding: "0 0.5rem",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "12px",
             fontWeight: 600,
             cursor: isNoShortCode ? "default" : "pointer",
             minWidth: `${Math.max(label.length, MIN_BUTTON_CH)}ch`,
             textAlign: "center",
+            boxSizing: "border-box",
           }}
         >
           {isCopied ? COPIED_FLAG : label}
@@ -617,14 +639,15 @@ export default function MacroCodesPage() {
 
   function renderProductRow(product: MacroProductGroup, section: MacroSection) {
     const colors = SECTION_COLORS[section];
-    const price = formatCashPrice(product.cashPriceCents);
+    // Round 5: age moved into the dose button labels themselves (see
+    // lib/macro-codes.ts's doseButtonLabel) so the separate age cell is
+    // gone, and cash price is hidden for now per Will 2026-09-12 — the
+    // row's trailing meta cell is just the ⚙ now.
 
     return (
       <div key={product.productKey} className="macro-row" style={styles.productRow}>
         <div style={styles.doseButtons}>{product.doses.map((dose) => renderDoseButton(dose, colors))}</div>
         <div className="macro-settings-cell" style={styles.rowMeta}>
-          <span style={styles.ageText}>{product.age}</span>
-          <span style={styles.priceText}>{price}</span>
           {renderSettingsMenu(product)}
         </div>
       </div>
@@ -633,7 +656,7 @@ export default function MacroCodesPage() {
 
   function renderSection(section: MacroSectionGroup) {
     return (
-      <section key={section.section}>
+      <section key={section.section} className="macro-section">
         <h2 style={styles.sectionHeading}>{section.section}</h2>
         {section.products.map((product) => renderProductRow(product, section.section))}
       </section>
@@ -642,12 +665,16 @@ export default function MacroCodesPage() {
 
   return (
     <main style={styles.main}>
-      <h1>Macro codes</h1>
+      <h1 style={styles.heading}>Macro codes</h1>
 
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
 
-      {!loading && sections.map((section) => renderSection(section))}
+      {!loading && (
+        <div className="macro-columns" style={styles.columns}>
+          {sections.map((section) => renderSection(section))}
+        </div>
+      )}
 
       {modal && (
         <div
@@ -737,8 +764,35 @@ export default function MacroCodesPage() {
        * appears on row hover/focus-within, EXCEPT on touch devices (no
        * hover) where it's always visible, since a touch user can't
        * "hover" to reveal it. Dose buttons are real <button>s so
-       * Enter/Space work natively with no extra keyboard handling. */}
+       * Enter/Space work natively with no extra keyboard handling.
+       *
+       * Round 5 (Will: "I need everything to fit on one screen"):
+       * .macro-columns is a CSS multi-column flow — plain inline styles
+       * can't express column-count media queries — so sections pack
+       * left-to-right, top-to-bottom into 4 columns on a typical
+       * pharmacy desktop monitor (narrowing to 3/2/1 down to phone
+       * width) instead of stacking in one long list. Each .macro-section
+       * gets break-inside: avoid so a section's own rows never split
+       * across two columns. */}
       <style>{`
+        .macro-columns {
+          column-count: 4;
+          column-gap: 1.25rem;
+        }
+        @media (max-width: 1600px) {
+          .macro-columns { column-count: 3; }
+        }
+        @media (max-width: 1100px) {
+          .macro-columns { column-count: 2; }
+        }
+        @media (max-width: 650px) {
+          .macro-columns { column-count: 1; }
+        }
+        .macro-section {
+          break-inside: avoid;
+          -webkit-column-break-inside: avoid;
+          margin-bottom: 0.5rem;
+        }
         .macro-dose-button:hover, .macro-dose-button:focus-visible {
           filter: brightness(0.96);
           outline: none;

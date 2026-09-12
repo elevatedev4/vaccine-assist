@@ -54,6 +54,13 @@ export type { MacroSection } from "@/lib/macro-catalog";
  * surfaced once per product for the page to render at the row's end.
  * Names are no longer stripped here — they arrive already cleaned via
  * ProductView.displayName (lib/product-view.ts's buildProductViews).
+ *
+ * ROUND 5 (Will's verbatim feedback): "Add the approved age range to
+ * the end of the product name inside the button. Hide prices for now.
+ * Make it all fit better." doseButtonLabel below now appends every
+ * product's catalog age to its button label (not just COVID's), and
+ * the page no longer renders a separate age/price cell — see
+ * app/macro-codes/page.tsx.
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -312,18 +319,21 @@ export type MacroSectionGroup = {
 };
 
 /**
- * Builds a round-4 dose button's label (Will's brief, verbatim): the
- * product's displayName, PLUS " 12+"/" 3–11" etc. ONLY for a COVID
- * product (from the catalog age label — e.g. "Comirnaty 12+",
- * "mNEXSPIKE 12+", "Spikevax 3–11"), PLUS " N" (the dose number) when
- * the product has more than one real dose row (e.g. "Shingrix 1"/
- * "Shingrix 2"). A single-dose non-COVID product gets neither suffix
- * (e.g. just "Abrysvo").
+ * Builds a round-5 dose button's label (Will's brief, verbatim: "Add
+ * the approved age range to the end of the product name inside the
+ * button"): the product's displayName, PLUS " N" (the dose number)
+ * when the product has more than one real dose row (e.g. "Shingrix
+ * 1"/"Shingrix 2"), PLUS " · <age>" (the catalog age-range label,
+ * whatever text that row already carries — never invented here) for
+ * every product that has one (e.g. "Shingrix 1 · 50+ (19+ IC)",
+ * "Abrysvo · 60+ / preg 32–36 wk", "Comirnaty · 12+"). A product with
+ * no catalog age (age === "", e.g. an unrecognized short code) gets no
+ * suffix at all.
  */
 function doseButtonLabel(row: MacroRow, doseCount: number): string {
   let label = row.displayName;
-  if (row.section === "COVID" && row.age) label += ` ${row.age}`;
   if (doseCount > 1) label += ` ${row.doseNumber}`;
+  if (row.age) label += ` · ${row.age}`;
   return label;
 }
 
