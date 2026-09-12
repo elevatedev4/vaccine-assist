@@ -3,6 +3,9 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
 import { formatNdcForStorage } from "@/lib/ndc";
+import { buildProductViews } from "@/lib/product-view";
+import { defaultDirections } from "@/lib/entry-defaults";
+import { doseNumberOf } from "@/lib/entry-values";
 
 /**
  * REST endpoint for the desktop app's Vaccines screen (what we offer).
@@ -27,10 +30,58 @@ import { formatNdcForStorage } from "@/lib/ndc";
  * retry WITHOUT them and flag `quantityDirectionsSupported: false` in the
  * response so the client can hide those inputs with a "pending
  * migration" note instead of crashing. See lib/schema-degradation.ts.
+ *
+ * V-entry-values (Will's brief): every row whose `directions` is
+ * null/blank also gets a `directions_default` field — the SAME
+ * lib/entry-defaults.ts helper the new /entry-values tab's "Fill blanks
+ * with defaults" button uses — computed server-side so the desktop app
+ * can adopt a sane default sig without ever having to duplicate that
+ * logic itself. `directions` is never overwritten; a row with a
+ * non-blank `directions` never gets `directions_default` at all.
  */
 const VACCINE_COLUMNS_BASE =
   "id, name, ndc, dose, short_code, cash_price_cents, active, created_at, updated_at";
 const VACCINE_COLUMNS_FULL = `${VACCINE_COLUMNS_BASE}, quantity, directions`;
+
+type VaccineRow = Record<string, unknown> & {
+  id: string;
+  name: string;
+  ndc: string | null;
+  dose?: string | null;
+  active: boolean;
+  directions?: string | null;
+};
+
+/**
+ * Annotates each row with `directions_default` when its `directions` is
+ * null/blank (see this file's header comment). Groups the WHOLE list
+ * passed in via lib/product-view.ts's buildProductViews (the same
+ * grouping every other tab uses) purely to compute each product's
+ * doseCount — every row's own `dose` column still drives its own
+ * doseNumber. Never mutates `directions` itself.
+ */
+function withDirectionsDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
+  const products = buildProductViews(
+    rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      ndc: (row.ndc as string | null) ?? null,
+      active: Boolean(row.active),
+    }))
+  );
+  const doseCountById = new Map<string, number>();
+  for (const product of products) {
+    for (const id of product.vaccineIds) doseCountById.set(id, product.vaccineIds.length);
+  }
+
+  return rows.map((row) => {
+    const directions = row.directions;
+    if (directions && directions.trim().length > 0) return row;
+    const doseNumber = doseNumberOf((row.dose as string | null) ?? null);
+    const doseCount = doseCountById.get(row.id) ?? 1;
+    return { ...row, directions_default: defaultDirections({ doseNumber, doseCount }) };
+  });
+}
 
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -65,7 +116,8 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: "Failed to load vaccines." }, { status: 500 });
       }
 
-      return NextResponse.json({ vaccines: data, quantityDirectionsSupported });
+      const vaccines = quantityDirectionsSupported ? withDirectionsDefaults((data ?? []) as VaccineRow[]) : data;
+      return NextResponse.json({ vaccines, quantityDirectionsSupported });
     }
 
     let vaccinesResult: {
@@ -88,10 +140,13 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Failed to load vaccines." }, { status: 500 });
     }
 
+    const vaccinesAnnotated = quantityDirectionsSupported
+      ? withDirectionsDefaults((vaccines ?? []) as VaccineRow[])
+      : vaccines ?? [];
     const vaccineIdsWithActiveLot = new Set((activeLots ?? []).map((lot) => lot.vaccine_id));
-    const vaccinesWithLotFlag = (vaccines ?? []).map((vaccine) => ({
+    const vaccinesWithLotFlag = vaccinesAnnotated.map((vaccine) => ({
       ...vaccine,
-      hasActiveLot: vaccineIdsWithActiveLot.has(vaccine.id),
+      hasActiveLot: vaccineIdsWithActiveLot.has(vaccine.id as string),
     }));
 
     return NextResponse.json({ vaccines: vaccinesWithLotFlag, quantityDirectionsSupported });
