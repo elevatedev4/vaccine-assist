@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
@@ -9,6 +9,7 @@ import { computeOrderPackages } from "@/lib/vaccine-product-catalog";
 import { deriveProductViewFields } from "@/lib/product-view";
 import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
+import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -106,6 +107,15 @@ const styles = {
   thRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
   td: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
   tdRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
+  // Surplus column (V-ordering-surplus, Will 2026-09-11): BOH minus the
+  // row's selected target — green when there's extra stock, red when
+  // short, neutral (inherited color) exactly at target.
+  tdRightSurplusPositive: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", color: "#0a7d27" },
+  tdRightSurplusNegative: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", color: "#b00020" },
+  // Order-quantity cells (Order (doses) / Order (pkg)) for any row with
+  // something to order — light green fill + bold so a nonzero order can't
+  // be scrolled past unnoticed.
+  tdRightOrderDue: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", background: "#e6f4ea", fontWeight: 700 },
   // Darkened (Will, 2026-09-09: "Darken the heading color to make it
   // easier to distinguish") from the original #f4f6f8, still light
   // enough for black text to stay readable.
@@ -160,6 +170,23 @@ function onHandStatusMessage(lastReceivedAt: string | null): string {
   return lastReceivedAt
     ? `On-hand data last received: ${new Date(lastReceivedAt).toLocaleString()}`
     : "On-hand data last received: never";
+}
+
+/** The "Surplus" cell's style + text for a row — green/red/neutral per
+ * lib/ordering-recommendation.ts's surplusVsTarget, blank when unknown. */
+function surplusCell(row: RecommendationRow): { style: CSSProperties; text: string } {
+  const surplus = surplusVsTarget({ onHand: row.onHand, target: row.effectiveTarget });
+  if (surplus === null) return { style: styles.tdRight, text: "" };
+  if (surplus > 0) return { style: styles.tdRightSurplusPositive, text: formatSurplus(surplus) };
+  if (surplus < 0) return { style: styles.tdRightSurplusNegative, text: formatSurplus(surplus) };
+  return { style: styles.tdRight, text: formatSurplus(surplus) };
+}
+
+/** Order-quantity cell style: highlighted green+bold whenever this row has
+ * something to order (V-ordering-surplus, Will: "so they don't get
+ * missed"), else the plain right-aligned cell. */
+function orderCellStyle(row: RecommendationRow): CSSProperties {
+  return row.order > 0 ? styles.tdRightOrderDue : styles.tdRight;
 }
 
 /** A single "target on-hand" cell — a row's own NDC-scoped override
@@ -756,6 +783,7 @@ export default function OrderingPage() {
             <th style={styles.thRight}>Rec. target</th>
             <th style={styles.th}>Target</th>
             <th style={styles.th}>BOH (doses)</th>
+            <th style={styles.thRight} title="BOH minus target">Surplus</th>
             <th style={styles.thRight}>Order (doses)</th>
             <th style={styles.thRight}>Order (pkg)</th>
           </tr>
@@ -782,28 +810,33 @@ export default function OrderingPage() {
                   <td style={styles.td}>{totals.onHand}</td>
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>—</td>
+                  <td style={styles.tdRight}>—</td>
                 </tr>
-                {enrichedRows.map((row) => (
-                  <tr key={row.key}>
-                    <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
-                    <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
-                    <td style={styles.td}>{row.unitSize ?? "—"}</td>
-                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
-                    <td style={styles.tdRight}>{row.upcoming7d}</td>
-                    <td style={styles.tdRight}>{row.recommendedTarget}</td>
-                    <td style={styles.td}>
-                      <TargetInput
-                        value={row.targetOnHand}
-                        disabled={targetsPending || !row.ndc}
-                        disabledTitle={targetsPending ? "activates after the database step" : "no NDC on file for this product"}
-                        onSave={(value) => (row.ndc ? saveTarget("ndc", row.ndc, value) : Promise.resolve(false))}
-                      />
-                    </td>
-                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
-                    <td style={styles.tdRight}>{row.order}</td>
-                    <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
-                  </tr>
-                ))}
+                {enrichedRows.map((row) => {
+                  const surplus = surplusCell(row);
+                  return (
+                    <tr key={row.key}>
+                      <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
+                      <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
+                      <td style={styles.td}>{row.unitSize ?? "—"}</td>
+                      <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
+                      <td style={styles.tdRight}>{row.upcoming7d}</td>
+                      <td style={styles.tdRight}>{row.recommendedTarget}</td>
+                      <td style={styles.td}>
+                        <TargetInput
+                          value={row.targetOnHand}
+                          disabled={targetsPending || !row.ndc}
+                          disabledTitle={targetsPending ? "activates after the database step" : "no NDC on file for this product"}
+                          onSave={(value) => (row.ndc ? saveTarget("ndc", row.ndc, value) : Promise.resolve(false))}
+                        />
+                      </td>
+                      <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
+                      <td style={surplus.style}>{surplus.text}</td>
+                      <td style={orderCellStyle(row)}>{row.order}</td>
+                      <td style={orderCellStyle(row)}>{row.orderPackages ?? "—"}</td>
+                    </tr>
+                  );
+                })}
               </Fragment>
             );
           })}
@@ -826,24 +859,29 @@ export default function OrderingPage() {
                   <th style={styles.thRight}>7d</th>
                   <th style={styles.thRight}>Rec. target</th>
                   <th style={styles.th}>BOH (doses)</th>
+                  <th style={styles.thRight} title="BOH minus target">Surplus</th>
                   <th style={styles.thRight}>Order (doses)</th>
                   <th style={styles.thRight}>Order (pkg)</th>
                 </tr>
               </thead>
               <tbody>
-                {inactiveRows.map(enrichRow).map((row) => (
-                  <tr key={row.key}>
-                    <td style={styles.td}>{row.displayName}</td>
-                    <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
-                    <td style={styles.td}>{row.unitSize ?? "—"}</td>
-                    <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
-                    <td style={styles.tdRight}>{row.upcoming7d}</td>
-                    <td style={styles.tdRight}>{row.recommendedTarget}</td>
-                    <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
-                    <td style={styles.tdRight}>{row.order}</td>
-                    <td style={styles.tdRight}>{row.orderPackages ?? "—"}</td>
-                  </tr>
-                ))}
+                {inactiveRows.map(enrichRow).map((row) => {
+                  const surplus = surplusCell(row);
+                  return (
+                    <tr key={row.key}>
+                      <td style={styles.td}>{row.displayName}</td>
+                      <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
+                      <td style={styles.td}>{row.unitSize ?? "—"}</td>
+                      <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
+                      <td style={styles.tdRight}>{row.upcoming7d}</td>
+                      <td style={styles.tdRight}>{row.recommendedTarget}</td>
+                      <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
+                      <td style={surplus.style}>{surplus.text}</td>
+                      <td style={orderCellStyle(row)}>{row.order}</td>
+                      <td style={orderCellStyle(row)}>{row.orderPackages ?? "—"}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

@@ -55,3 +55,25 @@ export type RecommendationRow = RecommendationInput & { recommendedOrder: number
 export function buildRecommendationRow(input: RecommendationInput, rate: number = WALK_IN_BUFFER_RATE): RecommendationRow {
   return { ...input, recommendedOrder: computeRecommendedOrder(input.upcoming7d, input.onHand, rate) };
 }
+
+/**
+ * Ordering-page "Surplus" column (Will 2026-09-11): how far BOH sits above
+ * or below the row's selected target (its "Your target" override when set,
+ * else the recommended target — see the page's `effectiveTarget` field).
+ * Returns null (blank cell) when either input is unknown, rather than
+ * guessing — onHand null means no on-hand data has arrived yet, and target
+ * null means there's nothing to compare against.
+ */
+export function surplusVsTarget({ onHand, target }: { onHand: number | null; target: number | null }): number | null {
+  if (onHand === null || target === null) return null;
+  return onHand - target;
+}
+
+/** Formats a surplus/deficit for display: a leading "+" for a surplus, a
+ * real minus sign (U+2212, not the ASCII hyphen) for a deficit, and a bare
+ * "0" when exactly at target. */
+export function formatSurplus(n: number): string {
+  if (n > 0) return `+${n}`;
+  if (n < 0) return `−${Math.abs(n)}`;
+  return "0";
+}
