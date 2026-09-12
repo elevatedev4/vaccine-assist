@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
@@ -36,7 +36,20 @@ import { buildToOrderRows } from "@/lib/ordering-to-order";
  *   - a modal nudging staff to set up the daily on-hand EMAIL (shown
  *     until one has actually arrived — a manual upload doesn't count,
  *     see GET /api/on-hand/address's lastReceivedAt), plus an always-
- *     visible "Upload on-hand file" button next to Refresh
+ *     visible "Upload on-hand file" action in the settings menu
+ *
+ * V-ordering-layout-round3 (Will 2026-09-12, verbatim): "Make the To
+ * Order table more succinct. Add a heading below it to separate the
+ * full list of all vaccine BOH. Hide all those buttons at the top in a
+ * settings cog or something. They're taking up way too much space." —
+ * page-layout only, no changes to the recommendation math or API:
+ *   - every former toolbar button/control (Refresh, Upload on-hand
+ *     file, Copy recommended → Your target, Walk-up %, Email-in setup)
+ *     now lives in a single ⚙ menu, top-right, same handlers unchanged
+ *   - the "To order" table is trimmed to Product / NDC / Order qty / BOH
+ *     with tighter row padding
+ *   - "All vaccines — on hand, schedule, last 7 days given" heading now
+ *     separates the To-order table from the full table below it
  */
 
 type RecommendationRow = {
@@ -120,6 +133,39 @@ const styles = {
   toolbar: { display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" as const, marginBottom: "0.5rem" },
   button: { padding: "0.5rem 1rem" },
   link: { fontSize: "0.85rem" },
+  // Page header row (V-ordering-layout-round3, Will 2026-09-12: "Hide
+  // all those buttons at the top in a settings cog... taking up way too
+  // much space") — title on the left, the ⚙ actions menu pinned top-
+  // right so the toolbar row no longer eats horizontal space.
+  headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "0.75rem", marginBottom: "0.5rem" },
+  gearMenuWrap: { position: "relative" as const },
+  gearButton: { fontSize: "1.1rem", lineHeight: 1, padding: "0.4rem 0.6rem", borderRadius: 6, border: "1px solid #888", background: "#fff", cursor: "pointer" },
+  menuPanel: {
+    position: "absolute" as const,
+    top: "calc(100% + 6px)",
+    right: 0,
+    background: "#fff",
+    border: "1px solid #ccc",
+    borderRadius: 8,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
+    padding: "0.6rem",
+    minWidth: 280,
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "flex-start" as const,
+    gap: "0.5rem",
+    zIndex: 50,
+  },
+  // Section heading separating the "To order" table from the full
+  // vaccine list below it (V-ordering-layout-round3 item 3).
+  sectionHeading: { marginTop: "2rem", marginBottom: "0.25rem" },
+  // Succinct "To order" table cells (V-ordering-layout-round3 item 2):
+  // smaller font + tighter padding than the main table's already-
+  // compact styles.
+  toOrderTh: { textAlign: "left" as const, padding: "1px 5px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const, fontSize: "12px" },
+  toOrderThRight: { textAlign: "right" as const, padding: "1px 5px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const, fontSize: "12px" },
+  toOrderTd: { textAlign: "left" as const, padding: "1px 5px", borderBottom: "1px solid #eee", fontSize: "12px", lineHeight: 1.15 },
+  toOrderTdRight: { textAlign: "right" as const, padding: "1px 5px", borderBottom: "1px solid #eee", fontSize: "12px", lineHeight: 1.15 },
   error: { color: "#b00020" },
   success: { color: "#0a7d27" },
   muted: { color: "#555", fontSize: "0.875rem" },
@@ -373,6 +419,12 @@ export default function OrderingPage() {
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
 
+  // V-ordering-layout-round3: the top-right ⚙ actions menu — closes on
+  // an outside click (see the effect below), same as any ordinary
+  // dropdown/popover.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
   // V-T26 item 1: the "Walk-up %" input's local editable text + save
   // status, same shape as TargetInput's own local state below but kept
   // inline here since it's a single page-level setting, not a per-row
@@ -412,6 +464,7 @@ export default function OrderingPage() {
     setCopyResult(null);
     setCopyError(null);
     setCopiedNdcKey(null);
+    setMenuOpen(false);
   }
 
   useEffect(() => {
@@ -430,6 +483,18 @@ export default function OrderingPage() {
       unsubscribe?.();
     };
   }, []);
+
+  // V-ordering-layout-round3: close the ⚙ menu on a click outside it.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleOutsideClick(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [menuOpen]);
 
   const loadRecommendation = useCallback(async (token: string) => {
     setLoading(true);
@@ -743,6 +808,12 @@ export default function OrderingPage() {
   // belt-and-suspenders (reviewer blocking fix, 2026-09-11).
   const toOrderRows = useMemo(() => buildToOrderRows((data?.rows ?? []).filter((row) => row.active)), [data]);
 
+  // V-ordering-layout-round3 item 2: the To-order table's one context
+  // column (BOH) — looked up by row key from the full recommendation
+  // data rather than added to lib/ordering-to-order.ts's ToOrderRow
+  // shape, since that lib is other coders' territory this round.
+  const onHandByKey = useMemo(() => new Map((data?.rows ?? []).map((row) => [row.key, row.onHand] as const)), [data]);
+
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -767,6 +838,14 @@ export default function OrderingPage() {
   const showEmailSetupLink =
     !!addressStatus && !("pending" in addressStatus && addressStatus.pending) && addressStatus.lastReceivedAt === null;
 
+  // V-ordering-layout-round3: the status text that matters stays
+  // visible (Will: "Keep... visible but compact — one line") — combined
+  // into a single muted line instead of the two separate paragraphs the
+  // toolbar round used to render.
+  const statusParts: string[] = [];
+  if (data) statusParts.push(onHandStatusMessage(data.onHandLastReceivedAt));
+  if (data?.trendUnavailable) statusParts.push("Last-7-days-given trend unavailable — using scheduled estimate only.");
+
   const uploadControl = (
     <>
       <label style={{ ...styles.button, border: "1px solid #888", borderRadius: 4, cursor: uploading ? "default" : "pointer", display: "inline-block" }}>
@@ -784,59 +863,75 @@ export default function OrderingPage() {
 
   return (
     <main style={styles.main}>
-      <h1>Ordering recommendations</h1>
-
-      <div style={styles.toolbar}>
-        <button style={styles.button} type="button" onClick={() => void loadRecommendation(session.accessToken)} disabled={loading}>
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
-        {uploadControl}
-        {!copyConfirming ? (
+      <div style={styles.headerRow}>
+        <h1 style={{ margin: 0 }}>Ordering recommendations</h1>
+        <div style={styles.gearMenuWrap} ref={menuRef}>
           <button
-            style={styles.button}
             type="button"
-            onClick={() => setCopyConfirming(true)}
-            disabled={!data || targetsPending}
+            style={styles.gearButton}
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-haspopup="true"
+            aria-expanded={menuOpen}
+            aria-label="Ordering settings and actions"
+            title="Settings and actions"
           >
-            Copy recommended → Your target
+            ⚙
           </button>
-        ) : (
-          <span style={styles.muted}>
-            Overwrite existing Your targets?{" "}
-            <button style={styles.button} type="button" onClick={() => void handleCopyRecommended()} disabled={copying}>
-              {copying ? "Copying…" : "Yes"}
-            </button>{" "}
-            <button style={styles.button} type="button" onClick={() => setCopyConfirming(false)} disabled={copying}>
-              Cancel
-            </button>
-          </span>
-        )}
-        <span style={styles.muted}>
-          <label htmlFor="walk-in-pct">Walk-up %</label>{" "}
-          <input
-            id="walk-in-pct"
-            type="number"
-            min={0}
-            max={100}
-            step={1}
-            style={styles.walkInInput}
-            value={walkInPctText}
-            disabled={data?.walkInPctPending}
-            title={data?.walkInPctPending ? "saves after a 1-minute database step" : undefined}
-            onChange={(e) => setWalkInPctText(e.target.value)}
-            onBlur={() => void handleSaveWalkInPct()}
-            onKeyDown={handleWalkInPctKeyDown}
-          />
-          {walkInPctStatus === "saving" && <span style={styles.saveStatus}>saving…</span>}
-          {walkInPctStatus === "saved" && <span style={{ ...styles.saveStatus, color: "#0a7d27" }}>saved</span>}
-          {walkInPctStatus === "error" && <span style={{ ...styles.saveStatus, color: "#b00020" }}>error</span>}
-          {data?.walkInPctPending && <span style={styles.saveStatus}>saves after a 1-minute database step</span>}
-        </span>
-        {showEmailSetupLink && (
-          <a href="#" style={styles.link} onClick={(e) => { e.preventDefault(); setShowEmailModal(true); }}>
-            Email-in setup
-          </a>
-        )}
+          {menuOpen && (
+            <div style={styles.menuPanel} role="menu">
+              <button style={styles.button} type="button" onClick={() => void loadRecommendation(session.accessToken)} disabled={loading}>
+                {loading ? "Refreshing…" : "Refresh"}
+              </button>
+              {uploadControl}
+              {!copyConfirming ? (
+                <button
+                  style={styles.button}
+                  type="button"
+                  onClick={() => setCopyConfirming(true)}
+                  disabled={!data || targetsPending}
+                >
+                  Copy recommended → Your target
+                </button>
+              ) : (
+                <span style={styles.muted}>
+                  Overwrite existing Your targets?{" "}
+                  <button style={styles.button} type="button" onClick={() => void handleCopyRecommended()} disabled={copying}>
+                    {copying ? "Copying…" : "Yes"}
+                  </button>{" "}
+                  <button style={styles.button} type="button" onClick={() => setCopyConfirming(false)} disabled={copying}>
+                    Cancel
+                  </button>
+                </span>
+              )}
+              <span style={styles.muted}>
+                <label htmlFor="walk-in-pct">Walk-up %</label>{" "}
+                <input
+                  id="walk-in-pct"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  style={styles.walkInInput}
+                  value={walkInPctText}
+                  disabled={data?.walkInPctPending}
+                  title={data?.walkInPctPending ? "saves after a 1-minute database step" : undefined}
+                  onChange={(e) => setWalkInPctText(e.target.value)}
+                  onBlur={() => void handleSaveWalkInPct()}
+                  onKeyDown={handleWalkInPctKeyDown}
+                />
+                {walkInPctStatus === "saving" && <span style={styles.saveStatus}>saving…</span>}
+                {walkInPctStatus === "saved" && <span style={{ ...styles.saveStatus, color: "#0a7d27" }}>saved</span>}
+                {walkInPctStatus === "error" && <span style={{ ...styles.saveStatus, color: "#b00020" }}>error</span>}
+                {data?.walkInPctPending && <span style={styles.saveStatus}>saves after a 1-minute database step</span>}
+              </span>
+              {showEmailSetupLink && (
+                <a href="#" style={styles.link} onClick={(e) => { e.preventDefault(); setShowEmailModal(true); setMenuOpen(false); }}>
+                  Email-in setup
+                </a>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {loadError && <p style={styles.error}>{loadError}</p>}
@@ -856,21 +951,19 @@ export default function OrderingPage() {
         </p>
       )}
 
-      {data && <p style={styles.muted}>{onHandStatusMessage(data.onHandLastReceivedAt)}</p>}
-      {data?.trendUnavailable && (
-        <p style={styles.muted}>Last-7-days-given trend data is unavailable right now — targets are using the scheduled estimate only.</p>
-      )}
+      {statusParts.length > 0 && <p style={styles.muted}>{statusParts.join(" · ")}</p>}
 
       <h2>To order</h2>
       {toOrderRows.length === 0 ? (
         <p style={styles.muted}>Nothing to order</p>
       ) : (
-        <table style={styles.table} className="to-order-table">
+        <table style={{ ...styles.table, marginTop: "0.5rem" }} className="to-order-table">
           <thead>
             <tr>
-              <th style={styles.th}>Product</th>
-              <th style={styles.th}>NDC</th>
-              <th style={styles.thRight}>Packages</th>
+              <th style={styles.toOrderTh}>Product</th>
+              <th style={styles.toOrderTh}>NDC</th>
+              <th style={styles.toOrderThRight}>Order qty</th>
+              <th style={styles.toOrderThRight}>BOH</th>
             </tr>
           </thead>
           <tbody>
@@ -888,14 +981,15 @@ export default function OrderingPage() {
                   onClick={canCopy ? () => void handleCopyOrderNdc(row) : undefined}
                   onKeyDown={canCopy ? (e) => handleToOrderRowKeyDown(e, row) : undefined}
                 >
-                  <td style={styles.td}>{row.displayName}</td>
-                  <td style={styles.td}>
+                  <td style={styles.toOrderTd}>{row.displayName}</td>
+                  <td style={styles.toOrderTd}>
                     {ndcText}
                     {canCopy && (isCopied ? <span style={{ ...styles.copiedFlag, marginLeft: "0.4rem" }}>Copied ✓</span> : <span style={{ ...styles.copyHint, marginLeft: "0.4rem" }}>Copy</span>)}
                   </td>
-                  <td style={styles.tdRight}>
+                  <td style={styles.toOrderTdRight}>
                     {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
                   </td>
+                  <td style={styles.toOrderTdRight}>{onHandDisplay(onHandByKey.get(row.key) ?? null)}</td>
                 </tr>
               );
             })}
@@ -903,6 +997,7 @@ export default function OrderingPage() {
         </table>
       )}
 
+      <h2 style={styles.sectionHeading}>All vaccines — on hand, schedule, last 7 days given</h2>
       <table style={styles.table}>
         <thead>
           <tr>
