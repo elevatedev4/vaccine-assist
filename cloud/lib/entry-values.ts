@@ -41,6 +41,10 @@ export type EntryValueRow = {
    * a single-dose product, e.g. 2 for Shingrix. Feeds
    * lib/entry-defaults.ts's defaultDirections. */
   doseCount: number;
+  /** The row's own short_code, verbatim — feeds
+   * lib/entry-defaults.ts's defaultQuantity (exact-then-base lookup),
+   * same as this file's own catalogType lookup above. */
+  shortCode: string | null;
   quantity: string | null;
   directions: string | null;
 };
@@ -80,6 +84,7 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
         sheetOrder: catalogEntry.sheetOrder,
         doseNumber: doseNumberOf(vaccine.dose),
         doseCount,
+        shortCode: vaccine.short_code,
         quantity: vaccine.quantity,
         directions: vaccine.directions,
       });

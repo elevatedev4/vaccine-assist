@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { buildEntryValueRows, type EntryValueRow, type EntryValueVaccine } from "@/lib/entry-values";
-import { planFillBlanksDirections } from "@/lib/entry-defaults";
+import { planFillDefaults, type FillDefaultsPatch } from "@/lib/entry-defaults";
 import { createDebouncedRunner, type DebouncedRunner } from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
@@ -27,10 +27,20 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  * Autosave (~500ms after the last keystroke, also flushed on blur) via
  * PATCH /api/vaccines/[id], reusing lib/lots-autosave.ts's
  * createDebouncedRunner (the same one /lots uses) — silent on success,
- * a red toast (app/error-toast.tsx) on failure. "Fill blanks with
- * defaults" applies lib/entry-defaults.ts's defaultDirections to every
- * row whose directions are currently blank, one PATCH per row, and
- * never touches a row that already has something on file.
+ * a red toast (app/error-toast.tsx) on failure.
+ *
+ * ROUND 2 (Will, verbatim, two messages): "the quantities are already
+ * in the software... use those" / "I want you to fill them in with the
+ * defaults, including the quantity." Two top-of-table buttons, both
+ * built on lib/entry-defaults.ts's pure planFillDefaults and both
+ * showing a "Filled N quantities, M directions" summary:
+ * - "Fill blanks": fills quantity and directions wherever either is
+ *   currently blank and a default exists. Never overwrites anything.
+ * - "Reset all directions to standard" (confirm via window.confirm,
+ *   since it's destructive to any custom directions): overwrites EVERY
+ *   row's directions with today's computed default. Quantity is
+ *   untouched by this button — there's no "reset" concept for it, only
+ *   fill-when-blank.
  */
 
 type RowDraft = { quantity: string; directions: string };
@@ -274,29 +284,38 @@ export default function EntryValuesPage() {
     lastSavedRef.current = { ...lastSavedRef.current, [id]: saved };
   }
 
-  /** "Fill blanks with defaults" (top-of-table button) — plans every
-   * blank-directions row via lib/entry-defaults.ts's pure
-   * planFillBlanksDirections, then PATCHes each one and updates local
-   * state so the inputs reflect it immediately. Never touches a row
-   * that already has non-blank directions. */
-  async function handleFillBlanks() {
+  /** Shared runner behind both top-of-table buttons — plans PATCHes via
+   * lib/entry-defaults.ts's pure planFillDefaults, then sends each one
+   * and updates local state so the inputs reflect it immediately.
+   * `overwriteDirections: false` ("Fill blanks") only ever fills a
+   * blank quantity/directions and never overwrites either.
+   * `overwriteDirections: true` ("Reset all directions to standard")
+   * additionally overwrites every row's directions with today's
+   * computed default — quantity is still only ever filled when blank,
+   * there's no "reset" concept for it. */
+  async function runFillDefaults(overwriteDirections: boolean) {
     if (!session) return;
     setFillMessage(null);
 
     const plannerRows = rows.map((row) => ({
       id: row.id,
+      shortCode: row.shortCode,
+      quantity: draftsRef.current[row.id]?.quantity ?? row.quantity,
       directions: draftsRef.current[row.id]?.directions ?? row.directions,
       doseNumber: row.doseNumber,
       doseCount: row.doseCount,
     }));
-    const patches = planFillBlanksDirections(plannerRows);
+    const patches = planFillDefaults(plannerRows, { overwriteDirections });
     if (patches.length === 0) {
-      setFillMessage("Nothing to fill — every row already has directions.");
+      setFillMessage(
+        overwriteDirections ? "Nothing to reset — every row already matches the standard directions." : "Nothing to fill — every row already has quantity and directions."
+      );
       return;
     }
 
     setFillingBlanks(true);
-    let succeeded = 0;
+    let quantitiesFilled = 0;
+    let directionsFilled = 0;
     try {
       for (const patch of patches) {
         // Cancel any pending per-row autosave first so it can't race
@@ -305,31 +324,59 @@ export default function EntryValuesPage() {
         const seq = (autosaveSeqRef.current[patch.id] ?? 0) + 1;
         autosaveSeqRef.current[patch.id] = seq;
 
+        const body: Record<string, string> = {};
+        if (patch.quantity !== undefined) body.quantity = patch.quantity;
+        if (patch.directions !== undefined) body.directions = patch.directions;
+
         try {
           const response = await fetch(`/api/vaccines/${patch.id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-            body: JSON.stringify({ directions: patch.directions }),
+            body: JSON.stringify(body),
           });
           const data = await response.json().catch(() => ({}));
           if (!response.ok) {
             const row = rowById.get(patch.id);
-            pushError(`Couldn't fill directions for ${row?.displayName ?? "a row"} — ${data.error ?? "Failed to save vaccine."}`);
+            pushError(`Couldn't fill defaults for ${row?.displayName ?? "a row"} — ${data.error ?? "Failed to save vaccine."}`);
             continue;
           }
-          succeeded += 1;
-          updateDraft(patch.id, { directions: patch.directions });
+          if (patch.quantity !== undefined) quantitiesFilled += 1;
+          if (patch.directions !== undefined) directionsFilled += 1;
+          updateDraftFromPatch(patch);
           const prevSaved = lastSavedRef.current[patch.id] ?? { quantity: "", directions: "" };
-          setLastSavedRefAndState(patch.id, { ...prevSaved, directions: patch.directions });
+          setLastSavedRefAndState(patch.id, {
+            quantity: patch.quantity ?? prevSaved.quantity,
+            directions: patch.directions ?? prevSaved.directions,
+          });
         } catch (err) {
           const row = rowById.get(patch.id);
-          pushError(`Couldn't fill directions for ${row?.displayName ?? "a row"} — ${err instanceof Error ? err.message : "Failed to save vaccine."}`);
+          pushError(`Couldn't fill defaults for ${row?.displayName ?? "a row"} — ${err instanceof Error ? err.message : "Failed to save vaccine."}`);
         }
       }
     } finally {
       setFillingBlanks(false);
-      if (succeeded > 0) setFillMessage(`Filled ${succeeded} direction${succeeded === 1 ? "" : "s"}.`);
+      if (quantitiesFilled > 0 || directionsFilled > 0) {
+        setFillMessage(`Filled ${quantitiesFilled} quantit${quantitiesFilled === 1 ? "y" : "ies"}, ${directionsFilled} direction${directionsFilled === 1 ? "" : "s"}.`);
+      }
     }
+  }
+
+  function updateDraftFromPatch(patch: FillDefaultsPatch) {
+    const draftPatch: Partial<RowDraft> = {};
+    if (patch.quantity !== undefined) draftPatch.quantity = patch.quantity;
+    if (patch.directions !== undefined) draftPatch.directions = patch.directions;
+    updateDraft(patch.id, draftPatch);
+  }
+
+  async function handleFillBlanks() {
+    await runFillDefaults(false);
+  }
+
+  async function handleResetDirections() {
+    if (!window.confirm("Reset EVERY row's directions to the standard text? This overwrites any custom directions already on file.")) {
+      return;
+    }
+    await runFillDefaults(true);
   }
 
   useEffect(() => {
@@ -422,7 +469,10 @@ export default function EntryValuesPage() {
         <>
           <p style={styles.toolbar}>
             <button type="button" style={styles.button} onClick={() => void handleFillBlanks()} disabled={fillingBlanks}>
-              {fillingBlanks ? "Filling…" : "Fill blanks with defaults"}
+              {fillingBlanks ? "Filling…" : "Fill blanks"}
+            </button>
+            <button type="button" style={styles.button} onClick={() => void handleResetDirections()} disabled={fillingBlanks}>
+              {fillingBlanks ? "Filling…" : "Reset all directions to standard"}
             </button>
             {fillMessage && <span style={styles.fillMessage}>{fillMessage}</span>}
           </p>
