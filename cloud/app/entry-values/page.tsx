@@ -5,7 +5,6 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { buildEntryValueRows, type EntryValueRow, type EntryValueVaccine } from "@/lib/entry-values";
 import { planFillBlanksDirections } from "@/lib/entry-defaults";
-import { macroProductColor } from "@/lib/macro-colors";
 import { createDebouncedRunner, type DebouncedRunner } from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
@@ -16,11 +15,14 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  * instructions, etc), so ... I likely need to have an editor in the
  * cloud app where I can specify all those items and then you can use
  * that for data entry instead of me having to type it in while data
- * entry is happening." One compact table — same look/order/colors as
+ * entry is happening." One compact table — same look/order as
  * /macro-codes' "All vaccines" section (lib/entry-values.ts's
  * buildEntryValueRows reuses lib/product-view.ts's buildProductViews
  * and lib/macro-catalog.ts, exactly like that page) — with editable
- * Quantity/Directions inputs instead of a copy button.
+ * Quantity/Directions inputs instead of a copy button. Plain rows, no
+ * per-product coloring (Will, round 2: colors "are hindering not
+ * helping") — a thin top border marks where the Type column's value
+ * changes from the row above, instead.
  *
  * Autosave (~500ms after the last keystroke, also flushed on blur) via
  * PATCH /api/vaccines/[id], reusing lib/lots-autosave.ts's
@@ -49,6 +51,9 @@ const styles = {
   type: { fontWeight: 600 },
   quantityInput: { width: "8ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
   directionsInput: { width: "100%", minWidth: "22ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
+  /** Marks a new Type group — the first row of the table never gets it
+   * (no border floating above the header). */
+  typeGroupStart: { borderTop: "2px solid #ddd" },
   dot: {
     display: "inline-block",
     width: "9px",
@@ -352,18 +357,18 @@ export default function EntryValuesPage() {
     );
   }
 
-  function renderRow(row: EntryValueRow) {
-    const color = macroProductColor(row.productKey);
+  function renderRow(row: EntryValueRow, isTypeGroupStart: boolean) {
     const draft = drafts[row.id] ?? { quantity: "", directions: "" };
     const quantityBlank = isBlank(draft.quantity);
     const complete = !quantityBlank && !isBlank(draft.directions);
+    const groupBorder = isTypeGroupStart ? styles.typeGroupStart : undefined;
 
     return (
-      <tr key={row.id} style={{ background: color.background }}>
-        <td style={{ ...styles.td, ...styles.type, color: color.text }}>{row.catalogType}</td>
-        <td style={styles.td}>{row.displayName}</td>
-        <td style={styles.td}>Dose {row.doseNumber}</td>
-        <td style={{ ...styles.td, background: quantityBlank ? BLANK_QUANTITY_HIGHLIGHT : undefined }}>
+      <tr key={row.id}>
+        <td style={{ ...styles.td, ...styles.type, ...groupBorder }}>{row.catalogType}</td>
+        <td style={{ ...styles.td, ...groupBorder }}>{row.displayName}</td>
+        <td style={{ ...styles.td, ...groupBorder }}>Dose {row.doseNumber}</td>
+        <td style={{ ...styles.td, ...groupBorder, background: quantityBlank ? BLANK_QUANTITY_HIGHLIGHT : undefined }}>
           <input
             type="text"
             aria-label={`${row.displayName} dose ${row.doseNumber} quantity`}
@@ -376,7 +381,7 @@ export default function EntryValuesPage() {
             onBlur={() => flushAutosaveNow(row.id)}
           />
         </td>
-        <td style={styles.td}>
+        <td style={{ ...styles.td, ...groupBorder }}>
           <input
             type="text"
             aria-label={`${row.displayName} dose ${row.doseNumber} directions`}
@@ -389,7 +394,7 @@ export default function EntryValuesPage() {
             onBlur={() => flushAutosaveNow(row.id)}
           />
         </td>
-        <td style={styles.td}>
+        <td style={{ ...styles.td, ...groupBorder }}>
           <span
             style={{ ...styles.dot, background: complete ? "#16a34a" : "#c9c9c9" }}
             title={complete ? "Quantity and directions on file" : "Missing quantity or directions"}
@@ -433,7 +438,9 @@ export default function EntryValuesPage() {
                 <th style={styles.th}></th>
               </tr>
             </thead>
-            <tbody>{rows.map((row) => renderRow(row))}</tbody>
+            <tbody>
+              {rows.map((row, index) => renderRow(row, index > 0 && rows[index - 1].catalogType !== row.catalogType))}
+            </tbody>
           </table>
         </>
       )}
