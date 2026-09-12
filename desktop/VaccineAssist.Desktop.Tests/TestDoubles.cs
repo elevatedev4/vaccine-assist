@@ -141,6 +141,25 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     public Physician? ResolvePhysicianResult { get; set; } = new() { Id = Guid.NewGuid(), DisplayName = "Rivera, Ana", AlternateId = "ALTTEST" };
     public int ResolvePhysicianCallCount { get; private set; }
 
+    /// <summary>V-..., 2026-09-11 (reviewer request-changes round): set to
+    /// make the very NEXT ResolvePhysicianAsync call fail with this
+    /// exception — consumed (reset to null) the moment it's used, same
+    /// "one-shot then normal" pattern as DelayNextGetLotsCall. Used by
+    /// DataEntryPopupViewModelPrefetchCacheTests to prove a transient
+    /// prefetch failure doesn't get cached forever
+    /// (EnsurePioneerEntryPrefetchStarted must restart on a faulted cached
+    /// task, and EnterIntoPioneerAsync's catch must clear the cache
+    /// outright). Deliberately throws from behind an `await Task.Yield()`
+    /// rather than synchronously — a real ResolvePhysicianAsync network
+    /// call would still be PENDING at the moment
+    /// BuildLivePayloadAsync's own defensive EnsurePioneerEntryPrefetchStarted
+    /// call re-checks it (moments after EnterIntoPioneerAsync's own call
+    /// started it), not already faulted; throwing synchronously here would
+    /// let that defensive re-check see IsFaulted immediately and restart
+    /// (and succeed) within the SAME click, which is a real, better
+    /// outcome in production but not what this test is isolating.</summary>
+    public Exception? ResolvePhysicianException { get; set; }
+
     public Task<IReadOnlyList<Vaccine>> GetVaccinesAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Vaccine>>(Vaccines);
 
@@ -187,6 +206,15 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     /// used, so only the one targeted call is delayed.</summary>
     public TaskCompletionSource<bool>? DelayNextGetLotsCall { get; set; }
 
+    /// <summary>V-..., 2026-09-11: counts every GetLotsAsync call (any
+    /// vaccineId/status) — used by DataEntryPopupViewModelPrefetchCacheTests.cs
+    /// to prove EnsurePioneerEntryPrefetchStarted's cached lot-lookup Task
+    /// is actually REUSED between EnterIntoPioneerAsync's own "start the
+    /// prefetch" call and BuildLivePayloadAsync's later "ensure it's
+    /// running" call, rather than firing a second, redundant network round
+    /// trip.</summary>
+    public int GetLotsCallCount { get; private set; }
+
     /// <summary>vaccineId == null means "every lot across every vaccine"
     /// (MSG893 item 4: LotsViewModel.LoadAsync's unfiltered call) — a real
     /// status filter is applied here too now (previously ignored), which
@@ -194,6 +222,8 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     /// defaults to Status="active" already.</summary>
     public async Task<IReadOnlyList<Lot>> GetLotsAsync(Guid? vaccineId = null, string? status = null, CancellationToken cancellationToken = default)
     {
+        GetLotsCallCount++;
+
         // Snapshot BEFORE any gating delay — a genuinely stale/slow
         // response reflects the data as it was AT CALL TIME, not
         // whatever it's since become while this call sat suspended.
@@ -337,10 +367,19 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         return Task.CompletedTask;
     }
 
-    public Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default)
+    public async Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default)
     {
         ResolvePhysicianCallCount++;
-        return Task.FromResult(ResolvePhysicianResult);
+
+        var exception = ResolvePhysicianException;
+        if (exception is not null)
+        {
+            ResolvePhysicianException = null; // consumed once — see this property's own doc comment
+            await Task.Yield(); // stay Pending until awaited, not already Faulted the instant this call returns
+            throw exception;
+        }
+
+        return ResolvePhysicianResult;
     }
 }
 

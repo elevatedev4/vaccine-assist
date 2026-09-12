@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Input;
@@ -96,6 +97,42 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// instead of overwriting whatever a newer lookup already found.
     /// </summary>
     private int _lotRefreshToken;
+
+    /// <summary>
+    /// V-..., 2026-09-11 ("Start faster" — Will's feedback: "huge delay
+    /// between me pushing 'enter into pioneer' and anything happening"):
+    /// (vaccine id, age) key for the cached ResolvePhysicianAsync/active-lot
+    /// lookups below — EnsurePioneerEntryPrefetchStarted only starts fresh
+    /// tasks when this doesn't match the CURRENT selection, so a re-check
+    /// (e.g. EnterIntoPioneerAsync's own defensive call right before it
+    /// needs the result) is a cache hit, not a second round trip. Null
+    /// until the first prefetch starts.
+    /// </summary>
+    private (Guid VaccineId, int AgeYears)? _pioneerEntryPrefetchKey;
+
+    /// <summary>
+    /// Cached ResolvePhysicianAsync task for _pioneerEntryPrefetchKey.
+    /// DELIBERATELY NOT started from the SelectedVaccine/PatientAgeYears
+    /// setters (i.e. NOT as early as the Review stage, despite Will's brief
+    /// suggesting exactly that as the "better" option) — PhysicianResolutionGateTests.
+    /// CopyToClipboardDoesNotRequireAResolvedPhysician asserts
+    /// ResolvePhysicianCallCount stays 0 for a clipboard-only session with
+    /// no Physicians rule configured (BuildPayloadAsync's own doc comment:
+    /// "staff without a Physicians rule set up yet must still be able to
+    /// fall back to copy/paste"). Prefetching on selection would call
+    /// ResolvePhysicianAsync for EVERY selection regardless of which button
+    /// staff eventually press, breaking that isolation. Instead started
+    /// from EnterIntoPioneerAsync itself, right after its guard clauses —
+    /// still well before BuildLivePayloadAsync's own await, so it runs
+    /// CONCURRENTLY with the "Update current lots to this lot"/VAR-confirm
+    /// work that can precede it (including a modal await for the
+    /// pharmacist's confirmation) instead of only starting after all of
+    /// that finishes.
+    /// </summary>
+    private Task<Physician?>? _prefetchedPhysicianTask;
+
+    /// <summary>Cached active-lot lookup (same filter BuildPayloadAsync always used: unexpired and not past its beyond-use date) for _pioneerEntryPrefetchKey — see _prefetchedPhysicianTask's doc comment; the two run concurrently via Task.WhenAll in BuildLivePayloadAsync instead of one after the other.</summary>
+    private Task<Lot?>? _prefetchedLotTask;
 
     /// <summary>Every active vaccine eligible for the age entered on the Age
     /// step (GetEligibleVaccinesForAgeAsync's result) — the pool SelectGroup/
@@ -752,6 +789,18 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     {
         var token = ++_lotRefreshToken;
 
+        // V-..., 2026-09-11: this is the one choke point every lot change
+        // (a fresh SelectedVaccine, or AddLotAsync/ApplyUpdateCurrentLotToThisAsync
+        // adding/replacing a lot for the CURRENT vaccine) already runs
+        // through, so it's also where the physician+lot prefetch cache
+        // (EnsurePioneerEntryPrefetchStarted) gets invalidated — a stale
+        // cached lot lookup from before this refresh must never win over
+        // whatever the lot status actually is now. Runs synchronously
+        // (before this method's first await), so a caller that immediately
+        // re-starts the prefetch right after (SelectedVaccine's setter)
+        // sees the invalidated key, not a stale one.
+        _pioneerEntryPrefetchKey = null;
+
         if (SelectedVaccine is null)
         {
             SelectedVaccineActiveLot = null;
@@ -840,6 +889,107 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Starts (or reuses) the physician-resolution + active-lot lookups a
+    /// live "Enter into Pioneer" run needs, running them CONCURRENTLY
+    /// rather than one after the other — V-..., 2026-09-11 ("Start faster":
+    /// Will's brief asked for BuildLivePayloadAsync's two independent
+    /// awaits to run in parallel).
+    ///
+    /// Called from EnterIntoPioneerAsync itself, right after its guard
+    /// clauses (deliberately NOT from the SelectedVaccine/PatientAgeYears
+    /// setters — see _prefetchedPhysicianTask's own doc comment for why
+    /// that "prefetch at Review stage" version of this would call
+    /// ResolvePhysicianAsync for every selection, including a
+    /// clipboard-only session that must never require one) — so the two
+    /// lookups run WHILE "Update current lots to this lot"/the VAR-confirm
+    /// modal (both of which can precede BuildLivePayloadAsync and the
+    /// VAR-confirm modal specifically waits on the pharmacist) are still in
+    /// flight, rather than only starting once BuildLivePayloadAsync itself
+    /// runs. Called again, defensively, from BuildLivePayloadAsync right
+    /// before it needs the results — a cache hit there is instant; a cache
+    /// miss (e.g. a lot just changed and RefreshSelectedVaccineActiveLotAsync
+    /// invalidated the key) just starts the lookups a little late, same as
+    /// the old sequential code always did.
+    ///
+    /// Keyed by (vaccine id, age) so re-selecting a DIFFERENT vaccine/dose,
+    /// or changing the age, invalidates the cache and starts fresh lookups
+    /// instead of awaiting stale ones for the wrong vaccine.
+    /// </summary>
+    private void EnsurePioneerEntryPrefetchStarted()
+    {
+        if (SelectedVaccine is null || PatientAgeYears is not int age) return;
+
+        var key = (VaccineId: SelectedVaccine.Id, AgeYears: age);
+        // Written out as .HasValue/.Value.Field comparisons (rather than
+        // `_pioneerEntryPrefetchKey == key`, comparing a nullable tuple
+        // against a plain one) purely to keep this reviewer-verifiable by
+        // reading alone, with no compiler on hand for this change.
+        //
+        // REVIEWER FIX (request-changes round, 2026-09-11): a cache "hit"
+        // used to mean only "the key matches and both task fields are
+        // non-null" — a FAULTED or CANCELED task is still non-null, so a
+        // transient API failure (network blip, timeout) got cached
+        // FOREVER: every later click for the same vaccine/age replayed the
+        // same already-failed Task instead of ever retrying, until the
+        // user reselected the vaccine. IsFaulted/IsCanceled on EITHER task
+        // now counts as a miss, same as the key not matching at all.
+        var sameSelection = _pioneerEntryPrefetchKey.HasValue
+            && _pioneerEntryPrefetchKey.Value.VaccineId == key.VaccineId
+            && _pioneerEntryPrefetchKey.Value.AgeYears == key.AgeYears;
+        var cachedTasksAreUsable = _prefetchedPhysicianTask is not null && _prefetchedLotTask is not null
+            && !_prefetchedPhysicianTask.IsFaulted && !_prefetchedPhysicianTask.IsCanceled
+            && !_prefetchedLotTask.IsFaulted && !_prefetchedLotTask.IsCanceled;
+
+        if (sameSelection && cachedTasksAreUsable)
+        {
+            return; // already running (or finished successfully) for this exact selection
+        }
+
+        _pioneerEntryPrefetchKey = key;
+        var vaccine = SelectedVaccine;
+        _prefetchedPhysicianTask = _apiService.ResolvePhysicianAsync(vaccine.Id, age);
+        _prefetchedLotTask = FindActiveLotForVaccineAsync(vaccine, l => !l.IsExpired && !l.IsPastBeyondUseDate);
+    }
+
+    /// <summary>
+    /// REVIEWER FIX (request-changes round, 2026-09-11): clears the
+    /// physician+lot prefetch cache outright — called from
+    /// EnterIntoPioneerAsync's catch block (and any early-return failure
+    /// path once BuildLivePayloadAsync has awaited the cached tasks) so a
+    /// transient failure never lingers as a cached, reusable-looking
+    /// result. EnsurePioneerEntryPrefetchStarted's own IsFaulted/IsCanceled
+    /// check already covers "the click starts a prefetch that itself
+    /// faults" — this covers the OTHER failure shapes that don't leave a
+    /// faulted Task behind at all (BuildLivePayloadAsync's own "no
+    /// physician configured"/"no unexpired lot" guard clauses, which
+    /// return null after a SUCCESSFULLY completed WhenAll — nothing about
+    /// the cached tasks themselves is wrong, but the vaccine's situation
+    /// might change by the next click, e.g. staff adds a lot or configures
+    /// a physician rule, and RefreshSelectedVaccineActiveLotAsync only
+    /// invalidates on a LOT change, not a physician-rule change made
+    /// outside this popup). Safe to call even when nothing was ever
+    /// prefetched (all three fields already null/default).
+    /// </summary>
+    private void ClearPioneerEntryPrefetchCache()
+    {
+        _pioneerEntryPrefetchKey = null;
+        _prefetchedPhysicianTask = null;
+        _prefetchedLotTask = null;
+    }
+
+    /// <summary>Shared per-step log sink — StepLog (the on-screen list) plus
+    /// AppFileLog (so "Copy logs" still has it after StepLog.Clear() — see
+    /// CopyLogsCommand's doc comment). Extracted from EnterIntoPioneerAsync's
+    /// old inline closure so BuildLivePayloadAsync's own prefetch-timing
+    /// line (V-..., 2026-09-11 "show where time goes") can log through the
+    /// same sink before PioneerEntryStepContext even exists.</summary>
+    private void LogStepMessage(string message)
+    {
+        StepLog.Add(message);
+        AppFileLog.Log($"[DataEntry] {message}");
     }
 
     private async Task AddLotAsync()
@@ -947,11 +1097,32 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         if (!Gate.CanEnterIntoPioneer || SelectedVaccine is null) return;
         if (IsLotExpiredOrMissing && !SkipLotAndExpiration && !CanUpdateCurrentLotToThis) return;
 
+        // V-..., 2026-09-11 ("Show where time goes" — Will: "huge delay
+        // between me pushing 'enter into pioneer' and anything happening"):
+        // measures from the click itself to the moment PioneerEntrySequenceRunner
+        // actually starts, so the step log can show how much of that delay
+        // was VM-side prep (VAR-update/lot work, physician+lot prefetch)
+        // versus the sequence's own per-step timing below it.
+        var clickToSequenceStartStopwatch = Stopwatch.StartNew();
+
         IsBusy = true;
         ErrorMessage = null;
         StepLog.Clear();
         try
         {
+            // V-..., 2026-09-11 ("start faster"): fires the physician+lot
+            // lookups NOW, right at the click, so they run CONCURRENTLY
+            // with the "Update current lots to this lot"/VAR-confirm work
+            // right below (the VAR-confirm modal specifically waits on the
+            // pharmacist) instead of only starting once BuildLivePayloadAsync
+            // itself runs — see EnsurePioneerEntryPrefetchStarted's own doc
+            // comment for why this isn't started any earlier (at vaccine
+            // selection/Review stage). Inside the try block (not before
+            // IsBusy is set) so a synchronous failure here still resets
+            // IsBusy/reports through this method's existing catch, same as
+            // every other failure path below.
+            EnsurePioneerEntryPrefetchStarted();
+
             // V-T21 item 5: "Update current lots to this lot" is applied
             // FIRST, before anything else — once this succeeds,
             // SelectedVaccineActiveLot reflects the fresh lot, so the VAR
@@ -982,14 +1153,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             if (payload is null) return; // BuildLivePayloadAsync already set ErrorMessage
 
             var vaccineId = SelectedVaccine.Id;
-            var context = new PioneerEntryStepContext(payload, IsDryRun, message =>
-            {
-                StepLog.Add(message);
-                // Also persisted to the file log (see AppFileLog) so "Copy
-                // logs" can still grab this after StepLog.Clear() wipes
-                // the on-screen list — see CopyLogsCommand's doc comment.
-                AppFileLog.Log($"[DataEntry] {message}");
-            })
+            var context = new PioneerEntryStepContext(payload, IsDryRun, LogStepMessage)
             {
                 // V-..., 2026-09-10: forwards the View's blank-value prompt
                 // (RequestTextPromptRequested) and closes the "save it back"
@@ -999,6 +1163,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
                 SaveQuantityAsync = quantity => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineQuantityAsync(vaccineId, quantity)),
                 SaveDirectionsAsync = directions => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineDirectionsAsync(vaccineId, directions)),
             };
+            LogStepMessage($"[Prep] sequence started {clickToSequenceStartStopwatch.ElapsedMilliseconds}ms after click.");
             var result = await PioneerEntrySequenceRunner.RunAsync(_sequence, context);
 
             StatusMessage = result.Success
@@ -1008,6 +1173,18 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         catch (Exception ex)
         {
             ErrorMessage = $"Couldn't run the entry sequence: {ex.Message}";
+            // REVIEWER FIX (request-changes round, 2026-09-11): an
+            // exception here most often means the CACHED prefetch task
+            // itself faulted (e.g. Task.WhenAll rethrowing a transient
+            // ResolvePhysicianAsync/GetLotsAsync failure) — clearing the
+            // cache guarantees the NEXT "Enter into Pioneer" click starts a
+            // genuinely fresh lookup instead of EnsurePioneerEntryPrefetchStarted's
+            // own IsFaulted check being the only thing standing between a
+            // transient blip and a permanently-stuck cached failure. Safe
+            // even when the exception had nothing to do with the prefetch
+            // at all (e.g. PioneerEntrySequenceRunner itself threw) — this
+            // just costs one extra lookup on the next click in that case.
+            ClearPioneerEntryPrefetchCache();
         }
         finally
         {
@@ -1133,7 +1310,18 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// BuildLivePayloadAsync for the physician-resolving payload
     /// EnterIntoPioneerAsync actually uses.
     /// </summary>
-    private async Task<VaccineEntryPayload?> BuildPayloadAsync()
+    /// <param name="prefetchedLotTask">
+    /// V-..., 2026-09-11 ("start faster"): BuildLivePayloadAsync passes its
+    /// already-running EnsurePioneerEntryPrefetchStarted lot lookup here
+    /// instead of letting this method start a SECOND, redundant one — the
+    /// lot-decision logic below (found lot wins; else SkipLotAndExpiration;
+    /// else block) stays the single source of truth either way. Null (the
+    /// default) means "no prefetch available" — CopyToClipboardAsync (which
+    /// never resolves a physician and so never prefetches, see this
+    /// method's own doc comment) still gets a fresh lookup exactly as
+    /// before this change.
+    /// </param>
+    private async Task<VaccineEntryPayload?> BuildPayloadAsync(Task<Lot?>? prefetchedLotTask = null)
     {
         if (SelectedVaccine is null)
         {
@@ -1148,7 +1336,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         // lookup RefreshSelectedVaccineActiveLotAsync uses (see
         // FindActiveLotForVaccineAsync's doc comment) so a live entry
         // can't disagree with what the popup's own gate just showed.
-        var lot = await FindActiveLotForVaccineAsync(SelectedVaccine, l => !l.IsExpired && !l.IsPastBeyondUseDate);
+        var lot = await (prefetchedLotTask ?? FindActiveLotForVaccineAsync(SelectedVaccine, l => !l.IsExpired && !l.IsPastBeyondUseDate));
 
         if (lot is not null)
         {
@@ -1169,17 +1357,30 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     /// <summary>
     /// PHYSICIAN RESOLUTION (Will, 2026-09-05): the payload actually used
     /// for a live/dry-run PioneerRx entry sequence — BuildPayloadAsync
-    /// (vaccine + lot only) PLUS a resolved protocol physician, fresh
-    /// every time from the CURRENT vaccine + age via ResolvePhysicianAsync
-    /// (never cached on the view-model). No matching rule BLOCKS entry
-    /// entirely (returns null, same "never build an unsafe payload"
-    /// posture BuildPayloadAsync already uses for a missing lot) with a
-    /// message pointing staff at the Physicians settings tab, rather than
-    /// typing an empty/wrong alternate ID into a real patient's PioneerRx
-    /// record. Physician is resolved BEFORE the lot lookup so a missing
-    /// rule is reported first — it's the more likely one-time setup gap,
-    /// while a missing lot already has its own dedicated gate/add-lot flow
-    /// the popup surfaces separately.
+    /// (vaccine + lot only) PLUS a resolved protocol physician for the
+    /// CURRENT vaccine + age. No matching rule BLOCKS entry entirely
+    /// (returns null, same "never build an unsafe payload" posture
+    /// BuildPayloadAsync already uses for a missing lot) with a message
+    /// pointing staff at the Physicians settings tab, rather than typing an
+    /// empty/wrong alternate ID into a real patient's PioneerRx record.
+    /// Physician is checked BEFORE the lot result so a missing rule is
+    /// reported first — it's the more likely one-time setup gap, while a
+    /// missing lot already has its own dedicated gate/add-lot flow the
+    /// popup surfaces separately.
+    ///
+    /// V-..., 2026-09-11 ("start faster" — Will: "huge delay between me
+    /// pushing 'enter into pioneer' and anything happening"): the physician
+    /// resolution and lot lookup used to run SEQUENTIALLY, one full round
+    /// trip after the other. Both are now started as early as
+    /// EnterIntoPioneerAsync's own click handler (see
+    /// EnsurePioneerEntryPrefetchStarted's doc comment) — normally well
+    /// before this method runs, since "Update current lots to this lot"/the
+    /// VAR-confirm modal can sit in between — and awaited here TOGETHER via
+    /// Task.WhenAll, so the wall-clock cost from THIS point on is whichever
+    /// of the two is still-slower to finish, not their sum. The
+    /// EnsurePioneerEntryPrefetchStarted call right below is a safety net
+    /// for any path that reaches here with no prefetch already running (see
+    /// that method's own doc comment), not the normal case.
     /// </summary>
     private async Task<VaccineEntryPayload?> BuildLivePayloadAsync()
     {
@@ -1195,16 +1396,41 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             return null;
         }
 
-        var physician = await _apiService.ResolvePhysicianAsync(SelectedVaccine.Id, age);
+        EnsurePioneerEntryPrefetchStarted();
+        var physicianTask = _prefetchedPhysicianTask!;
+        var lotTask = _prefetchedLotTask!;
+
+        var prefetchStopwatch = Stopwatch.StartNew();
+        await Task.WhenAll(physicianTask, lotTask);
+        LogStepMessage($"[Prep] prefetch physician+lots took {prefetchStopwatch.ElapsedMilliseconds}ms.");
+
+        var physician = physicianTask.Result;
         if (physician is null)
         {
             ErrorMessage = $"No protocol physician configured for {SelectedVaccine.Name} at age {age} — " +
                 "add one (or a matching rule) in the Physicians settings tab, then try again.";
+            // REVIEWER FIX (request-changes round, 2026-09-11): this is a
+            // SUCCESSFULLY completed task that just resolved to "no
+            // physician" — EnsurePioneerEntryPrefetchStarted's own
+            // IsFaulted/IsCanceled check would never catch this shape, so a
+            // later click (after staff configures a Physicians rule,
+            // outside this popup, with no reselect in between) would
+            // otherwise keep reusing this same stale "no physician"
+            // result forever.
+            ClearPioneerEntryPrefetchCache();
             return null;
         }
 
-        var payload = await BuildPayloadAsync();
-        if (payload is null) return null; // BuildPayloadAsync already set ErrorMessage (lot issue)
+        var payload = await BuildPayloadAsync(lotTask);
+        if (payload is null)
+        {
+            // Same reasoning as the physician branch above — BuildPayloadAsync
+            // already set ErrorMessage (lot issue); this just makes sure a
+            // later click doesn't keep replaying this same resolved-to-null
+            // lot lookup.
+            ClearPioneerEntryPrefetchCache();
+            return null;
+        }
 
         return payload with { PhysicianAlternateId = physician.AlternateId };
     }

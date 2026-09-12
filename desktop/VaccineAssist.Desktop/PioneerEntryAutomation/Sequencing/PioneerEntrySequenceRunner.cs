@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -36,6 +37,7 @@ public static class PioneerEntrySequenceRunner
 
             context.Log($"[{step.Name}] starting{(context.DryRun ? " (dry run)" : "")}...");
 
+            var stepStopwatch = Stopwatch.StartNew();
             PioneerEntryStepResult result;
             try
             {
@@ -46,8 +48,23 @@ public static class PioneerEntrySequenceRunner
                 result = new PioneerEntryStepResult(step.Name, Success: false, context.DryRun, $"Unexpected error: {ex.Message}");
             }
 
+            // V-..., 2026-09-11 ("Show where time goes" — Will's feedback
+            // that the delay between steps felt bigger than it should):
+            // every OK line now carries how long the step actually took,
+            // UNLESS the step's own message already reports timing itself
+            // (e.g. QuickSearchFieldEntry.WaitForFieldCoreAsync's "waited
+            // Nms for 'x' to appear") — appending a second, redundant
+            // elapsed figure there would just be noise. FAILED lines are
+            // left as-is; a failure's own message (field-not-found dumps,
+            // stalled-retry summaries, etc.) already names what happened,
+            // and the log line right above already shows how long the
+            // failing attempt ran before this line prints.
+            var okMessage = result.Success && !result.Message.Contains("(took ", StringComparison.OrdinalIgnoreCase)
+                ? $"{result.Message} (took {stepStopwatch.ElapsedMilliseconds}ms)"
+                : result.Message;
+
             context.Log(result.Success
-                ? $"[{result.StepName}] OK — {result.Message}"
+                ? $"[{result.StepName}] OK — {okMessage}"
                 : $"[{result.StepName}] FAILED — {result.Message}");
 
             results.Add(result);

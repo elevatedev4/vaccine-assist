@@ -85,6 +85,16 @@ public sealed class InputQuantityStep : IPioneerEntryStep
                 "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
+        // V-..., 2026-09-11: same "wait for found AND enabled before the
+        // one-shot lookup" hardening SelectPrescriberStep/InputVaccineCodeStep/
+        // InputLotAndExpirationStep already got — this step used to do a
+        // one-shot TypeAndConfirmAsync lookup straight away, which is
+        // exactly the shape that failed for the prescriber field (see
+        // QuickSearchFieldEntry.WaitForFieldAsync's own doc comment).
+        await QuickSearchFieldEntry.WaitForFieldAsync(
+            context.AttachedWindow, QuantityAutomationId, QuickSearchFieldEntry.DefaultFieldWaitTimeout,
+            context.Log, cancellationToken);
+
         var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
             context.AttachedWindow, QuantityAutomationId, "quantity", quantityText, enterPresses: 0,
             log: context.Log, cancellationToken: cancellationToken);

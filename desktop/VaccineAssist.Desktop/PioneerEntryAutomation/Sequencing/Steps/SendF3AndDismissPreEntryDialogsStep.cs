@@ -153,6 +153,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         // giving up; a non-recoverable exception still fails immediately,
         // unchanged from before.
         var f3Stopwatch = Stopwatch.StartNew();
+        var f3RetryAttempt = 0;
         try
         {
             await AutoWatchRetry.RunAsync(
@@ -166,8 +167,15 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 now: () => DateTime.UtcNow,
                 onRecoverableWait: async (ex, elapsed) =>
                 {
-                    context.Log($"[{Name}] Still waiting to send F3 to the Rx Profile window after " +
-                        $"{elapsed.TotalSeconds:0.0}s — {ex.GetType().Name}: {ex.Message}. PioneerRx may be busy; retrying...");
+                    // V-..., 2026-09-11: throttled per
+                    // AutoWatchRetry.ShouldLogRetry's own doc comment — same
+                    // "still waiting" spam fix as QuickSearchFieldEntry.TypeAndConfirmAsync.
+                    f3RetryAttempt++;
+                    if (AutoWatchRetry.ShouldLogRetry(f3RetryAttempt))
+                    {
+                        context.Log($"[{Name}] Still waiting to send F3 to the Rx Profile window after " +
+                            $"{elapsed.TotalSeconds:0.0}s — {ex.GetType().Name}: {ex.Message}. PioneerRx may be busy; retrying...");
+                    }
                     await WaitTick();
                 },
                 cancellationToken: cancellationToken);

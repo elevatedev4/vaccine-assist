@@ -57,6 +57,27 @@ public static class AutoWatchRetry
     public static TimeSpan DefaultOverallBudget = TimeSpan.FromSeconds(60);
 
     /// <summary>
+    /// V-..., 2026-09-11 (Will's feedback, verbatim: "There is a huge delay
+    /// between me pushing 'enter into pioneer' and anything happening...
+    /// there shouldn't be big delays between all the steps"): the actual
+    /// delay he saw was mostly the "Still waiting to enter the X ... after
+    /// Ns — retrying" log line spamming StepLog once per ~200ms tick for
+    /// the whole retry window (8.8s of prescriber-field waiting logged ~44
+    /// lines) — same information as one line per second would carry, just
+    /// noisier. Every caller of AutoWatchRetry.RunAsync's onRecoverableWait
+    /// (QuickSearchFieldEntry.TypeAndConfirmAsync,
+    /// SendF3AndDismissPreEntryDialogsStep's F3 send) tracks its OWN 1-based
+    /// attempt counter across calls and only actually logs when this
+    /// returns true — the FIRST attempt (so staff sees the wait start right
+    /// away) and every 5th one after that (at the ~200ms poll interval
+    /// those two callers use, 5 ticks is ~1s — Will's own "less than 2
+    /// seconds" expectation for a popup, roughly). PURE (attempt count
+    /// only, no clock of its own) so it's directly unit-testable — see
+    /// AutoWatchRetryTests.cs.
+    /// </summary>
+    public static bool ShouldLogRetry(int attempt) => attempt <= 1 || attempt % 5 == 0;
+
+    /// <summary>
     /// Runs `attempt`, retrying it for as long as it keeps failing with a
     /// recoverable exception (see class doc) and the wall-clock elapsed
     /// since the first attempt (per `now`) is still under `overallBudget`.
