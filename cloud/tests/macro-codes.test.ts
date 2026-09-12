@@ -431,6 +431,24 @@ describe("groupMacroRowsBySection", () => {
       expect(product.doses.map((d) => d.label)).toEqual(["Shingrix 1 · 50+ (19+ IC)", "Shingrix 2 · 50+ (19+ IC)"]);
     });
 
+    it("Shingrix regression: two doses split into separate ProductViews upstream still number 1/2, not two identical buttons", () => {
+      // Reproduces the live bug: upstream product grouping (keyed by the
+      // raw vaccine row's NDC) put Shingrix's two dose rows into TWO
+      // separate ProductViews instead of one product with two doses.
+      const products: ProductView[] = [
+        view({ productKey: "ndc:shingrix-dose1", displayName: "Shingrix", vaccineIds: ["s1"] }),
+        view({ productKey: "ndc:shingrix-dose2", displayName: "Shingrix", vaccineIds: ["s2"] }),
+      ];
+      const vaccines: MacroRowVaccine[] = [
+        vaccine({ id: "s1", name: "Shingrix", dose: "1", short_code: "shingrix1" }),
+        vaccine({ id: "s2", name: "Shingrix", dose: "2", short_code: "shingrix2" }),
+      ];
+      const rows = buildMacroRows(products, vaccines, {});
+
+      const product = groupMacroRowsBySection(rows).find((s) => s.section === "Shingles")!.products[0];
+      expect(product.doses.map((d) => d.label)).toEqual(["Shingrix 1 · 50+ (19+ IC)", "Shingrix 2 · 50+ (19+ IC)"]);
+    });
+
     it("a product with no short code gets its plain display name as the (unclickable) label", () => {
       const products: ProductView[] = [view({ productKey: "name:mystery", displayName: "Mystery Vaccine", vaccineIds: ["m1"] })];
       const vaccines: MacroRowVaccine[] = [vaccine({ id: "m1", name: "Mystery Vaccine", short_code: "" })];
