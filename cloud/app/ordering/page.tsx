@@ -10,6 +10,7 @@ import { deriveProductViewFields } from "@/lib/product-view";
 import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
+import { buildToOrderRows } from "@/lib/ordering-to-order";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -126,6 +127,13 @@ const styles = {
   walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   saveStatus: { fontSize: "0.7rem", marginLeft: "0.35rem" },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
+  // To-order table (V-T-ordering-unify, Will 2026-09-11): compact,
+  // same look as the main table — the row itself is the "Copy NDC"
+  // control (macro-codes'-page row-click-copy pattern), so its cells
+  // stay plain styles.td/tdRight and the click affordance lives in the
+  // .to-order-row <style> rule below.
+  copyHint: { color: "#888", fontWeight: 400 as const },
+  copiedFlag: { color: "#1a7f37", fontWeight: 600 },
   modalOverlay: {
     position: "fixed" as const,
     inset: 0,
@@ -343,6 +351,11 @@ export default function OrderingPage() {
   const [copyResult, setCopyResult] = useState<{ count: number } | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
 
+  // To-order table (V-T-ordering-unify, Will 2026-09-11): which row's
+  // NDC was just copied, for the 1.5s "Copied ✓" flash — same pattern
+  // as app/macro-codes/page.tsx's copiedKey.
+  const [copiedNdcKey, setCopiedNdcKey] = useState<string | null>(null);
+
   function resetAfterSignOut() {
     setData(null);
     setLoadError(null);
@@ -360,6 +373,7 @@ export default function OrderingPage() {
     setCopying(false);
     setCopyResult(null);
     setCopyError(null);
+    setCopiedNdcKey(null);
   }
 
   useEffect(() => {
@@ -500,6 +514,31 @@ export default function OrderingPage() {
       // Clipboard API unavailable/denied — the address is still visible
       // and selectable in the code box, so this is a soft failure.
     }
+  }
+
+  // To-order table row click/keyboard handler — clicking or pressing
+  // Enter/Space anywhere on a row copies its NDC (digits-with-dashes,
+  // as displayed), same "click anywhere on the row" pattern as
+  // app/macro-codes/page.tsx's row copy. A row with no NDC on file has
+  // nothing to copy, so it isn't made interactive at all (see the
+  // toOrderRows.map render below).
+  async function handleCopyOrderNdc(row: { key: string; ndc: string | null }) {
+    if (!row.ndc) return;
+    const text = formatNdcDashed(row.ndc);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedNdcKey(row.key);
+      setTimeout(() => setCopiedNdcKey((current) => (current === row.key ? null : current)), 1500);
+    } catch {
+      // Clipboard API unavailable/denied — the NDC is still visible in
+      // the cell, so this is a soft failure.
+    }
+  }
+
+  function handleToOrderRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, row: { key: string; ndc: string | null }) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    void handleCopyOrderNdc(row);
   }
 
   // Raw PUT /api/ordering/targets call with NO reload afterward — split
@@ -657,6 +696,11 @@ export default function OrderingPage() {
     return sortRows(data.rows.filter((row) => !row.active));
   }, [data]);
 
+  // To-order table (V-T-ordering-unify, Will 2026-09-11): "a new table
+  // at the top that shows only items recommended to be ordered" — every
+  // row with order > 0, from lib/ordering-to-order.ts's pure helper.
+  const toOrderRows = useMemo(() => buildToOrderRows(data?.rows ?? []), [data]);
+
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -771,6 +815,48 @@ export default function OrderingPage() {
       )}
 
       {data && <p style={styles.muted}>{onHandStatusMessage(data.onHandLastReceivedAt)}</p>}
+
+      <h2>To order</h2>
+      {toOrderRows.length === 0 ? (
+        <p style={styles.muted}>Nothing to order</p>
+      ) : (
+        <table style={styles.table} className="to-order-table">
+          <thead>
+            <tr>
+              <th style={styles.th}>Product</th>
+              <th style={styles.th}>NDC</th>
+              <th style={styles.thRight}>Packages</th>
+            </tr>
+          </thead>
+          <tbody>
+            {toOrderRows.map((row) => {
+              const ndcText = formatNdcDashed(row.ndc) || "—";
+              const isCopied = copiedNdcKey === row.key;
+              const canCopy = !!row.ndc;
+              return (
+                <tr
+                  key={row.key}
+                  className={canCopy ? "to-order-row" : undefined}
+                  role={canCopy ? "button" : undefined}
+                  tabIndex={canCopy ? 0 : undefined}
+                  aria-label={canCopy ? `Copy ${row.displayName} NDC ${ndcText}` : undefined}
+                  onClick={canCopy ? () => void handleCopyOrderNdc(row) : undefined}
+                  onKeyDown={canCopy ? (e) => handleToOrderRowKeyDown(e, row) : undefined}
+                >
+                  <td style={styles.td}>{row.displayName}</td>
+                  <td style={styles.td}>
+                    {ndcText}
+                    {canCopy && (isCopied ? <span style={{ ...styles.copiedFlag, marginLeft: "0.4rem" }}>Copied ✓</span> : <span style={{ ...styles.copyHint, marginLeft: "0.4rem" }}>Copy</span>)}
+                  </td>
+                  <td style={styles.tdRight}>
+                    {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
 
       <table style={styles.table}>
         <thead>
@@ -926,6 +1012,18 @@ export default function OrderingPage() {
           </div>
         </div>
       )}
+
+      {/* To-order table row interaction (hover/focus affordance for the
+       * click-to-copy row) — same "no external library" <style> posture
+       * as app/macro-codes/page.tsx's row styling. */}
+      <style>{`
+        .to-order-table tbody tr.to-order-row { cursor: pointer; }
+        .to-order-table tbody tr.to-order-row:hover,
+        .to-order-table tbody tr.to-order-row:focus-visible {
+          background: #f2f6fb;
+          outline: none;
+        }
+      `}</style>
     </main>
   );
 }

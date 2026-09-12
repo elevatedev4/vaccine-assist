@@ -1,18 +1,20 @@
 /**
- * /lots-only product name shortener (V-T-lots-round4/round5, Will
- * verbatim round5: "The helper text MM/DD/YYYY is being cut off
- * slightly. There is still a lot of random text there. Ex: (;
- * immunocompromised), (2 mo-55 yr), ( yr), (; pregnancy wk), (;
- * high-risk), 'Formula'. Get rid of those and others.") —
- * lib/product-view.ts's `displayName` is SHARED with /ordering and
- * /macro-codes (see that file's header: "the ONE place that computes
- * those four fields"), so it can't be changed there without altering
- * output those pages depend on. This is a separate pure helper,
- * applied ONLY on /lots (app/lots/page.tsx), that strips
- * qualifier/noise tokens from an already-computed displayName while
- * leaving everything else (season outside parens, dose-form qualifiers
- * like "MDV", "PFS", "HD", "adult", "two-vial", pack-count "1 ct", and
- * plain product numbers like "Prevnar 20") untouched.
+ * Product name shortener (V-T-lots-round4/round5, Will verbatim
+ * round5: "The helper text MM/DD/YYYY is being cut off slightly. There
+ * is still a lot of random text there. Ex: (; immunocompromised), (2
+ * mo-55 yr), ( yr), (; pregnancy wk), (; high-risk), 'Formula'. Get rid
+ * of those and others."). Originally applied only on /lots; folded
+ * into lib/product-view.ts's `deriveProductViewFields` as of
+ * V-T-ordering-unify (Will 2026-09-11: "Remove all the ages and extra
+ * characters from the product names like we've done in other tabs...
+ * This data should all be the same throughout") so it now runs for
+ * EVERY tab's displayName (Ordering, Lots, Macro codes, Entry values) —
+ * this file stays the pure implementation, kept separate for its own
+ * focused test suite. Strips qualifier/noise tokens from an
+ * already-computed display name while leaving everything else (season
+ * outside parens, dose-form qualifiers like "MDV", "PFS", "HD", "adult",
+ * "two-vial", pack-count "1 ct", and plain product numbers like
+ * "Prevnar 20") untouched.
  *
  * Round 4 tried to detect just the age-shaped content of a
  * parenthetical and strip only that, which left fragments whenever a
