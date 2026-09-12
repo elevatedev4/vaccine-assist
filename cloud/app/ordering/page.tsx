@@ -56,10 +56,27 @@ type RecommendationRow = {
    * package figure): this is the per-BOH-unit size the Pioneer report
    * itself carries. */
   unitSize: string | null;
+  /** Doses administered over the last 7 COMPLETE Chicago days, summed
+   * across this product's own vaccine ids (V-ordering-trend, Will
+   * 2026-09-12: "recommend that we keep up with the trends, since we
+   * take walk-ins and not just schedule") — 0 when trendUnavailable is
+   * true, or when nothing has been ingested for this product yet. */
+  given7d: number;
+  /** upcoming7d + its walk-in buffer — the schedule-driven demand
+   * estimate (the OLD recommendedTarget formula, kept under its own
+   * name now that a second estimate exists). */
+  scheduledDemand: number;
+  /** given7d itself, unbuffered — see lib/ordering-recommendation.ts's
+   * computeDemandTarget doc comment for why no extra buffer is added. */
+  trendDemand: number;
+  /** max(scheduledDemand, trendDemand), before any "Your target"
+   * override. */
   recommendedTarget: number;
   targetOnHand: number | null;
   effectiveTarget: number;
-  targetSource: "ndc" | "group" | "recommended";
+  /** Which estimate determined effectiveTarget: an NDC-scoped override,
+   * or whichever of scheduledDemand/trendDemand was larger. */
+  targetSource: "override" | "scheduled" | "trend";
   order: number;
 };
 
@@ -70,6 +87,12 @@ type RecommendationResponse = {
   // with, and whether that's still just the default (0012 pending).
   walkInPct: number;
   walkInPctPending: boolean;
+  // V-ordering-trend: true when the route's administeredSummary call
+  // failed — every row's given7d is 0 for this response, and the trend
+  // estimate never wins a row's target while this is true. Shown as a
+  // muted note under the table so staff know the trend column is stale/
+  // unavailable rather than genuinely zero.
+  trendUnavailable: boolean;
   // Still returned by the API (GET/PUT /api/ordering/targets and
   // lib/ordering-targets.ts are left intact per Will's brief), but this
   // page no longer reads or renders it — group-scoped overrides are
@@ -126,6 +149,10 @@ const styles = {
   targetInput: { width: 64, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   saveStatus: { fontSize: "0.7rem", marginLeft: "0.35rem" },
+  // "Rec. target" cell's source label (V-ordering-trend) — small,
+  // muted, superscript-positioned so it reads as a footnote on the
+  // number rather than competing with it.
+  targetSourceLabel: { fontSize: "0.65rem", color: "#666", marginLeft: "0.2rem", verticalAlign: "super" as const },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
   // To-order table (V-T-ordering-unify, Will 2026-09-11): compact,
   // same look as the main table — the row itself is the "Copy NDC"
@@ -195,6 +222,17 @@ function surplusCell(row: RecommendationRow): { style: CSSProperties; text: stri
  * missed"), else the plain right-aligned cell. */
 function orderCellStyle(row: RecommendationRow): CSSProperties {
   return row.order > 0 ? styles.tdRightOrderDue : styles.tdRight;
+}
+
+/** The "Rec. target" cell's small source label (V-ordering-trend): "yours"
+ * when a "Your target" override is in effect, "trend" when last week's
+ * actual pace beat the scheduled+buffer estimate, and nothing when the
+ * schedule-driven estimate itself won (the ordinary case) — Will's
+ * brief: "nothing when scheduled". */
+function targetSourceLabel(row: RecommendationRow): string | null {
+  if (row.targetSource === "override") return "yours";
+  if (row.targetSource === "trend") return "trend";
+  return null;
 }
 
 /** A single "target on-hand" cell — a row's own NDC-scoped override
@@ -819,6 +857,9 @@ export default function OrderingPage() {
       )}
 
       {data && <p style={styles.muted}>{onHandStatusMessage(data.onHandLastReceivedAt)}</p>}
+      {data?.trendUnavailable && (
+        <p style={styles.muted}>Last-7-days-given trend data is unavailable right now — targets are using the scheduled estimate only.</p>
+      )}
 
       <h2>To order</h2>
       {toOrderRows.length === 0 ? (
@@ -870,6 +911,9 @@ export default function OrderingPage() {
             <th style={styles.th}>Unit size</th>
             <th style={styles.thRight}>Units/pkg</th>
             <th style={styles.thRight}>7d</th>
+            <th style={styles.thRight} title="Doses given in the last 7 complete days (from Pioneer's daily report)">
+              Last 7d given
+            </th>
             <th style={styles.thRight}>Rec. target</th>
             <th style={styles.th}>Target</th>
             <th style={styles.th}>BOH (doses)</th>
@@ -884,7 +928,9 @@ export default function OrderingPage() {
             // V-T-ordering-lots-round3 (Will 2026-09-09, verbatim): "Leave
             // off the targets for headings. Just leave the target and
             // order all blank on those rows." — see
-            // lib/ordering-heading-totals.ts's doc comment.
+            // lib/ordering-heading-totals.ts's doc comment. "Last 7d
+            // given" (V-ordering-trend) joins that same left-off-on-
+            // headings set, same reasoning.
             const totals = computeHeadingTotals(enrichedRows);
 
             return (
@@ -896,6 +942,7 @@ export default function OrderingPage() {
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>{totals.upcoming7d}</td>
                   <td style={styles.tdRight}>—</td>
+                  <td style={styles.tdRight}>—</td>
                   <td style={styles.td}>—</td>
                   <td style={styles.td}>{totals.onHand}</td>
                   <td style={styles.tdRight}>—</td>
@@ -904,6 +951,7 @@ export default function OrderingPage() {
                 </tr>
                 {enrichedRows.map((row) => {
                   const surplus = surplusCell(row);
+                  const sourceLabel = targetSourceLabel(row);
                   return (
                     <tr key={row.key}>
                       <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
@@ -911,7 +959,11 @@ export default function OrderingPage() {
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                       <td style={styles.tdRight}>{row.upcoming7d}</td>
-                      <td style={styles.tdRight}>{row.recommendedTarget}</td>
+                      <td style={styles.tdRight}>{row.given7d}</td>
+                      <td style={styles.tdRight}>
+                        {row.recommendedTarget}
+                        {sourceLabel && <span style={styles.targetSourceLabel}>{sourceLabel}</span>}
+                      </td>
                       <td style={styles.td}>
                         <TargetInput
                           value={row.targetOnHand}
@@ -947,6 +999,9 @@ export default function OrderingPage() {
                   <th style={styles.th}>Unit size</th>
                   <th style={styles.thRight}>Units/pkg</th>
                   <th style={styles.thRight}>7d</th>
+                  <th style={styles.thRight} title="Doses given in the last 7 complete days (from Pioneer's daily report)">
+                    Last 7d given
+                  </th>
                   <th style={styles.thRight}>Rec. target</th>
                   <th style={styles.th}>BOH (doses)</th>
                   <th style={styles.thRight} title="BOH minus target">Surplus</th>
@@ -957,6 +1012,7 @@ export default function OrderingPage() {
               <tbody>
                 {inactiveRows.map(enrichRow).map((row) => {
                   const surplus = surplusCell(row);
+                  const sourceLabel = targetSourceLabel(row);
                   return (
                     <tr key={row.key}>
                       <td style={styles.td}>{row.displayName}</td>
@@ -964,7 +1020,11 @@ export default function OrderingPage() {
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                       <td style={styles.tdRight}>{row.upcoming7d}</td>
-                      <td style={styles.tdRight}>{row.recommendedTarget}</td>
+                      <td style={styles.tdRight}>{row.given7d}</td>
+                      <td style={styles.tdRight}>
+                        {row.recommendedTarget}
+                        {sourceLabel && <span style={styles.targetSourceLabel}>{sourceLabel}</span>}
+                      </td>
                       <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                       <td style={surplus.style}>{surplus.text}</td>
                       <td style={orderCellStyle(row)}>{row.order}</td>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildRecommendationRow,
+  computeDemandTarget,
   computeRecommendedOrder,
   formatSurplus,
   surplusVsTarget,
@@ -86,6 +87,59 @@ describe("buildRecommendationRow", () => {
     expect(row.onHand).toBeNull();
     expect(row.onHandAsOf).toBeNull();
     expect(row.recommendedOrder).toBe(4); // 3 + 1 (min buffer) - 0
+  });
+});
+
+describe("computeDemandTarget", () => {
+  it("falls back to scheduledDemand when given7d is omitted (unchanged behaviour)", () => {
+    // upcoming7d=20, buffer=5 -> scheduledDemand=25
+    const result = computeDemandTarget(20, undefined, 0.25);
+    expect(result).toEqual({
+      given7d: 0,
+      scheduledDemand: 25,
+      trendDemand: 0,
+      demandTarget: 25,
+      targetSource: "scheduled",
+    });
+  });
+
+  it("falls back to scheduledDemand when given7d is explicitly 0 (unchanged behaviour)", () => {
+    const result = computeDemandTarget(4, 0);
+    expect(result.demandTarget).toBe(5); // 4 + 1 (min buffer)
+    expect(result.targetSource).toBe("scheduled");
+  });
+
+  it("picks scheduledDemand on a tie (given7d equal to scheduledDemand)", () => {
+    const result = computeDemandTarget(4, 5); // scheduledDemand = 4+1 = 5
+    expect(result.demandTarget).toBe(5);
+    expect(result.targetSource).toBe("scheduled");
+  });
+
+  it("picks trendDemand when last week's actual pace exceeds the scheduled+buffer estimate", () => {
+    // upcoming7d=4 -> scheduledDemand=5; given7d=30 (heavy walk-in week) wins.
+    const result = computeDemandTarget(4, 30);
+    expect(result).toEqual({
+      given7d: 30,
+      scheduledDemand: 5,
+      trendDemand: 30,
+      demandTarget: 30,
+      targetSource: "trend",
+    });
+  });
+
+  it("trendDemand is given7d itself, with no additional walk-in buffer applied", () => {
+    const result = computeDemandTarget(0, 12);
+    expect(result.scheduledDemand).toBe(0);
+    expect(result.trendDemand).toBe(12);
+    expect(result.demandTarget).toBe(12);
+    expect(result.targetSource).toBe("trend");
+  });
+
+  it("respects a custom walk-up rate for scheduledDemand", () => {
+    // upcoming7d=4, rate=0.5 -> buffer=ceil(4*0.5)=2 -> scheduledDemand=6
+    const result = computeDemandTarget(4, 5, 0.5);
+    expect(result.scheduledDemand).toBe(6);
+    expect(result.targetSource).toBe("scheduled");
   });
 });
 
