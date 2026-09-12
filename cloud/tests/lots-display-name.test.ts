@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lotsDisplayName } from "@/lib/lots-display-name";
+import { formatProductDisplayName, listCatalogEntries } from "@/lib/vaccine-product-catalog";
 
 describe("lotsDisplayName", () => {
   it("strips a trailing '+' age token while keeping the season", () => {
@@ -61,9 +62,11 @@ describe("lotsDisplayName", () => {
     expect(lotsDisplayName("Shingrix (50+; 19+ immunocompromised)")).toBe("Shingrix");
   });
 
-  it("drops a parenthetical with a mo-yr age range (real Menveo combo)", () => {
-    // productName "Menveo (two-vial)", ageRange "2 mo-55 yr"
-    expect(lotsDisplayName("Menveo (two-vial) (2 mo-55 yr)")).toBe("Menveo");
+  it("drops the age parenthetical but KEEPS the SKU qualifier in the other one (real Menveo combo)", () => {
+    // productName "Menveo (two-vial)", ageRange "2 mo-55 yr" — reviewer
+    // blocking fix: round 5's first pass dropped "two-vial" too, which
+    // isn't age/eligibility noise, it's the SKU qualifier itself.
+    expect(lotsDisplayName("Menveo (two-vial) (2 mo-55 yr)")).toBe("Menveo two-vial");
   });
 
   it("drops a parenthetical with age + pregnancy week note (real Abrysvo combo)", () => {
@@ -110,5 +113,57 @@ describe("lotsDisplayName", () => {
 
   it("drops everything from a dangling unclosed '(' onward", () => {
     expect(lotsDisplayName("Something (age 20+")).toBe("Something");
+  });
+
+  // Reviewer blocking fix (REQUEST_CHANGES on deb2a9f): deleting whole
+  // parentheticals collided distinct catalog SKUs onto the same /lots
+  // name. Each case below is the REAL formatProductDisplayName output
+  // (productName + ageRange, see lib/vaccine-product-catalog.ts) for a
+  // pair of entries that must stay distinguishable.
+
+  it("keeps the 1-count marker so it doesn't collide with the 10-count Abrysvo", () => {
+    // productName "Abrysvo (1 ct)", ageRange "60+; pregnancy 32-36 wk"
+    expect(lotsDisplayName("Abrysvo (1 ct) (60+; pregnancy 32-36 wk)")).toBe("Abrysvo 1 ct");
+    // productName "Abrysvo", ageRange "60+; pregnancy 32-36 wk" — the OTHER Abrysvo row
+    expect(lotsDisplayName("Abrysvo (60+; pregnancy 32-36 wk)")).toBe("Abrysvo");
+  });
+
+  it("keeps PFS vs MDV so the two Flucelvax rows don't collide", () => {
+    // productName "Flucelvax (2026-27, PFS)", ageRange "6 mo+"
+    expect(lotsDisplayName("Flucelvax (2026-27, PFS) (6 mo+)")).toBe("Flucelvax PFS");
+    // productName "Flucelvax (2026-27, MDV)", ageRange "6 mo+"
+    expect(lotsDisplayName("Flucelvax (2026-27, MDV) (6 mo+)")).toBe("Flucelvax MDV");
+  });
+
+  it("keeps PFS vs MDV so the two Afluria rows don't collide", () => {
+    // productName "Afluria (2026-27, PFS)", ageRange "6 mo+"
+    expect(lotsDisplayName("Afluria (2026-27, PFS) (6 mo+)")).toBe("Afluria PFS");
+    // productName "Afluria (2026-27, MDV)", ageRange "6 mo+"
+    expect(lotsDisplayName("Afluria (2026-27, MDV) (6 mo+)")).toBe("Afluria MDV");
+  });
+
+  it("keeps the 'adult' formulation qualifier (real Vaqta combo)", () => {
+    // productName "Vaqta (adult)", ageRange "19+"
+    expect(lotsDisplayName("Vaqta (adult) (19+)")).toBe("Vaqta adult");
+  });
+
+  it("keeps the dose-strength qualifier (real Engerix-B combo)", () => {
+    // productName "Engerix-B (adult 20 mcg)", ageRange "20+"
+    expect(lotsDisplayName("Engerix-B (adult 20 mcg) (20+)")).toBe("Engerix-B adult 20 mcg");
+  });
+
+  it("produces a unique /lots name for every catalog entry", () => {
+    const entries = listCatalogEntries();
+    const byOutput = new Map<string, string[]>();
+    for (const entry of entries) {
+      const full = formatProductDisplayName(entry.productName, entry.ageRange ?? null);
+      const shortened = lotsDisplayName(full);
+      const key = entry.packageNdc ?? entry.match.ndc ?? entry.productName;
+      const existing = byOutput.get(shortened) ?? [];
+      existing.push(key);
+      byOutput.set(shortened, existing);
+    }
+    const collisions = [...byOutput.entries()].filter(([, keys]) => keys.length > 1);
+    expect(collisions, `colliding /lots names: ${JSON.stringify(collisions)}`).toEqual([]);
   });
 });
