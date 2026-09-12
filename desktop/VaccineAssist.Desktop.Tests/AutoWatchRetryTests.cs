@@ -137,4 +137,68 @@ public class AutoWatchRetryTests
             onRecoverableWait: (_, _) => Task.CompletedTask,
             cancellationToken: cts.Token));
     }
+
+    // --- ShouldLogRetry (V-..., 2026-09-11: "Still waiting ... retrying"
+    // spam fix — Will's feedback that the popup felt like it had "big
+    // delays between all the steps" when really it was ~44 near-identical
+    // log lines for one 8.8s wait) ---
+
+    [Fact]
+    public void LogsTheFirstAttempt()
+    {
+        // Staff must see the wait start immediately, not after a 5-tick delay.
+        Assert.True(AutoWatchRetry.ShouldLogRetry(1));
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(9)]
+    public void SuppressesAttemptsThatAreNotTheFirstOrAMultipleOfFive(int attempt)
+    {
+        Assert.False(AutoWatchRetry.ShouldLogRetry(attempt));
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(10)]
+    [InlineData(15)]
+    [InlineData(50)]
+    public void LogsEveryFifthAttempt(int attempt)
+    {
+        Assert.True(AutoWatchRetry.ShouldLogRetry(attempt));
+    }
+
+    [Fact]
+    public async Task RunAsyncOnlyInvokesOnRecoverableWaitOnceForEveryRecoverableFailureRegardlessOfLoggingThrottle()
+    {
+        // ShouldLogRetry only decides whether a CALLER logs — it must never
+        // change how many times AutoWatchRetry itself calls
+        // onRecoverableWait/attempt, since callers still need to wait
+        // (Task.Delay) and re-attempt on every tick, logged or not.
+        var clock = new FakeClock();
+        var attempts = 0;
+        var onRecoverableWaitCalls = 0;
+
+        await AutoWatchRetry.RunAsync(
+            attempt: () =>
+            {
+                attempts++;
+                if (attempts <= 7) throw new TimeoutException("Operation timed out.");
+                return "ok";
+            },
+            overallBudget: TimeSpan.FromSeconds(60),
+            now: clock.Now,
+            onRecoverableWait: (_, _) =>
+            {
+                onRecoverableWaitCalls++;
+                return Task.CompletedTask;
+            });
+
+        Assert.Equal(8, attempts);
+        Assert.Equal(7, onRecoverableWaitCalls);
+    }
 }

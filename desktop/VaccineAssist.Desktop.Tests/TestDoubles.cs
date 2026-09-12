@@ -187,6 +187,15 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     /// used, so only the one targeted call is delayed.</summary>
     public TaskCompletionSource<bool>? DelayNextGetLotsCall { get; set; }
 
+    /// <summary>V-..., 2026-09-11: counts every GetLotsAsync call (any
+    /// vaccineId/status) — used by DataEntryPopupViewModelPrefetchCacheTests.cs
+    /// to prove EnsurePioneerEntryPrefetchStarted's cached lot-lookup Task
+    /// is actually REUSED between EnterIntoPioneerAsync's own "start the
+    /// prefetch" call and BuildLivePayloadAsync's later "ensure it's
+    /// running" call, rather than firing a second, redundant network round
+    /// trip.</summary>
+    public int GetLotsCallCount { get; private set; }
+
     /// <summary>vaccineId == null means "every lot across every vaccine"
     /// (MSG893 item 4: LotsViewModel.LoadAsync's unfiltered call) — a real
     /// status filter is applied here too now (previously ignored), which
@@ -194,6 +203,8 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     /// defaults to Status="active" already.</summary>
     public async Task<IReadOnlyList<Lot>> GetLotsAsync(Guid? vaccineId = null, string? status = null, CancellationToken cancellationToken = default)
     {
+        GetLotsCallCount++;
+
         // Snapshot BEFORE any gating delay — a genuinely stale/slow
         // response reflects the data as it was AT CALL TIME, not
         // whatever it's since become while this call sat suspended.

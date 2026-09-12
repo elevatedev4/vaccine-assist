@@ -77,6 +77,15 @@ public sealed class InputDirectionsStep : IPioneerEntryStep
                 "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
+        // V-..., 2026-09-11: same "wait for found AND enabled before the
+        // one-shot lookup" hardening SelectPrescriberStep/InputVaccineCodeStep/
+        // InputLotAndExpirationStep already got — see
+        // QuickSearchFieldEntry.WaitForFieldAsync's own doc comment for why
+        // a one-shot lookup alone isn't a strong enough "ready" signal.
+        await QuickSearchFieldEntry.WaitForFieldAsync(
+            context.AttachedWindow, DirectionsAutomationId, QuickSearchFieldEntry.DefaultFieldWaitTimeout,
+            context.Log, cancellationToken);
+
         var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
             context.AttachedWindow, DirectionsAutomationId, "directions", directions!, enterPresses: 0,
             log: context.Log, cancellationToken: cancellationToken);

@@ -228,6 +228,12 @@ public static class QuickSearchFieldEntry
 
         try
         {
+            // V-..., 2026-09-11: throttled per AutoWatchRetry.ShouldLogRetry
+            // (own doc comment) — this counter is local to THIS field's
+            // retry run, so a later field's wait always starts fresh at
+            // attempt 1 (logs immediately) rather than inheriting an
+            // earlier field's count.
+            var retryAttempt = 0;
             await AutoWatchRetry.RunAsync(
                 attempt: () =>
                 {
@@ -243,8 +249,12 @@ public static class QuickSearchFieldEntry
                 now: () => DateTime.UtcNow,
                 onRecoverableWait: async (ex, elapsed) =>
                 {
-                    log?.Invoke($"Still waiting to enter the {fieldLabel} (AutomationId '{automationId}') after " +
-                        $"{elapsed.TotalSeconds:0.0}s — {ex.GetType().Name}: {ex.Message}. PioneerRx may be busy; retrying...");
+                    retryAttempt++;
+                    if (AutoWatchRetry.ShouldLogRetry(retryAttempt))
+                    {
+                        log?.Invoke($"Still waiting to enter the {fieldLabel} (AutomationId '{automationId}') after " +
+                            $"{elapsed.TotalSeconds:0.0}s — {ex.GetType().Name}: {ex.Message}. PioneerRx may be busy; retrying...");
+                    }
                     await Task.Delay(PollInterval, cancellationToken);
                 },
                 cancellationToken: cancellationToken);

@@ -37,20 +37,30 @@ public sealed class ConfirmEntryStep : IPioneerEntryStep
 
     public string Name => "Confirm entry";
 
-    public Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
+    public async Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
     {
         if (context.DryRun)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: true,
+            return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
                 $"Would locate the \"Save & Continue\" button (AutomationId '{SaveButtonAutomationId}') and STOP without clicking it — " +
-                "review and press Save & Continue (F12) in Pioneer yourself (no PioneerRx call made)."));
+                "review and press Save & Continue (F12) in Pioneer yourself (no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step."));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
+
+        // V-..., 2026-09-11: same "wait for found AND enabled" hardening as
+        // every other field-typing step on this path — this step only
+        // LOCATES the Save & Continue button (never clicks it, see the
+        // class doc comment's SAFETY section), but it's still a one-shot
+        // lookup that can lose the same race against PioneerRx still
+        // rendering the Add New Rx screen's bottom status panel.
+        await QuickSearchFieldEntry.WaitForFieldAsync(
+            context.AttachedWindow, SaveButtonAutomationId, QuickSearchFieldEntry.DefaultFieldWaitTimeout,
+            context.Log, cancellationToken);
 
         AutomationElement? saveButton;
         try
@@ -59,18 +69,18 @@ public sealed class ConfirmEntryStep : IPioneerEntryStep
         }
         catch (Exception ex)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
-                $"Couldn't search for the \"Save & Continue\" button (AutomationId '{SaveButtonAutomationId}'): {ex.Message}"));
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                $"Couldn't search for the \"Save & Continue\" button (AutomationId '{SaveButtonAutomationId}'): {ex.Message}");
         }
 
         if (saveButton is null)
         {
-            return Task.FromResult(new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
                 $"Couldn't find the \"Save & Continue\" button (AutomationId '{SaveButtonAutomationId}') — " +
-                "the fields above may have entered correctly, but this couldn't confirm where to save. Review Pioneer directly."));
+                "the fields above may have entered correctly, but this couldn't confirm where to save. Review Pioneer directly.");
         }
 
-        return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, DryRun: false,
-            "Fields entered. Found the \"Save & Continue\" button but did NOT click it — review the entry and press Save & Continue (F12) in Pioneer yourself."));
+        return new PioneerEntryStepResult(Name, Success: true, DryRun: false,
+            "Fields entered. Found the \"Save & Continue\" button but did NOT click it — review the entry and press Save & Continue (F12) in Pioneer yourself.");
     }
 }
