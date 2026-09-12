@@ -58,6 +58,20 @@ export function doseNumberOf(dose: string | null): number {
 }
 
 /**
+ * Formats a dose number for display in the /entry-values Dose column
+ * (Will, 2026-09-12, verbatim: "Remove 'Dose' from the dose data, it's
+ * redundant since it already has that for a heading"). Display-only —
+ * doesn't touch EntryValueRow.doseNumber itself, which stays the plain
+ * number used for sorting, lookups, and lib/entry-defaults.ts's
+ * defaultDirections. Defensively strips a leading "Dose " (any case) in
+ * case a future dose value already carries it, so the column never
+ * shows "Dose Dose 1".
+ */
+export function doseColumnLabel(doseNumber: number | string): string {
+  return String(doseNumber).replace(/^dose\s+/i, "").trim();
+}
+
+/**
  * Builds one EntryValueRow per active dose `vaccine` row, grouped into
  * products (for Type/doseCount) exactly like every other tab. Final
  * order: sheetOrder (the macro-catalog sheet's row order), then dose
