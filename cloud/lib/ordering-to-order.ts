@@ -13,6 +13,7 @@ export type ToOrderInputRow = {
   ndc: string | null;
   group: string;
   order: number;
+  active: boolean;
 };
 
 export type ToOrderRow = {
@@ -40,16 +41,24 @@ function sortForToOrder(rows: readonly ToOrderInputRow[]): ToOrderInputRow[] {
  * Builds the /ordering "To order" table's rows (V-T-ordering-unify,
  * Will 2026-09-11: "a new table at the top that shows only items
  * recommended to be ordered, and includes the product name, NDC, and
- * packages to order"): every row with order > 0, grouped and sorted
- * EXACTLY like the main recommendation table below it — COVID/Flu/Other
- * display order (lib/ordering-group.ts), then within each group by
- * order desc then vaccine name (the same tie-break as the main table's
- * own sortRows in app/ordering/page.tsx) — then flattened into one
- * list. Pure/no I/O, so it's directly unit-testable and safe to call at
- * render time.
+ * packages to order"): every ACTIVE row with order > 0, grouped and
+ * sorted EXACTLY like the main recommendation table below it —
+ * COVID/Flu/Other display order (lib/ordering-group.ts), then within
+ * each group by order desc then vaccine name (the same tie-break as the
+ * main table's own sortRows in app/ordering/page.tsx) — then flattened
+ * into one list. Pure/no I/O, so it's directly unit-testable and safe
+ * to call at render time.
+ *
+ * Filters on `active` itself (reviewer blocking fix, 2026-09-11): the
+ * recommendation API computes `order` for inactive/discontinued
+ * products too (app/api/ordering/recommendation/route.ts doesn't zero
+ * it out), and the main table separately filters to active rows before
+ * ever calling this helper. Re-filtering here means this helper stays
+ * correct even if a future caller forgets to pre-filter — an inactive
+ * product with low on-hand can never surface in "To order".
  */
 export function buildToOrderRows(rows: readonly ToOrderInputRow[]): ToOrderRow[] {
-  const filtered = rows.filter((row) => row.order > 0);
+  const filtered = rows.filter((row) => row.active && row.order > 0);
 
   const byGroup = new Map<string, ToOrderInputRow[]>();
   for (const row of filtered) {

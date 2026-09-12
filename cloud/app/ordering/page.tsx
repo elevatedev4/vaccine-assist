@@ -698,8 +698,12 @@ export default function OrderingPage() {
 
   // To-order table (V-T-ordering-unify, Will 2026-09-11): "a new table
   // at the top that shows only items recommended to be ordered" — every
-  // row with order > 0, from lib/ordering-to-order.ts's pure helper.
-  const toOrderRows = useMemo(() => buildToOrderRows(data?.rows ?? []), [data]);
+  // ACTIVE row with order > 0, from lib/ordering-to-order.ts's pure
+  // helper. Pre-filtered to active here (same as groupedActiveRows
+  // above) so an inactive/discontinued product's leftover `order` can
+  // never surface — buildToOrderRows also filters on `active` itself,
+  // belt-and-suspenders (reviewer blocking fix, 2026-09-11).
+  const toOrderRows = useMemo(() => buildToOrderRows((data?.rows ?? []).filter((row) => row.active)), [data]);
 
   if (!authChecked) {
     return <AuthLoading />;
