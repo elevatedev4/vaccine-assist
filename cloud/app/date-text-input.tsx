@@ -140,7 +140,12 @@ export default function DateTextInput({
       onPaste={handlePaste}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      style={{ width: style?.width ?? "12ch", ...style, borderColor: invalid ? "#b00020" : style?.borderColor }}
+      style={{
+        width: style?.width ?? "13ch",
+        boxSizing: style?.boxSizing ?? "border-box",
+        ...style,
+        borderColor: invalid ? "#b00020" : style?.borderColor,
+      }}
     />
   );
 }

@@ -335,6 +335,15 @@ const CATALOG: ProductCatalogEntry[] = [
   },
 ];
 
+/** Read-only view of every catalog row (V-T-lots-round5 reviewer fix:
+ * lots-display-name.test.ts runs every entry through
+ * formatProductDisplayName -> lotsDisplayName and asserts no two
+ * distinct rows collide on the shortened /lots name). Not used by any
+ * page — CATALOG itself stays module-private everywhere else. */
+export function listCatalogEntries(): readonly ProductCatalogEntry[] {
+  return CATALOG;
+}
+
 function toResult(entry: ProductCatalogEntry): ProductLookupResult {
   return {
     productName: entry.productName,
