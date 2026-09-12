@@ -68,7 +68,7 @@ describe("ingestAdministeredRows", () => {
     expect(store.has("administered:2026-09-10")).toBe(true);
     expect(store.has("administered:2026-09-11")).toBe(true);
     const day1 = store.get("administered:2026-09-10") as AdministeredDay;
-    expect(day1.rows).toEqual([{ at: rows[0].at, itemName: rows[0].itemName, vaccineId: rows[0].vaccineId }]);
+    expect(day1.rows).toEqual([{ at: rows[0].at, itemName: rows[0].itemName, vaccineId: rows[0].vaccineId, occurrence: 0 }]);
     expect(day1.sources).toEqual(["inbound_attachment:key-1"]);
   });
 
@@ -93,6 +93,49 @@ describe("ingestAdministeredRows", () => {
     const day = store.get("administered:2026-09-10") as AdministeredDay;
     expect(day.rows).toHaveLength(2);
     expect(day.sources).toEqual(["day-1-file", "day-2-file"]);
+  });
+
+  // Review fix (2026-09-12): Pioneer's "Completed date" is
+  // minute-precision, so two DIFFERENT patients given the same vaccine
+  // in the same minute share an identical (at, itemName) — the
+  // `occurrence` index (0, 1, 2... in file order) is what keeps them
+  // distinct rather than collapsing into one dose.
+  it("stores two distinct doses that share the same (at, itemName) within one file (same-minute doses)", async () => {
+    const { client, store } = fakeSupabase();
+    const sameMinute = matchedRow(); // two patients, same vaccine, same minute
+    const result = await ingestAdministeredRows(client, [sameMinute, sameMinute], "same-minute-file");
+
+    expect(result.rows).toBe(2);
+    const day = store.get("administered:2026-09-10") as AdministeredDay;
+    expect(day.rows).toHaveLength(2);
+    expect(day.rows.map((r) => r.occurrence).sort()).toEqual([0, 1]);
+  });
+
+  it("re-ingesting the SAME file with same-minute duplicates still yields exactly two (idempotent)", async () => {
+    const { client, store } = fakeSupabase();
+    const sameMinute = matchedRow();
+    await ingestAdministeredRows(client, [sameMinute, sameMinute], "same-minute-file");
+    await ingestAdministeredRows(client, [sameMinute, sameMinute], "same-minute-file");
+
+    const day = store.get("administered:2026-09-10") as AdministeredDay;
+    expect(day.rows).toHaveLength(2);
+  });
+
+  it("an overlapping LATER file repeating only one of the two same-minute doses still yields exactly two", async () => {
+    const { client, store } = fakeSupabase();
+    const sameMinute = matchedRow();
+    await ingestAdministeredRows(client, [sameMinute, sameMinute], "day-1-file");
+    // Overlapping file repeats the FIRST of the two same-minute rows
+    // (occurrence 0) plus a genuinely new dose for the next day.
+    await ingestAdministeredRows(
+      client,
+      [sameMinute, matchedRow({ itemName: "Comirnaty", at: "2026-09-10T22:00:00.000Z" })],
+      "day-2-file"
+    );
+
+    const day = store.get("administered:2026-09-10") as AdministeredDay;
+    expect(day.rows).toHaveLength(3); // the two same-minute doses + Comirnaty
+    expect(day.rows.filter((r) => r.itemName === sameMinute.itemName && r.at === sameMinute.at)).toHaveLength(2);
   });
 
   it("recording the same sourceKey twice doesn't duplicate it in sources", async () => {
