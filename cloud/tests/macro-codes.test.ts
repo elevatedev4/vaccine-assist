@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildMacroCode, buildMacroRows, expToMacroDate, type MacroLotLike, type MacroRowVaccine } from "@/lib/macro-codes";
+import {
+  buildMacroCode,
+  buildMacroRows,
+  expToMacroDate,
+  groupMacroRowsForFamily,
+  type MacroLotLike,
+  type MacroRow,
+  type MacroRowVaccine,
+} from "@/lib/macro-codes";
 import type { ProductView } from "@/lib/product-view";
 
 describe("expToMacroDate", () => {
@@ -175,7 +183,9 @@ describe("buildMacroRows", () => {
     expect(rows[0].macro).toBe("comirnaty12,RM3739,06222027");
     expect(rows[0].cashPriceCents).toBe(14799);
     expect(rows[0].catalogType).toBe("Pfizer 12+");
-    expect(rows[0].sections).toEqual(["age12plus"]);
+    expect(rows[0].family).toBe("fluCovid");
+    expect(rows[0].age).toBe("12+");
+    expect(rows[0].doseCount).toBe(1);
   });
 
   it("flags a row incomplete when the vaccine has no active lot on file, without inventing a placeholder date", () => {
@@ -216,12 +226,35 @@ describe("buildMacroRows", () => {
     expect(rows[0].catalogType).toBe("Other");
   });
 
-  it("flucelvaxpfs belongs to both age-3-11 and age-12-plus quick-view sections", () => {
+  it("flucelvaxpfs is family fluCovid with a 6 mo+ age label", () => {
     const products: ProductView[] = [view({ productKey: "name:flucelvaxpfs", displayName: "Flucelvax PFS", vaccineIds: ["f1"] })];
     const vaccines: MacroRowVaccine[] = [vaccine({ id: "f1", name: "Flucelvax PFS", short_code: "flucelvaxpfs" })];
 
     const rows = buildMacroRows(products, vaccines, {});
-    expect(rows[0].sections).toEqual(["age3to11", "age12plus"]);
+    expect(rows[0].family).toBe("fluCovid");
+    expect(rows[0].age).toBe("6 mo+");
+  });
+
+  it("a multi-dose product's doseCount matches its real deduped dose row count", () => {
+    const products: ProductView[] = [view({ productKey: "ndc:gardasil", displayName: "Gardasil", vaccineIds: ["g1", "g2", "g3"] })];
+    const vaccines: MacroRowVaccine[] = [
+      vaccine({ id: "g1", name: "Gardasil", dose: "1", short_code: "gardasil1" }),
+      vaccine({ id: "g2", name: "Gardasil", dose: "2", short_code: "gardasil2" }),
+      vaccine({ id: "g3", name: "Gardasil", dose: "3", short_code: "gardasil3" }),
+    ];
+
+    const rows = buildMacroRows(products, vaccines, {});
+    expect(rows.every((r) => r.doseCount === 3)).toBe(true);
+  });
+
+  it("a product with no short code at all gets family 'other', age '', and doseCount 1", () => {
+    const products: ProductView[] = [view({ productKey: "name:mystery", displayName: "Mystery Vaccine", vaccineIds: ["m1"] })];
+    const vaccines: MacroRowVaccine[] = [vaccine({ id: "m1", name: "Mystery Vaccine", short_code: "" })];
+
+    const rows = buildMacroRows(products, vaccines, {});
+    expect(rows[0].family).toBe("other");
+    expect(rows[0].age).toBe("");
+    expect(rows[0].doseCount).toBe(1);
   });
 
   it("orders rows by the Excel sheet's row order (sheetOrder), then dose number, then display name", () => {
@@ -248,5 +281,85 @@ describe("buildMacroRows", () => {
       "Mystery Vaccine",
     ]);
     expect(rows.map((r) => r.doseNumber)).toEqual([1, 1, 2, 1]);
+  });
+});
+
+describe("groupMacroRowsForFamily", () => {
+  it("filters to just the requested family", () => {
+    const products: ProductView[] = [
+      view({ productKey: "name:comirnaty", displayName: "Comirnaty", vaccineIds: ["c1"] }),
+      view({ productKey: "name:gardasil", displayName: "Gardasil", vaccineIds: ["g1"] }),
+    ];
+    const vaccines: MacroRowVaccine[] = [
+      vaccine({ id: "c1", name: "Comirnaty", short_code: "comirnaty12" }),
+      vaccine({ id: "g1", name: "Gardasil", short_code: "gardasil1" }),
+    ];
+    const rows = buildMacroRows(products, vaccines, {});
+
+    expect(groupMacroRowsForFamily(rows, "fluCovid").map((r) => r.displayName)).toEqual(["Comirnaty"]);
+    expect(groupMacroRowsForFamily(rows, "other").map((r) => r.displayName)).toEqual(["Gardasil"]);
+  });
+
+  it("orders the fluCovid family by ageMinMonths ascending, then type, then product, then dose", () => {
+    const products: ProductView[] = [
+      view({ productKey: "name:fluad", displayName: "Fluad", vaccineIds: ["fa1"] }),
+      view({ productKey: "name:comirnaty", displayName: "Comirnaty", vaccineIds: ["c1"] }),
+      view({ productKey: "name:flumist", displayName: "FluMist", vaccineIds: ["fm1"] }),
+      view({ productKey: "name:mflusiva", displayName: "mFLUSIVA", vaccineIds: ["mf1"] }),
+    ];
+    const vaccines: MacroRowVaccine[] = [
+      vaccine({ id: "fa1", name: "Fluad", short_code: "fluad" }), // 65+
+      vaccine({ id: "c1", name: "Comirnaty", short_code: "comirnaty12" }), // 12+
+      vaccine({ id: "fm1", name: "FluMist", short_code: "flumist" }), // 2-49
+      vaccine({ id: "mf1", name: "mFLUSIVA", short_code: "mflusiva" }), // 50+
+    ];
+    const rows = buildMacroRows(products, vaccines, {});
+
+    const grouped = groupMacroRowsForFamily(rows, "fluCovid");
+    expect(grouped.map((r) => r.displayName)).toEqual(["FluMist", "Comirnaty", "mFLUSIVA", "Fluad"]);
+  });
+
+  it("flags showType/showProduct only on the first row of each Type/product run (HPV combined, not repeated)", () => {
+    const products: ProductView[] = [
+      view({ productKey: "ndc:gardasil", displayName: "Gardasil", vaccineIds: ["g1", "g2", "g3"] }),
+      view({ productKey: "ndc:engerix", displayName: "Engerix 20", vaccineIds: ["e1"] }),
+    ];
+    const vaccines: MacroRowVaccine[] = [
+      vaccine({ id: "g1", name: "Gardasil", dose: "1", short_code: "gardasil1" }),
+      vaccine({ id: "g2", name: "Gardasil", dose: "2", short_code: "gardasil2" }),
+      vaccine({ id: "g3", name: "Gardasil", dose: "3", short_code: "gardasil3" }),
+      vaccine({ id: "e1", name: "Engerix 20", short_code: "engerix1" }),
+    ];
+    const rows = buildMacroRows(products, vaccines, {});
+
+    const grouped = groupMacroRowsForFamily(rows, "other");
+    // sheetOrder: Engerix (10) before Gardasil (14).
+    expect(grouped.map((r) => [r.displayName, r.doseNumber, r.showType, r.showProduct])).toEqual([
+      ["Engerix 20", 1, true, true],
+      ["Gardasil", 1, true, true],
+      ["Gardasil", 2, false, false],
+      ["Gardasil", 3, false, false],
+    ]);
+  });
+
+  it("starts a new Type block (and thus a new product) even for a same-named product boundary", () => {
+    const products: ProductView[] = [
+      view({ productKey: "ndc:mmr", displayName: "MMR-II", vaccineIds: ["m1"] }),
+      view({ productKey: "ndc:priorix", displayName: "Priorix", vaccineIds: ["p1"] }),
+    ];
+    const vaccines: MacroRowVaccine[] = [
+      vaccine({ id: "m1", name: "MMR-II", short_code: "mmr1" }),
+      vaccine({ id: "p1", name: "Priorix", short_code: "priorix1" }),
+    ];
+    const rows: MacroRow[] = buildMacroRows(products, vaccines, {});
+
+    const grouped = groupMacroRowsForFamily(rows, "other");
+    // Both are catalogType "MMR" but are different products (productKey),
+    // so each still gets its own showProduct row even though showType is
+    // only true for the first (same Type run).
+    expect(grouped.map((r) => [r.displayName, r.showType, r.showProduct])).toEqual([
+      ["MMR-II", true, true],
+      ["Priorix", false, true],
+    ]);
   });
 });

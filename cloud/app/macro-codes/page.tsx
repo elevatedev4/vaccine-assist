@@ -1,33 +1,42 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { buildProductViews } from "@/lib/product-view";
-import { buildMacroCode, buildMacroRows, type MacroLotLike, type MacroRow, type MacroRowVaccine } from "@/lib/macro-codes";
-import { macroProductColor } from "@/lib/macro-colors";
+import {
+  buildMacroCode,
+  buildMacroRows,
+  groupMacroRowsForFamily,
+  type MacroFamily,
+  type MacroGroupedRow,
+  type MacroLotLike,
+  type MacroRow,
+  type MacroRowVaccine,
+} from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
-import type { MacroSection } from "@/lib/macro-catalog";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
 /**
- * /macro-codes tab, round 2 (Will's brief, verbatim highlights): "Remove
- * the entry box for dose. It's always set already... Hide the short
- * code and macro code in a little settings dropdown at the far right...
- * follow the same format as the excel file... a section for covid/flu
- * vaccines for age 3-11 and then for 12+, then a section for all the
- * vaccines... type of vaccine, then the name of the product, then dose,
- * then the copy button, very succinct and compact. Include the cash
- * price too. Use color coding to differentiate the vaccines."
+ * /macro-codes tab, round 3 (Will's brief, verbatim highlights):
+ * "Remove 'Dose ' from the dose data, it's redundant... For multi-dose
+ * series, combine the heading instead of listing it multiple times.
+ * Add a border around the sections to differentiate the vaccines from
+ * one another... if it's the same product, no need to list it multiple
+ * times. Remove the colors, they are hindering not helping. Remove
+ * helper text... Make the 'All vaccines' section be 'Other vaccines'
+ * and don't include flu/covid. Add mFLUSIVA and FluMist to the
+ * flu/covid section... Arrange them by age. Add an age column... Make
+ * it so if they click anywhere on the row it will copy and the
+ * settings button should be outside that on the right side and just
+ * show up on hover. Price should also not be repeated... include with
+ * the product."
  *
- * Pure row-building + catalog/section/color logic lives in
- * lib/macro-codes.ts / lib/macro-catalog.ts / lib/macro-colors.ts
- * (all unit-tested); this page is just data loading + the compact
- * section layout + the copy/modal UI. Saving a lot from the modal fans
- * out to every dose vaccine_id of the product (POST /api/lots
- * vaccine_ids) — the SAME fan-out /lots already uses, so a save here
- * keeps the /lots page and desktop app in sync.
+ * Pure row-building + catalog/family/grouping logic lives in
+ * lib/macro-codes.ts / lib/macro-catalog.ts (both unit-tested); this
+ * page is just data loading + the compact, bordered-by-Type table
+ * layout + the click-row-to-copy/modal UI.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -38,14 +47,16 @@ const styles = {
   button: { padding: "0.3rem 0.6rem", fontSize: "13px", minWidth: 68 },
   error: { color: "#b00020", fontSize: "0.8rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
-  note: { color: "#b00020", fontSize: "0.72rem", fontStyle: "italic" as const, marginLeft: "0.4rem", whiteSpace: "nowrap" as const },
+  note: { color: "#b00020", fontSize: "0.7rem", fontStyle: "italic" as const, whiteSpace: "nowrap" as const },
   sectionHeading: { fontSize: "0.95rem", fontWeight: 700, margin: "1.25rem 0 0.35rem" },
-  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "12.5px", lineHeight: 1.2 },
+  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "12.5px", lineHeight: 1.15 },
   th: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
-  td: { textAlign: "left" as const, padding: "2px 6px", verticalAlign: "middle" as const },
-  type: { fontWeight: 600 },
-  cashPrice: { whiteSpace: "nowrap" as const },
-  copyCell: { display: "flex", alignItems: "center", gap: "0.3rem" },
+  td: { textAlign: "left" as const, padding: "1px 6px", verticalAlign: "middle" as const },
+  typeCell: { fontWeight: 600, verticalAlign: "top" as const, whiteSpace: "nowrap" as const },
+  ageCell: { whiteSpace: "nowrap" as const, color: "#444" },
+  productCell: { whiteSpace: "nowrap" as const },
+  copyHint: { color: "#888", fontWeight: 400 as const },
+  copiedFlag: { color: "#1a7f37", fontWeight: 600 },
   copyFallback: { marginTop: "0.25rem" },
   copyFallbackInput: {
     fontFamily: "ui-monospace, monospace",
@@ -102,11 +113,9 @@ const styles = {
   checkboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
 } as const;
 
-const SECTION_DEFS: readonly { key: MacroSection | "all"; heading: string }[] = [
-  { key: "age3to11", heading: "COVID / Flu — Age 3-11" },
-  { key: "age12plus", heading: "COVID / Flu — Age 12+" },
-  { key: "altFlu", heading: "Alternative flu shots" },
-  { key: "all", heading: "All vaccines" },
+const FAMILY_DEFS: readonly { key: MacroFamily; heading: string }[] = [
+  { key: "fluCovid", heading: "Flu / COVID" },
+  { key: "other", heading: "Other vaccines" },
 ];
 
 /** Copies text via the Clipboard API, falling back to a hidden
@@ -304,6 +313,14 @@ export default function MacroCodesPage() {
     [productViews, vaccines, activeLotsByVaccineId]
   );
 
+  const groupedByFamily = useMemo(() => {
+    const map: Record<MacroFamily, MacroGroupedRow[]> = { fluCovid: [], other: [] };
+    for (const { key } of FAMILY_DEFS) {
+      map[key] = groupMacroRowsForFamily(rows, key);
+    }
+    return map;
+  }, [rows]);
+
   function rowKey(row: MacroRow): string {
     return `${row.productKey}:${row.doseNumber}`;
   }
@@ -487,33 +504,59 @@ export default function MacroCodesPage() {
     );
   }
 
-  function renderRow(row: MacroRow, sectionKey: string) {
-    const key = `${sectionKey}:${rowKey(row)}`;
+  /** Row click/keyboard handler — clicking or pressing Enter/Space
+   * anywhere on the row copies (or opens the modal for an incomplete
+   * row), per Will's round-3 brief ("if they click anywhere on the row
+   * it will copy"). The ⚙ settings cell stops propagation so it never
+   * triggers this. */
+  function handleRowActivate(row: MacroRow) {
+    if (row.shortCode === null) return;
+    void handleCopy(row);
+  }
+
+  function handleRowKeyDown(event: ReactKeyboardEvent<HTMLTableRowElement>, row: MacroRow) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    handleRowActivate(row);
+  }
+
+  function renderRow(row: MacroGroupedRow, familyKey: string) {
+    const key = `${familyKey}:${rowKey(row)}`;
     const note = missingNote(row);
     const isNoShortCode = row.shortCode === null;
-    const color = macroProductColor(row.productKey);
     const copyKey = rowKey(row);
+    const isCopied = copiedKey === copyKey;
+    const price = formatCashPrice(row.cashPriceCents);
+    const doseLabel = row.doseCount > 1 ? String(row.doseNumber) : "";
 
     return (
-      <tr key={key} style={{ background: color.background }}>
-        <td style={{ ...styles.td, ...styles.type, color: color.text }}>{row.catalogType}</td>
-        <td style={styles.td}>{row.displayName}</td>
-        <td style={styles.td}>Dose {row.doseNumber}</td>
-        <td style={{ ...styles.td, ...styles.cashPrice }}>{formatCashPrice(row.cashPriceCents)}</td>
+      <tr
+        key={key}
+        className={`macro-row${row.showType ? " macro-row--type-start" : ""}`}
+        role={isNoShortCode ? undefined : "button"}
+        tabIndex={isNoShortCode ? undefined : 0}
+        aria-label={isNoShortCode ? undefined : `Copy ${row.displayName} dose ${row.doseNumber} macro code`}
+        onClick={() => handleRowActivate(row)}
+        onKeyDown={(e) => handleRowKeyDown(e, row)}
+      >
+        <td style={{ ...styles.td, ...styles.typeCell }}>{row.showType ? row.catalogType : ""}</td>
+        <td style={{ ...styles.td, ...styles.ageCell }}>{row.showProduct ? row.age : ""}</td>
+        <td style={{ ...styles.td, ...styles.productCell }}>
+          {row.showProduct ? (price ? `${row.displayName} · ${price}` : row.displayName) : ""}
+        </td>
+        <td style={styles.td}>{doseLabel}</td>
         <td style={styles.td}>
           {isNoShortCode ? (
             <em style={styles.muted}>no short code set</em>
           ) : (
-            <span style={styles.copyCell}>
-              <button type="button" style={styles.button} onClick={() => void handleCopy(row)}>
-                {copiedKey === copyKey ? "Copied" : "Copy"}
-              </button>
-              {note && <span style={styles.note}>{note}</span>}
+            <>
+              {isCopied ? <span style={styles.copiedFlag}>Copied ✓</span> : <span style={styles.copyHint}>Copy</span>}
+              {note && <span style={{ ...styles.note, marginLeft: "0.4rem" }}>{note}</span>}
               {copyFailure?.key === copyKey && <CopyFallback code={copyFailure.code} />}
-            </span>
+            </>
           )}
         </td>
-        <td style={{ ...styles.td, textAlign: "right" }}>
+        <td className="macro-settings-cell" style={{ ...styles.td, textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
           {!isNoShortCode && (
             <details className="macro-settings-menu" style={styles.menuDetails} onToggle={handleSettingsMenuToggle}>
               <summary style={styles.menuSummary} aria-label={`${row.displayName} dose ${row.doseNumber} details`}>
@@ -540,23 +583,23 @@ export default function MacroCodesPage() {
     );
   }
 
-  function renderSectionTable(sectionRows: MacroRow[], sectionKey: string) {
-    if (sectionRows.length === 0) return null;
+  function renderFamilyTable(familyRows: MacroGroupedRow[], familyKey: string) {
+    if (familyRows.length === 0) return null;
     return (
-      <table style={styles.table}>
+      <table className="macro-table" style={styles.table}>
         <thead>
           <tr>
             <th style={styles.th}>Type</th>
-            <th style={styles.th}>Vaccine</th>
+            <th style={styles.th}>Age</th>
+            <th style={styles.th}>Product</th>
             <th style={styles.th}>Dose</th>
-            <th style={styles.th}>Cash price</th>
             <th style={styles.th}></th>
             <th style={styles.th}></th>
           </tr>
         </thead>
         <tbody>
-          {sectionRows.map((row) => (
-            <Fragment key={`${sectionKey}:${rowKey(row)}`}>{renderRow(row, sectionKey)}</Fragment>
+          {familyRows.map((row) => (
+            <Fragment key={`${familyKey}:${rowKey(row)}`}>{renderRow(row, familyKey)}</Fragment>
           ))}
         </tbody>
       </table>
@@ -566,19 +609,18 @@ export default function MacroCodesPage() {
   return (
     <main style={styles.main}>
       <h1>Macro codes</h1>
-      <p style={styles.muted}>Click Copy to copy a dose&apos;s macro code. Rows missing a lot or expiration prompt for them first.</p>
 
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
 
       {!loading &&
-        SECTION_DEFS.map(({ key, heading }) => {
-          const sectionRows = key === "all" ? rows : rows.filter((row) => row.sections.includes(key));
-          if (sectionRows.length === 0) return null;
+        FAMILY_DEFS.map(({ key, heading }) => {
+          const familyRows = groupedByFamily[key];
+          if (familyRows.length === 0) return null;
           return (
             <section key={key}>
               <h2 style={styles.sectionHeading}>{heading}</h2>
-              {renderSectionTable(sectionRows, key)}
+              {renderFamilyTable(familyRows, key)}
             </section>
           );
         })}
@@ -663,6 +705,39 @@ export default function MacroCodesPage() {
           </div>
         </div>
       )}
+
+      {/* Row-level interaction styling that plain inline styles can't
+       * express (hover/focus states, and the ⚙ column's border-around-
+       * Type-block rule) — same "no external library" posture as
+       * app/appointments/explorer/page.tsx's <style> keyframes tag.
+       * The settings cell is opacity:0 by default and only appears on
+       * row hover/focus-within, EXCEPT on touch devices (no hover) where
+       * it's always visible, since a touch user can't "hover" to reveal
+       * it. macro-row--type-start draws the top border of each bordered
+       * Type block; the table's own bottom border plus this rule
+       * produces one full border around every Type group. */}
+      <style>{`
+        .macro-table tbody tr.macro-row { cursor: pointer; }
+        .macro-table tbody tr.macro-row:hover,
+        .macro-table tbody tr.macro-row:focus-visible {
+          background: #f2f6fb;
+          outline: none;
+        }
+        .macro-table tbody tr.macro-row--type-start td {
+          border-top: 1px solid #ccc;
+        }
+        .macro-table tbody tr.macro-row:last-child td {
+          border-bottom: 1px solid #ccc;
+        }
+        .macro-settings-cell { opacity: 0; }
+        .macro-row:hover .macro-settings-cell,
+        .macro-row:focus-within .macro-settings-cell {
+          opacity: 1;
+        }
+        @media (hover: none) {
+          .macro-settings-cell { opacity: 1; }
+        }
+      `}</style>
     </main>
   );
 }
