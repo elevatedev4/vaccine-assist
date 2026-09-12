@@ -927,18 +927,57 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         // `_pioneerEntryPrefetchKey == key`, comparing a nullable tuple
         // against a plain one) purely to keep this reviewer-verifiable by
         // reading alone, with no compiler on hand for this change.
-        if (_pioneerEntryPrefetchKey.HasValue
+        //
+        // REVIEWER FIX (request-changes round, 2026-09-11): a cache "hit"
+        // used to mean only "the key matches and both task fields are
+        // non-null" — a FAULTED or CANCELED task is still non-null, so a
+        // transient API failure (network blip, timeout) got cached
+        // FOREVER: every later click for the same vaccine/age replayed the
+        // same already-failed Task instead of ever retrying, until the
+        // user reselected the vaccine. IsFaulted/IsCanceled on EITHER task
+        // now counts as a miss, same as the key not matching at all.
+        var sameSelection = _pioneerEntryPrefetchKey.HasValue
             && _pioneerEntryPrefetchKey.Value.VaccineId == key.VaccineId
-            && _pioneerEntryPrefetchKey.Value.AgeYears == key.AgeYears
-            && _prefetchedPhysicianTask is not null && _prefetchedLotTask is not null)
+            && _pioneerEntryPrefetchKey.Value.AgeYears == key.AgeYears;
+        var cachedTasksAreUsable = _prefetchedPhysicianTask is not null && _prefetchedLotTask is not null
+            && !_prefetchedPhysicianTask.IsFaulted && !_prefetchedPhysicianTask.IsCanceled
+            && !_prefetchedLotTask.IsFaulted && !_prefetchedLotTask.IsCanceled;
+
+        if (sameSelection && cachedTasksAreUsable)
         {
-            return; // already running (or finished) for this exact selection
+            return; // already running (or finished successfully) for this exact selection
         }
 
         _pioneerEntryPrefetchKey = key;
         var vaccine = SelectedVaccine;
         _prefetchedPhysicianTask = _apiService.ResolvePhysicianAsync(vaccine.Id, age);
         _prefetchedLotTask = FindActiveLotForVaccineAsync(vaccine, l => !l.IsExpired && !l.IsPastBeyondUseDate);
+    }
+
+    /// <summary>
+    /// REVIEWER FIX (request-changes round, 2026-09-11): clears the
+    /// physician+lot prefetch cache outright — called from
+    /// EnterIntoPioneerAsync's catch block (and any early-return failure
+    /// path once BuildLivePayloadAsync has awaited the cached tasks) so a
+    /// transient failure never lingers as a cached, reusable-looking
+    /// result. EnsurePioneerEntryPrefetchStarted's own IsFaulted/IsCanceled
+    /// check already covers "the click starts a prefetch that itself
+    /// faults" — this covers the OTHER failure shapes that don't leave a
+    /// faulted Task behind at all (BuildLivePayloadAsync's own "no
+    /// physician configured"/"no unexpired lot" guard clauses, which
+    /// return null after a SUCCESSFULLY completed WhenAll — nothing about
+    /// the cached tasks themselves is wrong, but the vaccine's situation
+    /// might change by the next click, e.g. staff adds a lot or configures
+    /// a physician rule, and RefreshSelectedVaccineActiveLotAsync only
+    /// invalidates on a LOT change, not a physician-rule change made
+    /// outside this popup). Safe to call even when nothing was ever
+    /// prefetched (all three fields already null/default).
+    /// </summary>
+    private void ClearPioneerEntryPrefetchCache()
+    {
+        _pioneerEntryPrefetchKey = null;
+        _prefetchedPhysicianTask = null;
+        _prefetchedLotTask = null;
     }
 
     /// <summary>Shared per-step log sink — StepLog (the on-screen list) plus
@@ -1134,6 +1173,18 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         catch (Exception ex)
         {
             ErrorMessage = $"Couldn't run the entry sequence: {ex.Message}";
+            // REVIEWER FIX (request-changes round, 2026-09-11): an
+            // exception here most often means the CACHED prefetch task
+            // itself faulted (e.g. Task.WhenAll rethrowing a transient
+            // ResolvePhysicianAsync/GetLotsAsync failure) — clearing the
+            // cache guarantees the NEXT "Enter into Pioneer" click starts a
+            // genuinely fresh lookup instead of EnsurePioneerEntryPrefetchStarted's
+            // own IsFaulted check being the only thing standing between a
+            // transient blip and a permanently-stuck cached failure. Safe
+            // even when the exception had nothing to do with the prefetch
+            // at all (e.g. PioneerEntrySequenceRunner itself threw) — this
+            // just costs one extra lookup on the next click in that case.
+            ClearPioneerEntryPrefetchCache();
         }
         finally
         {
@@ -1358,11 +1409,28 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         {
             ErrorMessage = $"No protocol physician configured for {SelectedVaccine.Name} at age {age} — " +
                 "add one (or a matching rule) in the Physicians settings tab, then try again.";
+            // REVIEWER FIX (request-changes round, 2026-09-11): this is a
+            // SUCCESSFULLY completed task that just resolved to "no
+            // physician" — EnsurePioneerEntryPrefetchStarted's own
+            // IsFaulted/IsCanceled check would never catch this shape, so a
+            // later click (after staff configures a Physicians rule,
+            // outside this popup, with no reselect in between) would
+            // otherwise keep reusing this same stale "no physician"
+            // result forever.
+            ClearPioneerEntryPrefetchCache();
             return null;
         }
 
         var payload = await BuildPayloadAsync(lotTask);
-        if (payload is null) return null; // BuildPayloadAsync already set ErrorMessage (lot issue)
+        if (payload is null)
+        {
+            // Same reasoning as the physician branch above — BuildPayloadAsync
+            // already set ErrorMessage (lot issue); this just makes sure a
+            // later click doesn't keep replaying this same resolved-to-null
+            // lot lookup.
+            ClearPioneerEntryPrefetchCache();
+            return null;
+        }
 
         return payload with { PhysicianAlternateId = physician.AlternateId };
     }

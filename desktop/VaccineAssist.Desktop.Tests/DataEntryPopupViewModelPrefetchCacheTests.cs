@@ -132,4 +132,49 @@ public class DataEntryPopupViewModelPrefetchCacheTests
 
         Assert.Equal("SECONDLOT", sequence.CapturedPayload!.LotNumber);
     }
+
+    [Fact]
+    public async Task ATransientPhysicianResolutionFailureDoesNotStayCachedForASecondAttemptWithNoReselect()
+    {
+        // Reviewer fix (request-changes round, 2026-09-11): before this
+        // fix, a faulted cached Task for (vaccine id, age) stayed cached —
+        // EnsurePioneerEntryPrefetchStarted's cache-hit guard only checked
+        // the task fields were non-null, and nothing ever cleared them on
+        // failure, so every later click for the SAME vaccine/age replayed
+        // the same already-faulted Task until the user reselected the
+        // vaccine. FakeVaccineApiService.ResolvePhysicianException makes
+        // ONLY the first ResolvePhysicianAsync call fail (consumed once,
+        // then normal) — the first "Enter into Pioneer" click must fail
+        // with that error, and a SECOND click, with NO reselect of
+        // SelectedVaccine/PatientAgeYears in between, must succeed.
+        var apiService = new FakeVaccineApiService();
+        apiService.LotsByVaccineId[SampleVaccine.Id] = new()
+        {
+            new Lot { Id = Guid.NewGuid(), VaccineId = SampleVaccine.Id, LotNumber = "GOOD1", Expiration = DateOnly.FromDateTime(DateTime.Today.AddYears(1)), Status = "active" },
+        };
+        apiService.ResolvePhysicianException = new InvalidOperationException("network blip");
+        var sequence = new PayloadCapturingPioneerEntrySequence();
+        var viewModel = CreateViewModel(apiService, sequence);
+        viewModel.PatientAgeYears = 40;
+        viewModel.SelectedVaccine = SampleVaccine;
+        await Settle(viewModel);
+
+        viewModel.EnterIntoPioneerCommand.Execute(null);
+        await Settle(viewModel);
+
+        Assert.Null(sequence.CapturedPayload);
+        Assert.NotNull(viewModel.ErrorMessage);
+        Assert.Contains("network blip", viewModel.ErrorMessage);
+        Assert.Equal(1, apiService.ResolvePhysicianCallCount);
+
+        // No reselect of SelectedVaccine/PatientAgeYears here — this is
+        // exactly the click that used to replay the same cached, forever-
+        // faulted Task.
+        viewModel.EnterIntoPioneerCommand.Execute(null);
+        await Settle(viewModel);
+
+        Assert.NotNull(sequence.CapturedPayload);
+        Assert.Equal("GOOD1", sequence.CapturedPayload!.LotNumber);
+        Assert.Equal(2, apiService.ResolvePhysicianCallCount);
+    }
 }

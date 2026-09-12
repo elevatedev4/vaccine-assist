@@ -141,6 +141,25 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     public Physician? ResolvePhysicianResult { get; set; } = new() { Id = Guid.NewGuid(), DisplayName = "Rivera, Ana", AlternateId = "ALTTEST" };
     public int ResolvePhysicianCallCount { get; private set; }
 
+    /// <summary>V-..., 2026-09-11 (reviewer request-changes round): set to
+    /// make the very NEXT ResolvePhysicianAsync call fail with this
+    /// exception — consumed (reset to null) the moment it's used, same
+    /// "one-shot then normal" pattern as DelayNextGetLotsCall. Used by
+    /// DataEntryPopupViewModelPrefetchCacheTests to prove a transient
+    /// prefetch failure doesn't get cached forever
+    /// (EnsurePioneerEntryPrefetchStarted must restart on a faulted cached
+    /// task, and EnterIntoPioneerAsync's catch must clear the cache
+    /// outright). Deliberately throws from behind an `await Task.Yield()`
+    /// rather than synchronously — a real ResolvePhysicianAsync network
+    /// call would still be PENDING at the moment
+    /// BuildLivePayloadAsync's own defensive EnsurePioneerEntryPrefetchStarted
+    /// call re-checks it (moments after EnterIntoPioneerAsync's own call
+    /// started it), not already faulted; throwing synchronously here would
+    /// let that defensive re-check see IsFaulted immediately and restart
+    /// (and succeed) within the SAME click, which is a real, better
+    /// outcome in production but not what this test is isolating.</summary>
+    public Exception? ResolvePhysicianException { get; set; }
+
     public Task<IReadOnlyList<Vaccine>> GetVaccinesAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Vaccine>>(Vaccines);
 
@@ -348,10 +367,19 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
         return Task.CompletedTask;
     }
 
-    public Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default)
+    public async Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default)
     {
         ResolvePhysicianCallCount++;
-        return Task.FromResult(ResolvePhysicianResult);
+
+        var exception = ResolvePhysicianException;
+        if (exception is not null)
+        {
+            ResolvePhysicianException = null; // consumed once — see this property's own doc comment
+            await Task.Yield(); // stay Pending until awaited, not already Faulted the instant this call returns
+            throw exception;
+        }
+
+        return ResolvePhysicianResult;
     }
 }
 
