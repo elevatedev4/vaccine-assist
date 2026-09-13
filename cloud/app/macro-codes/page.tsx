@@ -803,7 +803,17 @@ function MacroCodesPageContent() {
     return (
       <span
         key={key}
-        style={{ position: "relative", display: block ? "block" : "inline-block", width: block ? "100%" : undefined }}
+        style={{
+          position: "relative",
+          display: block ? "block" : "inline-block",
+          width: block ? "100%" : undefined,
+          // ROUND 10 FIX: inside a flex-wrap button group (version C), a
+          // button must never be squeezed narrower than its own content —
+          // that's what let "Dose 1" wrap onto two lines when a sibling
+          // Dose 2/3 button was wide. flexShrink: 0 keeps every button at
+          // its natural width; the GROUP wraps to a new line instead.
+          flexShrink: block ? undefined : 0,
+        }}
       >
         <button
           type="button"
@@ -839,6 +849,11 @@ function MacroCodesPageContent() {
             gap: subLabel ? 1 : undefined,
             fontSize: large ? "13px" : "12px",
             fontWeight: 600,
+            // ROUND 10 FIX: the main label itself must never wrap (that's
+            // the "Dose 1" wrapping-onto-two-lines bug) — its width is
+            // sized to fit via minWidth below, so nowrap just stops a
+            // narrow flex context from breaking it mid-word.
+            whiteSpace: "nowrap",
             cursor: isNoShortCode ? "default" : "pointer",
             width: block ? "100%" : undefined,
             minWidth: block ? undefined : `${Math.max(visibleText.length, MIN_BUTTON_CH)}ch`,
@@ -852,7 +867,14 @@ function MacroCodesPageContent() {
               aria-hidden="true"
               style={{
                 display: "block",
-                maxWidth: large ? 112 : 96,
+                // ROUND 10 FIX (live screenshot, layout C): dropped from
+                // 96/112px — even the shortened round-10-fix catalog
+                // strings (e.g. Gardasil's "1–2 mo · 9–14: 6 mo") could
+                // still widen the button enough to shove the group over
+                // the product name at 1456px; the full text is always
+                // still reachable via the button's title (defaultTitle
+                // above).
+                maxWidth: 88,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
@@ -1419,21 +1441,39 @@ function MacroCodesPageContent() {
           border-radius: 4px;
           margin: 0.4rem 0 0.15rem;
         }
+        /* ROUND 10 FIX (live screenshot, layout C @ 1456px): Gardasil 9's
+         * Dose 2/3 buttons were wide enough that the grid's "auto" button
+         * column pushed left over the name column, wrapping "Dose 1"
+         * onto two lines and shoving the price line under the buttons.
+         * Switched from a fixed 3-column grid to flex so the button
+         * group can wrap to a second line UNDER itself instead of
+         * colliding with the name: the name block is flex:0 0 auto (its
+         * own natural/nowrap width, never stretched or squeezed) and the
+         * button group is flex-wrap:wrap with a max-width cap, so a wide
+         * multi-dose group wraps within its own column instead of
+         * spilling into the name's space. */
         .macro-row-c {
-          display: grid;
-          grid-template-columns: 1fr auto auto;
-          align-items: center;
+          display: flex;
+          align-items: flex-start;
           gap: 0.5rem;
           padding: 6px 0;
           border-bottom: 1px solid #eee;
         }
         .macro-product-name-cell-c {
+          flex: 0 0 auto;
           min-width: 0;
+          max-width: 55%;
         }
         .macro-product-name-c {
           font-size: 15px;
           font-weight: 700;
           line-height: 1.25;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .macro-row-c > .macro-settings-cell {
+          flex: 0 0 auto;
         }
         .macro-product-meta-c {
           display: flex;
@@ -1492,16 +1532,34 @@ function MacroCodesPageContent() {
         }
         .macro-dose-buttons-c {
           display: flex;
+          flex-wrap: wrap;
           gap: 0.3rem;
           justify-content: flex-end;
+          max-width: 60%;
+          /* Pushes the button group (and the settings ⚙ after it) to the
+           * row's right edge, hugging together, instead of the name-cell
+           * -> buttons -> settings gaps splitting evenly (which left an
+           * odd empty gap after a short name). */
+          margin-left: auto;
         }
 
         @media (max-width: 700px) {
-          .macro-row-b, .macro-row-c {
+          .macro-row-c {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .macro-product-name-cell-c,
+          .macro-dose-buttons-c {
+            max-width: 100%;
+          }
+          .macro-dose-buttons-c {
+            justify-content: flex-start;
+            margin-left: 0;
+          }
+          .macro-row-b {
             grid-template-columns: 1fr;
             justify-items: start;
           }
-          .macro-dose-buttons-c { justify-content: flex-start; }
         }
       `}</style>
     </main>

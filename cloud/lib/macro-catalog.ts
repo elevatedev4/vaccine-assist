@@ -297,7 +297,7 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
     age: "9–45",
     ageBase: "9–45",
     ageMinMonths: 108,
-    doseSchedule: { 2: "1–2 mo (15+) · 6 mo (9–14)", 3: "6 mo (15+ only)" },
+    doseSchedule: { 2: "1–2 mo · 9–14: 6 mo", 3: "6 mo (15+)" },
   },
   menveo: { type: "Meningitis", sheetOrder: 15, age: "2 mo–55", ageBase: "2 mo–55", ageMinMonths: 2 },
   vaqtaadult: {
@@ -315,7 +315,7 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
     age: "12 mo+",
     ageBase: "12 mo+",
     ageMinMonths: 12,
-    doseSchedule: { 2: "28 d — students, healthcare, travelers, HIV, IC contacts" },
+    doseSchedule: { 2: "28 d · special groups" },
   },
   priorix: { type: "MMR", sheetOrder: 19, age: "12 mo+", ageBase: "12 mo+", ageMinMonths: 12 },
 };
