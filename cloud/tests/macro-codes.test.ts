@@ -398,6 +398,42 @@ describe("groupMacroRowsBySection", () => {
     expect(product.cashPriceCents).toBe(14799);
   });
 
+  describe("ROUND 9: ageBase / note propagate from the catalog onto MacroRow and MacroProductGroup", () => {
+    it("Shingrix: ageBase '50+', note '19+ if immunocompromised', full `age` untouched", () => {
+      const products: ProductView[] = [view({ productKey: "ndc:shingrix", displayName: "Shingrix", vaccineIds: ["s1", "s2"] })];
+      const vaccines: MacroRowVaccine[] = [
+        vaccine({ id: "s1", name: "Shingrix", dose: "1", short_code: "shingrix1" }),
+        vaccine({ id: "s2", name: "Shingrix", dose: "2", short_code: "shingrix2" }),
+      ];
+      const rows = buildMacroRows(products, vaccines, {});
+      expect(rows.every((r) => r.age === "50+ (19+ IC)")).toBe(true);
+      expect(rows.every((r) => r.ageBase === "50+")).toBe(true);
+      expect(rows.every((r) => r.note === "19+ if immunocompromised")).toBe(true);
+
+      const product = groupMacroRowsBySection(rows).find((s) => s.section === "Shingles")!.products[0];
+      expect(product.ageBase).toBe("50+");
+      expect(product.note).toBe("19+ if immunocompromised");
+    });
+
+    it("a product with no catalog qualifier (Comirnaty) has ageBase equal to age and no note", () => {
+      const products: ProductView[] = [view({ productKey: "name:comirnaty", displayName: "Comirnaty", vaccineIds: ["c1"] })];
+      const vaccines: MacroRowVaccine[] = [vaccine({ id: "c1", name: "Comirnaty", short_code: "comirnaty12" })];
+      const rows = buildMacroRows(products, vaccines, {});
+
+      const product = groupMacroRowsBySection(rows).find((s) => s.section === "COVID")!.products[0];
+      expect(product.ageBase).toBe("12+");
+      expect(product.note).toBeUndefined();
+    });
+
+    it("a product with no short code (Other/MACRO_CATALOG_OTHER) has an empty ageBase and no note", () => {
+      const products: ProductView[] = [view({ productKey: "name:mystery", displayName: "Mystery Vaccine", vaccineIds: ["m1"] })];
+      const vaccines: MacroRowVaccine[] = [vaccine({ id: "m1", name: "Mystery Vaccine", short_code: "" })];
+      const rows = buildMacroRows(products, vaccines, {});
+      expect(rows[0].ageBase).toBe("");
+      expect(rows[0].note).toBeUndefined();
+    });
+  });
+
   describe("dose button labels", () => {
     it("single-dose non-COVID product: display name plus its catalog age in parens", () => {
       const products: ProductView[] = [view({ productKey: "name:abrysvo", displayName: "Abrysvo", vaccineIds: ["a1"] })];
@@ -612,6 +648,17 @@ describe("filterMacroTopGroups", () => {
   it("returns no groups at all when nothing matches", () => {
     const topGroups = topGroupsFor(fixtureCodes);
     expect(filterMacroTopGroups(topGroups, "nonexistent-product-xyz")).toEqual([]);
+  });
+
+  it("ROUND 9 (Will's verbatim brief): also matches a product's special-qualification note", () => {
+    const products: ProductView[] = [view({ productKey: "ndc:shingrix", displayName: "Shingrix", vaccineIds: ["s1"] })];
+    const vaccines: MacroRowVaccine[] = [vaccine({ id: "s1", name: "Shingrix", short_code: "shingrix1" })];
+    const rows = buildMacroRows(products, vaccines, {});
+    const topGroups = groupSectionsByTopGroup(groupMacroRowsBySection(rows));
+
+    const filtered = filterMacroTopGroups(topGroups, "immunocompromised");
+    const names = filtered.flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)));
+    expect(names).toEqual(["Shingrix"]);
   });
 });
 

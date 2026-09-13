@@ -147,9 +147,30 @@ export type MacroCatalogEntry = {
   sheetOrder: number;
   /** Which round-4 section this product belongs to. */
   section: MacroSection;
-  /** Short, human-readable approved age range, e.g. "12+", "3–11",
-   * "6 mo+", "60+ (50–59 high-risk)". "" for an unrecognized code. */
+  /** Short, human-readable approved age range, INCLUDING any
+   * parenthetical/qualifier clause, e.g. "12+", "3–11", "6 mo+", "50+
+   * (19+ IC)", "60+ / preg 32–36 wk". "" for an unrecognized code. This
+   * is the FULL label round-4/5/7's doseButtonLabel and
+   * macroProductNameWithAge flatten for versions A/B — kept exactly as
+   * it always was (round 9 below adds ageBase/note for version C
+   * alongside this field, without touching it, so A/B's output stays
+   * byte-identical). */
   age: string;
+  /** ROUND 9 (Will's verbatim feedback, 2026-09-13, /macro-codes round
+   * 8 in his own numbering — continuing this file's internal ROUND
+   * count after round 8's A/B/C switcher): version C's compact base age
+   * range with any qualifier clause stripped out, e.g. "50+" for
+   * Shingrix (whose `age` is "50+ (19+ IC)"), "60+" for Abrysvo (whose
+   * `age` is "60+ / preg 32–36 wk"). Equal to `age` verbatim for a
+   * product with no qualifier. "" for an unrecognized code. */
+  ageBase: string;
+  /** ROUND 9: a special-qualification note surfaced via version C's ⓘ
+   * icon/tooltip, e.g. "19+ if immunocompromised" (Shingrix), "2–18
+   * high-risk" (Prevnar 20), "or pregnant 32–36 wk" (Abrysvo), "2–17
+   * high-risk" (Capvaxive), "50–59 high-risk" (Arexvy). Undefined for a
+   * product with no qualification — see RAW_MACRO_CATALOG below for the
+   * full base/note table. */
+  note?: string;
   /** Numeric floor of `age`, in months, for sorting a section's products
    * youngest-eligible-first. An unrecognized code sorts last. */
   ageMinMonths: number;
@@ -164,39 +185,77 @@ export const MACRO_CATALOG_OTHER: MacroCatalogEntry = {
   sheetOrder: MACRO_CATALOG_OTHER_ORDER,
   section: "Other",
   age: "",
+  ageBase: "",
   ageMinMonths: Number.MAX_SAFE_INTEGER,
 };
 
-type RawCatalogEntry = { type: string; sheetOrder: number; age: string; ageMinMonths: number };
+type RawCatalogEntry = { type: string; sheetOrder: number; age: string; ageBase: string; note?: string; ageMinMonths: number };
 
 /** Keyed by short_code (see this file's header for the exact-vs-base
  * key convention). sheetOrder values are the sheet's original row
  * position (1-indexed) and are kept for stability/tie-breaking even
- * though section display order is now driven by MACRO_SECTION_ORDER. */
+ * though section display order is now driven by MACRO_SECTION_ORDER.
+ *
+ * ROUND 9 (Will's verbatim feedback, 2026-09-13): `ageBase`/`note` split
+ * out of `age`'s qualifier clause for version C's compact age line + ⓘ
+ * tooltip — `age` itself is untouched (still the full label A/B use).
+ * Hand-edited per product below rather than parsed out of `age`, since
+ * three of the five notes reword the source clause for a clearer
+ * tooltip (Shingrix "19+ IC" -> "19+ if immunocompromised", Abrysvo
+ * "preg 32–36 wk" -> "or pregnant 32–36 wk") rather than just stripping
+ * parens — a generic parser can't produce that wording. */
 const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
-  comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageMinMonths: 144 },
-  mnexspike: { type: "Moderna 12+", sheetOrder: 2, age: "12+", ageMinMonths: 144 },
-  spikevax6mo11: { type: "Moderna 3-11", sheetOrder: 3, age: "3–11", ageMinMonths: 36 },
-  flucelvaxmdv: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
-  flucelvaxpfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
-  mflusiva: { type: "Flu mRNA (50+)", sheetOrder: 20, age: "50+", ageMinMonths: 600 },
-  afluriapfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageMinMonths: 6 },
-  fluad: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageMinMonths: 780 },
-  fluzonehd: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageMinMonths: 780 },
-  flumist: { type: "Flu (nasal)", sheetOrder: 6, age: "2–49", ageMinMonths: 24 },
-  arexvy: { type: "RSV", sheetOrder: 7, age: "60+ (50–59 high-risk)", ageMinMonths: 600 },
-  abrysvo: { type: "RSV (preg)", sheetOrder: 8, age: "60+ / preg 32–36 wk", ageMinMonths: 720 },
-  shingrix: { type: "Shingles", sheetOrder: 9, age: "50+ (19+ IC)", ageMinMonths: 228 },
-  engerix: { type: "Hep B (adult)", sheetOrder: 10, age: "20+", ageMinMonths: 240 },
-  prevnar20: { type: "Pneumonia 20", sheetOrder: 11, age: "19+ (2–18 high-risk)", ageMinMonths: 24 },
-  capvaxive: { type: "Pneumonia 21", sheetOrder: 12, age: "18+ (2–17 high-risk)", ageMinMonths: 24 },
-  boostrix: { type: "Tetanus (TDaP)", sheetOrder: 13, age: "10+", ageMinMonths: 120 },
-  gardasil: { type: "HPV", sheetOrder: 14, age: "9–45", ageMinMonths: 108 },
-  menveo: { type: "Meningitis", sheetOrder: 15, age: "2 mo–55", ageMinMonths: 2 },
-  vaqtaadult: { type: "Hepatitis A (19+)", sheetOrder: 16, age: "19+", ageMinMonths: 228 },
-  typhim: { type: "Typhoid", sheetOrder: 17, age: "2+", ageMinMonths: 24 },
-  mmr: { type: "MMR", sheetOrder: 18, age: "12 mo+", ageMinMonths: 12 },
-  priorix: { type: "MMR", sheetOrder: 19, age: "12 mo+", ageMinMonths: 12 },
+  comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageBase: "12+", ageMinMonths: 144 },
+  mnexspike: { type: "Moderna 12+", sheetOrder: 2, age: "12+", ageBase: "12+", ageMinMonths: 144 },
+  spikevax6mo11: { type: "Moderna 3-11", sheetOrder: 3, age: "3–11", ageBase: "3–11", ageMinMonths: 36 },
+  flucelvaxmdv: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageBase: "6 mo+", ageMinMonths: 6 },
+  flucelvaxpfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageBase: "6 mo+", ageMinMonths: 6 },
+  mflusiva: { type: "Flu mRNA (50+)", sheetOrder: 20, age: "50+", ageBase: "50+", ageMinMonths: 600 },
+  afluriapfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageBase: "6 mo+", ageMinMonths: 6 },
+  fluad: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageBase: "65+", ageMinMonths: 780 },
+  fluzonehd: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageBase: "65+", ageMinMonths: 780 },
+  flumist: { type: "Flu (nasal)", sheetOrder: 6, age: "2–49", ageBase: "2–49", ageMinMonths: 24 },
+  arexvy: { type: "RSV", sheetOrder: 7, age: "60+ (50–59 high-risk)", ageBase: "60+", note: "50–59 high-risk", ageMinMonths: 600 },
+  abrysvo: {
+    type: "RSV (preg)",
+    sheetOrder: 8,
+    age: "60+ / preg 32–36 wk",
+    ageBase: "60+",
+    note: "or pregnant 32–36 wk",
+    ageMinMonths: 720,
+  },
+  shingrix: {
+    type: "Shingles",
+    sheetOrder: 9,
+    age: "50+ (19+ IC)",
+    ageBase: "50+",
+    note: "19+ if immunocompromised",
+    ageMinMonths: 228,
+  },
+  engerix: { type: "Hep B (adult)", sheetOrder: 10, age: "20+", ageBase: "20+", ageMinMonths: 240 },
+  prevnar20: {
+    type: "Pneumonia 20",
+    sheetOrder: 11,
+    age: "19+ (2–18 high-risk)",
+    ageBase: "19+",
+    note: "2–18 high-risk",
+    ageMinMonths: 24,
+  },
+  capvaxive: {
+    type: "Pneumonia 21",
+    sheetOrder: 12,
+    age: "18+ (2–17 high-risk)",
+    ageBase: "18+",
+    note: "2–17 high-risk",
+    ageMinMonths: 24,
+  },
+  boostrix: { type: "Tetanus (TDaP)", sheetOrder: 13, age: "10+", ageBase: "10+", ageMinMonths: 120 },
+  gardasil: { type: "HPV", sheetOrder: 14, age: "9–45", ageBase: "9–45", ageMinMonths: 108 },
+  menveo: { type: "Meningitis", sheetOrder: 15, age: "2 mo–55", ageBase: "2 mo–55", ageMinMonths: 2 },
+  vaqtaadult: { type: "Hepatitis A (19+)", sheetOrder: 16, age: "19+", ageBase: "19+", ageMinMonths: 228 },
+  typhim: { type: "Typhoid", sheetOrder: 17, age: "2+", ageBase: "2+", ageMinMonths: 24 },
+  mmr: { type: "MMR", sheetOrder: 18, age: "12 mo+", ageBase: "12 mo+", ageMinMonths: 12 },
+  priorix: { type: "MMR", sheetOrder: 19, age: "12 mo+", ageBase: "12 mo+", ageMinMonths: 12 },
 };
 
 const MACRO_CATALOG: Readonly<Record<string, MacroCatalogEntry>> = Object.fromEntries(

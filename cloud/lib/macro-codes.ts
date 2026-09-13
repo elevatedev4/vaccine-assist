@@ -123,6 +123,19 @@ export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
  * of the page so it's unit-testable without a DOM (see this file's
  * MacroViewModeStorage doc comment) — Will's brief requires the
  * read/write be wrapped so an unavailable/blocked store never throws.
+ *
+ * ROUND 9 (Will's verbatim feedback, 2026-09-13, replying to round 8 —
+ * "I like C so far... let's work on improving C"): polishes version C
+ * only (A/B untouched). MacroRow/MacroProductGroup grow two new fields,
+ * `ageBase`/`note`, piped straight through from lib/macro-catalog.ts's
+ * same-named MacroCatalogEntry fields — `age` itself is NOT touched, so
+ * doseButtonLabel/macroProductNameWithAge (and hence every version-A/B
+ * label and this file's own existing tests) stay byte-identical to
+ * round 8. Version C's page renderer (app/macro-codes/page.tsx) uses
+ * `ageBase` for its compact "age · price" line and `note` for its ⓘ
+ * tooltip; filterMacroTopGroups now also matches a query against
+ * `note`, per Will's brief ("filter box should also match the note
+ * text").
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -201,9 +214,19 @@ export type MacroRow = {
   /** Round-4 section (Flu, COVID, Pneumonia, RSV, ...) — see
    * lib/macro-catalog.ts's sectionForType. */
   section: MacroSection;
-  /** Short approved-age-range label, e.g. "12+", "3–11", "6 mo+". ""
-   * for an unrecognized short code. */
+  /** Short approved-age-range label, INCLUDING any qualifier clause,
+   * e.g. "12+", "3–11", "6 mo+", "50+ (19+ IC)". "" for an unrecognized
+   * short code. See lib/macro-catalog.ts's MacroCatalogEntry.age doc
+   * comment — this is the FULL label version A/B render. */
   age: string;
+  /** ROUND 9: version C's compact base age range with any qualifier
+   * clause stripped (lib/macro-catalog.ts's MacroCatalogEntry.ageBase).
+   * Equal to `age` verbatim when the product has no qualifier. */
+  ageBase: string;
+  /** ROUND 9: special-qualification note for version C's ⓘ tooltip
+   * (lib/macro-catalog.ts's MacroCatalogEntry.note). Undefined when the
+   * product has no qualification. */
+  note?: string;
   /** Numeric floor of `age` in months, for sorting a section's products
    * youngest-eligible-first. Unrecognized codes sort last. */
   ageMinMonths: number;
@@ -321,6 +344,8 @@ export function buildMacroRows(
         sheetOrder: MACRO_CATALOG_OTHER.sheetOrder,
         section: MACRO_CATALOG_OTHER.section,
         age: MACRO_CATALOG_OTHER.age,
+        ageBase: MACRO_CATALOG_OTHER.ageBase,
+        note: MACRO_CATALOG_OTHER.note,
         ageMinMonths: MACRO_CATALOG_OTHER.ageMinMonths,
         doseCount: 1,
         vaccineIds: product.vaccineIds,
@@ -365,6 +390,8 @@ export function buildMacroRows(
         sheetOrder: catalogEntry.sheetOrder,
         section: catalogEntry.section,
         age: catalogEntry.age,
+        ageBase: catalogEntry.ageBase,
+        note: catalogEntry.note,
         ageMinMonths: catalogEntry.ageMinMonths,
         doseCount,
         vaccineIds: product.vaccineIds,
@@ -400,6 +427,14 @@ export type MacroProductGroup = {
   /** Catalog age-range label (lib/macro-catalog.ts), e.g. "12+",
    * "3–11". "" for an unrecognized/no-short-code product. */
   age: string;
+  /** ROUND 9: version C's compact base age range with any qualifier
+   * clause stripped (see MacroRow.ageBase). Equal to `age` verbatim
+   * when the product has no qualifier. */
+  ageBase: string;
+  /** ROUND 9: special-qualification note for version C's ⓘ tooltip
+   * (see MacroRow.note). Undefined when the product has no
+   * qualification. */
+  note?: string;
   cashPriceCents: number | null;
   doses: MacroDoseButton[];
 };
@@ -503,6 +538,8 @@ export function groupMacroRowsBySection(rows: readonly MacroRow[]): MacroSection
         productKey: first.productKey,
         displayName: first.displayName,
         age: first.age,
+        ageBase: first.ageBase,
+        note: first.note,
         cashPriceCents: first.cashPriceCents,
         doses: sortedRows.map((row) => ({ row, label: doseButtonLabel(row, doseCount) })),
       };
@@ -566,12 +603,15 @@ export function groupSectionsByTopGroup(sections: readonly MacroSectionGroup[]):
  * Matches a product if `query` (trimmed, case-insensitive) is a
  * substring of the product's display name, its section's display name
  * (either the catalog name or the round-8 override, e.g. "Tdap"
- * matches Tetanus), or any of its real doses' short codes — so typing a
- * code ("shingrix") or a family alias ("tdap") finds the product even
- * when it isn't in the display name. Matching a section's name keeps
- * every product in that section (typing "flu" shows the whole Flu
- * section) rather than requiring each product name to also contain the
- * word.
+ * matches Tetanus), its round-9 special-qualification note (Will's
+ * verbatim brief, 2026-09-13: "make the table... filter box should
+ * also match the note text" — e.g. "high-risk" or "immunocompromised"
+ * finds every product with that qualifier), or any of its real doses'
+ * short codes — so typing a code ("shingrix") or a family alias
+ * ("tdap") finds the product even when it isn't in the display name.
+ * Matching a section's name keeps every product in that section
+ * (typing "flu" shows the whole Flu section) rather than requiring
+ * each product name to also contain the word.
  *
  * An empty/whitespace-only query returns `topGroups` UNCHANGED, by
  * reference — a cleared search box is a no-op, not a rebuild. A
@@ -585,6 +625,7 @@ export function filterMacroTopGroups(topGroups: readonly MacroTopGroupBlock[], q
 
   function productMatches(product: MacroProductGroup): boolean {
     if (product.displayName.toLowerCase().includes(needle)) return true;
+    if ((product.note ?? "").toLowerCase().includes(needle)) return true;
     return product.doses.some((dose) => (dose.row.shortCode ?? "").toLowerCase().includes(needle));
   }
 
