@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { NAV_TABS, buildNavItems, isTabActive, shouldShowNav } from "@/lib/nav-config";
 
 describe("NAV_TABS", () => {
-  it("has exactly the seven tabs (five from Will's original brief plus Macro codes and Entry values), in order", () => {
+  it("has exactly the eight tabs (five from Will's original brief plus Macro codes, Entry values, and Screener), in order", () => {
     expect(NAV_TABS.map((t) => t.label)).toEqual([
       "Schedule",
       "Ordering",
       "Data Entry",
+      "Screener",
       "Lots",
       "Macro codes",
       "Entry values",
@@ -16,6 +17,7 @@ describe("NAV_TABS", () => {
       "/appointments",
       "/ordering",
       "/data-entry",
+      "/screener",
       "/lots",
       "/macro-codes",
       "/entry-values",
