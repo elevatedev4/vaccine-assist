@@ -1,0 +1,58 @@
+<Window x:Class="VaccineAssist.Desktop.Views.MacroCodesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Macro codes"
+        Width="980" Height="760"
+        WindowStyle="ToolWindow"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        PreviewKeyDown="MacroCodesWindow_OnPreviewKeyDown">
+    <!--
+        Will, 2026-09-13 (verbatim): "Make a macro code popup ... this
+        screen we built when someone pushes Ctrl+8. When they click on the
+        one they want, it copies the macro code and closes the page so
+        they can go resume data entry themselves."
+
+        Hosts the cloud app's /macro-codes?embed=1 page (built alongside
+        this — see the cloud side's macro-codes route) in-process via
+        WebView2 rather than the user's default browser, so it can stay a
+        borderless, Topmost, non-taskbar popup exactly like
+        DataEntryPopupWindow — same "quick popup while working the Rx
+        profile" workflow, just for looking up a macro code instead of
+        entering a dose. WindowStartupLocation="CenterScreen" and the
+        Topmost/ShowInTaskbar/ResizeMode combination match
+        DataEntryPopupWindow.xaml's existing convention.
+
+        The page copies the code itself and posts
+        window.chrome.webview.postMessage({ type: "vaccine-assist:macro-copied",
+        code, label, product }) back to this host; Escape (here, via
+        PreviewKeyDown) or the page's own
+        { type: "vaccine-assist:macro-cancel" } message both just close
+        the popup with no clipboard action. See MacroCodesWindow.xaml.cs.
+    -->
+    <Grid>
+        <wv2:WebView2 x:Name="WebView"/>
+
+        <!-- Shown instead of the WebView2 control if CoreWebView2
+             initialization throws (e.g. the WebView2 Runtime isn't
+             installed on this workstation) — see
+             MacroCodesWindow_OnLoaded's catch clause. Never lets a missing
+             runtime crash the app; just explains what to do. -->
+        <StackPanel x:Name="FailurePanel" Visibility="Collapsed"
+                    VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32">
+            <TextBlock Text="Couldn't load the macro codes screen." FontWeight="Bold" FontSize="14"
+                       TextWrapping="Wrap" HorizontalAlignment="Center"/>
+            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" MaxWidth="500" TextAlignment="Center">
+                This usually means the WebView2 Runtime isn't installed on this computer. Download it from
+                <Hyperlink NavigateUri="https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+                           RequestNavigate="DownloadLink_OnRequestNavigate">go.microsoft.com/fwlink/p/?LinkId=2124703</Hyperlink>
+                (Evergreen WebView2 Runtime) and try again.
+            </TextBlock>
+            <TextBlock x:Name="FailureDetailTextBlock" Margin="0,10,0,0" Foreground="Gray"
+                       TextWrapping="Wrap" MaxWidth="500" TextAlignment="Center" FontSize="11"/>
+        </StackPanel>
+    </Grid>
+</Window>

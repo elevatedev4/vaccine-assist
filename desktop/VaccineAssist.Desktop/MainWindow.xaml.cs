@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using VaccineAssist.Desktop.Hotkeys;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
@@ -21,9 +22,18 @@ namespace VaccineAssist.Desktop;
 /// (not a standalone window) since MainWindow is the one window that
 /// stays open for the whole signed-in session — the hotkey should work
 /// no matter which tab is currently showing.
+///
+/// 2026-09-13: also owns a second, independent global hotkey — Ctrl+8 —
+/// for the macro-codes popup (Will's brief). Same reasoning for living on
+/// MainWindow as the data-entry hotkey above; the two GlobalHotKey
+/// instances are otherwise unrelated (distinct ids, distinct vk, distinct
+/// popups) and neither's registration/lifecycle affects the other's.
 /// </summary>
 public partial class MainWindow : Window
 {
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
     private readonly LotsViewModel _lotsViewModel;
     private readonly SchedulingViewModel _schedulingViewModel;
     private readonly OrderingViewModel _orderingViewModel;
@@ -34,7 +44,9 @@ public partial class MainWindow : Window
     private readonly IVaccineApiService _vaccineApiService;
     private readonly IClipboardService _clipboardService;
     private readonly IPioneerEntrySequence _pioneerEntrySequence;
+    private readonly string _cloudApiBaseUrl;
     private GlobalHotKey? _dataEntryHotKey;
+    private GlobalHotKey? _macroCodesHotKey;
 
     /// <summary>
     /// The currently-open data-entry popup, if any — at most one can be
@@ -53,8 +65,20 @@ public partial class MainWindow : Window
     /// </summary>
     private DataEntryPopupWindow? _openDataEntryPopup;
 
-    /// <summary>Process-unique id for RegisterHotKey — arbitrary but must not collide with another hotkey id this process registers (only one exists today).</summary>
+    /// <summary>
+    /// The currently-open macro-codes popup, if any — same "at most one at
+    /// a time, re-activate rather than stack" rule as _openDataEntryPopup
+    /// above (see ShowMacroCodesPopup), and same reason MainWindow needs
+    /// to explicitly close it on sign-out/window-close (MainWindow_OnClosed):
+    /// it's not an owned window, so nothing else would clean it up.
+    /// </summary>
+    private MacroCodesWindow? _openMacroCodesPopup;
+
+    /// <summary>Process-unique id for RegisterHotKey — arbitrary but must not collide with another hotkey id this process registers.</summary>
     private const int DataEntryHotKeyId = 1;
+
+    /// <summary>Process-unique id for the Ctrl+8 macro-codes hotkey's RegisterHotKey call — must differ from DataEntryHotKeyId (the only other id this process registers).</summary>
+    private const int MacroCodesHotKeyId = 2;
 
     public MainWindow(
         LotsViewModel lotsViewModel,
@@ -62,7 +86,8 @@ public partial class MainWindow : Window
         IAuthService authService,
         IVaccineApiService vaccineApiService,
         IClipboardService clipboardService,
-        IPioneerEntrySequence pioneerEntrySequence)
+        IPioneerEntrySequence pioneerEntrySequence,
+        string cloudApiBaseUrl)
     {
         InitializeComponent();
         _lotsViewModel = lotsViewModel;
@@ -71,6 +96,7 @@ public partial class MainWindow : Window
         _vaccineApiService = vaccineApiService;
         _clipboardService = clipboardService;
         _pioneerEntrySequence = pioneerEntrySequence;
+        _cloudApiBaseUrl = cloudApiBaseUrl;
 
         _schedulingViewModel = new SchedulingViewModel(_vaccineApiService);
         _orderingViewModel = new OrderingViewModel(_vaccineApiService);
@@ -131,12 +157,35 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
+
+        // 2026-09-13: Ctrl+8 macro-codes popup — a second, independent
+        // GlobalHotKey instance (distinct id, distinct vk) registered the
+        // exact same way as the data-entry hotkey above, right down to the
+        // failure handling (a one-time MessageBox; the popup just isn't
+        // reachable via the hotkey if this fails — there's no separate
+        // button for it the way the Data entry tab has one).
+        _macroCodesHotKey = new GlobalHotKey(this, MacroCodesHotKeyId, GlobalHotKey.VK_8);
+        _macroCodesHotKey.Pressed += (_, _) => ShowMacroCodesPopup();
+
+        var macroCodesRegistered = _macroCodesHotKey.Register();
+        if (!macroCodesRegistered)
+        {
+            MessageBox.Show(
+                this,
+                "Couldn't register the Ctrl+8 macro-codes hotkey — it may already be in use by another application.",
+                "Vaccine Assist",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private void MainWindow_OnClosed(object? sender, EventArgs e)
     {
         _dataEntryHotKey?.Dispose();
         _dataEntryHotKey = null;
+
+        _macroCodesHotKey?.Dispose();
+        _macroCodesHotKey = null;
 
         // Covers both exit paths: MainWindow closing directly (chrome/
         // Alt+F4) and Sign out (LogoutButton_OnClick -> App.xaml.cs's
@@ -145,6 +194,9 @@ public partial class MainWindow : Window
         // why an orphaned popup is a real problem, not just cosmetic.
         _openDataEntryPopup?.Close();
         _openDataEntryPopup = null;
+
+        _openMacroCodesPopup?.Close();
+        _openMacroCodesPopup = null;
     }
 
     /// <summary>
@@ -205,6 +257,38 @@ public partial class MainWindow : Window
             }
         };
         _openDataEntryPopup = popup;
+
+        popup.Show();
+    }
+
+    /// <summary>
+    /// Ctrl+8 (Will, 2026-09-13). Same "at most one instance, re-activate
+    /// instead of stacking" rule as ShowDataEntryPopup above — see
+    /// _openMacroCodesPopup's doc comment. Captures the current foreground
+    /// window (typically PioneerRx, if that's what the pharmacist was
+    /// working in) via GetForegroundWindow() BEFORE showing the popup, so
+    /// MacroCodesWindow can restore it on close — see that window's
+    /// constructor/Closed handler.
+    /// </summary>
+    private void ShowMacroCodesPopup()
+    {
+        if (_openMacroCodesPopup is not null)
+        {
+            _openMacroCodesPopup.BringToFront();
+            return;
+        }
+
+        var previousForegroundWindow = GetForegroundWindow();
+        var popup = new MacroCodesWindow(_cloudApiBaseUrl, _clipboardService, previousForegroundWindow);
+
+        popup.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_openMacroCodesPopup, popup))
+            {
+                _openMacroCodesPopup = null;
+            }
+        };
+        _openMacroCodesPopup = popup;
 
         popup.Show();
     }

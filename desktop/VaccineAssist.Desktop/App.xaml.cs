@@ -162,7 +162,8 @@ public partial class App : Application
 
         var mainWindow = new MainWindow(
             lotsViewModel, vaccinesViewModel, _authService,
-            _vaccineApiService, _clipboardService, _pioneerEntrySequence);
+            _vaccineApiService, _clipboardService, _pioneerEntrySequence,
+            _settings.CloudApiBaseUrl);
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>

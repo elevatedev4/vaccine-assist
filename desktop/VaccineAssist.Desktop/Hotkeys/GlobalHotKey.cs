@@ -20,6 +20,15 @@ namespace VaccineAssist.Desktop.Hotkeys;
 /// workstations. Only the virtual-key constant changes here; everything
 /// else about registration (MOD_CONTROL, the HwndSource hook, the
 /// process-unique id) is unchanged.
+///
+/// 2026-09-13 (macro-codes popup, Ctrl+8): the virtual-key code used to be
+/// hardcoded to VK_NUMPAD7 here. It's now a constructor parameter
+/// (defaulting to VK_NUMPAD7, so MainWindow's existing data-entry hotkey
+/// is unaffected) so a second, independent GlobalHotKey instance can
+/// register Ctrl+8 for the macro-codes popup — same class, same
+/// RegisterHotKey/UnregisterHotKey + HwndSource hook mechanism, same
+/// per-instance registration/unregistration lifecycle, just a different
+/// vk and a distinct id. See MainWindow's _macroCodesHotKey.
 /// </summary>
 public sealed class GlobalHotKey : IDisposable
 {
@@ -35,8 +44,15 @@ public sealed class GlobalHotKey : IDisposable
     /// <summary>VK_NUMPAD7 — see Win32 virtual-key codes.</summary>
     public const uint VK_NUMPAD7 = 0x67;
 
+    /// <summary>VK '8' — the top-row number key (Win32 virtual-key codes
+    /// for '0'-'9' are 0x30-0x39, matching ASCII). Used for Ctrl+8, the
+    /// macro-codes popup hotkey (Will, 2026-09-13) — a different key than
+    /// VK_NUMPAD7 so the two hotkeys never collide with each other.</summary>
+    public const uint VK_8 = 0x38;
+
     private readonly Window _window;
     private readonly int _id;
+    private readonly uint _vk;
     private HwndSource? _source;
     private bool _registered;
 
@@ -45,13 +61,15 @@ public sealed class GlobalHotKey : IDisposable
 
     /// <param name="window">Must already have a native handle — call Register() after the window's SourceInitialized/Loaded event, not from its constructor.</param>
     /// <param name="id">A process-unique hotkey id (Win32 requires this per RegisterHotKey call).</param>
-    public GlobalHotKey(Window window, int id)
+    /// <param name="vk">Virtual-key code to combine with MOD_CONTROL — defaults to VK_NUMPAD7 (the original V-T3 data-entry hotkey) so existing callers are unaffected. Pass VK_8 (or another VK_* constant) for a different Ctrl+&lt;key&gt; combination on its own instance.</param>
+    public GlobalHotKey(Window window, int id, uint vk = VK_NUMPAD7)
     {
         _window = window;
         _id = id;
+        _vk = vk;
     }
 
-    /// <summary>Registers Ctrl+NumPad7. Returns false (does not throw) if registration fails — e.g. another app already claimed that combination.</summary>
+    /// <summary>Registers Ctrl+&lt;vk&gt;. Returns false (does not throw) if registration fails — e.g. another app already claimed that combination.</summary>
     public bool Register()
     {
         var handle = new WindowInteropHelper(_window).Handle;
@@ -64,7 +82,7 @@ public sealed class GlobalHotKey : IDisposable
         _source = HwndSource.FromHwnd(handle);
         _source?.AddHook(WndProc);
 
-        _registered = RegisterHotKey(handle, _id, MOD_CONTROL, VK_NUMPAD7);
+        _registered = RegisterHotKey(handle, _id, MOD_CONTROL, _vk);
         return _registered;
     }
 
