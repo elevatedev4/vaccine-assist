@@ -14,6 +14,7 @@ import {
   productTotalsDescending,
   productTotalsToCsv,
   quickPickRange,
+  visibleDayRows,
   type DosesGivenPivot,
   type QuickPickId,
 } from "@/lib/doses-given";
@@ -62,6 +63,14 @@ import {
  *     than imported).
  *   - The grand total now renders as a prominent headline ("527 doses ·
  *     8/4–9/11" — formatRangeSummary) above the tables.
+ *
+ * ROUND 3 (V-doses-given, Will 2026-09-13, verbatim: "We're closed on
+ * sat/sun, so if there is no data on those days, then no need to show
+ * them.") — the "By day" table now hides a Saturday/Sunday row whose
+ * total is 0 (visibleDates below, from lib/doses-given.ts's
+ * visibleDayRows). CSV export is unaffected — handleDownloadCsv reads
+ * pivot.dates directly, so every day (including empty weekends) still
+ * exports.
  */
 
 type ViewMode = "byDay" | "byProduct";
@@ -429,6 +438,18 @@ export default function DosesGivenPage() {
   const productTotals = useMemo(() => (pivot ? productTotalsDescending(pivot) : []), [pivot]);
   const orderedProducts = useMemo(() => (pivot ? orderProductsByGroup(pivot.products) : []), [pivot]);
   const headerRows = useMemo(() => buildProductHeaderRows(orderedProducts), [orderedProducts]);
+  // V-doses-given (Will 2026-09-13, verbatim: "We're closed on sat/sun,
+  // so if there is no data on those days, then no need to show them.") —
+  // hides a Saturday/Sunday row with 0 doses from the "By day" table.
+  // CSV export (handleDownloadCsv below) still reads pivot.dates directly
+  // and keeps every day, unchanged.
+  const visibleDates = useMemo(
+    () =>
+      pivot
+        ? visibleDayRows(pivot.dates.map((date) => ({ date, total: pivot.totalsByDate[date] }))).map((row) => row.date)
+        : [],
+    [pivot]
+  );
 
   function handleDownloadCsv() {
     if (!pivot) return;
@@ -606,7 +627,7 @@ export default function DosesGivenPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pivot.dates.map((date) => (
+                  {visibleDates.map((date) => (
                     <tr key={date}>
                       <td style={styles.tdType}>{formatDayLabel(date)}</td>
                       <td style={styles.totalCell}>{pivot.totalsByDate[date]}</td>
