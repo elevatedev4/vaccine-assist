@@ -100,6 +100,29 @@ export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
  * incidental collision-avoidance for this one product) so renaming it
  * there would loosen that general contract fleet-wide for a one-page
  * ask; see MACRO_DISPLAY_NAME_OVERRIDES below.
+ *
+ * ROUND 8 (Will's verbatim feedback, 2026-09-12, replying to round 7):
+ * "I don't like the layout where you have a heading then next row the
+ * buttons. Instead, have the heading be in 1 column, then the buttons
+ * next to it stacked vertically... I want to see two versions as well:
+ * one that has another column after type (ex: tdap), then product (ex
+ * Boostrix (with age range)) > Dose 1 button... If you have any other
+ * ideas to make this user friendly... feel free to research the best
+ * way and make another version." Adds three pure helpers the page's new
+ * A/B/C layout switcher uses, none of which change buildMacroRows/
+ * groupMacroRowsBySection/groupSectionsByTopGroup's data shape — only
+ * how the page renders it: (1) macroSectionDisplayName, the section-level
+ * counterpart to MACRO_DISPLAY_NAME_OVERRIDES above, so a family/section
+ * heading can read "Tdap" instead of the catalog's "Tetanus" wherever a
+ * version shows it; (2) macroProductNameWithAge, a product-level (not
+ * per-dose) "<name> (<age>)" label reusing doseButtonLabel's age-
+ * flattening for version B's plain-text product-name column; (3)
+ * filterMacroTopGroups, version C's live-filter-as-you-type matching
+ * logic. Also adds the view-mode switcher's tiny localStorage
+ * read/write pair (readMacroViewMode/writeMacroViewMode), factored out
+ * of the page so it's unit-testable without a DOM (see this file's
+ * MacroViewModeStorage doc comment) — Will's brief requires the
+ * read/write be wrapped so an unavailable/blocked store never throws.
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -204,6 +227,25 @@ const MACRO_DISPLAY_NAME_OVERRIDES: Readonly<Record<string, string>> = {
 
 function macroDisplayNameFor(defaultDisplayName: string, shortCode: string): string {
   return MACRO_DISPLAY_NAME_OVERRIDES[macroBaseShortCode(shortCode)] ?? defaultDisplayName;
+}
+
+/** Round-8 per-page section/family heading display-name overrides — same
+ * posture as MACRO_DISPLAY_NAME_OVERRIDES above, but keyed by
+ * MacroSection rather than a short code. Applied only where a version's
+ * layout shows the family/section name itself (e.g. version B/C's
+ * "type" column, version A's family cell); the section's own identity
+ * (MacroSectionGroup.section, used for grouping/sorting/color lookup)
+ * is never touched. Will's verbatim example: "another column after type
+ * (ex: tdap)" — Tetanus is the section that contains Boostrix (TDaP). */
+const MACRO_SECTION_DISPLAY_NAME_OVERRIDES: Readonly<Partial<Record<MacroSection, string>>> = {
+  Tetanus: "Tdap",
+};
+
+/** Resolves a section's display label for a version's family/type
+ * column or heading — "Tdap" for Tetanus, every other section's own
+ * name otherwise. */
+export function macroSectionDisplayName(section: MacroSection): string {
+  return MACRO_SECTION_DISPLAY_NAME_OVERRIDES[section] ?? section;
 }
 
 function doseNumberOf(vaccine: MacroRowVaccine): number {
@@ -398,6 +440,18 @@ function doseButtonLabel(row: MacroRow, doseCount: number): string {
 }
 
 /**
+ * Round-8 product-level (not per-dose) label for version B's plain-text
+ * "product (with age range)" column: "<name> (<age>)", e.g. "Boostrix
+ * (10+)", "Shingrix (50+, 19+ IC)" — same age-flattening as
+ * doseButtonLabel above, minus the "(Dose N)" clause (a product-name
+ * cell names the product once, not per dose). A product with no catalog
+ * age (age === "") gets no suffix, same as doseButtonLabel.
+ */
+export function macroProductNameWithAge(product: Pick<MacroProductGroup, "displayName" | "age">): string {
+  return product.age ? `${product.displayName} (${flattenAgeForLabel(product.age)})` : product.displayName;
+}
+
+/**
  * Sorts and groups `rows` (from buildMacroRows) into round-4's
  * section -> product -> dose-buttons shape (Will's brief, verbatim):
  * "Have a section (Flu, Pneumonia, RSV, etc) and then have the product
@@ -499,4 +553,111 @@ export function groupSectionsByTopGroup(sections: readonly MacroSectionGroup[]):
   return MACRO_TOP_GROUP_ORDER.map((group) => ({ group, sections: byGroup.get(group) ?? [] })).filter(
     (block) => block.sections.length > 0
   );
+}
+
+/**
+ * Round-8 version C's live-filter-as-you-type matching logic: narrows
+ * groupSectionsByTopGroup's output down to products matching `query`.
+ * Chosen over an alphabetical index (see page.tsx's version-C comment
+ * for the full rationale) because a pharmacy tech usually knows the
+ * product or short code they're after, so a few typed characters gets
+ * there faster than scanning an A–Z rail across ~25 products.
+ *
+ * Matches a product if `query` (trimmed, case-insensitive) is a
+ * substring of the product's display name, its section's display name
+ * (either the catalog name or the round-8 override, e.g. "Tdap"
+ * matches Tetanus), or any of its real doses' short codes — so typing a
+ * code ("shingrix") or a family alias ("tdap") finds the product even
+ * when it isn't in the display name. Matching a section's name keeps
+ * every product in that section (typing "flu" shows the whole Flu
+ * section) rather than requiring each product name to also contain the
+ * word.
+ *
+ * An empty/whitespace-only query returns `topGroups` UNCHANGED, by
+ * reference — a cleared search box is a no-op, not a rebuild. A
+ * section left with zero matching products, and a group left with zero
+ * remaining sections, are omitted entirely (same "omit if empty"
+ * posture as groupMacroRowsBySection / groupSectionsByTopGroup above).
+ */
+export function filterMacroTopGroups(topGroups: readonly MacroTopGroupBlock[], query: string): MacroTopGroupBlock[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return topGroups as MacroTopGroupBlock[];
+
+  function productMatches(product: MacroProductGroup): boolean {
+    if (product.displayName.toLowerCase().includes(needle)) return true;
+    return product.doses.some((dose) => (dose.row.shortCode ?? "").toLowerCase().includes(needle));
+  }
+
+  const filteredGroups: MacroTopGroupBlock[] = [];
+  for (const block of topGroups) {
+    const filteredSections: MacroSectionGroup[] = [];
+    for (const section of block.sections) {
+      const sectionNameMatches =
+        section.section.toLowerCase().includes(needle) || macroSectionDisplayName(section.section).toLowerCase().includes(needle);
+      const products = sectionNameMatches ? section.products : section.products.filter(productMatches);
+      if (products.length > 0) filteredSections.push({ ...section, products });
+    }
+    if (filteredSections.length > 0) filteredGroups.push({ ...block, sections: filteredSections });
+  }
+  return filteredGroups;
+}
+
+/** Round-8 view-mode switcher's persisted choice — "A" (family/type
+ * heading + stacked buttons), "B" (type/product/dose columns), or "C"
+ * (research-based scan grid). See page.tsx's switcher UI. */
+export type MacroViewMode = "A" | "B" | "C";
+
+/** Switcher button order, also MacroViewMode's full value set. */
+export const MACRO_VIEW_MODES: readonly MacroViewMode[] = ["A", "B", "C"];
+
+/** localStorage key the switcher's choice is persisted under. */
+export const MACRO_VIEW_MODE_STORAGE_KEY = "macro-codes-view-mode";
+
+/** The default view mode: version A, matching Will's brief ("Selection
+ * persisted in localStorage... default 'A'"). */
+export const DEFAULT_MACRO_VIEW_MODE: MacroViewMode = "A";
+
+function isMacroViewMode(value: unknown): value is MacroViewMode {
+  return value === "A" || value === "B" || value === "C";
+}
+
+/** Minimal Storage-shaped interface (matches window.localStorage's own
+ * shape) so readMacroViewMode/writeMacroViewMode are unit-testable with
+ * a plain in-memory fake — this project's Vitest config runs tests
+ * under Node, with no DOM/localStorage global, and the page itself must
+ * tolerate a real browser whose storage is unavailable (private
+ * browsing, disabled site data) just as much as a test double that
+ * throws. */
+export type MacroViewModeStorage = Pick<Storage, "getItem" | "setItem">;
+
+/**
+ * Reads the switcher's persisted choice from `storage` (the page passes
+ * window.localStorage, wrapped — see below). Returns
+ * DEFAULT_MACRO_VIEW_MODE for a missing/invalid value, a null/undefined
+ * `storage` (storage never obtained), or a `storage.getItem` that
+ * throws — this NEVER throws itself, per Will's brief ("wrap read/write
+ * in try/catch — must not throw if storage is unavailable").
+ */
+export function readMacroViewMode(storage: MacroViewModeStorage | null | undefined): MacroViewMode {
+  if (!storage) return DEFAULT_MACRO_VIEW_MODE;
+  try {
+    const stored = storage.getItem(MACRO_VIEW_MODE_STORAGE_KEY);
+    return isMacroViewMode(stored) ? stored : DEFAULT_MACRO_VIEW_MODE;
+  } catch {
+    return DEFAULT_MACRO_VIEW_MODE;
+  }
+}
+
+/**
+ * Persists the switcher's choice to `storage`. A null/undefined
+ * `storage`, or a `storage.setItem` that throws, is silently ignored —
+ * the choice just won't persist this session; this NEVER throws.
+ */
+export function writeMacroViewMode(storage: MacroViewModeStorage | null | undefined, mode: MacroViewMode): void {
+  if (!storage) return;
+  try {
+    storage.setItem(MACRO_VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    // storage unavailable/blocked — the choice just won't persist this session
+  }
 }

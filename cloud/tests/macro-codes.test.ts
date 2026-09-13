@@ -2,12 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   buildMacroCode,
   buildMacroRows,
+  DEFAULT_MACRO_VIEW_MODE,
   expToMacroDate,
+  filterMacroTopGroups,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
+  macroProductNameWithAge,
+  macroSectionDisplayName,
+  MACRO_VIEW_MODE_STORAGE_KEY,
+  readMacroViewMode,
+  writeMacroViewMode,
   type MacroLotLike,
   type MacroRow,
   type MacroRowVaccine,
+  type MacroViewModeStorage,
 } from "@/lib/macro-codes";
 import type { ProductView } from "@/lib/product-view";
 
@@ -507,5 +515,164 @@ describe("groupSectionsByTopGroup", () => {
     const rows = rowsFor([{ code: "gardasil1", name: "Gardasil" }]); // HPV -> Common only
     const groups = groupSectionsByTopGroup(groupMacroRowsBySection(rows));
     expect(groups.map((g) => g.group)).toEqual(["Common"]);
+  });
+});
+
+describe("macroSectionDisplayName", () => {
+  it("renames Tetanus to Tdap (Will's verbatim example)", () => {
+    expect(macroSectionDisplayName("Tetanus")).toBe("Tdap");
+  });
+
+  it("leaves every other section's name unchanged", () => {
+    const untouched: MacroRow["section"][] = [
+      "Flu",
+      "COVID",
+      "Pneumonia",
+      "RSV",
+      "Shingles",
+      "Hep B",
+      "HPV",
+      "Meningitis",
+      "Hep A",
+      "Typhoid",
+      "MMR",
+      "Other",
+    ];
+    for (const section of untouched) {
+      expect(macroSectionDisplayName(section)).toBe(section);
+    }
+  });
+});
+
+describe("macroProductNameWithAge", () => {
+  it("appends the flattened age in parens", () => {
+    expect(macroProductNameWithAge({ displayName: "Boostrix", age: "10+" })).toBe("Boostrix (10+)");
+  });
+
+  it("flattens an age that already carries its own parenthetical to a comma clause", () => {
+    expect(macroProductNameWithAge({ displayName: "Shingrix", age: "50+ (19+ IC)" })).toBe("Shingrix (50+, 19+ IC)");
+  });
+
+  it("omits the suffix entirely for a product with no catalog age", () => {
+    expect(macroProductNameWithAge({ displayName: "Mystery Vaccine", age: "" })).toBe("Mystery Vaccine");
+  });
+});
+
+describe("filterMacroTopGroups", () => {
+  function topGroupsFor(codes: { code: string; name: string }[]) {
+    const products: ProductView[] = codes.map(({ code, name }) => view({ productKey: `name:${code}`, displayName: name, vaccineIds: [code] }));
+    const vaccines: MacroRowVaccine[] = codes.map(({ code, name }) => vaccine({ id: code, name, short_code: code }));
+    const rows = buildMacroRows(products, vaccines, {});
+    return groupSectionsByTopGroup(groupMacroRowsBySection(rows));
+  }
+
+  const fixtureCodes = [
+    { code: "flucelvaxmdv", name: "Flucelvax MDV" }, // Flu
+    { code: "comirnaty12", name: "Comirnaty" }, // COVID
+    { code: "shingrix1", name: "Shingrix" }, // Shingles (name won't contain "shingrix" lowercase substring test uses code)
+    { code: "boostrix", name: "Boostrix" }, // Tetanus/Tdap
+    { code: "gardasil1", name: "Gardasil" }, // HPV
+  ];
+
+  it("returns the input unchanged (by reference) for an empty/whitespace query", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    expect(filterMacroTopGroups(topGroups, "")).toBe(topGroups);
+    expect(filterMacroTopGroups(topGroups, "   ")).toBe(topGroups);
+  });
+
+  it("matches by product display name, case-insensitively", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    const filtered = filterMacroTopGroups(topGroups, "boost");
+    const names = filtered.flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)));
+    expect(names).toEqual(["Boostrix"]);
+  });
+
+  it("matches by short code even when it isn't a substring of the display name", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    const filtered = filterMacroTopGroups(topGroups, "gardasil1");
+    const names = filtered.flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)));
+    expect(names).toEqual(["Gardasil"]);
+  });
+
+  it("matches a section's display-name override, e.g. 'tdap' finds the whole Tetanus section", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    const filtered = filterMacroTopGroups(topGroups, "tdap");
+    const names = filtered.flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)));
+    expect(names).toEqual(["Boostrix"]);
+  });
+
+  it("omits sections and groups with zero matches", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    const filtered = filterMacroTopGroups(topGroups, "gardasil1");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].group).toBe("Common");
+    expect(filtered[0].sections.map((s) => s.section)).toEqual(["HPV"]);
+  });
+
+  it("returns no groups at all when nothing matches", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    expect(filterMacroTopGroups(topGroups, "nonexistent-product-xyz")).toEqual([]);
+  });
+});
+
+describe("readMacroViewMode / writeMacroViewMode", () => {
+  function fakeStorage(initial: Record<string, string> = {}): MacroViewModeStorage & { data: Record<string, string> } {
+    const data = { ...initial };
+    return {
+      data,
+      getItem: (key: string) => (key in data ? data[key] : null),
+      setItem: (key: string, value: string) => {
+        data[key] = value;
+      },
+    };
+  }
+
+  it("defaults to 'A' when storage is null/undefined", () => {
+    expect(readMacroViewMode(null)).toBe(DEFAULT_MACRO_VIEW_MODE);
+    expect(readMacroViewMode(undefined)).toBe(DEFAULT_MACRO_VIEW_MODE);
+  });
+
+  it("defaults to 'A' when nothing is stored yet", () => {
+    expect(readMacroViewMode(fakeStorage())).toBe("A");
+  });
+
+  it("defaults to 'A' for an invalid stored value", () => {
+    expect(readMacroViewMode(fakeStorage({ [MACRO_VIEW_MODE_STORAGE_KEY]: "not-a-mode" }))).toBe("A");
+  });
+
+  it("returns a validly stored mode", () => {
+    expect(readMacroViewMode(fakeStorage({ [MACRO_VIEW_MODE_STORAGE_KEY]: "B" }))).toBe("B");
+    expect(readMacroViewMode(fakeStorage({ [MACRO_VIEW_MODE_STORAGE_KEY]: "C" }))).toBe("C");
+  });
+
+  it("never throws when storage.getItem throws (e.g. a blocked store)", () => {
+    const throwingStorage: MacroViewModeStorage = {
+      getItem: () => {
+        throw new Error("storage blocked");
+      },
+      setItem: () => {
+        throw new Error("storage blocked");
+      },
+    };
+    expect(() => readMacroViewMode(throwingStorage)).not.toThrow();
+    expect(readMacroViewMode(throwingStorage)).toBe(DEFAULT_MACRO_VIEW_MODE);
+  });
+
+  it("writeMacroViewMode persists a value readMacroViewMode then reads back", () => {
+    const storage = fakeStorage();
+    writeMacroViewMode(storage, "B");
+    expect(readMacroViewMode(storage)).toBe("B");
+  });
+
+  it("writeMacroViewMode never throws when storage.setItem throws, and is a no-op for null/undefined storage", () => {
+    const throwingStorage: MacroViewModeStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("storage blocked");
+      },
+    };
+    expect(() => writeMacroViewMode(throwingStorage, "C")).not.toThrow();
+    expect(() => writeMacroViewMode(null, "C")).not.toThrow();
+    expect(() => writeMacroViewMode(undefined, "C")).not.toThrow();
   });
 });
