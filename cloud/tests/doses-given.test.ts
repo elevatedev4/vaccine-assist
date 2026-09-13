@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  allRange,
   buildDosesGivenPivot,
+  DEFAULT_LOOKBACK_DAYS,
   dosesGivenPivotToCsv,
+  formatRangeSummary,
+  lastNDaysRange,
+  orderProductsByGroup,
   productTotalsDescending,
   productTotalsToCsv,
+  quickPickRange,
   resolveDoseProductName,
+  thisMonthRange,
+  yesterdayInChicago,
   type DosesGivenSourceDay,
 } from "@/lib/doses-given";
 
@@ -138,5 +146,112 @@ describe("CSV export", () => {
     );
     const csv = dosesGivenPivotToCsv(commaPivot);
     expect(csv).toContain('"Vaccine, Extra"');
+  });
+});
+
+// V-doses-given-layout (Will 2026-09-13): default-range and quick-pick
+// helpers. Every function takes an explicit `today` override so these
+// stay deterministic without faking system time (see each function's own
+// doc comment in lib/doses-given.ts).
+describe("yesterdayInChicago", () => {
+  it("returns the day before the given today", () => {
+    expect(yesterdayInChicago("2026-09-13")).toBe("2026-09-12");
+  });
+
+  it("crosses a month boundary correctly", () => {
+    expect(yesterdayInChicago("2026-09-01")).toBe("2026-08-31");
+  });
+});
+
+describe("lastNDaysRange", () => {
+  it("returns the last N complete days ending yesterday, inclusive", () => {
+    expect(lastNDaysRange(7, "2026-09-13")).toEqual({ start: "2026-09-06", end: "2026-09-12" });
+  });
+
+  it("uses DEFAULT_LOOKBACK_DAYS (14) as the old fixed-lookback fallback", () => {
+    expect(lastNDaysRange(DEFAULT_LOOKBACK_DAYS, "2026-09-13")).toEqual({ start: "2026-08-30", end: "2026-09-12" });
+  });
+});
+
+describe("thisMonthRange", () => {
+  it("spans the 1st of the current month through yesterday", () => {
+    expect(thisMonthRange("2026-09-13")).toEqual({ start: "2026-09-01", end: "2026-09-12" });
+  });
+
+  it("collapses to a single day when today is the 1st (yesterday is last month)", () => {
+    // Today is 2026-09-01, so yesterday (2026-08-31) is in August —
+    // "this month" (September) has no complete days yet.
+    expect(thisMonthRange("2026-09-01")).toEqual({ start: "2026-08-31", end: "2026-08-31" });
+  });
+});
+
+describe("allRange", () => {
+  it("spans the earliest ingested day through yesterday", () => {
+    expect(allRange("2026-08-04", "2026-09-13")).toEqual({ start: "2026-08-04", end: "2026-09-12" });
+  });
+
+  it("falls back to the DEFAULT_LOOKBACK_DAYS lookback when nothing has been ingested (earliestDay null)", () => {
+    expect(allRange(null, "2026-09-13")).toEqual(lastNDaysRange(DEFAULT_LOOKBACK_DAYS, "2026-09-13"));
+  });
+
+  it("never returns an inverted range when earliestDay is somehow after yesterday", () => {
+    expect(allRange("2026-09-13", "2026-09-13")).toEqual({ start: "2026-09-12", end: "2026-09-12" });
+  });
+});
+
+describe("quickPickRange", () => {
+  const today = "2026-09-13";
+
+  it("all delegates to allRange", () => {
+    expect(quickPickRange("all", "2026-08-04", today)).toEqual(allRange("2026-08-04", today));
+  });
+
+  it("last7 delegates to lastNDaysRange(7)", () => {
+    expect(quickPickRange("last7", "2026-08-04", today)).toEqual(lastNDaysRange(7, today));
+  });
+
+  it("last14 delegates to lastNDaysRange(14)", () => {
+    expect(quickPickRange("last14", "2026-08-04", today)).toEqual(lastNDaysRange(14, today));
+  });
+
+  it("thisMonth delegates to thisMonthRange", () => {
+    expect(quickPickRange("thisMonth", "2026-08-04", today)).toEqual(thisMonthRange(today));
+  });
+});
+
+describe("orderProductsByGroup", () => {
+  it("puts COVID products first, then Flu, then everything else, alphabetical within each group", () => {
+    const products = ["Shingrix", "Comirnaty", "Vaqta", "Fluzone", "Boostrix", "Novavax", "Afluria"];
+    expect(orderProductsByGroup(products)).toEqual([
+      "Comirnaty",
+      "Novavax",
+      "Afluria",
+      "Fluzone",
+      "Boostrix",
+      "Shingrix",
+      "Vaqta",
+    ]);
+  });
+
+  it("keeps an unrecognized/raw item name in the trailing 'everything else' group", () => {
+    expect(orderProductsByGroup(["MYSTERY DOSE", "Comirnaty"])).toEqual(["Comirnaty", "MYSTERY DOSE"]);
+  });
+
+  it("handles an empty product list", () => {
+    expect(orderProductsByGroup([])).toEqual([]);
+  });
+});
+
+describe("formatRangeSummary", () => {
+  it("formats the grand-total headline with short M/D dates", () => {
+    expect(formatRangeSummary(527, "2026-08-04", "2026-09-11")).toBe("527 doses · 8/4–9/11");
+  });
+
+  it("uses the singular 'dose' for a total of exactly 1", () => {
+    expect(formatRangeSummary(1, "2026-09-01", "2026-09-01")).toBe("1 dose · 9/1–9/1");
+  });
+
+  it("uses the plural 'doses' for a total of 0", () => {
+    expect(formatRangeSummary(0, "2026-09-01", "2026-09-02")).toBe("0 doses · 9/1–9/2");
   });
 });
