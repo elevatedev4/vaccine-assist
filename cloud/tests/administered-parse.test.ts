@@ -124,4 +124,71 @@ describe("parseVaccinationLog", () => {
       { date: "bad-3", item: "Item C" },
     ]);
   });
+
+  it("returns expanded: 0 for a file with no quantity column", () => {
+    const { expanded } = parseVaccinationLog([
+      ["Completed date", "Item"],
+      [46275.5, "Flu Quad"],
+    ]);
+    expect(expanded).toBe(0);
+  });
+
+  // V-import-doses-file, 2026-09-13: Will's manually-exported "8/1
+  // onward" backfill uses a DIFFERENT header/column set than the daily
+  // SES email for the exact same report: "Completed On" (not "Completed
+  // date"), "Dispensed Item Name" (not "Item"), plus an optional
+  // "Dispensed Quantity" column the daily email never carries. Columns
+  // are located BY NAME, so this must work regardless of column order
+  // too (quantity is listed BEFORE item name here, on purpose).
+  describe("'Completed On / Dispensed Item Name / Dispensed Quantity' header variant", () => {
+    it("maps columns by header name, including out-of-order columns", () => {
+      const { rows } = parseVaccinationLog([
+        ["Completed On", "Dispensed Quantity", "Dispensed Item Name"],
+        [46275.5, 0.5, "Fluad 2026-2027 Syringe"],
+      ]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].itemName).toBe("Fluad 2026-2027 Syringe");
+      expect(rows[0].dateLocal).toBe("2026-09-10");
+    });
+
+    it("treats a fractional quantity (e.g. 0.5, a vial fraction) as a single dose", () => {
+      const { rows, expanded } = parseVaccinationLog([
+        ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
+        [46275.5, "Fluad 2026-2027 Syringe", 0.5],
+      ]);
+      expect(rows).toHaveLength(1);
+      expect(expanded).toBe(0);
+    });
+
+    it("treats a quantity of exactly 1 as a single dose", () => {
+      const { rows, expanded } = parseVaccinationLog([
+        ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
+        [46275.5, "Comirnaty", 1],
+      ]);
+      expect(rows).toHaveLength(1);
+      expect(expanded).toBe(0);
+    });
+
+    it("expands an integer quantity of 2 into two identical dose rows and counts it in `expanded`", () => {
+      const { rows, expanded } = parseVaccinationLog([
+        ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
+        [46275.5, "Fluad 2026-2027 Syringe", 2],
+      ]);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toEqual(rows[1]);
+      expect(rows[0].itemName).toBe("Fluad 2026-2027 Syringe");
+      expect(expanded).toBe(1);
+    });
+
+    it("counts only the SOURCE row (not the expanded dose count) in `expanded`, across multiple batch rows", () => {
+      const { rows, expanded } = parseVaccinationLog([
+        ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
+        [46275.5, "Fluad 2026-2027 Syringe", 3],
+        [46276.5, "Comirnaty", 0.3],
+        [46277.5, "Shingrix", 2],
+      ]);
+      expect(rows).toHaveLength(3 + 1 + 2); // 3 Fluad + 1 Comirnaty + 2 Shingrix
+      expect(expanded).toBe(2); // the quantity=3 row and the quantity=2 row
+    });
+  });
 });

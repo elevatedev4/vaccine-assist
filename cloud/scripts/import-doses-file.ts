@@ -13,7 +13,20 @@
 //
 // Usage (from cloud/):
 //   set -a; source .env.local; set +a
-//   npx vite-node -c vitest.config.ts scripts/import-doses-file.ts <path> [--received <ISO>] [--dry-run]
+//   IMPORT_DOSES_RUN=1 npx vite-node -c vitest.config.ts scripts/import-doses-file.ts <path> [--received <ISO>] [--dry-run]
+//
+// IMPORT_DOSES_RUN=1 is REQUIRED (fix, 2026-09-13): under `npx vite-node
+// <this file>`, process.argv[1] is vite-node's OWN bin path, not this
+// script's path, so the naive "am I the entry point"
+// `import.meta.url === pathToFileURL(process.argv[1]).href` check is
+// always false and main() silently never ran (the script exited 0
+// having done nothing). The entry-point guard below now ALSO accepts
+// this env var as an explicit "yes, actually run" signal — kept in
+// addition to (not instead of) the import.meta.url check so a future
+// runner that DOES set argv[1] correctly still works without the env
+// var. main() is exported for tests/import-doses-file.test.ts to
+// exercise directly if ever needed, and to keep it out of the
+// side-effecting bottom guard.
 //
 // --dry-run: prints the file summary (row count, date range, rows/day,
 // unmatched item names) but never retains the attachment or writes to
@@ -118,7 +131,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { filePath, received, dryRun };
 }
 
-async function main() {
+export async function main() {
   let parsed: ParsedArgs;
   try {
     parsed = parseArgs(process.argv.slice(2));
@@ -151,12 +164,12 @@ async function main() {
     return;
   }
 
-  const { rows, skipped, skippedSamples } = parseVaccinationLog(matrix);
+  const { rows, skipped, skippedSamples, expanded } = parseVaccinationLog(matrix);
   const summary = summarizeVaccinationLogRows(rows);
 
   console.log(`File: ${filePath} (${kind}, ${buffer.length} bytes)`);
   console.log(`Header: ${info.headerLine}`);
-  console.log(`Row count: ${summary.rowCount}`);
+  console.log(`Row count (doses, after quantity expansion): ${summary.rowCount}`);
   console.log(`Date range: ${summary.dateRange ? `${summary.dateRange.min} .. ${summary.dateRange.max}` : "(no rows)"}`);
   console.log("Rows per day:");
   for (const [date, count] of Object.entries(summary.perDay)) {
@@ -164,6 +177,9 @@ async function main() {
   }
   if (skipped > 0) {
     console.log(`Skipped ${skipped} row(s) with an unparseable date or blank item name:`, skippedSamples);
+  }
+  if (expanded > 0) {
+    console.log(`Expanded ${expanded} source row(s) with an integer quantity > 1 into multiple dose rows.`);
   }
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
@@ -230,9 +246,19 @@ async function main() {
 // alias (tsconfig's "@/*" -> repo root — see vitest.config.ts), and an
 // unconditional `main()` call here would run the whole CLI (including
 // process.exit calls and a requireEnv exit) as an import side effect.
-// Only run when this file is the actual entry point (vite-node), never
-// on import.
-const isEntryPoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Only run when this file is the actual entry point.
+//
+// Fix (2026-09-13): under `npx vite-node scripts/import-doses-file.ts`,
+// process.argv[1] is vite-node's OWN bin script, not this file, so
+// `import.meta.url === pathToFileURL(process.argv[1]).href` is ALWAYS
+// false in the one way this script is actually ever run — main() never
+// executed and the script exited 0 having silently done nothing. The
+// IMPORT_DOSES_RUN=1 env var (see this file's Usage comment) is the
+// primary signal now; the import.meta.url check is kept as a second,
+// OR'd path for a future runner that does set argv[1] to this file.
+const isEntryPoint =
+  process.env.IMPORT_DOSES_RUN === "1" ||
+  (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href);
 if (isEntryPoint) {
   main().catch((err) => {
     console.error(err);

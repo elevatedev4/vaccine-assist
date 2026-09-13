@@ -256,8 +256,15 @@ export function matrixFromDelimitedText(text: string, delimiter: "," | "\t"): un
 
 /** True when a header row looks like PioneerRx's per-dose vaccination
  * log (as opposed to the BOH stock report) — case-insensitive "Completed
- * date" anywhere in the header cells, per the real report Will forwarded
- * 2026-09-11 20:39Z. */
+ * date" (the daily 3am email's header, first seen 2026-09-11 20:39Z) OR
+ * "Completed on" (Will's manually-exported "8/1 onward" backfill,
+ * V-import-doses-file 2026-09-13: `Completed On | Dispensed Item Name |
+ * Dispensed Quantity` — same underlying report, a different manual
+ * export path in PioneerRx uses different column names) anywhere in the
+ * header cells. lib/administered/parse.ts's own column-mapping mirrors
+ * this exact pair of date-column aliases (its DATE_HEADER_TOKENS) so the
+ * two never drift on what counts as a vaccination log. */
 export function isVaccinationLogHeaderLine(headerLine: string): boolean {
-  return headerLine.toLowerCase().includes("completed date");
+  const lower = headerLine.toLowerCase();
+  return lower.includes("completed date") || lower.includes("completed on");
 }

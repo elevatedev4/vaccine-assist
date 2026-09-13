@@ -17,7 +17,7 @@ export async function ingestVaccinationLogMatrix(
   catalog: CatalogVaccine[],
   sourceKey: string
 ): Promise<IngestResult & { matched: number; skipped: number }> {
-  const { rows: parsedRows, skipped, skippedSamples } = parseVaccinationLog(matrix);
+  const { rows: parsedRows, skipped, skippedSamples, expanded } = parseVaccinationLog(matrix);
   if (skipped > 0) {
     // Review fix (2026-09-12): these rows were previously dropped
     // silently. Logged once per ingest call, never per row — a ragged
@@ -28,6 +28,13 @@ export async function ingestVaccinationLogMatrix(
       `ingestVaccinationLogMatrix: skipped ${skipped} row(s) with an unparseable date or blank item name`,
       skippedSamples
     );
+  }
+  if (expanded > 0) {
+    // V-import-doses-file, 2026-09-13: a "Dispensed Quantity" column
+    // with an integer > 1 expands one source row into that many dose
+    // rows (parse.ts's doseCountFromQuantityCell) — logged once per
+    // ingest call, mirroring `skipped` above, never per row.
+    console.warn(`ingestVaccinationLogMatrix: expanded ${expanded} row(s) with an integer quantity > 1 into multiple dose rows`);
   }
   const matchedRows = matchAdministeredRows(parsedRows, catalog);
   const matched = matchedRows.filter((row) => row.vaccineId !== null).length;
