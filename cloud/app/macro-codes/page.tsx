@@ -7,8 +7,14 @@ import { buildProductViews } from "@/lib/product-view";
 import {
   buildMacroCode,
   buildMacroRows,
+  DEFAULT_MACRO_VIEW_MODE,
+  filterMacroTopGroups,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
+  macroProductNameWithAge,
+  macroSectionDisplayName,
+  readMacroViewMode,
+  writeMacroViewMode,
   type MacroDoseButton,
   type MacroLotLike,
   type MacroProductGroup,
@@ -17,6 +23,8 @@ import {
   type MacroSection,
   type MacroSectionGroup,
   type MacroTopGroupBlock,
+  type MacroViewMode,
+  type MacroViewModeStorage,
 } from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
@@ -49,6 +57,38 @@ import DateTextInput from "@/app/date-text-input";
  * lib/product-view.ts's buildProductViews; pure row-building/grouping
  * logic lives in lib/macro-codes.ts / lib/macro-catalog.ts (both unit-
  * tested).
+ *
+ * ROUND 8 (Will's verbatim feedback, 2026-09-12, replying to the round-7
+ * page): "I don't like the layout where you have a heading then next
+ * row the buttons. Instead, have the heading be in 1 column, then the
+ * buttons next to it stacked vertically... I want to see two versions
+ * as well: one that has another column after type (ex: tdap), then
+ * product (ex Boostrix (with age range)) > Dose 1 button... If you have
+ * any other ideas to make this user friendly... feel free to research
+ * the best way and make another version." Adds a three-way layout
+ * switcher (renderSectionVersionA/B/C below), all built on the SAME
+ * topGroups data (buildMacroRows -> groupMacroRowsBySection ->
+ * groupSectionsByTopGroup, unchanged) — only the render layer varies:
+ *
+ * - Version A: one row per section/family — a fixed-width family-name
+ *   cell (macroSectionDisplayName, e.g. "Tdap" for Tetanus) next to a
+ *   vertical stack of every dose button in that family, one per line,
+ *   full label text unchanged from round 7.
+ * - Version B: one row per product, three columns — family name |
+ *   plain-text product name + age (macroProductNameWithAge) | short
+ *   dose buttons ("Dose 1"/"Dose 2", or "Copy" for a single-dose
+ *   product — see doseButtonShortLabel below).
+ * - Version C: a from-scratch "scan grid" — see its own comment at
+ *   renderSectionVersionC for the design rationale.
+ *
+ * The switcher's choice persists in localStorage (read/write wrapped in
+ * try/catch, factored into lib/macro-codes.ts's
+ * readMacroViewMode/writeMacroViewMode so it's unit-testable without a
+ * DOM) and defaults to "A". Copy behavior, the lot/exp modal, the ⚙
+ * menu, and hidden prices are IDENTICAL across all three versions —
+ * renderDoseButton and renderSettingsMenu are shared, just parameterized
+ * by a visible-label override and a couple of layout flags; nothing
+ * about handleCopy/copyToClipboard/the modal is duplicated per version.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -76,6 +116,15 @@ const SECTION_COLORS: Readonly<Record<MacroSection, SectionColors>> = {
   Other: { bg: "#f2f2f2", border: "#aaaaaa", text: "#4d4d4d" },
 };
 
+/** Round 8: switcher button labels, verbatim per Will's brief ("Make
+ * the two different versions and add buttons at the top for me to
+ * switch between them"). */
+const VIEW_MODE_OPTIONS: readonly { mode: MacroViewMode; label: string }[] = [
+  { mode: "A", label: "A · Type | buttons" },
+  { mode: "B", label: "B · Type | product | dose" },
+  { mode: "C", label: "C · Scan grid" },
+];
+
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "0.75rem 1rem", maxWidth: "100%" },
   heading: { margin: "0 0 0.4rem", fontSize: "1.15rem" },
@@ -93,23 +142,6 @@ const styles = {
     paddingBottom: "0.15rem",
     borderBottom: "2px solid #999",
   },
-  sectionHeading: {
-    fontSize: "0.8rem",
-    fontWeight: 700,
-    margin: "0 0 0.15rem",
-    paddingBottom: "0.1rem",
-    borderBottom: "1px solid #ccc",
-  },
-  productRow: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "0.3rem",
-    padding: "1px 0",
-    borderBottom: "1px solid #eee",
-  },
-  doseButtons: { display: "flex", flexWrap: "wrap" as const, gap: "0.25rem", alignItems: "center" },
-  rowMeta: { display: "flex", alignItems: "center", gap: "0.3rem", whiteSpace: "nowrap" as const, flexShrink: 0 },
   copyFallback: { margin: "0.15rem 0 0.4rem", width: "100%" },
   copyFallbackInput: {
     fontFamily: "ui-monospace, monospace",
@@ -165,6 +197,21 @@ const styles = {
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" },
   checkboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
   button: { padding: "0.3rem 0.6rem", fontSize: "13px" },
+  // Round 8: the A/B/C layout switcher + version C's live-filter box —
+  // both sit above .macro-groups, so they use the same plain-object
+  // convention as everything else here (hover/active states for the
+  // switcher buttons are in the <style> tag below, same posture as the
+  // dose buttons).
+  viewSwitcher: { display: "flex", gap: "0.4rem", flexWrap: "wrap" as const, margin: "0 0 0.6rem" },
+  filterBox: { margin: "0 0 0.6rem", maxWidth: 320 },
+  filterInput: {
+    width: "100%",
+    padding: "0.4rem 0.6rem",
+    fontSize: "13px",
+    border: "1px solid #999",
+    borderRadius: 5,
+    boxSizing: "border-box" as const,
+  },
 } as const;
 
 /** "Copied ✓" is 8 characters — a button's reserved width is at least
@@ -276,6 +323,33 @@ export default function MacroCodesPage() {
   };
   const [modal, setModal] = useState<ModalState | null>(null);
 
+  // Round 8: A/B/C layout switcher + version C's live-filter query.
+  // viewMode starts at the default and is corrected from localStorage in
+  // an effect (below) rather than a useState lazy initializer, so the
+  // very first render — which also runs during SSR, where there's no
+  // `window` — never touches storage and always matches between server
+  // and client (no hydration mismatch); the stored choice, if any, then
+  // takes over a frame later.
+  const [viewMode, setViewModeState] = useState<MacroViewMode>(DEFAULT_MACRO_VIEW_MODE);
+  const [filterQuery, setFilterQuery] = useState("");
+
+  function getViewModeStorage(): MacroViewModeStorage | null {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    setViewModeState(readMacroViewMode(getViewModeStorage()));
+  }, []);
+
+  function setViewMode(mode: MacroViewMode) {
+    setViewModeState(mode);
+    writeMacroViewMode(getViewModeStorage(), mode);
+  }
+
   function resetAfterSignOut() {
     setVaccines([]);
     setLots([]);
@@ -374,6 +448,14 @@ export default function MacroCodesPage() {
 
   const sections = useMemo(() => groupMacroRowsBySection(rows), [rows]);
   const topGroups = useMemo(() => groupSectionsByTopGroup(sections), [sections]);
+
+  // Version C's live filter only narrows what's shown in version C —
+  // switching to A/B always shows the full catalog regardless of a
+  // query typed while on C.
+  const visibleTopGroups = useMemo(
+    () => (viewMode === "C" ? filterMacroTopGroups(topGroups, filterQuery) : topGroups),
+    [viewMode, topGroups, filterQuery]
+  );
 
   function rowKey(row: MacroRow): string {
     return `${row.productKey}:${row.doseNumber}`;
@@ -558,15 +640,40 @@ export default function MacroCodesPage() {
     );
   }
 
-  function renderDoseButton(dose: MacroDoseButton, colors: SectionColors) {
+  /**
+   * Round 8: renderDoseButton grew three optional layout knobs so all
+   * three versions can share it (per the brief: copy/modal/⚙/hidden-
+   * price behavior must be identical, reused, not reimplemented):
+   * - `visibleLabel`: shown instead of the full `dose.label` (e.g.
+   *   version B/C's short "Dose 1"/"Copy" — see doseButtonShortLabel
+   *   below) while every click/copy/modal/tooltip/title still uses the
+   *   full descriptive label underneath, unchanged.
+   * - `block`: version A's one-per-line vertical stack — full width,
+   *   left-aligned text, instead of an inline pill sized to its label.
+   * - `large`: version C's bigger hit target (Will's brief: "larger hit
+   *   targets").
+   * The click handler, disabled state, "Copied ✓" swap, missing-lot/exp
+   * red dot, and copy-failure fallback are untouched from round 7.
+   */
+  function renderDoseButton(
+    dose: MacroDoseButton,
+    colors: SectionColors,
+    options?: { visibleLabel?: string; block?: boolean; large?: boolean }
+  ) {
     const { row, label } = dose;
     const key = rowKey(row);
     const isNoShortCode = row.shortCode === null;
     const isCopied = copiedKey === key;
     const note = missingNote(row);
+    const block = options?.block ?? false;
+    const large = options?.large ?? false;
+    const visibleText = isCopied ? COPIED_FLAG : options?.visibleLabel ?? label;
 
     return (
-      <span key={key} style={{ position: "relative", display: "inline-block" }}>
+      <span
+        key={key}
+        style={{ position: "relative", display: block ? "block" : "inline-block", width: block ? "100%" : undefined }}
+      >
         <button
           type="button"
           disabled={isNoShortCode}
@@ -582,20 +689,23 @@ export default function MacroCodesPage() {
             // longer — a fixed minHeight + horizontal-only padding keeps
             // every button a consistent, clearly-clickable ~32px tall
             // regardless of label length, instead of growing vertically.
-            minHeight: 32,
-            padding: "0 0.5rem",
+            // Version C bumps this further (`large`) for bigger hit
+            // targets per Will's brief.
+            minHeight: large ? 38 : 32,
+            padding: large ? "0 0.75rem" : "0 0.5rem",
             display: "inline-flex",
             alignItems: "center",
-            justifyContent: "center",
-            fontSize: "12px",
+            justifyContent: block ? "flex-start" : "center",
+            fontSize: large ? "13px" : "12px",
             fontWeight: 600,
             cursor: isNoShortCode ? "default" : "pointer",
-            minWidth: `${Math.max(label.length, MIN_BUTTON_CH)}ch`,
-            textAlign: "center",
+            width: block ? "100%" : undefined,
+            minWidth: block ? undefined : `${Math.max(visibleText.length, MIN_BUTTON_CH)}ch`,
+            textAlign: block ? "left" : "center",
             boxSizing: "border-box",
           }}
         >
-          {isCopied ? COPIED_FLAG : label}
+          {visibleText}
         </button>
         {!isNoShortCode && note && (
           <span
@@ -616,6 +726,20 @@ export default function MacroCodesPage() {
         {copyFailure?.key === key && <CopyFallback code={copyFailure.code} />}
       </span>
     );
+  }
+
+  /** Version B/C's short dose-button label (Will's verbatim brief:
+   * "Dose 1 button... for a single-dose product, one button — pick
+   * either 'Copy' or the product's short code as its label and use that
+   * choice consistently across the whole version, don't mix"). Chose
+   * "Copy" over the raw short code: the product name + age is already
+   * spelled out in its own column right next to the button (unlike
+   * version A, where the button IS the only place the name appears), so
+   * the button just needs to say what clicking it does. Used identically
+   * by both version B and version C so the choice stays consistent
+   * across every version that uses short labels. */
+  function doseButtonShortLabel(row: MacroRow, doseCount: number): string {
+    return doseCount > 1 ? `Dose ${row.doseNumber}` : "Copy";
   }
 
   function renderSettingsMenu(product: MacroProductGroup) {
@@ -650,33 +774,151 @@ export default function MacroCodesPage() {
     );
   }
 
-  function renderProductRow(product: MacroProductGroup, section: MacroSection) {
-    const colors = SECTION_COLORS[section];
-    // Round 5: age moved into the dose button labels themselves (see
-    // lib/macro-codes.ts's doseButtonLabel) so the separate age cell is
-    // gone, and cash price is hidden for now per Will 2026-09-12 — the
-    // row's trailing meta cell is just the ⚙ now.
-
+  /**
+   * Version A (Will's verbatim brief): "have the heading be in 1
+   * column, then the buttons next to it stacked vertically." One row
+   * PER SECTION/FAMILY (not per product) — a fixed-width family-name
+   * cell (macroSectionDisplayName) next to a vertical stack of every
+   * dose button belonging to that family, one button per line, full
+   * label text unchanged ("Shingrix (Dose 1) (50+, 19+ IC)" etc., same
+   * as round 7 — see doseButtonLabel in lib/macro-codes.ts). The ⚙ menu
+   * still fires once per PRODUCT (same renderSettingsMenu as every other
+   * version), placed once at the end of that product's own dose lines
+   * rather than once per family — a family with two products still gets
+   * two separate ⚙s, just both inside the one family row.
+   */
+  function renderSectionVersionA(section: MacroSectionGroup) {
+    const colors = SECTION_COLORS[section.section];
     return (
-      <div key={product.productKey} className="macro-row" style={styles.productRow}>
-        <div style={styles.doseButtons}>{product.doses.map((dose) => renderDoseButton(dose, colors))}</div>
-        <div className="macro-settings-cell" style={styles.rowMeta}>
-          {renderSettingsMenu(product)}
+      <div key={section.section} className="macro-family-row">
+        <div className="macro-family-cell" style={{ color: colors.text, borderLeftColor: colors.border }}>
+          {macroSectionDisplayName(section.section)}
+        </div>
+        <div className="macro-dose-stack">
+          {section.products.map((product) => (
+            <div key={product.productKey} className="macro-row macro-product-block">
+              <div className="macro-dose-lines">{product.doses.map((dose) => renderDoseButton(dose, colors, { block: true }))}</div>
+              <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
+            </div>
+          ))}
         </div>
       </div>
     );
   }
 
-  function renderSection(section: MacroSectionGroup) {
+  /**
+   * Version B (Will's verbatim brief): "another column after type (ex:
+   * tdap), then product (ex Boostrix (with age range)) > Dose 1
+   * button." One row PER PRODUCT, three columns: family name
+   * (macroSectionDisplayName, repeated per row — same posture as the
+   * original Excel sheet's own Type column, which repeated per row
+   * too), product name + age as PLAIN TEXT (macroProductNameWithAge —
+   * not a button, not clickable), then the dose buttons themselves
+   * (doseButtonShortLabel: "Dose 1"/"Dose 2", or "Copy" for a single-
+   * dose product). The ⚙ menu is unchanged, once per product.
+   */
+  function renderSectionVersionB(section: MacroSectionGroup) {
+    const colors = SECTION_COLORS[section.section];
     return (
-      <section key={section.section} className="macro-section">
-        <h2 style={styles.sectionHeading}>{section.section}</h2>
-        {section.products.map((product) => renderProductRow(product, section.section))}
+      <section key={section.section} className="macro-section macro-section-b">
+        {section.products.map((product) => {
+          const doseCount = product.doses.length;
+          return (
+            <div key={product.productKey} className="macro-row macro-row-b">
+              <div className="macro-family-cell-b" style={{ color: colors.text }}>
+                {macroSectionDisplayName(section.section)}
+              </div>
+              <div className="macro-product-name-cell">{macroProductNameWithAge(product)}</div>
+              <div className="macro-dose-buttons-b">
+                {product.doses.map((dose) => renderDoseButton(dose, colors, { visibleLabel: doseButtonShortLabel(dose.row, doseCount) }))}
+              </div>
+              <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
+            </div>
+          );
+        })}
+      </section>
+    );
+  }
+
+  /**
+   * Version C — "Scan grid," a from-scratch layout aimed squarely at
+   * Will's stated goal: a pharmacy tech scanning ~25 products to find
+   * ONE fast. Design choices (each addresses one part of the brief):
+   *
+   * - Live filter-as-you-type (lib/macro-codes.ts's
+   *   filterMacroTopGroups), not an A–Z index rail: a tech almost always
+   *   already knows the product or short code they need, so typing a
+   *   few letters narrows straight to it in one motion. An alphabetical
+   *   index instead requires the tech to know which LETTER their target
+   *   starts under across an already-alphabetically-scattered catalog
+   *   (products are grouped by disease family, not name), which is an
+   *   extra translation step the filter avoids entirely — and the
+   *   filter also matches a section family name ("tdap", "flu") and
+   *   short codes, not just the display name, so it works as a family
+   *   jump-to as well as a product search.
+   * - High-contrast per-family color BANDS (macro-section-band below):
+   *   reuses SECTION_COLORS' existing border hue as a solid heading
+   *   background instead of the subtle per-button tint every other
+   *   version uses, so a family boundary is visible from across the
+   *   room, not just on close reading.
+   * - A single two-column CSS grid template (name | buttons) shared by
+   *   EVERY row in every section (.macro-row-c below) keeps the name
+   *   column's left edge and the button column's right edge each
+   *   perfectly vertically aligned down the whole page, so the eye
+   *   tracks one straight line instead of re-finding the edge per row.
+   * - Larger hit targets: renderDoseButton's `large` option (38px tall,
+   *   more horizontal padding) vs. the 32px default elsewhere.
+   * - Dose buttons right-aligned (`justify-content: flex-end` on
+   *   .macro-dose-buttons-c) so, combined with the fixed grid template
+   *   above, every button column lines up on the right edge too.
+   *
+   * One-screen fit at 1920×1080: the existing three-column COVID/Flu |
+   * Common | Other layout already spreads the catalog's ~13 sections
+   * and ~25 products across three columns instead of one long list, and
+   * this version's rows are intentionally compact (small band headings,
+   * ~2px row gaps, no separate age row). Rough arithmetic says this
+   * fits: the "Other" column (the deepest, with the most sections —
+   * Hep B, Meningitis, Hep A, Typhoid, MMR, Other) has roughly a dozen
+   * product rows plus band headings, each row/band well under 30px
+   * tall, putting that column at well under 500px — nowhere near a
+   * 1080px viewport (minus browser chrome and this page's own header/
+   * switcher). This is arithmetic, not a measured screenshot — it
+   * hasn't been verified pixel-for-pixel in a real browser at that
+   * resolution. If a future catalog addition (a new section, or several
+   * new products piling into one already-long column) ever does push a
+   * column past one screen, the live filter above is also the fallback:
+   * typing even one character immediately drops every non-matching row
+   * and the page fits again — the filter isn't just a search feature
+   * here, it's the page's own answer to "what if it doesn't fit."
+   */
+  function renderSectionVersionC(section: MacroSectionGroup) {
+    const colors = SECTION_COLORS[section.section];
+    return (
+      <section key={section.section} className="macro-section macro-section-c">
+        <h2 className="macro-section-band" style={{ background: colors.border }}>
+          {macroSectionDisplayName(section.section)}
+        </h2>
+        {section.products.map((product) => {
+          const doseCount = product.doses.length;
+          return (
+            <div key={product.productKey} className="macro-row macro-row-c">
+              <div className="macro-product-name-cell-c">{macroProductNameWithAge(product)}</div>
+              <div className="macro-dose-buttons-c">
+                {product.doses.map((dose) =>
+                  renderDoseButton(dose, colors, { visibleLabel: doseButtonShortLabel(dose.row, doseCount), large: true })
+                )}
+              </div>
+              <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
+            </div>
+          );
+        })}
       </section>
     );
   }
 
   function renderTopGroup(block: MacroTopGroupBlock) {
+    const renderSection =
+      viewMode === "A" ? renderSectionVersionA : viewMode === "B" ? renderSectionVersionB : renderSectionVersionC;
     return (
       <div key={block.group} className="macro-group-column" style={styles.groupColumn}>
         <h2 style={styles.groupHeading}>{block.group}</h2>
@@ -689,12 +931,39 @@ export default function MacroCodesPage() {
     <main style={styles.main}>
       <h1 style={styles.heading}>Macro codes</h1>
 
+      <div className="macro-view-switcher" style={styles.viewSwitcher} role="group" aria-label="Layout version">
+        {VIEW_MODE_OPTIONS.map(({ mode, label }) => (
+          <button
+            key={mode}
+            type="button"
+            className={`macro-view-switcher-button${viewMode === mode ? " active" : ""}`}
+            onClick={() => setViewMode(mode)}
+            aria-pressed={viewMode === mode}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {viewMode === "C" && (
+        <div style={styles.filterBox}>
+          <input
+            type="text"
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="Filter by name or code…"
+            aria-label="Filter vaccines"
+            style={styles.filterInput}
+          />
+        </div>
+      )}
+
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
 
       {!loading && (
         <div className="macro-groups" style={styles.groups}>
-          {topGroups.map((block) => renderTopGroup(block))}
+          {visibleTopGroups.map((block) => renderTopGroup(block))}
         </div>
       )}
 
@@ -793,7 +1062,12 @@ export default function MacroCodesPage() {
        * flow — plain inline styles can't express the narrow-width
        * media query, so the stack-to-one-column fallback below 1100px
        * lives here. Each column stacks its own sections top to bottom
-       * (no multi-column text flow within a column). */}
+       * (no multi-column text flow within a column).
+       *
+       * Round 8 adds: the view-switcher button active/hover state; the
+       * version-A family-row/dose-stack layout; version B's four-column
+       * row grid; and version C's color band heading + two-column row
+       * grid with right-aligned buttons. */}
       <style>{`
         .macro-groups {
           flex-wrap: wrap;
@@ -818,6 +1092,121 @@ export default function MacroCodesPage() {
         }
         @media (hover: none) {
           .macro-settings-menu { opacity: 1; }
+        }
+
+        /* View switcher */
+        .macro-view-switcher-button {
+          padding: 0.3rem 0.7rem;
+          font-size: 12px;
+          font-weight: 600;
+          border: 1px solid #999;
+          border-radius: 5px;
+          background: #fff;
+          color: #333;
+          cursor: pointer;
+        }
+        .macro-view-switcher-button:hover { background: #f2f2f2; }
+        .macro-view-switcher-button.active {
+          background: #333;
+          border-color: #333;
+          color: #fff;
+        }
+
+        /* Version A: one row per family — fixed-width name cell next to
+         * a vertical stack of every dose button in that family. */
+        .macro-family-row {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.6rem;
+          padding: 0.35rem 0;
+          border-bottom: 1px solid #eee;
+        }
+        .macro-family-cell {
+          flex: 0 0 92px;
+          min-width: 0;
+          font-size: 0.8rem;
+          font-weight: 700;
+          padding: 3px 0 3px 8px;
+          border-left: 3px solid;
+        }
+        .macro-dose-stack {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+        }
+        .macro-product-block {
+          display: flex;
+          align-items: center;
+          gap: 0.3rem;
+        }
+        .macro-dose-lines {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        /* Version B: family | product-name-plain-text | dose buttons | ⚙ */
+        .macro-row-b {
+          display: grid;
+          grid-template-columns: 92px 1fr auto auto;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 3px 0;
+          border-bottom: 1px solid #eee;
+        }
+        .macro-family-cell-b {
+          font-size: 0.78rem;
+          font-weight: 700;
+        }
+        .macro-product-name-cell {
+          font-size: 0.85rem;
+          min-width: 0;
+        }
+        .macro-dose-buttons-b {
+          display: flex;
+          gap: 0.25rem;
+          flex-wrap: wrap;
+        }
+
+        /* Version C: high-contrast family band + a two-column grid
+         * (name | right-aligned buttons) shared by every row so columns
+         * stay aligned straight down the page. */
+        .macro-section-band {
+          font-size: 0.75rem;
+          font-weight: 800;
+          color: #fff;
+          padding: 3px 8px;
+          border-radius: 4px;
+          margin: 0.4rem 0 0.15rem;
+        }
+        .macro-row-c {
+          display: grid;
+          grid-template-columns: 1fr auto auto;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 3px 0;
+          border-bottom: 1px solid #eee;
+        }
+        .macro-product-name-cell-c {
+          font-size: 0.85rem;
+          min-width: 0;
+        }
+        .macro-dose-buttons-c {
+          display: flex;
+          gap: 0.3rem;
+          justify-content: flex-end;
+        }
+
+        @media (max-width: 700px) {
+          .macro-row-b, .macro-row-c {
+            grid-template-columns: 1fr;
+            justify-items: start;
+          }
+          .macro-dose-buttons-c { justify-content: flex-start; }
         }
       `}</style>
     </main>
