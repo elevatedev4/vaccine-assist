@@ -185,7 +185,12 @@ export default function TopNav() {
   }
 
   return (
-    <nav style={styles.nav} aria-label="Primary">
+    // data-top-nav: a stable, style-free hook /macro-codes' embed mode
+    // (?embed=1, V-macro-codes-round9) targets from its own <style> tag
+    // to hide the shared nav strip when it's popped up as the desktop
+    // app's Ctrl+8 macro-code picker — see app/macro-codes/page.tsx.
+    <nav style={styles.nav} aria-label="Primary" data-top-nav="">
+
       <div style={styles.tabs}>
         {items.map((item) => (
           <a key={item.href} href={item.href} style={item.active ? styles.linkActive : styles.link} aria-current={item.active ? "page" : undefined}>

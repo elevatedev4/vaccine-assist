@@ -97,7 +97,11 @@ const CATALOG: ProductCatalogEntry[] = [
     // order (primary match.ndc, on ANY row, always wins first).
     match: { ndc: "00069246510", name: "Abrysvo", altNdcs: ["00069034401", "00069246501"] },
     productName: "Abrysvo",
-    ageRange: "60+; pregnancy 32-36 wk",
+    // V-macro-codes-round9 (Will verbatim, 2026-09-13): "Abrysvo should
+    // be marked 75+ and 18+ if high risk" — replaces the old "60+;
+    // pregnancy 32-36 wk", kept in sync with lib/macro-catalog.ts's
+    // abrysvo entry so /ordering, /lots, and /macro-codes all agree.
+    ageRange: "75+; 18+ high-risk",
     dosesPerPackage: 10,
     packageNdc: "00069-2465-10",
     source: "pfizermedical.com/abrysvo/storage-handling",
@@ -113,7 +117,8 @@ const CATALOG: ProductCatalogEntry[] = [
     // Abrysvo bucket even before/without that DB row existing.
     match: { ndc: "00069246501" },
     productName: "Abrysvo (1 ct)",
-    ageRange: "60+; pregnancy 32-36 wk",
+    // V-macro-codes-round9: kept in sync with the 10-count entry above.
+    ageRange: "75+; 18+ high-risk",
     dosesPerPackage: 1,
     packageNdc: "00069-2465-01",
     source: "pfizermedical.com/abrysvo/storage-handling",
@@ -186,8 +191,17 @@ const CATALOG: ProductCatalogEntry[] = [
     source: "CDC Adult price list",
   },
   {
+    // V-macro-codes-round9 (Will verbatim, 2026-09-13): "Remove 'two
+    // vial' from menveo name." Was "Menveo (two-vial)" — dropped here
+    // (the shared source every tab's displayName derives from, via
+    // lib/product-view.ts's deriveProductViewFields -> lotsDisplayName)
+    // rather than via a macro-page-only override, since there is no
+    // separate one-vial Menveo catalog row to collide with (this is the
+    // ONLY Menveo entry) — confirmed by tests/lots-display-name.test.ts's
+    // "produces a unique /lots name for every catalog entry" sweep,
+    // which still passes with this change.
     match: { ndc: "58160095509", name: "Menveo" },
-    productName: "Menveo (two-vial)",
+    productName: "Menveo",
     ageRange: "2 mo-55 yr",
     dosesPerPackage: 5,
     packageNdc: "58160-0955-09",

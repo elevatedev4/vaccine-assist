@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useSearchParams } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { buildProductViews } from "@/lib/product-view";
@@ -27,6 +28,7 @@ import {
   type MacroViewModeStorage,
 } from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
+import { postToHost } from "@/lib/macro-embed";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 
@@ -97,6 +99,35 @@ import DateTextInput from "@/app/date-text-input";
  * per-item breakdown (bold product name, smaller gray age/price line,
  * ⓘ special-qualification tooltip, and a capped/content-sized column
  * width instead of the old edge-to-edge stretch).
+ *
+ * EMBED MODE (V-macro-codes-round9, Will verbatim, 2026-09-13): "Make a
+ * macro code popup in the vaccine assist app that pops up this screen
+ * we built when someone pushes Ctrl+8. When they click on the one they
+ * want, it copies the macro code and closes the page so they can go
+ * resume data entry themselves." The desktop (WPF) half — built in
+ * parallel, not part of this file — opens `/macro-codes?embed=1` in its
+ * own popup/WebView2 host on Ctrl+8; `embed` (read via useSearchParams,
+ * which is why the default export below wraps the real component in a
+ * <Suspense> boundary — required by Next for any component that calls
+ * it) drives a handful of presentation-only differences, all gated on
+ * that one boolean: no top nav (hidden via a global CSS rule this page
+ * injects targeting top-nav.tsx's `data-top-nav` hook — TopNav itself
+ * is untouched), no page title/switcher, `effectiveViewMode` forces
+ * layout C for rendering while leaving the real `viewMode` state (and
+ * its localStorage read/write) completely alone so a later non-embed
+ * visit still sees whatever the user had chosen before, tighter page
+ * padding, a white body background, and the version-C filter box
+ * auto-focused. None of buildMacroRows/groupMacroRowsBySection/
+ * groupSectionsByTopGroup/the catalog data change — embed mode is
+ * output-layer only. Copy behavior gains one more step in embed mode:
+ * after a successful clipboard copy (both the direct-copy path for a
+ * complete row and the lot/exp-modal path for an incomplete one), it
+ * posts a `vaccine-assist:macro-copied` message via lib/macro-embed.ts's
+ * postToHost and calls `window.close()`; Escape (when neither the modal
+ * nor a ⚙ menu is open — those already own Escape for their own
+ * cancel/close) posts `vaccine-assist:macro-cancel` and closes the same
+ * way. A copy FAILURE (clipboard denied) does not post/close — the
+ * existing manual-copy fallback UI shows instead, same as non-embed.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -297,7 +328,21 @@ function formatCashPrice(cents: number | null): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/** Real default export — wraps the page in the <Suspense> boundary
+ * MacroCodesPageContent's useSearchParams call requires (see this
+ * file's "EMBED MODE" doc comment above). */
 export default function MacroCodesPage() {
+  return (
+    <Suspense fallback={<AuthLoading />}>
+      <MacroCodesPageContent />
+    </Suspense>
+  );
+}
+
+function MacroCodesPageContent() {
+  const searchParams = useSearchParams();
+  const embed = searchParams.get("embed") === "1";
+
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [signInEmail, setSignInEmail] = useState("");
@@ -316,6 +361,11 @@ export default function MacroCodesPage() {
 
   type ModalState = {
     row: MacroRow;
+    /** The dose button's full descriptive label (MacroDoseButton.label,
+     * e.g. "Abrysvo (75+, 18+ high-risk)") — carried through from
+     * handleCopy so embed mode's post-save `vaccine-assist:macro-copied`
+     * message (see handleModalSubmit) has it without recomputing it. */
+    label: string;
     lotNumber: string;
     expirationIso: string;
     saveToSystem: boolean;
@@ -342,6 +392,13 @@ export default function MacroCodesPage() {
   // takes over a frame later.
   const [viewMode, setViewModeState] = useState<MacroViewMode>(DEFAULT_MACRO_VIEW_MODE);
   const [filterQuery, setFilterQuery] = useState("");
+
+  // Embed mode always renders as layout C (Will's brief: "layout C
+  // forced") without touching `viewMode` itself, so the read/write-to-
+  // localStorage effects below keep running exactly as they do outside
+  // embed mode — the user's stored non-embed preference is preserved,
+  // just ignored for what THIS render shows.
+  const effectiveViewMode: MacroViewMode = embed ? "C" : viewMode;
 
   function getViewModeStorage(): MacroViewModeStorage | null {
     try {
@@ -463,8 +520,8 @@ export default function MacroCodesPage() {
   // switching to A/B always shows the full catalog regardless of a
   // query typed while on C.
   const visibleTopGroups = useMemo(
-    () => (viewMode === "C" ? filterMacroTopGroups(topGroups, filterQuery) : topGroups),
-    [viewMode, topGroups, filterQuery]
+    () => (effectiveViewMode === "C" ? filterMacroTopGroups(topGroups, filterQuery) : topGroups),
+    [effectiveViewMode, topGroups, filterQuery]
   );
 
   function rowKey(row: MacroRow): string {
@@ -519,7 +576,7 @@ export default function MacroCodesPage() {
     setModal((current) => (current && !current.submitting ? null : current));
   }
 
-  async function handleCopy(row: MacroRow) {
+  async function handleCopy(row: MacroRow, label: string) {
     if (!row.macro || !row.shortCode) return;
     if (row.complete) {
       const key = rowKey(row);
@@ -528,6 +585,14 @@ export default function MacroCodesPage() {
         setCopyFailure(null);
         setCopiedKey(key);
         setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1500);
+        // Embed mode (V-macro-codes-round9): a successful copy is the
+        // whole point of the popup — tell the host what was picked and
+        // close. A FAILED copy falls through to the copy-failure
+        // fallback below instead, same in embed mode as out of it.
+        if (embed) {
+          postToHost({ type: "vaccine-assist:macro-copied", code: row.macro, label, product: row.displayName });
+          window.close();
+        }
       } else {
         setCopiedKey(null);
         setCopyFailure({ key, code: row.macro });
@@ -537,6 +602,7 @@ export default function MacroCodesPage() {
     setCopyFailure(null);
     setModal({
       row,
+      label,
       lotNumber: row.lotNumber ?? "",
       expirationIso: row.expirationIso ?? "",
       saveToSystem: row.packageSize !== 1,
@@ -610,6 +676,14 @@ export default function MacroCodesPage() {
 
     if (copied) {
       setModal(null);
+      // Embed mode (V-macro-codes-round9): same "copied -> tell the
+      // host -> close" step as the direct-copy path in handleCopy, just
+      // reached via the lot/exp modal instead — finalCode is non-null
+      // here since `copied` can only be true when it was.
+      if (embed && finalCode) {
+        postToHost({ type: "vaccine-assist:macro-copied", code: finalCode, label: modal.label, product: modal.row.displayName });
+        window.close();
+      }
     } else {
       // Leave the modal open showing the manual-copy fallback rather
       // than closing on a copy that didn't actually happen.
@@ -630,6 +704,25 @@ export default function MacroCodesPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modal !== null]);
+
+  // Embed mode (V-macro-codes-round9, Will verbatim: pressing Escape
+  // should back out of the whole popup): only when neither the lot/exp
+  // modal nor a ⚙ menu is open — those already own Escape for their own
+  // narrower close, above — Escape here posts macro-cancel and closes
+  // the popup entirely, same two message channels as a successful copy.
+  useEffect(() => {
+    if (!embed) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (modal || anyMenuOpen) return;
+      postToHost({ type: "vaccine-assist:macro-cancel" });
+      window.close();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [embed, modal, anyMenuOpen]);
 
   if (!authChecked) {
     return <AuthLoading />;
@@ -687,7 +780,7 @@ export default function MacroCodesPage() {
         <button
           type="button"
           disabled={isNoShortCode}
-          onClick={() => void handleCopy(row)}
+          onClick={() => void handleCopy(row, label)}
           title={isNoShortCode ? "no short code set" : note ? note : `Copy ${label} macro code`}
           className="macro-dose-button"
           style={{
@@ -980,14 +1073,15 @@ export default function MacroCodesPage() {
 
   function renderTopGroup(block: MacroTopGroupBlock) {
     const renderSection =
-      viewMode === "A" ? renderSectionVersionA : viewMode === "B" ? renderSectionVersionB : renderSectionVersionC;
+      effectiveViewMode === "A" ? renderSectionVersionA : effectiveViewMode === "B" ? renderSectionVersionB : renderSectionVersionC;
     // ROUND 9: version C's columns size to content (a fixed basis, no
     // grow/shrink to fill the row) instead of A/B's flex:1-0-0 stretch —
     // see .macro-groups-c on the wrapping container below for the
     // matching max-width cap. Inline style wins over the CSS class for
     // the flex/minWidth shorthand, so this is done here rather than in
     // the <style> tag.
-    const columnStyle = viewMode === "C" ? { ...styles.groupColumn, flex: "0 1 340px", minWidth: 320 } : styles.groupColumn;
+    const columnStyle =
+      effectiveViewMode === "C" ? { ...styles.groupColumn, flex: "0 1 340px", minWidth: 320 } : styles.groupColumn;
     return (
       <div key={block.group} className="macro-group-column" style={columnStyle}>
         <h2 style={styles.groupHeading}>{block.group}</h2>
@@ -997,24 +1091,26 @@ export default function MacroCodesPage() {
   }
 
   return (
-    <main style={styles.main}>
-      <h1 style={styles.heading}>Macro codes</h1>
+    <main style={embed ? { ...styles.main, padding: "0.35rem 0.5rem" } : styles.main}>
+      {!embed && <h1 style={styles.heading}>Macro codes</h1>}
 
-      <div className="macro-view-switcher" style={styles.viewSwitcher} role="group" aria-label="Layout version">
-        {VIEW_MODE_OPTIONS.map(({ mode, label }) => (
-          <button
-            key={mode}
-            type="button"
-            className={`macro-view-switcher-button${viewMode === mode ? " active" : ""}`}
-            onClick={() => setViewMode(mode)}
-            aria-pressed={viewMode === mode}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {!embed && (
+        <div className="macro-view-switcher" style={styles.viewSwitcher} role="group" aria-label="Layout version">
+          {VIEW_MODE_OPTIONS.map(({ mode, label }) => (
+            <button
+              key={mode}
+              type="button"
+              className={`macro-view-switcher-button${viewMode === mode ? " active" : ""}`}
+              onClick={() => setViewMode(mode)}
+              aria-pressed={viewMode === mode}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {viewMode === "C" && (
+      {effectiveViewMode === "C" && (
         <div style={styles.filterBox}>
           <input
             type="text"
@@ -1023,6 +1119,7 @@ export default function MacroCodesPage() {
             placeholder="Filter by name or code…"
             aria-label="Filter vaccines"
             style={styles.filterInput}
+            autoFocus={embed}
           />
         </div>
       )}
@@ -1032,8 +1129,8 @@ export default function MacroCodesPage() {
 
       {!loading && (
         <div
-          className={`macro-groups${viewMode === "C" ? " macro-groups-c" : ""}`}
-          style={viewMode === "C" ? { ...styles.groups, maxWidth: 1200 } : styles.groups}
+          className={`macro-groups${effectiveViewMode === "C" ? " macro-groups-c" : ""}`}
+          style={effectiveViewMode === "C" ? { ...styles.groups, maxWidth: 1200 } : styles.groups}
         >
           {visibleTopGroups.map((block) => renderTopGroup(block))}
         </div>
@@ -1139,8 +1236,15 @@ export default function MacroCodesPage() {
        * Round 8 adds: the view-switcher button active/hover state; the
        * version-A family-row/dose-stack layout; version B's four-column
        * row grid; and version C's color band heading + two-column row
-       * grid with right-aligned buttons. */}
+       * grid with right-aligned buttons.
+       *
+       * Round 9 embed mode adds: hiding the shared top nav (targeting
+       * top-nav.tsx's `data-top-nav` hook — TopNav's own code is
+       * untouched) and forcing a white body background, both global
+       * rules scoped to embed mode by only being emitted at all when
+       * `embed` is true. */}
       <style>{`
+        ${embed ? "nav[data-top-nav] { display: none !important; } body { background: #fff !important; }" : ""}
         .macro-groups {
           flex-wrap: wrap;
         }

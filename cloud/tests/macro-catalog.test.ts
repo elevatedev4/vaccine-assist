@@ -158,7 +158,10 @@ describe("lookupMacroCatalog", () => {
       shingrix1: { age: "50+ (19+ IC)", ageBase: "50+", note: "19+ if immunocompromised" },
       prevnar20: { age: "19+ (2–18 high-risk)", ageBase: "19+", note: "2–18 high-risk" },
       capvaxive: { age: "18+ (2–17 high-risk)", ageBase: "18+", note: "2–17 high-risk" },
-      abrysvo: { age: "60+ / preg 32–36 wk", ageBase: "60+", note: "or pregnant 32–36 wk" },
+      // V-macro-codes-round9 (Will verbatim, 2026-09-13): "Abrysvo
+      // should be marked 75+ and 18+ if high risk" — replaces the old
+      // "60+ / preg 32–36 wk" age.
+      abrysvo: { age: "75+ (18+ high-risk)", ageBase: "75+", note: "18+ if high risk" },
       comirnaty12: { age: "12+", ageBase: "12+", note: undefined },
     };
     for (const [code, expected] of Object.entries(table)) {
