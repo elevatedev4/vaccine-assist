@@ -441,7 +441,11 @@ describe("groupMacroRowsBySection", () => {
       const rows = buildMacroRows(products, vaccines, {});
 
       const product = groupMacroRowsBySection(rows).find((s) => s.section === "RSV")!.products[0];
-      expect(product.doses.map((d) => d.label)).toEqual(["Abrysvo (60+ / preg 32–36 wk)"]);
+      // V-macro-codes-round9: Abrysvo's age is now "75+ (18+ high-risk)"
+      // (was "60+ / preg 32–36 wk") — its trailing parenthetical gets
+      // flattened to a comma clause like Shingrix's, unlike the old age
+      // string which had no parens to flatten.
+      expect(product.doses.map((d) => d.label)).toEqual(["Abrysvo (75+, 18+ high-risk)"]);
     });
 
     it("single-dose COVID products: display name plus the catalog age in parens", () => {

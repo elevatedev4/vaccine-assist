@@ -149,7 +149,7 @@ export type MacroCatalogEntry = {
   section: MacroSection;
   /** Short, human-readable approved age range, INCLUDING any
    * parenthetical/qualifier clause, e.g. "12+", "3–11", "6 mo+", "50+
-   * (19+ IC)", "60+ / preg 32–36 wk". "" for an unrecognized code. This
+   * (19+ IC)", "75+ (18+ high-risk)". "" for an unrecognized code. This
    * is the FULL label round-4/5/7's doseButtonLabel and
    * macroProductNameWithAge flatten for versions A/B — kept exactly as
    * it always was (round 9 below adds ageBase/note for version C
@@ -160,13 +160,13 @@ export type MacroCatalogEntry = {
    * 8 in his own numbering — continuing this file's internal ROUND
    * count after round 8's A/B/C switcher): version C's compact base age
    * range with any qualifier clause stripped out, e.g. "50+" for
-   * Shingrix (whose `age` is "50+ (19+ IC)"), "60+" for Abrysvo (whose
-   * `age` is "60+ / preg 32–36 wk"). Equal to `age` verbatim for a
+   * Shingrix (whose `age` is "50+ (19+ IC)"), "75+" for Abrysvo (whose
+   * `age` is "75+ (18+ high-risk)"). Equal to `age` verbatim for a
    * product with no qualifier. "" for an unrecognized code. */
   ageBase: string;
   /** ROUND 9: a special-qualification note surfaced via version C's ⓘ
    * icon/tooltip, e.g. "19+ if immunocompromised" (Shingrix), "2–18
-   * high-risk" (Prevnar 20), "or pregnant 32–36 wk" (Abrysvo), "2–17
+   * high-risk" (Prevnar 20), "18+ if high risk" (Abrysvo), "2–17
    * high-risk" (Capvaxive), "50–59 high-risk" (Arexvy). Undefined for a
    * product with no qualification — see RAW_MACRO_CATALOG below for the
    * full base/note table. */
@@ -202,7 +202,7 @@ type RawCatalogEntry = { type: string; sheetOrder: number; age: string; ageBase:
  * Hand-edited per product below rather than parsed out of `age`, since
  * three of the five notes reword the source clause for a clearer
  * tooltip (Shingrix "19+ IC" -> "19+ if immunocompromised", Abrysvo
- * "preg 32–36 wk" -> "or pregnant 32–36 wk") rather than just stripping
+ * "18+ high-risk" -> "18+ if high risk") rather than just stripping
  * parens — a generic parser can't produce that wording. */
 const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
   comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageBase: "12+", ageMinMonths: 144 },
@@ -216,13 +216,19 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
   fluzonehd: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageBase: "65+", ageMinMonths: 780 },
   flumist: { type: "Flu (nasal)", sheetOrder: 6, age: "2–49", ageBase: "2–49", ageMinMonths: 24 },
   arexvy: { type: "RSV", sheetOrder: 7, age: "60+ (50–59 high-risk)", ageBase: "60+", note: "50–59 high-risk", ageMinMonths: 600 },
+  // ROUND 9 macro-round9 (Will verbatim, 2026-09-13): "Abrysvo should be
+  // marked 75+ and 18+ if high risk" — replaces the old "60+ / preg
+  // 32–36 wk" age (that pregnancy-week qualifier is gone entirely, not
+  // just reworded). ageMinMonths follows this file's established
+  // pattern for a note that itself names a younger qualifying age (see
+  // shingrix/prevnar20/capvaxive below): 18 * 12 = 216, not the 75+ base.
   abrysvo: {
     type: "RSV (preg)",
     sheetOrder: 8,
-    age: "60+ / preg 32–36 wk",
-    ageBase: "60+",
-    note: "or pregnant 32–36 wk",
-    ageMinMonths: 720,
+    age: "75+ (18+ high-risk)",
+    ageBase: "75+",
+    note: "18+ if high risk",
+    ageMinMonths: 216,
   },
   shingrix: {
     type: "Shingles",

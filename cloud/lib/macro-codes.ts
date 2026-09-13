@@ -449,8 +449,8 @@ export type MacroSectionGroup = {
 /** Flattens a single trailing parenthetical inside an age label to a
  * comma clause — e.g. "50+ (19+ IC)" -> "50+, 19+ IC" — so a round-7
  * button label never nests parens two deep ("Shingrix (Dose 1) (50+
- * (19+ IC))"). An age with no parenthetical (e.g. "12+", "60+ / preg
- * 32–36 wk") passes through unchanged. */
+ * (19+ IC))"). An age with no parenthetical (e.g. "12+", "2–49")
+ * passes through unchanged. */
 function flattenAgeForLabel(age: string): string {
   return age.replace(/\s*\(([^)]*)\)\s*$/, ", $1");
 }
@@ -463,7 +463,7 @@ function flattenAgeForLabel(age: string): string {
  * "Shingrix (Dose 1)"/"Shingrix (Dose 2)"), PLUS " (<age>)" (the
  * catalog age-range label — flattened per flattenAgeForLabel above) for
  * every product that has one (e.g. "Shingrix (Dose 1) (50+, 19+ IC)",
- * "Abrysvo (60+ / preg 32–36 wk)", "Comirnaty 2026-2027 (12+)",
+ * "Abrysvo (75+, 18+ high-risk)", "Comirnaty 2026-2027 (12+)",
  * "Boostrix (10+)"). A product with no catalog age (age === "", e.g. an
  * unrecognized short code) gets no age suffix at all.
  */
