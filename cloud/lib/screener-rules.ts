@@ -193,17 +193,19 @@ const RSV_50_74_RISK_CONDITIONS: DerivedConditionKey[] = [
   "longTermCare",
 ];
 
-// Round 2 correction: the multi-source review's pneumococcal
-// risk-condition list for adults does NOT include Heart Failure (it's
-// on the RSV/Comirnaty lists, not this one) — dropped from the prior
-// pass. Renamed from "19-49" to "adult" since it's also used, unchanged,
-// as the 50+ condition list is age-only (no condition gate at 50+).
+// Round 2 correction (coordinator, after review): Heart Failure IS on
+// this list — ACIP's "chronic heart disease" trigger explicitly
+// includes congestive heart failure and cardiomyopathies (MMWR
+// RR-72(3), 2023; cdc.gov/pneumococcal/hcp/vaccine-recommendations).
+// Renamed from "19-49" to "adult" since it's also used, unchanged, as
+// the 50+ condition list is age-only (no condition gate at 50+).
 const PNEUMOCOCCAL_ADULT_RISK_CONDITIONS: DerivedConditionKey[] = [
   "asplenia",
   "cancer",
   "csfLeak",
   "cochlearImplant",
   "coronaryArteryDisease",
+  "heartFailure",
   "chronicKidneyDisease",
   "chronicLiverDisease",
   "chronicLungDisease",
@@ -303,6 +305,13 @@ function pneumococcalHistoryReason(history: "pcv13" | "ppsv23" | "both"): string
  * the full prior-dose sequencing logic (a specific history, not a
  * yes/no) and a pediatric risk-based tier (only Capvaxive's differs:
  * "consider" not "risk", per its newer/less-settled 2-17y label).
+ *
+ * `adultRiskAgeMin` (coordinator correction after round 2): Prevnar
+ * 20's condition-based adult tier starts at 19 per the ACIP adult
+ * schedule (an 18-year-old with a qualifying condition falls under its
+ * own 2-18 child/adolescent tier instead) — but Capvaxive's FDA label
+ * is 18+ for adults, so its condition-based tier starts at 18, one year
+ * earlier than Prevnar 20's.
  */
 function pneumococcalRule(
   id: string,
@@ -310,7 +319,8 @@ function pneumococcalRule(
   sourceUrl: string,
   childAgeMax: number,
   childStatus: "risk" | "consider",
-  childReason: string
+  childReason: string,
+  adultRiskAgeMin: number = 19
 ): ScreenerVaccineRule {
   const historyTiers: ScreenerTier[] = (["pcv15_20_21", "pcv13", "ppsv23", "both"] as const).flatMap(
     (history) => {
@@ -322,7 +332,7 @@ function pneumococcalRule(
         { requirePriorPneumo: history, ageMin: 50, status, reason },
         {
           requirePriorPneumo: history,
-          ageMin: 19,
+          ageMin: adultRiskAgeMin,
           ageMax: 49,
           requiredConditions: PNEUMOCOCCAL_ADULT_RISK_CONDITIONS,
           status: riskStatus,
@@ -347,7 +357,7 @@ function pneumococcalRule(
       },
       { ageMin: 50, status: "routine", reason: "One dose." },
       {
-        ageMin: 19,
+        ageMin: adultRiskAgeMin,
         ageMax: 49,
         requiredConditions: PNEUMOCOCCAL_ADULT_RISK_CONDITIONS,
         status: "risk",
@@ -356,7 +366,7 @@ function pneumococcalRule(
     ],
     fallback: {
       status: "not-indicated",
-      reason: "Below age 2, or age 19-49 without a qualifying risk condition.",
+      reason: `Below age 2, or age ${adultRiskAgeMin}-49 without a qualifying risk condition.`,
     },
   };
 }
@@ -509,7 +519,8 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
     "https://www.fda.gov/media/179426",
     17,
     "consider",
-    "2026 pediatric label; ACIP adoption pending — confirm before administering."
+    "2026 pediatric label; ACIP adoption pending — confirm before administering.",
+    18
   ),
   {
     id: "boostrix",
@@ -569,6 +580,17 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
         requiredConditions: ["asplenia", "hiv", "sickleCellOrThalassemia"],
         status: "info",
         reason: "Outside Menveo's label (age ≤55) — a different meningococcal product is needed.",
+      },
+      {
+        // Coordinator correction: immunocompromised isn't on the
+        // asplenia/HIV/sickle-cell risk list, but shouldn't be told
+        // "not indicated" either — surface it as a discussion point
+        // (complement deficiency and eculizumab/ravulizumab therapy are
+        // separate ACIP-recognized triggers this form doesn't ask about).
+        ageMin: 2 / 12,
+        requiredConditions: ["immunocompromised"],
+        status: "consider",
+        reason: "Complement deficiency / eculizumab users are not on the form — ask.",
       },
       {
         ageMin: 2 / 12,

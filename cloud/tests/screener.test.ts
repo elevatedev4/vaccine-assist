@@ -209,9 +209,10 @@ describe("Prevnar 20 / Capvaxive — adults, no prior history", () => {
     expect(statusFor(results, "capvaxive")).toBe("not-indicated");
   });
 
-  it("heart failure alone does NOT qualify the 19-49 risk tier (dropped from the adult list)", () => {
+  it("heart failure qualifies the adult risk tier (ACIP's chronic heart disease includes CHF)", () => {
     const results = pneumo(30, { heartFailure: true });
-    expect(statusFor(results, "prevnar20")).toBe("not-indicated");
+    expect(statusFor(results, "prevnar20")).toBe("risk");
+    expect(statusFor(results, "capvaxive")).toBe("risk");
   });
 });
 
@@ -259,10 +260,10 @@ describe("Prevnar 20 / Capvaxive — children 2-18 with a qualifying condition",
     expect(statusFor(results, "capvaxive")).toBe("consider");
   });
 
-  it("age 18 + asplenia -> Prevnar 20 risk (2-18 band), Capvaxive falls outside its 2-17 pediatric band -> not-indicated", () => {
+  it("age 18 + asplenia -> Prevnar 20 risk via its 2-18 child tier, Capvaxive risk via its 18+ adult tier (FDA label is 18+)", () => {
     const results = pneumo(18, { asplenia: true });
     expect(statusFor(results, "prevnar20")).toBe("risk");
-    expect(statusFor(results, "capvaxive")).toBe("not-indicated");
+    expect(statusFor(results, "capvaxive")).toBe("risk");
   });
 
   it("a child with no qualifying condition is not-indicated", () => {
@@ -324,8 +325,10 @@ describe("Menveo", () => {
     expect(statusFor(screen(30, conditions({ sickleCellOrThalassemia: true })), "menveo")).toBe("risk");
   });
 
-  it("immunocompromised ALONE does not qualify Menveo's risk tier (not on the round-2 list)", () => {
-    expect(statusFor(screen(30, conditions({ immunocompromised: true })), "menveo")).toBe("info");
+  it("immunocompromised ALONE does not qualify Menveo's risk tier, but is a consider (not not-indicated/info)", () => {
+    const results = screen(30, conditions({ immunocompromised: true }));
+    expect(statusFor(results, "menveo")).toBe("consider");
+    expect(reasonFor(results, "menveo")).toMatch(/complement deficiency.*eculizumab/i);
   });
 
   it("over 55 with a qualifying condition -> info, outside Menveo's label", () => {
