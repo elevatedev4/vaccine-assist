@@ -14,8 +14,8 @@ const CATALOG: CatalogVaccine[] = [
   { id: "v-menveo", name: "Menveo", short_code: "menveo", ndc: "58160095509" },
 ];
 
-function row(itemName: string): VaccinationLogRow {
-  return { completedAt: "2026-09-10T20:24:00.000Z", dateLocal: "2026-09-10", itemName };
+function row(itemName: string, ndc?: string): VaccinationLogRow {
+  return { completedAt: "2026-09-10T20:24:00.000Z", dateLocal: "2026-09-10", itemName, ...(ndc ? { ndc } : {}) };
 }
 
 describe("matchAdministeredRow", () => {
@@ -66,6 +66,47 @@ describe("matchAdministeredRow", () => {
     expect(matchAdministeredRow(row("Shingrix 50 Mcg/0.5 Ml Syringe"), CATALOG).vaccineId).toBe("v-shingrix");
     expect(matchAdministeredRow(row("Prevnar 20 Syringe"), CATALOG).vaccineId).toBe("v-prevnar20");
     expect(matchAdministeredRow(row("Menveo A-C-Y-W-135-Dip vial (12-55y)"), CATALOG).vaccineId).toBe("v-menveo");
+  });
+});
+
+// V-administered-ndc-match, 2026-09-13: NDC-first matching for exports
+// (like the KPI-style export) that carry a "Dispensed Item NDC" column.
+describe("matchAdministeredRow — NDC-first matching", () => {
+  it("matches by exact catalog vaccine.ndc, taking priority over a name that would resolve to a DIFFERENT vaccine", () => {
+    // "Fluad" would resolve to v-fluad via plain name matching, but the
+    // row's NDC is Shingrix's own on-file ndc — the NDC match must win.
+    const result = matchAdministeredRow(row("Fluad", "58160082311"), CATALOG);
+    expect(result.vaccineId).toBe("v-shingrix");
+  });
+
+  it("normalizes a dashed report NDC before comparing against the catalog's digits-only ndc", () => {
+    const result = matchAdministeredRow(row("Unrecognized Name", "58160-0823-11"), CATALOG);
+    expect(result.vaccineId).toBe("v-shingrix");
+  });
+
+  it("falls back to the researched static catalog's packageNdc when no vaccine's own ndc matches (mirrors lib/on-hand/pioneer-boh.ts)", () => {
+    // v-fluad's on-file `ndc` is null in this catalog, but the
+    // researched static catalog (lib/vaccine-product-catalog.ts) knows
+    // Fluad's packageNdc as "70461-0026-03" — a report NDC of
+    // "70461002603" should still resolve to v-fluad even though the
+    // item name here doesn't say "Fluad" at all.
+    const result = matchAdministeredRow(row("Some Other Item Name Entirely", "70461002603"), CATALOG);
+    expect(result.vaccineId).toBe("v-fluad");
+  });
+
+  it("falls back to name matching when the row's NDC doesn't resolve to any catalog vaccine", () => {
+    const result = matchAdministeredRow(row("Fluad", "00000000000"), CATALOG);
+    expect(result.vaccineId).toBe("v-fluad");
+  });
+
+  it("falls back to name matching (including the Pioneer alias table) when the row has no NDC at all", () => {
+    const result = matchAdministeredRow(row("M-M-R Ii Vaccine Vial"), CATALOG);
+    expect(result.vaccineId).toBe("v-mmr");
+  });
+
+  it("keeps vaccineId: null for a non-vaccine row whose NDC and name both fail to resolve (e.g. a KPI export's non-vaccine fill)", () => {
+    const result = matchAdministeredRow(row("Synthetic Lisinopril 10mg Tablet", "00000-0000-01"), CATALOG);
+    expect(result.vaccineId).toBeNull();
   });
 });
 

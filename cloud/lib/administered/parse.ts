@@ -1,4 +1,5 @@
 import { chicagoDateString } from "@/lib/chicago-date";
+import { normalizeNdc } from "@/lib/ndc";
 
 /**
  * Parser for PioneerRx's daily "_AppExport_ Vaccines completed.xlsx"
@@ -51,6 +52,31 @@ import { chicagoDateString } from "@/lib/chicago-date";
  * not source rows) still comes out right. `expanded` on the result
  * counts how many SOURCE rows triggered this (ingest.ts logs it once per
  * ingest call, mirroring how `skipped` is logged).
+ *
+ * NDC COLUMN (V-administered-ndc-match, 2026-09-13): Pioneer's daily
+ * export and the wider KPI-style export Will now also sends both carry
+ * an optional "Dispensed Item NDC" column (aliased "NDC" too, in case a
+ * future export shortens it). When present, its cell is normalized with
+ * lib/ndc.ts's normalizeNdc (digits-only — the SAME comparison form
+ * every other NDC match in this app uses, e.g.
+ * lib/on-hand/pioneer-boh.ts's matchPioneerBohRows) and carried on each
+ * row as `ndc`, so lib/administered/match.ts can try an NDC match before
+ * falling back to name matching. A blank/unparseable NDC cell just
+ * leaves `ndc` undefined — never a reason to skip the row, since the
+ * item name alone is still enough to match on.
+ *
+ * WIDER KPI EXPORT SHAPE (V-administered-ndc-match): the KPI-style
+ * export's header carries the same three core columns under 34+ OTHER
+ * columns (every other Rx field a fill has — patient/Rx details this app
+ * must never read). findColumnMap/resolveColumnMap already locate
+ * columns BY HEADER NAME regardless of position or column count, so
+ * those extra columns are simply never referenced by index and fall out
+ * on their own — nothing extra to filter here. Because a KPI export logs
+ * EVERY fill (not just vaccines), most of its rows will fail to match
+ * any catalog vaccine in lib/administered/match.ts (by NDC or name) and
+ * are kept with `vaccineId: null`, the same "unmatched" handling any
+ * unrecognized item name already gets — never logged with patient/Rx
+ * details, only the count.
  */
 
 export type VaccinationLogRow = {
@@ -61,6 +87,12 @@ export type VaccinationLogRow = {
   /** Pioneer's raw item name, e.g. "Fluad Trivalent 2026-27" — matched
    * against the catalog by lib/administered/match.ts, never parsed here. */
   itemName: string;
+  /** Digits-only NDC (lib/ndc.ts normalizeNdc), when the source matrix
+   * had a recognizable NDC column and the cell parsed to at least one
+   * digit — undefined when there's no NDC column at all, or the cell
+   * was blank/unparseable. lib/administered/match.ts tries this before
+   * falling back to name matching. */
+  ndc?: string;
 };
 
 /** A row parseVaccinationLog dropped for an unparseable date or a blank
@@ -94,6 +126,9 @@ const MAX_SKIPPED_SAMPLES = 3;
 const DATE_HEADER_TOKENS = ["completed date", "completed on"];
 const ITEM_HEADER_TOKENS = ["item", "dispensed item name"];
 const QUANTITY_HEADER_TOKENS = ["dispensed quantity"];
+/** V-administered-ndc-match: "Dispensed Item NDC" (the KPI-style export)
+ * or a bare "NDC" header — see this file's top doc comment. */
+const NDC_HEADER_TOKENS = ["dispensed item ndc", "ndc"];
 
 function cellToString(cell: unknown): string {
   if (cell === null || cell === undefined) return "";
@@ -117,14 +152,14 @@ function isHeaderRow(cells: unknown[]): boolean {
   });
 }
 
-type ColumnMap = { dateIdx: number; itemIdx: number; quantityIdx: number | null };
+type ColumnMap = { dateIdx: number; itemIdx: number; quantityIdx: number | null; ndcIdx: number | null };
 
 /** The original hardcoded layout (date in column 0, item in column 1, no
- * quantity column) — used when no row in the matrix satisfies
+ * quantity or NDC column) — used when no row in the matrix satisfies
  * isHeaderRow at all, so every hand-built matrix that never included a
  * real header row (none exist in this repo's tests today, but nothing
  * guarantees a future caller won't) keeps working exactly as before. */
-const POSITIONAL_FALLBACK: ColumnMap = { dateIdx: 0, itemIdx: 1, quantityIdx: null };
+const POSITIONAL_FALLBACK: ColumnMap = { dateIdx: 0, itemIdx: 1, quantityIdx: null, ndcIdx: null };
 
 /** Locates the date/item/quantity columns BY HEADER NAME (not position)
  * from a header row's own cells, so the two known column-name variants
@@ -138,16 +173,23 @@ function resolveColumnMap(headerRow: unknown[]): ColumnMap | null {
   let dateIdx = -1;
   let itemIdx = -1;
   let quantityIdx = -1;
+  let ndcIdx = -1;
 
   headerRow.forEach((cell, idx) => {
     const norm = normalizedHeaderCell(cell);
     if (dateIdx === -1 && DATE_HEADER_TOKENS.includes(norm)) dateIdx = idx;
     if (itemIdx === -1 && ITEM_HEADER_TOKENS.includes(norm)) itemIdx = idx;
     if (quantityIdx === -1 && QUANTITY_HEADER_TOKENS.includes(norm)) quantityIdx = idx;
+    if (ndcIdx === -1 && NDC_HEADER_TOKENS.includes(norm)) ndcIdx = idx;
   });
 
   if (dateIdx === -1 || itemIdx === -1) return null;
-  return { dateIdx, itemIdx, quantityIdx: quantityIdx === -1 ? null : quantityIdx };
+  return {
+    dateIdx,
+    itemIdx,
+    quantityIdx: quantityIdx === -1 ? null : quantityIdx,
+    ndcIdx: ndcIdx === -1 ? null : ndcIdx,
+  };
 }
 
 /** The first header row found in the matrix (isHeaderRow), plus the
@@ -337,8 +379,9 @@ export function parseVaccinationLog(matrix: unknown[][]): ParseVaccinationLogRes
 
     const doseCount = columnMap.quantityIdx === null ? 1 : doseCountFromQuantityCell(cells[columnMap.quantityIdx]);
     if (doseCount > 1) expanded += 1;
+    const ndc = columnMap.ndcIdx === null ? undefined : (normalizeNdc(cellToString(cells[columnMap.ndcIdx])) ?? undefined);
     for (let i = 0; i < doseCount; i++) {
-      rows.push({ completedAt: parsedDate.completedAt, dateLocal: parsedDate.dateLocal, itemName });
+      rows.push({ completedAt: parsedDate.completedAt, dateLocal: parsedDate.dateLocal, itemName, ...(ndc ? { ndc } : {}) });
     }
   }
 
