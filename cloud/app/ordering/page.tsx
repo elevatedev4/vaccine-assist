@@ -11,7 +11,6 @@ import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 import { buildToOrderRows } from "@/lib/ordering-to-order";
-import { formatReloadDosesHistoryResult, type ReloadDosesHistoryResult } from "@/lib/ordering-reload-doses-history";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -196,10 +195,6 @@ const styles = {
   targetInput: { width: 64, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   saveStatus: { fontSize: "0.7rem", marginLeft: "0.35rem" },
-  // "Rec. target" cell's source label (V-ordering-trend) — small,
-  // muted, superscript-positioned so it reads as a footnote on the
-  // number rather than competing with it.
-  targetSourceLabel: { fontSize: "0.65rem", color: "#666", marginLeft: "0.2rem", verticalAlign: "super" as const },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
   // To-order table (V-T-ordering-unify, Will 2026-09-11): compact,
   // same look as the main table — the row itself is the "Copy NDC"
@@ -269,17 +264,6 @@ function surplusCell(row: RecommendationRow): { style: CSSProperties; text: stri
  * missed"), else the plain right-aligned cell. */
 function orderCellStyle(row: RecommendationRow): CSSProperties {
   return row.order > 0 ? styles.tdRightOrderDue : styles.tdRight;
-}
-
-/** The "Rec. target" cell's small source label (V-ordering-trend): "yours"
- * when a "Your target" override is in effect, "trend" when last week's
- * actual pace beat the scheduled+buffer estimate, and nothing when the
- * schedule-driven estimate itself won (the ordinary case) — Will's
- * brief: "nothing when scheduled". */
-function targetSourceLabel(row: RecommendationRow): string | null {
-  if (row.targetSource === "override") return "yours";
-  if (row.targetSource === "trend") return "trend";
-  return null;
 }
 
 /** A single "target on-hand" cell — a row's own NDC-scoped override
@@ -417,14 +401,6 @@ export default function OrderingPage() {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
 
-  // V-ordering-reload-doses-history: ⚙ menu's "Reload doses history"
-  // action — re-runs POST /api/administered/reprocess (re-reads every
-  // retained Pioneer vaccination-log attachment) and reports the result
-  // in the same banner area as the Upload action's own result/error.
-  const [reloadingHistory, setReloadingHistory] = useState(false);
-  const [reloadHistoryError, setReloadHistoryError] = useState<string | null>(null);
-  const [reloadHistoryResult, setReloadHistoryResult] = useState<ReloadDosesHistoryResult | null>(null);
-
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
 
@@ -464,9 +440,6 @@ export default function OrderingPage() {
     setUploadError(null);
     setUploadResult(null);
     setAddressCopied(false);
-    setReloadingHistory(false);
-    setReloadHistoryError(null);
-    setReloadHistoryResult(null);
     setShowEmailModal(false);
     setInactiveExpanded(false);
     setWalkInPctText("");
@@ -617,34 +590,6 @@ export default function OrderingPage() {
       setUploadError(err instanceof Error ? err.message : "Could not upload the file.");
     } finally {
       setUploading(false);
-    }
-  }
-
-  // V-ordering-reload-doses-history: same auth/fetch pattern as the
-  // recommendation fetch / on-hand upload above — bearer token, no
-  // request body — then refresh the recommendation so "Last 7d given"
-  // reflects whatever the reprocess just (re)loaded.
-  async function handleReloadDosesHistory() {
-    if (!session) return;
-    setReloadingHistory(true);
-    setReloadHistoryError(null);
-    setReloadHistoryResult(null);
-    try {
-      const response = await fetch("/api/administered/reprocess", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${session.accessToken}` },
-      });
-      const body = await response.json();
-      if (!response.ok) {
-        setReloadHistoryError(body.error ?? "Could not reload doses history.");
-        return;
-      }
-      setReloadHistoryResult({ rows: body.rows, days: body.days, processed: body.processed });
-      await loadRecommendation(session.accessToken);
-    } catch (err) {
-      setReloadHistoryError(err instanceof Error ? err.message : "Could not reload doses history.");
-    } finally {
-      setReloadingHistory(false);
     }
   }
 
@@ -923,9 +868,6 @@ export default function OrderingPage() {
                 {loading ? "Refreshing…" : "Refresh"}
               </button>
               {uploadControl}
-              <button style={styles.button} type="button" onClick={() => void handleReloadDosesHistory()} disabled={reloadingHistory}>
-                {reloadingHistory ? "Reloading…" : "Reload doses history"}
-              </button>
               {!copyConfirming ? (
                 <button
                   style={styles.button}
@@ -980,7 +922,6 @@ export default function OrderingPage() {
       {loadError && <p style={styles.error}>{loadError}</p>}
       {addressStatusError && <p style={styles.error}>{addressStatusError}</p>}
       {uploadError && <p style={styles.error}>{uploadError}</p>}
-      {reloadHistoryError && <p style={styles.error}>{reloadHistoryError}</p>}
       {copyError && <p style={styles.error}>{copyError}</p>}
       {copyResult && (
         <p style={styles.success}>
@@ -994,7 +935,6 @@ export default function OrderingPage() {
           {uploadResult.unmatched.length > 0 ? ` Unmatched: ${uploadResult.unmatched.join(", ")}.` : ""}
         </p>
       )}
-      {reloadHistoryResult && <p style={styles.success}>{formatReloadDosesHistoryResult(reloadHistoryResult)}</p>}
 
       {statusParts.length > 0 && <p style={styles.muted}>{statusParts.join(" · ")}</p>}
 
@@ -1042,7 +982,7 @@ export default function OrderingPage() {
         </table>
       )}
 
-      <h2 style={styles.sectionHeading}>All vaccines — on hand, schedule, last 7 days given</h2>
+      <h2 style={styles.sectionHeading}>All vaccines</h2>
       <table style={styles.table}>
         <thead>
           <tr>
@@ -1091,7 +1031,6 @@ export default function OrderingPage() {
                 </tr>
                 {enrichedRows.map((row) => {
                   const surplus = surplusCell(row);
-                  const sourceLabel = targetSourceLabel(row);
                   return (
                     <tr key={row.key}>
                       <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
@@ -1100,10 +1039,7 @@ export default function OrderingPage() {
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                       <td style={styles.tdRight}>{row.upcoming7d}</td>
                       <td style={styles.tdRight}>{row.given7d}</td>
-                      <td style={styles.tdRight}>
-                        {row.recommendedTarget}
-                        {sourceLabel && <span style={styles.targetSourceLabel}>{sourceLabel}</span>}
-                      </td>
+                      <td style={styles.tdRight}>{row.recommendedTarget}</td>
                       <td style={styles.td}>
                         <TargetInput
                           value={row.targetOnHand}
@@ -1152,7 +1088,6 @@ export default function OrderingPage() {
               <tbody>
                 {inactiveRows.map(enrichRow).map((row) => {
                   const surplus = surplusCell(row);
-                  const sourceLabel = targetSourceLabel(row);
                   return (
                     <tr key={row.key}>
                       <td style={styles.td}>{row.displayName}</td>
@@ -1161,10 +1096,7 @@ export default function OrderingPage() {
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
                       <td style={styles.tdRight}>{row.upcoming7d}</td>
                       <td style={styles.tdRight}>{row.given7d}</td>
-                      <td style={styles.tdRight}>
-                        {row.recommendedTarget}
-                        {sourceLabel && <span style={styles.targetSourceLabel}>{sourceLabel}</span>}
-                      </td>
+                      <td style={styles.tdRight}>{row.recommendedTarget}</td>
                       <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                       <td style={surplus.style}>{surplus.text}</td>
                       <td style={orderCellStyle(row)}>{row.order}</td>
