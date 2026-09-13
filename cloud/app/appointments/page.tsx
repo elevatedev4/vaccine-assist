@@ -1246,6 +1246,14 @@ export default function AppointmentsPage() {
         <a href="/appointments/explorer" style={styles.activityToggleLink}>
           Data explorer →
         </a>
+        {" · "}
+        {/* V-doses-given (Will 2026-09-12 verbatim: "On the scheduling
+            page, include a data explorer link for doses given.") — same
+            de-emphasized placement/styling as the appointment Data
+            explorer link right next to it. */}
+        <a href="/doses-given" style={styles.activityToggleLink}>
+          Doses given →
+        </a>
       </div>
 
       {activityExpanded && (
