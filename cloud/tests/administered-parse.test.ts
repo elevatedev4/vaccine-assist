@@ -125,12 +125,12 @@ describe("parseVaccinationLog", () => {
     ]);
   });
 
-  it("returns expanded: 0 for a file with no quantity column", () => {
-    const { expanded } = parseVaccinationLog([
+  it("returns hasNdcColumn: false for a file with no NDC column", () => {
+    const { hasNdcColumn } = parseVaccinationLog([
       ["Completed date", "Item"],
       [46275.5, "Flu Quad"],
     ]);
-    expect(expanded).toBe(0);
+    expect(hasNdcColumn).toBe(false);
   });
 
   // V-import-doses-file, 2026-09-13: Will's manually-exported "8/1
@@ -140,6 +140,15 @@ describe("parseVaccinationLog", () => {
   // "Dispensed Quantity" column the daily email never carries. Columns
   // are located BY NAME, so this must work regardless of column order
   // too (quantity is listed BEFORE item name here, on purpose).
+  //
+  // V-administered-ndc-match, 2026-09-13: parseVaccinationLog no longer
+  // expands a batch line's quantity into duplicate rows itself (see this
+  // file's own top doc comment and lib/administered/ingest.ts's doc
+  // comment) — it's ONE parsed row per source row, always, carrying a
+  // `doseCount` for lib/administered/ingest.ts to expand AFTER matching
+  // confirms the row is a real vaccine. These tests now assert on
+  // `doseCount`, not on duplicated rows; the actual expansion is covered
+  // by tests/administered-ingest.test.ts.
   describe("'Completed On / Dispensed Item Name / Dispensed Quantity' header variant", () => {
     it("maps columns by header name, including out-of-order columns", () => {
       const { rows } = parseVaccinationLog([
@@ -151,44 +160,45 @@ describe("parseVaccinationLog", () => {
       expect(rows[0].dateLocal).toBe("2026-09-10");
     });
 
-    it("treats a fractional quantity (e.g. 0.5, a vial fraction) as a single dose", () => {
-      const { rows, expanded } = parseVaccinationLog([
+    it("treats a fractional quantity (e.g. 0.5, a vial fraction) as a single dose (doseCount left unset)", () => {
+      const { rows } = parseVaccinationLog([
         ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
         [46275.5, "Fluad 2026-2027 Syringe", 0.5],
       ]);
       expect(rows).toHaveLength(1);
-      expect(expanded).toBe(0);
+      expect(rows[0].doseCount).toBeUndefined();
     });
 
-    it("treats a quantity of exactly 1 as a single dose", () => {
-      const { rows, expanded } = parseVaccinationLog([
+    it("treats a quantity of exactly 1 as a single dose (doseCount left unset)", () => {
+      const { rows } = parseVaccinationLog([
         ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
         [46275.5, "Comirnaty", 1],
       ]);
       expect(rows).toHaveLength(1);
-      expect(expanded).toBe(0);
+      expect(rows[0].doseCount).toBeUndefined();
     });
 
-    it("expands an integer quantity of 2 into two identical dose rows and counts it in `expanded`", () => {
-      const { rows, expanded } = parseVaccinationLog([
+    it("carries an integer quantity of 2 as doseCount: 2, WITHOUT duplicating the row", () => {
+      const { rows } = parseVaccinationLog([
         ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
         [46275.5, "Fluad 2026-2027 Syringe", 2],
       ]);
-      expect(rows).toHaveLength(2);
-      expect(rows[0]).toEqual(rows[1]);
+      expect(rows).toHaveLength(1);
       expect(rows[0].itemName).toBe("Fluad 2026-2027 Syringe");
-      expect(expanded).toBe(1);
+      expect(rows[0].doseCount).toBe(2);
     });
 
-    it("counts only the SOURCE row (not the expanded dose count) in `expanded`, across multiple batch rows", () => {
-      const { rows, expanded } = parseVaccinationLog([
+    it("carries each batch row's own doseCount independently, across multiple batch rows", () => {
+      const { rows } = parseVaccinationLog([
         ["Completed On", "Dispensed Item Name", "Dispensed Quantity"],
         [46275.5, "Fluad 2026-2027 Syringe", 3],
         [46276.5, "Comirnaty", 0.3],
         [46277.5, "Shingrix", 2],
       ]);
-      expect(rows).toHaveLength(3 + 1 + 2); // 3 Fluad + 1 Comirnaty + 2 Shingrix
-      expect(expanded).toBe(2); // the quantity=3 row and the quantity=2 row
+      expect(rows).toHaveLength(3); // one parsed row per source row — no expansion here
+      expect(rows[0].doseCount).toBe(3);
+      expect(rows[1].doseCount).toBeUndefined(); // fractional quantity, not a batch line
+      expect(rows[2].doseCount).toBe(2);
     });
   });
 
@@ -230,14 +240,14 @@ describe("parseVaccinationLog", () => {
       expect(rows[0].ndc).toBeUndefined();
     });
 
-    it("carries the same NDC onto every expanded dose row for an integer-quantity batch line", () => {
+    it("carries both NDC and doseCount on the same (unexpanded) row for an integer-quantity batch line", () => {
       const { rows } = parseVaccinationLog([
         ["Completed On", "Dispensed Item Name", "Dispensed Quantity", "Dispensed Item NDC"],
         [46275.5, "Fluad 2026-2027 Syringe", 2, "70461-0026-03"],
       ]);
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(1);
       expect(rows[0].ndc).toBe("70461002603");
-      expect(rows[1].ndc).toBe("70461002603");
+      expect(rows[0].doseCount).toBe(2);
     });
 
     // Will's KPI-style export: the same "Completed On / Dispensed Item

@@ -164,12 +164,20 @@ export async function main() {
     return;
   }
 
-  const { rows, skipped, skippedSamples, expanded } = parseVaccinationLog(matrix);
+  // NOTE (V-administered-ndc-match, 2026-09-13): parseVaccinationLog no
+  // longer expands a batch line's quantity into duplicate rows itself
+  // (that now happens post-match, in ingestVaccinationLogMatrix below —
+  // see parse.ts/ingest.ts doc comments for why), so `rows.length` here
+  // is the SOURCE row count, not the final dose count. The real
+  // post-match/post-expansion numbers (`matched`/`expanded`/
+  // `nonVaccineRows`) are only known after ingestVaccinationLogMatrix
+  // runs, logged further down.
+  const { rows, skipped, skippedSamples } = parseVaccinationLog(matrix);
   const summary = summarizeVaccinationLogRows(rows);
 
   console.log(`File: ${filePath} (${kind}, ${buffer.length} bytes)`);
   console.log(`Header: ${info.headerLine}`);
-  console.log(`Row count (doses, after quantity expansion): ${summary.rowCount}`);
+  console.log(`Row count (source rows, before quantity expansion): ${summary.rowCount}`);
   console.log(`Date range: ${summary.dateRange ? `${summary.dateRange.min} .. ${summary.dateRange.max}` : "(no rows)"}`);
   console.log("Rows per day:");
   for (const [date, count] of Object.entries(summary.perDay)) {
@@ -177,9 +185,6 @@ export async function main() {
   }
   if (skipped > 0) {
     console.log(`Skipped ${skipped} row(s) with an unparseable date or blank item name:`, skippedSamples);
-  }
-  if (expanded > 0) {
-    console.log(`Expanded ${expanded} source row(s) with an integer quantity > 1 into multiple dose rows.`);
   }
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
@@ -237,7 +242,18 @@ export async function main() {
   const result = await ingestVaccinationLogMatrix(supabase, matrix, catalog, sourceKey);
   console.log("");
   console.log(
-    JSON.stringify({ rows: result.rows, matched: result.matched, days: result.days.length, skipped: result.skipped }, null, 2)
+    JSON.stringify(
+      {
+        rows: result.rows,
+        matched: result.matched,
+        days: result.days.length,
+        skipped: result.skipped,
+        nonVaccineRows: result.nonVaccineRows,
+        expanded: result.expanded,
+      },
+      null,
+      2
+    )
   );
 }
 

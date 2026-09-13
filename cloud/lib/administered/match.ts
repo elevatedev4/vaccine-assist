@@ -57,12 +57,20 @@ export type MatchedAdministeredRow = {
   dateLocal: string;
   itemName: string;
   vaccineId: string | null;
+  /** Carried straight from VaccinationLogRow.doseCount (V-administered-
+   * ndc-match, 2026-09-13) — NOT expanded here, matching.ts stays
+   * one-row-in-one-row-out. lib/administered/ingest.ts expands a row
+   * into this many stored dose rows, but ONLY once vaccineId is set (see
+   * that file's doc comment for why a non-vaccine KPI-export fill must
+   * never expand). */
+  doseCount?: number;
 };
 
 /** Matches one row; `vaccineId` is null (not thrown/dropped) for an
- * unrecognized item name — the row is still kept (lib/administered/store.ts
- * persists it with vaccineId: null) so it counts toward `unmatched`
- * rather than silently vanishing. */
+ * unrecognized item name — whether the row is still KEPT (vs. dropped as
+ * a non-vaccine fill) is lib/administered/ingest.ts's call, based on
+ * whether the source file carried an NDC column (parse.ts's
+ * `hasNdcColumn`) — this function itself never drops a row. */
 export function matchAdministeredRow(row: VaccinationLogRow, catalog: CatalogVaccine[]): MatchedAdministeredRow {
   // Defensively re-normalizes: VaccinationLogRow.ndc is documented as
   // already digits-only (parse.ts normalizes it), but normalizeNdc is
@@ -72,7 +80,13 @@ export function matchAdministeredRow(row: VaccinationLogRow, catalog: CatalogVac
   const ndc = normalizeNdc(row.ndc ?? null);
   const byNdc = ndc ? matchByNdc(ndc, catalog) : null;
   const matched = byNdc ?? matchPioneerItemName(row.itemName, catalog);
-  return { at: row.completedAt, dateLocal: row.dateLocal, itemName: row.itemName, vaccineId: matched?.id ?? null };
+  return {
+    at: row.completedAt,
+    dateLocal: row.dateLocal,
+    itemName: row.itemName,
+    vaccineId: matched?.id ?? null,
+    ...(row.doseCount !== undefined ? { doseCount: row.doseCount } : {}),
+  };
 }
 
 export function matchAdministeredRows(rows: VaccinationLogRow[], catalog: CatalogVaccine[]): MatchedAdministeredRow[] {
