@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildEntryValueRows, doseColumnLabel, doseNumberOf, type EntryValueVaccine } from "@/lib/entry-values";
+import { defaultDirections } from "@/lib/entry-defaults";
 
 function vaccine(overrides: Partial<EntryValueVaccine>): EntryValueVaccine {
   return {
@@ -59,6 +60,29 @@ describe("buildEntryValueRows", () => {
       vaccine({ id: "i1", name: "Inactive Vax", active: false }),
     ]);
     expect(rows.map((r) => r.id)).toEqual(["a1"]);
+  });
+
+  it("Shingrix regression: two dose rows with mismatched NDCs (split into separate ProductViews upstream) still get doseCount 2 and correct dose numbers, not doseCount 1 each", () => {
+    // Reproduces the live bug (Will, 2026-09-12): upstream product
+    // grouping (lib/lots-grouping.ts's groupVaccinesIntoProducts, keyed
+    // by NDC/name) splits Shingrix's two dose rows into TWO separate
+    // ProductViews because their NDCs don't match — each split group
+    // then had doseCount 1, so lib/entry-defaults.ts's defaultDirections
+    // never prefixed "Dose X — " for Shingrix, unlike Engerix-B/Gardasil/
+    // Vaqta/MMR whose dose rows share one NDC.
+    const rows = buildEntryValueRows([
+      vaccine({ id: "s1", name: "Shingrix", short_code: "shingrix1", dose: "1", ndc: "99999999901" }),
+      vaccine({ id: "s2", name: "Shingrix", short_code: "shingrix2", dose: "2", ndc: "99999999902" }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.doseCount === 2)).toBe(true);
+    expect(rows.map((r) => r.doseNumber)).toEqual([1, 2]);
+
+    const directions = rows.map((r) => defaultDirections({ doseNumber: r.doseNumber, doseCount: r.doseCount }));
+    expect(directions).toEqual([
+      "Dose 1 — For administration by healthcare provider in pharmacy.",
+      "Dose 2 — For administration by healthcare provider in pharmacy.",
+    ]);
   });
 
   it("a single-dose product gets doseCount 1", () => {

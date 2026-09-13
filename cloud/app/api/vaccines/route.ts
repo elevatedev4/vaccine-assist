@@ -6,6 +6,7 @@ import { formatNdcForStorage } from "@/lib/ndc";
 import { buildProductViews } from "@/lib/product-view";
 import { defaultDirections, defaultQuantity } from "@/lib/entry-defaults";
 import { doseNumberOf } from "@/lib/entry-values";
+import { doseCountByVaccineId } from "@/lib/dose-family";
 
 /**
  * REST endpoint for the desktop app's Vaccines screen (what we offer).
@@ -68,8 +69,13 @@ type VaccineRow = Record<string, unknown> & {
  * file's header comment). Groups the WHOLE list passed in via
  * lib/product-view.ts's buildProductViews (the same grouping every
  * other tab uses) purely to compute each product's doseCount — every
- * row's own `dose` column still drives its own doseNumber. Never
- * mutates `directions`/`quantity` themselves.
+ * row's own `dose` column still drives its own doseNumber. doseCount
+ * itself goes through lib/dose-family.ts's doseCountByVaccineId, which
+ * regroups by cleaned display name so a product whose dose rows carry
+ * mismatched NDCs (e.g. Shingrix) — split into separate ProductViews by
+ * buildProductViews — still reports the real family size on every row
+ * instead of 1 for each half (same class of bug commit 1b41fb5 fixed
+ * for /macro-codes). Never mutates `directions`/`quantity` themselves.
  */
 function withDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
   const products = buildProductViews(
@@ -80,10 +86,7 @@ function withDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
       active: Boolean(row.active),
     }))
   );
-  const doseCountById = new Map<string, number>();
-  for (const product of products) {
-    for (const id of product.vaccineIds) doseCountById.set(id, product.vaccineIds.length);
-  }
+  const doseCountById = doseCountByVaccineId(products);
 
   return rows.map((row) => {
     let result = row;

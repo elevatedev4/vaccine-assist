@@ -1,18 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
-import {
-  getInboundAttachmentByKey,
-  headerInfoFromMatrix,
-  isVaccinationLogHeaderLine,
-  listInboundAttachments,
-  matrixFromDelimitedText,
-  matrixFromXlsxBuffer,
-} from "@/lib/inbound-attachments";
-import { ingestVaccinationLogMatrix } from "@/lib/administered/ingest";
-import type { CatalogVaccine } from "@/lib/vaccine-matching";
-
-const XLSX_PATTERN = /spreadsheet|vnd\.ms-excel|\.xlsx$/i;
+import { reprocessAdministeredAttachments } from "@/lib/administered/reprocess";
 
 /**
  * POST /api/administered/reprocess — re-parses EVERY retained inbound
@@ -28,7 +17,12 @@ const XLSX_PATTERN = /spreadsheet|vnd\.ms-excel|\.xlsx$/i;
  * retained but (before this feature existed) never ingested; it's safe
  * to run again any time.
  *
- * Authed like every other admin route (requireAuthenticatedUser).
+ * Authed like every other admin route (requireAuthenticatedUser). The
+ * actual attachment-scanning/ingest work lives in
+ * lib/administered/reprocess.ts's reprocessAdministeredAttachments,
+ * shared with scripts/reprocess-administered.ts so the two callers can
+ * never drift on which attachments count as a vaccination log or how
+ * they're ingested.
  */
 export async function POST(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -44,53 +38,22 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data: vaccineRows, error: catalogError } = await supabase.from("vaccine").select("id, name, short_code, ndc");
-  if (catalogError) {
-    console.error("POST /api/administered/reprocess: failed to load vaccine catalog", catalogError);
+  let result;
+  try {
+    result = await reprocessAdministeredAttachments(supabase);
+  } catch (err) {
+    console.error("POST /api/administered/reprocess: failed", err);
     return NextResponse.json({ error: "Failed to load vaccine catalog." }, { status: 500 });
-  }
-  const catalog: CatalogVaccine[] = vaccineRows ?? [];
-
-  const attachmentMetas = await listInboundAttachments(supabase);
-
-  let processed = 0;
-  let rows = 0;
-  let matched = 0;
-  let skipped = 0;
-  const daysTouched = new Set<string>();
-
-  for (const meta of attachmentMetas) {
-    const attachment = await getInboundAttachmentByKey(supabase, meta.key);
-    if (!attachment) continue;
-
-    const buffer = Buffer.from(attachment.base64, "base64");
-    let matrix: unknown[][];
-    try {
-      matrix = XLSX_PATTERN.test(attachment.contentType) || XLSX_PATTERN.test(attachment.filename)
-        ? matrixFromXlsxBuffer(buffer)
-        : matrixFromDelimitedText(buffer.toString("utf-8"), buffer.toString("utf-8").includes("\t") ? "\t" : ",");
-    } catch (err) {
-      console.warn(`POST /api/administered/reprocess: failed to read attachment key=${meta.key}`, err);
-      continue;
-    }
-
-    const info = headerInfoFromMatrix(matrix);
-    if (!info || !isVaccinationLogHeaderLine(info.headerLine)) continue;
-
-    try {
-      const result = await ingestVaccinationLogMatrix(supabase, matrix, catalog, meta.key);
-      processed += 1;
-      rows += result.rows;
-      matched += result.matched;
-      skipped += result.skipped;
-      for (const day of result.days) daysTouched.add(day);
-    } catch (err) {
-      console.error(`POST /api/administered/reprocess: ingest failed for key=${meta.key}`, err);
-    }
   }
 
   console.log(
-    `POST /api/administered/reprocess: processed=${processed} rows=${rows} matched=${matched} days=${daysTouched.size} skipped=${skipped}`
+    `POST /api/administered/reprocess: processed=${result.processed} rows=${result.rows} matched=${result.matched} days=${result.days} skipped=${result.skipped}`
   );
-  return NextResponse.json({ processed, rows, matched, days: daysTouched.size, skipped });
+  return NextResponse.json({
+    processed: result.processed,
+    rows: result.rows,
+    matched: result.matched,
+    days: result.days,
+    skipped: result.skipped,
+  });
 }
