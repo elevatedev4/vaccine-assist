@@ -180,6 +180,12 @@ const styles = {
   // Order qty (pkg) is the number staff actually act on — bold per
   // Will's brief so it can't be skimmed past.
   toOrderTdOrderQty: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "1px solid #eee", fontWeight: 700 },
+  // Deemphasized second line under a "To order" header's main label
+  // (V-ordering-header-sublabels, Will 2026-09-13: "Add '(doses)' to BOH
+  // and Target on a second row, deemphasized, same for order qty
+  // (pkg)") — small, gray, regular weight so it reads as a unit hint
+  // rather than part of the column name.
+  toOrderThSub: { display: "block", fontSize: "11px", color: "#888", fontWeight: 400 as const },
   // NDC copy button (V-to-order-table-emphasis: "Make NDC a button that
   // they can click to copy it like we've used on macro codes") — same
   // colored-bordered-button posture as app/macro-codes/page.tsx's dose
@@ -226,6 +232,12 @@ const styles = {
   // something to order — light green fill + bold so a nonzero order can't
   // be scrolled past unnoticed.
   tdRightOrderDue: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", background: "#e6f4ea", fontWeight: 700 },
+  // Whole-row highlight for any "All vaccines" product row with a
+  // nonzero computed order (V-ordering-header-sublabels, Will
+  // 2026-09-13: "highlight the entire row... to indicate action is
+  // needed") — pale yellow so it doesn't compete with the order cell's
+  // own green emphasis (tdRightOrderDue), which stays on top of this.
+  trOrderDue: { background: "#fff8d6" },
   // Darkened (Will, 2026-09-09: "Darken the heading color to make it
   // easier to distinguish") from the original #f4f6f8, still light
   // enough for black text to stay readable.
@@ -982,9 +994,18 @@ export default function OrderingPage() {
             <tr>
               <th style={styles.toOrderTh}>Product</th>
               <th style={styles.toOrderTh}>NDC</th>
-              <th style={styles.toOrderThRight}>BOH</th>
-              <th style={styles.toOrderThRight}>Target</th>
-              <th style={styles.toOrderThRight}>Order qty (pkg)</th>
+              <th style={styles.toOrderThRight}>
+                BOH
+                <span style={styles.toOrderThSub}>(doses)</span>
+              </th>
+              <th style={styles.toOrderThRight}>
+                Target
+                <span style={styles.toOrderThSub}>(doses)</span>
+              </th>
+              <th style={styles.toOrderThRight}>
+                Order qty
+                <span style={styles.toOrderThSub}>(pkg)</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -1075,7 +1096,7 @@ export default function OrderingPage() {
                 {enrichedRows.map((row) => {
                   const surplus = surplusCell(row);
                   return (
-                    <tr key={row.key}>
+                    <tr key={row.key} style={row.order > 0 ? styles.trOrderDue : undefined}>
                       <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
                       <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
