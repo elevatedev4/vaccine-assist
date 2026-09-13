@@ -38,6 +38,17 @@
     -->
     <PackageReference Include="FlaUI.Core" Version="4.0.0" />
     <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
+
+    <!--
+      2026-09-13: Ctrl+8 macro-codes popup (MacroCodesWindow) hosts the
+      cloud app's /macro-codes?embed=1 page in-process via WebView2 rather
+      than shelling out to the user's default browser — lets it stay a
+      borderless Topmost popup and round-trip window.chrome.webview.postMessage
+      calls back into this app (see MacroCodesWindow.xaml.cs). Requires the
+      Evergreen WebView2 Runtime on the workstation, which ships by default
+      on Windows 10/11 — no separate install expected in the field.
+    -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
   </ItemGroup>
 
 </Project>
