@@ -139,18 +139,38 @@ describe("screen — 40-year-old, immunocompromised", () => {
 });
 
 describe("screen — prior pneumococcal vaccine answered yes", () => {
-  const results = screen(55, conditions(), "yes");
-
   it("Prevnar 20 / Capvaxive become info (sequencing note), overriding age-based routine", () => {
+    const results = screen(55, conditions(), "yes");
     expect(statusFor(results, "prevnar20")).toBe("info");
     expect(statusFor(results, "capvaxive")).toBe("info");
     expect(reasonFor(results, "prevnar20")).toMatch(/PPSV23/);
+  });
+
+  it("also fires for a 19-49 patient who has a qualifying risk condition", () => {
+    const results = screen(30, conditions({ smoking: true }), "yes");
+    expect(statusFor(results, "prevnar20")).toBe("info");
+  });
+
+  it("does NOT fire for a patient who wouldn't otherwise be PCV-eligible (30, no condition)", () => {
+    const results = screen(30, conditions(), "yes");
+    expect(statusFor(results, "prevnar20")).toBe("not-indicated");
+    expect(statusFor(results, "capvaxive")).toBe("not-indicated");
   });
 });
 
 describe("screen — extra rule branches", () => {
   it("Comirnaty becomes risk when a risk factor is checked", () => {
     const results = screen(30, conditions({ cancer: true }));
+    expect(statusFor(results, "comirnaty")).toBe("risk");
+  });
+
+  it("Comirnaty stays consider for a condition NOT on its specific risk list (asplenia alone)", () => {
+    const results = screen(30, conditions({ asplenia: true }));
+    expect(statusFor(results, "comirnaty")).toBe("consider");
+  });
+
+  it("Comirnaty becomes risk for smoking (on its specific risk list)", () => {
+    const results = screen(30, conditions({ smoking: true }));
     expect(statusFor(results, "comirnaty")).toBe("risk");
   });
 

@@ -190,6 +190,35 @@ const PNEUMOCOCCAL_19_49_RISK_CONDITIONS: DerivedConditionKey[] = [
 const RSV_ONE_LIFETIME_DOSE_NOTE =
   "One lifetime dose — no revaccination if previously vaccinated with either brand.";
 
+// Comirnaty's "benefit greatest" risk trigger is a SPECIFIC list, not
+// "any checkbox at all" (review fix, coordinator 2026-09-13: Asplenia,
+// CSF leak, Cochlear implant, Long-term care resident, or 3+ drinks/day
+// alone must NOT bump a 12+ patient from "consider" to "risk"). Per
+// spec: any chronic condition (chronic lung, CAD, heart failure,
+// chronic liver, CKD, diabetes — "diabetes" already covers its 4
+// sub-items via lib/screener.ts's deriveConditions auto-tick), plus
+// Pregnant, Immunocompromised, Cancer, HIV, Solid organ transplant,
+// Severe obesity, Smoking. mNEXSPIKE's broader "anyCondition" gate is
+// intentionally different and left as-is (correct per spec).
+const COMIRNATY_RISK_CONDITIONS: DerivedConditionKey[] = [
+  "chronicLungDisease",
+  "coronaryArteryDisease",
+  "heartFailure",
+  "chronicLiverDisease",
+  "chronicKidneyDisease",
+  "diabetes",
+  "pregnant",
+  "immunocompromised",
+  "cancer",
+  "hiv",
+  "solidOrganTransplant",
+  "severeObesity",
+  "smoking",
+];
+
+const PNEUMOCOCCAL_PRIOR_DOSE_INFO_REASON =
+  "Prior PPSV23 only: give PCV20/21 ≥1 year later. Prior PCV20/21: no further dose needed.";
+
 function pneumococcalRule(id: string, name: string): ScreenerVaccineRule {
   const sourceUrl = "https://www.cdc.gov/pneumococcal/hcp/vaccine-recommendations/index.html";
   return {
@@ -197,11 +226,25 @@ function pneumococcalRule(id: string, name: string): ScreenerVaccineRule {
     name,
     sourceUrl,
     tiers: [
+      // The priorPneumo="yes" sequencing note only replaces an
+      // otherwise-routine/risk recommendation (review fix, coordinator
+      // 2026-09-13) — it must NOT fire for a patient who wouldn't be
+      // getting PCV at all (e.g. age 30, no risk condition), so each
+      // "yes" tier mirrors the age/condition gate of the tier it
+      // overrides and both are checked before those tiers.
       {
         requirePriorPneumo: "yes",
+        ageMin: 50,
         status: "info",
-        reason:
-          "Prior PPSV23 only: give PCV20/21 ≥1 year later. Prior PCV20/21: no further dose needed.",
+        reason: PNEUMOCOCCAL_PRIOR_DOSE_INFO_REASON,
+      },
+      {
+        requirePriorPneumo: "yes",
+        ageMin: 19,
+        ageMax: 49,
+        requiredConditions: PNEUMOCOCCAL_19_49_RISK_CONDITIONS,
+        status: "info",
+        reason: PNEUMOCOCCAL_PRIOR_DOSE_INFO_REASON,
       },
       { ageMin: 50, status: "routine", reason: "Routine, one dose, age 50+." },
       {
@@ -247,7 +290,7 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
     tiers: [
       {
         ageMin: 12,
-        requiredConditions: ["anyCondition"],
+        requiredConditions: COMIRNATY_RISK_CONDITIONS,
         status: "risk",
         reason: "Benefit is greatest with a chronic condition or other checked risk factor.",
       },
@@ -450,9 +493,11 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
     id: "typhim-vi",
     name: "Typhim Vi",
     // No source URL was given in the brief for Typhim Vi specifically —
-    // using CDC's typhoid vaccination page (best fit, not brief-verified
-    // like the other sourceUrls). Flagged for Will to confirm.
-    sourceUrl: "https://www.cdc.gov/typhoid-fever/hcp/vaccination/index.html",
+    // using CDC's typhoid vaccine considerations page (matches the same
+    // /<disease>/hcp/vaccine-considerations/index.html convention as
+    // Shingrix's and RSV's sourceUrls above; not brief-verified like the
+    // other sourceUrls). Flagged for Will to confirm it resolves.
+    sourceUrl: "https://www.cdc.gov/typhoid-fever/hcp/vaccine-considerations/index.html",
     tiers: [],
     fallback: { status: "info", reason: "Travel only — ask about travel." },
   },
