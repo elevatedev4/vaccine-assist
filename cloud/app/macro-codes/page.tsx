@@ -89,6 +89,14 @@ import DateTextInput from "@/app/date-text-input";
  * renderDoseButton and renderSettingsMenu are shared, just parameterized
  * by a visible-label override and a couple of layout flags; nothing
  * about handleCopy/copyToClipboard/the modal is duplicated per version.
+ *
+ * ROUND 9 (Will's verbatim feedback, 2026-09-13, replying to round 8):
+ * "I like C so far, but keep all the options for now. Let's work on
+ * improving C." Polishes version C ONLY (A and B are byte-for-byte
+ * unchanged) — see renderSectionVersionC's own doc comment for the
+ * per-item breakdown (bold product name, smaller gray age/price line,
+ * ⓘ special-qualification tooltip, and a capped/content-sized column
+ * width instead of the old edge-to-edge stretch).
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -279,9 +287,11 @@ function missingNote(row: MacroRow): string | null {
   return null;
 }
 
-// Kept for when prices come back — hidden per Will 2026-09-12 ("Hide
-// prices for now"). Not called anywhere below; the cashPriceCents data
-// plumbing (MacroProductGroup.cashPriceCents) is untouched.
+// Hidden on versions A/B per Will 2026-09-12 ("Hide prices for now") —
+// still unused by renderSectionVersionA/B below. ROUND 9 (Will's
+// verbatim brief, 2026-09-13): "Try adding price there with the age as
+// well" — version C's renderSectionVersionC now calls this for its
+// compact "age · price" line; A/B are untouched.
 function formatCashPrice(cents: number | null): string {
   if (cents === null) return "";
   return `$${(cents / 100).toFixed(2)}`;
@@ -890,6 +900,38 @@ export default function MacroCodesPage() {
    * typing even one character immediately drops every non-matching row
    * and the page fits again — the filter isn't just a search feature
    * here, it's the page's own answer to "what if it doesn't fit."
+   *
+   * ROUND 9 (Will's verbatim feedback, 2026-09-13, replying to round 8:
+   * "I like C so far, but keep all the options for now. Let's work on
+   * improving C") polishes the name/age column and the columns' overall
+   * width, all still on the SAME two-column grid/data pipeline above:
+   * - Product name is now its own bold, slightly larger line
+   *   (.macro-product-name-c) instead of sharing one line with the age
+   *   via macroProductNameWithAge (still used by A/B, untouched here).
+   * - A second, small gray line (.macro-product-meta-c) holds the
+   *   compact base age range (MacroProductGroup.ageBase — the qualifier
+   *   clause is NOT repeated here, see the ⓘ below) plus the cash price
+   *   when known, joined by " · " (formatCashPrice — still hidden on
+   *   A/B, per Will's round-6 "hide prices for now").
+   * - A product with a special qualification (MacroProductGroup.note)
+   *   gets a small ⓘ right after the age/price line — a focusable span
+   *   (tabIndex 0) carrying both `title` (mouse hover, and a fallback
+   *   for anything that ignores the CSS tooltip) and `aria-label` (screen
+   *   readers), plus a CSS-only tooltip (.macro-note-tooltip below) shown
+   *   on `:hover`/`:focus-visible` — no new dependency, same "plain CSS,
+   *   no popover library" posture as every other interaction on this
+   *   page.
+   * - Columns no longer stretch edge-to-edge: renderTopGroup below gives
+   *   version C's .macro-group-column a fixed content-sized basis
+   *   instead of flex:1, and the .macro-groups-c wrapper caps the whole
+   *   three-column row at max-width ~1200px, left-aligned under the
+   *   page's own H1 (both already start at the same left padding) —
+   *   Will's brief: "make the table a little more compact width-wise...
+   *   the dead space going away will make it easier to use."
+   * - Row vertical padding bumped to ~6px (.macro-row-c) per the same
+   *   brief; still not measured pixel-for-pixel at 1920×1080/1440×900 —
+   *   same caveat as the one-screen-fit note above, and the live filter
+   *   is still the fallback if a wide catalog ever overflows.
    */
   function renderSectionVersionC(section: MacroSectionGroup) {
     const colors = SECTION_COLORS[section.section];
@@ -900,9 +942,29 @@ export default function MacroCodesPage() {
         </h2>
         {section.products.map((product) => {
           const doseCount = product.doses.length;
+          const price = formatCashPrice(product.cashPriceCents);
+          const metaText = price ? `${product.ageBase} · ${price}` : product.ageBase;
           return (
             <div key={product.productKey} className="macro-row macro-row-c">
-              <div className="macro-product-name-cell-c">{macroProductNameWithAge(product)}</div>
+              <div className="macro-product-name-cell-c">
+                <div className="macro-product-name-c">{product.displayName}</div>
+                <div className="macro-product-meta-c">
+                  {metaText}
+                  {product.note && (
+                    <span
+                      className="macro-note-icon"
+                      tabIndex={0}
+                      title={product.note}
+                      aria-label={`Special qualification: ${product.note}`}
+                    >
+                      <span aria-hidden="true">ⓘ</span>
+                      <span className="macro-note-tooltip" aria-hidden="true">
+                        {product.note}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              </div>
               <div className="macro-dose-buttons-c">
                 {product.doses.map((dose) =>
                   renderDoseButton(dose, colors, { visibleLabel: doseButtonShortLabel(dose.row, doseCount), large: true })
@@ -919,8 +981,15 @@ export default function MacroCodesPage() {
   function renderTopGroup(block: MacroTopGroupBlock) {
     const renderSection =
       viewMode === "A" ? renderSectionVersionA : viewMode === "B" ? renderSectionVersionB : renderSectionVersionC;
+    // ROUND 9: version C's columns size to content (a fixed basis, no
+    // grow/shrink to fill the row) instead of A/B's flex:1-0-0 stretch —
+    // see .macro-groups-c on the wrapping container below for the
+    // matching max-width cap. Inline style wins over the CSS class for
+    // the flex/minWidth shorthand, so this is done here rather than in
+    // the <style> tag.
+    const columnStyle = viewMode === "C" ? { ...styles.groupColumn, flex: "0 1 340px", minWidth: 320 } : styles.groupColumn;
     return (
-      <div key={block.group} className="macro-group-column" style={styles.groupColumn}>
+      <div key={block.group} className="macro-group-column" style={columnStyle}>
         <h2 style={styles.groupHeading}>{block.group}</h2>
         {block.sections.map((section) => renderSection(section))}
       </div>
@@ -962,7 +1031,10 @@ export default function MacroCodesPage() {
       {loadError && <p style={styles.error}>{loadError}</p>}
 
       {!loading && (
-        <div className="macro-groups" style={styles.groups}>
+        <div
+          className={`macro-groups${viewMode === "C" ? " macro-groups-c" : ""}`}
+          style={viewMode === "C" ? { ...styles.groups, maxWidth: 1200 } : styles.groups}
+        >
           {visibleTopGroups.map((block) => renderTopGroup(block))}
         </div>
       )}
@@ -1174,7 +1246,15 @@ export default function MacroCodesPage() {
 
         /* Version C: high-contrast family band + a two-column grid
          * (name | right-aligned buttons) shared by every row so columns
-         * stay aligned straight down the page. */
+         * stay aligned straight down the page. Round 9: columns stop
+         * stretching full width (.macro-groups-c caps the whole row at
+         * max-width via inline style + renderTopGroup's per-column
+         * fixed basis above), rows get ~6px vertical padding, and the
+         * name column splits into a bold name line + a small gray
+         * age/price line with an optional ⓘ qualification tooltip. */
+        .macro-groups-c {
+          justify-content: flex-start;
+        }
         .macro-section-band {
           font-size: 0.75rem;
           font-weight: 800;
@@ -1188,12 +1268,71 @@ export default function MacroCodesPage() {
           grid-template-columns: 1fr auto auto;
           align-items: center;
           gap: 0.5rem;
-          padding: 3px 0;
+          padding: 6px 0;
           border-bottom: 1px solid #eee;
         }
         .macro-product-name-cell-c {
-          font-size: 0.85rem;
           min-width: 0;
+        }
+        .macro-product-name-c {
+          font-size: 15px;
+          font-weight: 700;
+          line-height: 1.25;
+        }
+        .macro-product-meta-c {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 12px;
+          color: #666;
+          line-height: 1.2;
+          margin-top: 1px;
+        }
+        .macro-note-icon {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          width: 14px;
+          height: 14px;
+          border-radius: 50%;
+          border: 1px solid #888;
+          font-size: 10px;
+          line-height: 1;
+          color: #666;
+          cursor: help;
+        }
+        .macro-note-icon:hover,
+        .macro-note-icon:focus-visible {
+          border-color: #333;
+          color: #333;
+        }
+        .macro-note-icon:focus-visible {
+          outline: 2px solid #333;
+          outline-offset: 2px;
+        }
+        .macro-note-tooltip {
+          visibility: hidden;
+          opacity: 0;
+          position: absolute;
+          bottom: 130%;
+          left: 50%;
+          transform: translateX(-50%);
+          background: #333;
+          color: #fff;
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-size: 11px;
+          font-weight: 400;
+          white-space: nowrap;
+          z-index: 20;
+          transition: opacity 0.1s ease;
+        }
+        .macro-note-icon:hover .macro-note-tooltip,
+        .macro-note-icon:focus-visible .macro-note-tooltip {
+          visibility: visible;
+          opacity: 1;
         }
         .macro-dose-buttons-c {
           display: flex;

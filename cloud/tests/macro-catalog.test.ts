@@ -153,6 +153,36 @@ describe("lookupMacroCatalog", () => {
     expect(lookupMacroCatalog("  Shingrix1 ")).toMatchObject({ type: "Shingles" });
   });
 
+  it("ROUND 9: splits a qualified age into ageBase + note, matching Will's verbatim examples, while leaving the full `age` string untouched for A/B", () => {
+    const table: Record<string, { age: string; ageBase: string; note: string | undefined }> = {
+      shingrix1: { age: "50+ (19+ IC)", ageBase: "50+", note: "19+ if immunocompromised" },
+      prevnar20: { age: "19+ (2–18 high-risk)", ageBase: "19+", note: "2–18 high-risk" },
+      capvaxive: { age: "18+ (2–17 high-risk)", ageBase: "18+", note: "2–17 high-risk" },
+      abrysvo: { age: "60+ / preg 32–36 wk", ageBase: "60+", note: "or pregnant 32–36 wk" },
+      comirnaty12: { age: "12+", ageBase: "12+", note: undefined },
+    };
+    for (const [code, expected] of Object.entries(table)) {
+      const entry = lookupMacroCatalog(code);
+      expect(entry.age, `${code} age`).toBe(expected.age);
+      expect(entry.ageBase, `${code} ageBase`).toBe(expected.ageBase);
+      expect(entry.note, `${code} note`).toBe(expected.note);
+    }
+  });
+
+  it("ROUND 9: an unqualified age's ageBase equals age verbatim and note is undefined", () => {
+    for (const code of ["boostrix1", "typhim", "mmr1", "priorix1", "gardasil1", "fluad", "menveo"]) {
+      const entry = lookupMacroCatalog(code);
+      expect(entry.ageBase, code).toBe(entry.age);
+      expect(entry.note, code).toBeUndefined();
+    }
+  });
+
+  it("ROUND 9: 'Other' (no catalog entry) has an empty ageBase and no note", () => {
+    const result = lookupMacroCatalog("somethingbrandnew");
+    expect(result.ageBase).toBe("");
+    expect(result.note).toBeUndefined();
+  });
+
   it("every catalog entry (looked up by every code in the round-3 age table) carries a non-empty age label and a finite ageMinMonths", () => {
     const codes = [
       "comirnaty12",
