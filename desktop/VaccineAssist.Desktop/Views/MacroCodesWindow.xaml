@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="Macro codes"
-        Width="980" Height="760"
+        Width="1100" Height="820"
         WindowStyle="ToolWindow"
         Topmost="True"
         ShowInTaskbar="False"
@@ -25,6 +25,16 @@
         entering a dose. WindowStartupLocation="CenterScreen" and the
         Topmost/ShowInTaskbar/ResizeMode combination match
         DataEntryPopupWindow.xaml's existing convention.
+
+        2026-09-13 (Will, verbatim, after testing the popup): "It works.
+        The page needs to be compact ... so that it will fit all on one
+        popup and not require scrolling." The cloud page's embed mode
+        (?embed=1, app/macro-codes/page.tsx) was rebuilt to fit its
+        content within an estimated ~534px inside a 980x760 window with
+        no scrolling — see that file's "EMBED COMPACT" comment for the
+        height budget. Bumped from 980x760 to 1100x820 here anyway, purely
+        for extra headroom around that estimate; the cloud CSS still
+        targets 980x760, so this leaves margin rather than requiring it.
 
         The page copies the code itself and posts
         window.chrome.webview.postMessage({ type: "vaccine-assist:macro-copied",

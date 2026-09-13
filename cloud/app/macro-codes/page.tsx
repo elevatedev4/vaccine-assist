@@ -835,8 +835,14 @@ function MacroCodesPageContent() {
             // subLabel (schedule interval) grows just enough for its
             // second line — height only, never width beyond the capped
             // subLabel column below.
-            minHeight: subLabel ? (large ? 46 : 40) : large ? 38 : 32,
-            padding: large ? "0 0.75rem" : "0 0.5rem",
+            // Embed compact (2026-09-13, target 980x760): a flat 28px
+            // minHeight regardless of subLabel — the 11px label + 9px
+            // subLabel stack fits inside 28px with the reduced padding
+            // below, and a fixed height (instead of subLabel's usual
+            // +6/+8px bump) keeps every button in a row the same height
+            // even when only some doses have a subLabel.
+            minHeight: embed ? 28 : subLabel ? (large ? 46 : 40) : large ? 38 : 32,
+            padding: embed ? "0 0.5rem" : large ? "0 0.75rem" : "0 0.5rem",
             display: "inline-flex",
             // ROUND 10: a subLabel switches the button to a vertical
             // (column) flex so the two lines stack — main/cross axes
@@ -847,7 +853,7 @@ function MacroCodesPageContent() {
             alignItems: subLabel ? (block ? "flex-start" : "center") : "center",
             justifyContent: subLabel ? "center" : block ? "flex-start" : "center",
             gap: subLabel ? 1 : undefined,
-            fontSize: large ? "13px" : "12px",
+            fontSize: embed ? "11px" : large ? "13px" : "12px",
             fontWeight: 600,
             // ROUND 10 FIX: the main label itself must never wrap (that's
             // the "Dose 1" wrapping-onto-two-lines bug) — its width is
@@ -874,11 +880,11 @@ function MacroCodesPageContent() {
                 // the product name at 1456px; the full text is always
                 // still reachable via the button's title (defaultTitle
                 // above).
-                maxWidth: 88,
+                maxWidth: embed ? 70 : 88,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                fontSize: large ? "11px" : "10px",
+                fontSize: embed ? "9px" : large ? "11px" : "10px",
                 fontWeight: 400,
                 color: isNoShortCode ? "#999" : "#666",
               }}
@@ -1098,9 +1104,19 @@ function MacroCodesPageContent() {
    */
   function renderSectionVersionC(section: MacroSectionGroup) {
     const colors = SECTION_COLORS[section.section];
+    // Embed compact (2026-09-13, target 980x760 — see the <style> tag's
+    // EMBED COMPACT block for the height budget this feeds into): every
+    // size below is inline (not a CSS class) so it only ever applies in
+    // embed mode and never touches the normal, non-embed layout-C page.
+    const bandStyle = embed
+      ? { background: colors.border, fontSize: 11, padding: "2px 6px", margin: "3px 0 1px" }
+      : { background: colors.border };
+    const rowStyle = embed ? { padding: "4px 0" } : undefined;
+    const nameStyle = embed ? { fontSize: 13, lineHeight: 1.15 } : undefined;
+    const metaStyle = embed ? { fontSize: 10, marginTop: 0 } : undefined;
     return (
-      <section key={section.section} className="macro-section macro-section-c">
-        <h2 className="macro-section-band" style={{ background: colors.border }}>
+      <section key={section.section} className="macro-section macro-section-c" style={embed ? { marginBottom: 4 } : undefined}>
+        <h2 className="macro-section-band" style={bandStyle}>
           {macroSectionDisplayName(section.section)}
         </h2>
         {section.products.map((product) => {
@@ -1108,10 +1124,10 @@ function MacroCodesPageContent() {
           const price = formatCashPrice(product.cashPriceCents);
           const metaText = price ? `${product.ageBase} · ${price}` : product.ageBase;
           return (
-            <div key={product.productKey} className="macro-row macro-row-c">
+            <div key={product.productKey} className="macro-row macro-row-c" style={rowStyle}>
               <div className="macro-product-name-cell-c">
-                <div className="macro-product-name-c">{product.displayName}</div>
-                <div className="macro-product-meta-c">
+                <div className="macro-product-name-c" style={nameStyle}>{product.displayName}</div>
+                <div className="macro-product-meta-c" style={metaStyle}>
                   {metaText}
                   {product.note && (
                     <span
@@ -1154,8 +1170,17 @@ function MacroCodesPageContent() {
     // matching max-width cap. Inline style wins over the CSS class for
     // the flex/minWidth shorthand, so this is done here rather than in
     // the <style> tag.
-    const columnStyle =
-      effectiveViewMode === "C" ? { ...styles.groupColumn, flex: "0 1 340px", minWidth: 320 } : styles.groupColumn;
+    // Embed compact overrides this: the popup is narrower than 3x340px
+    // plus gaps, so columns instead grow/shrink evenly to fill the
+    // available width (flex: 1 1 0, min-width: 0) — `width: "auto"` also
+    // beats the @media (max-width: 1100px) `.macro-group-column { width:
+    // 100% }` rule below (inline style over an unqualified class rule),
+    // same reasoning as the .macro-groups override above it.
+    const columnStyle = embed
+      ? { ...styles.groupColumn, flex: "1 1 0", minWidth: 0, width: "auto" as const }
+      : effectiveViewMode === "C"
+      ? { ...styles.groupColumn, flex: "0 1 340px", minWidth: 320 }
+      : styles.groupColumn;
     return (
       <div key={block.group} className="macro-group-column" style={columnStyle}>
         <h2 style={styles.groupHeading}>{block.group}</h2>
@@ -1165,7 +1190,7 @@ function MacroCodesPageContent() {
   }
 
   return (
-    <main style={embed ? { ...styles.main, padding: "0.35rem 0.5rem" } : styles.main}>
+    <main style={embed ? { ...styles.main, padding: "8px" } : styles.main}>
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
 
       {!embed && (
@@ -1185,7 +1210,11 @@ function MacroCodesPageContent() {
       )}
 
       {effectiveViewMode === "C" && (
-        <div style={styles.filterBox}>
+        // Embed compact (2026-09-13, Ctrl+8 popup target 980x760, see the
+        // <style> tag's EMBED COMPACT block below for the full height
+        // budget): only the margin shrinks here — width/position/autoFocus
+        // are untouched so the box stays visible and focused at top.
+        <div style={embed ? { ...styles.filterBox, margin: "0 0 6px" } : styles.filterBox}>
           <input
             type="text"
             value={filterQuery}
@@ -1204,7 +1233,21 @@ function MacroCodesPageContent() {
       {!loading && (
         <div
           className={`macro-groups${effectiveViewMode === "C" ? " macro-groups-c" : ""}`}
-          style={effectiveViewMode === "C" ? { ...styles.groups, maxWidth: 1200 } : styles.groups}
+          style={
+            // Embed compact: the three columns must sit SIDE BY SIDE at
+            // 980px wide, but the @media (max-width: 1100px) rule further
+            // down (`.macro-groups { flex-direction: column }`) was
+            // stacking them into one tall column at that width instead —
+            // that stacking, not font size, was the main cause of the
+            // scrolling Will saw. Inline styles beat that class rule
+            // (no !important needed), and gap drops from 1.5rem to 10px
+            // per the embed spec.
+            embed
+              ? { ...styles.groups, gap: "10px", flexDirection: "row" as const, flexWrap: "nowrap" as const, maxWidth: "100%" }
+              : effectiveViewMode === "C"
+              ? { ...styles.groups, maxWidth: 1200 }
+              : styles.groups
+          }
         >
           {visibleTopGroups.map((block) => renderTopGroup(block))}
         </div>
@@ -1316,9 +1359,37 @@ function MacroCodesPageContent() {
        * top-nav.tsx's `data-top-nav` hook — TopNav's own code is
        * untouched) and forcing a white body background, both global
        * rules scoped to embed mode by only being emitted at all when
-       * `embed` is true. */}
+       * `embed` is true.
+       *
+       * EMBED COMPACT (2026-09-13, Will verbatim: "The page needs to be
+       * compact ... so that it will fit all on one popup and not require
+       * scrolling"). These values target the popup's 980x760 WebView2
+       * window (see MacroCodesWindow.xaml, resized to 1100x820 for extra
+       * headroom around this target — do not shrink further just because
+       * the window is now bigger). Most of the actual scrolling turned
+       * out to be the @media (max-width: 1100px) rule below stacking the
+       * three .macro-groups columns into one column at 980px wide, not
+       * font size — the `overflow: hidden` below only holds if that
+       * stacking is also defeated, which it is via the inline
+       * flex-direction/width overrides in the JSX above (page.tsx's
+       * renderTopGroup + the .macro-groups container), not here.
+       *
+       * Height budget for the tallest column ("Common": 5 families / 9
+       * product rows, per Will's brief, with Gardasil's (HPV) dose
+       * buttons wrapping to 2 lines):
+       *   main padding            8 + 8  =  16px
+       *   filter box (input+gap)         =  36px
+       *   5 family bands  @ ~21px        = 105px
+       *   8 normal rows   @ ~36px        = 288px
+       *   1 wrapped row (Gardasil) ~69px =  69px
+       *   5 section gaps  @   4px        =  20px
+       *   ------------------------------------------
+       *   estimated total                ≈ 534px
+       * against a 760px window (minus its own title bar/border chrome),
+       * so there's a comfortable margin — overflow: hidden is safe here
+       * rather than falling back to scroll. */}
       <style>{`
-        ${embed ? "nav[data-top-nav] { display: none !important; } body { background: #fff !important; }" : ""}
+        ${embed ? "nav[data-top-nav] { display: none !important; } body { background: #fff !important; overflow: hidden !important; }" : ""}
         .macro-groups {
           flex-wrap: wrap;
         }
