@@ -457,7 +457,7 @@ describe("groupMacroRowsBySection", () => {
       expect(rows[0].doseInterval).toBeUndefined();
     });
 
-    it("Gardasil 9: dose 3 carries the '15+ only' interval text", () => {
+    it("Gardasil 9: dose 3 carries the '15+' interval text (shortened round-10-fix)", () => {
       const products: ProductView[] = [
         view({ productKey: "ndc:gardasil", displayName: "Gardasil 9", vaccineIds: ["g1", "g2", "g3"] }),
       ];
@@ -468,7 +468,7 @@ describe("groupMacroRowsBySection", () => {
       ];
       const rows = buildMacroRows(products, vaccines, {});
       const dose3 = rows.find((r) => r.doseNumber === 3)!;
-      expect(dose3.doseInterval).toBe("6 mo (15+ only)");
+      expect(dose3.doseInterval).toBe("6 mo (15+)");
     });
 
     it("a product with no short code (Other) has an undefined doseInterval", () => {

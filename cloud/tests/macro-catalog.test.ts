@@ -191,10 +191,10 @@ describe("lookupMacroCatalog", () => {
       expect(lookupMacroCatalog("shingrix").doseSchedule).toEqual({ 2: "2 mo" });
     });
 
-    it("Gardasil 9: dose 2 and dose 3 carry the age-split interval text", () => {
+    it("Gardasil 9: dose 2 and dose 3 carry the age-split interval text (shortened round-10-fix per the round-10 layout bug)", () => {
       expect(lookupMacroCatalog("gardasil").doseSchedule).toEqual({
-        2: "1–2 mo (15+) · 6 mo (9–14)",
-        3: "6 mo (15+ only)",
+        2: "1–2 mo · 9–14: 6 mo",
+        3: "6 mo (15+)",
       });
     });
 
@@ -206,9 +206,9 @@ describe("lookupMacroCatalog", () => {
       expect(lookupMacroCatalog("vaqtaadult").doseSchedule).toEqual({ 2: "6 mo" });
     });
 
-    it("M-M-R II: dose 2 carries the 28-day/eligible-groups note; Priorix (a distinct MMR product) has none", () => {
+    it("M-M-R II: dose 2 carries the shortened 28-day/special-groups note; Priorix (a distinct MMR product) has none", () => {
       expect(lookupMacroCatalog("mmr").doseSchedule).toEqual({
-        2: "28 d — students, healthcare, travelers, HIV, IC contacts",
+        2: "28 d · special groups",
       });
       expect(lookupMacroCatalog("priorix").doseSchedule).toBeUndefined();
     });
