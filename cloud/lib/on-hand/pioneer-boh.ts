@@ -270,6 +270,32 @@ const PIONEER_NAME_ALIASES: { requiredTokens: string[]; matchesCatalogName: (nam
     requiredTokens: ["flucelvax", "2026-2027"],
     matchesCatalogName: (name) => name.trim().toLowerCase() === "flucelvax pfs",
   },
+  {
+    // "M-M-R Ii Vaccine Vial" (V-administered-match-mmr-vaqta, Will
+    // 2026-09-13: 7 unmatched vaccination-log rows) — Pioneer's
+    // dispensed-item title-casing renders "II" as "Ii", and the
+    // hyphenated "M-M-R" form never plain-contains/is-contained-by the
+    // on-file "MMR-II" name either way (lib/vaccine-matching.ts's
+    // contains check needs an unbroken "mmr" substring), so neither
+    // survives the shared free-text matcher. requiredTokens checks for
+    // the hyphenated "m-m-r" form specifically — the SAME alternate name
+    // lib/vaccine-group-catalog.ts's MMR group already lists
+    // (`namePrefixes: ["MMR-II", "Priorix", "M-M-R"]`) — case-insensitive
+    // via the `lower` substring check below, so "Ii"/"II"/"ii" all match.
+    requiredTokens: ["m-m-r"],
+    matchesCatalogName: (name) => name.trim().toLowerCase() === "mmr-ii",
+  },
+  {
+    // "Vaqta 50 Units/ml Syringe (19y+)" -> the on-file "Vaqta adult" row
+    // — the vaccination log's dispensed-item name carries the adult
+    // dose/age markers ("50 Units/ml", "19y+") but never the word
+    // "adult" itself, so the shared free-text matcher's contains check
+    // (needle vs. "vaqta adult") never lines up in either direction.
+    // Only one Vaqta product is on file (supabase/seed/vaccines.sql), so
+    // a bare "vaqta" token is unambiguous.
+    requiredTokens: ["vaqta"],
+    matchesCatalogName: (name) => name.trim().toLowerCase() === "vaqta adult",
+  },
 ];
 
 function matchByPioneerNameAlias(rawName: string, catalog: CatalogVaccine[]): CatalogVaccine | null {
