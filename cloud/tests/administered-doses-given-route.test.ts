@@ -27,7 +27,18 @@ function authedRequest(path: string) {
   return new Request(`http://localhost${path}`, { headers: { Authorization: "Bearer test-token" } });
 }
 
-function fakeSupabase(days: Record<string, unknown>, catalog: unknown[] = CATALOG) {
+// `days` is keyed by administeredDayKey(date) ("administered:YYYY-MM-DD")
+// -> the stored AdministeredDay value. The `.like().order().limit()`
+// chain below (added for the `?earliestOnly=1` path — see
+// getEarliestAdministeredDate in route.ts) only ever reads the KEYS,
+// same "key-only, never the `rows` payload" contract that function
+// documents, so it's implemented independently of the `.eq().
+// maybeSingle()` chain the normal per-day reads use.
+function fakeSupabase(
+  days: Record<string, unknown>,
+  catalog: unknown[] = CATALOG,
+  options: { likeError?: unknown } = {}
+) {
   return {
     from: (table: string) => {
       if (table === "vaccine") {
@@ -38,6 +49,18 @@ function fakeSupabase(days: Record<string, unknown>, catalog: unknown[] = CATALO
           select: () => ({
             eq: (_column: string, key: string) => ({
               maybeSingle: async () => ({ data: key in days ? { value: days[key] } : null, error: null }),
+            }),
+            like: (_column: string, pattern: string) => ({
+              order: () => ({
+                limit: async () => {
+                  if (options.likeError) return { data: null, error: options.likeError };
+                  const prefix = pattern.replace(/%$/, "");
+                  const matchingKeys = Object.keys(days)
+                    .filter((key) => key.startsWith(prefix))
+                    .sort();
+                  return { data: matchingKeys.length ? [{ key: matchingKeys[0] }] : [], error: null };
+                },
+              }),
             }),
           }),
         };
@@ -134,5 +157,72 @@ describe("GET /api/administered/doses-given", () => {
     } as never);
     const response = await GET(authedRequest("/api/administered/doses-given?start=2026-09-01&end=2026-09-02"));
     expect(response.status).toBe(500);
+  });
+});
+
+// V-doses-given-layout (Will 2026-09-13): the page's default range needs
+// the earliest ingested day BEFORE it knows what range to request, so
+// this cheap path is checked (and must short-circuit) before start/end
+// are even required — see getEarliestAdministeredDate and the `?
+// earliestOnly=1` branch in route.ts's own doc comments.
+describe("GET /api/administered/doses-given?earliestOnly=1", () => {
+  afterEach(() => {
+    vi.mocked(getSupabaseServerClient).mockReset();
+  });
+
+  it("requires auth just like the normal path", async () => {
+    const { requireAuthenticatedUser } = await import("@/lib/auth");
+    vi.mocked(requireAuthenticatedUser).mockResolvedValueOnce({
+      error: new Response(null, { status: 401 }) as never,
+    } as never);
+
+    const response = await GET(authedRequest("/api/administered/doses-given?earliestOnly=1"));
+    expect(response.status).toBe(401);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("never requires start/end", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({}) as never);
+    const response = await GET(authedRequest("/api/administered/doses-given?earliestOnly=1"));
+    expect(response.status).toBe(200);
+  });
+
+  it("returns the earliest administered day across every stored key, regardless of insertion order", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(
+      fakeSupabase({
+        [administeredDayKey("2026-09-01")]: { date: "2026-09-01", rows: [], updatedAt: "", sources: [] },
+        [administeredDayKey("2026-08-04")]: { date: "2026-08-04", rows: [], updatedAt: "", sources: [] },
+        [administeredDayKey("2026-08-20")]: { date: "2026-08-20", rows: [], updatedAt: "", sources: [] },
+      }) as never
+    );
+
+    const response = await GET(authedRequest("/api/administered/doses-given?earliestOnly=1"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ earliestDay: "2026-08-04" });
+  });
+
+  it("returns earliestDay: null when nothing has been ingested yet", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({}) as never);
+    const response = await GET(authedRequest("/api/administered/doses-given?earliestOnly=1"));
+    const body = await response.json();
+    expect(body).toEqual({ earliestDay: null });
+  });
+
+  it("degrades to earliestDay: null (not an error) when app_setting doesn't exist yet", async () => {
+    const missingTableError = { code: "PGRST205", message: "Could not find the table 'app_setting' in the schema cache" };
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({}, CATALOG, { likeError: missingTableError }) as never);
+    const response = await GET(authedRequest("/api/administered/doses-given?earliestOnly=1"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ earliestDay: null });
+  });
+
+  it("returns 503 when Supabase is not configured", async () => {
+    vi.mocked(getSupabaseServerClient).mockImplementation(() => {
+      throw new Error("Supabase is not configured.");
+    });
+    const response = await GET(authedRequest("/api/administered/doses-given?earliestOnly=1"));
+    expect(response.status).toBe(503);
   });
 });
