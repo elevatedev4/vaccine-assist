@@ -3,6 +3,7 @@ import {
   buildMacroCode,
   buildMacroRows,
   DEFAULT_MACRO_VIEW_MODE,
+  doseButtonShortLabel,
   expToMacroDate,
   filterMacroTopGroups,
   groupMacroRowsBySection,
@@ -431,6 +432,63 @@ describe("groupMacroRowsBySection", () => {
       const rows = buildMacroRows(products, vaccines, {});
       expect(rows[0].ageBase).toBe("");
       expect(rows[0].note).toBeUndefined();
+    });
+  });
+
+  describe("ROUND 10: doseInterval propagates from the catalog's doseSchedule onto MacroRow", () => {
+    it("Shingrix: dose 1 undefined, dose 2 '2 mo'", () => {
+      const products: ProductView[] = [view({ productKey: "ndc:shingrix", displayName: "Shingrix", vaccineIds: ["s1", "s2"] })];
+      const vaccines: MacroRowVaccine[] = [
+        vaccine({ id: "s1", name: "Shingrix", dose: "1", short_code: "shingrix1" }),
+        vaccine({ id: "s2", name: "Shingrix", dose: "2", short_code: "shingrix2" }),
+      ];
+      const rows = buildMacroRows(products, vaccines, {});
+      const dose1 = rows.find((r) => r.doseNumber === 1)!;
+      const dose2 = rows.find((r) => r.doseNumber === 2)!;
+      expect(dose1.doseInterval).toBeUndefined();
+      expect(dose2.doseInterval).toBe("2 mo");
+    });
+
+    it("a single-dose product (Boostrix) never gets a doseInterval, even though it has no doseSchedule to begin with", () => {
+      const products: ProductView[] = [view({ productKey: "name:boostrix", displayName: "Boostrix", vaccineIds: ["b1"] })];
+      const vaccines: MacroRowVaccine[] = [vaccine({ id: "b1", name: "Boostrix", short_code: "boostrix1" })];
+      const rows = buildMacroRows(products, vaccines, {});
+      expect(rows[0].doseCount).toBe(1);
+      expect(rows[0].doseInterval).toBeUndefined();
+    });
+
+    it("Gardasil 9: dose 3 carries the '15+ only' interval text", () => {
+      const products: ProductView[] = [
+        view({ productKey: "ndc:gardasil", displayName: "Gardasil 9", vaccineIds: ["g1", "g2", "g3"] }),
+      ];
+      const vaccines: MacroRowVaccine[] = [
+        vaccine({ id: "g1", name: "Gardasil 9", dose: "1", short_code: "gardasil1" }),
+        vaccine({ id: "g2", name: "Gardasil 9", dose: "2", short_code: "gardasil2" }),
+        vaccine({ id: "g3", name: "Gardasil 9", dose: "3", short_code: "gardasil3" }),
+      ];
+      const rows = buildMacroRows(products, vaccines, {});
+      const dose3 = rows.find((r) => r.doseNumber === 3)!;
+      expect(dose3.doseInterval).toBe("6 mo (15+ only)");
+    });
+
+    it("a product with no short code (Other) has an undefined doseInterval", () => {
+      const products: ProductView[] = [view({ productKey: "name:mystery", displayName: "Mystery Vaccine", vaccineIds: ["m1"] })];
+      const vaccines: MacroRowVaccine[] = [vaccine({ id: "m1", name: "Mystery Vaccine", short_code: "" })];
+      const rows = buildMacroRows(products, vaccines, {});
+      expect(rows[0].doseInterval).toBeUndefined();
+    });
+  });
+
+  describe("ROUND 10: doseButtonShortLabel", () => {
+    it("returns 'One dose' for a single-dose product (doseCount 1), regardless of dose number", () => {
+      const row = { doseNumber: 1 } as MacroRow;
+      expect(doseButtonShortLabel(row, 1)).toBe("One dose");
+    });
+
+    it("returns 'Dose N' for a multi-dose product", () => {
+      expect(doseButtonShortLabel({ doseNumber: 1 } as MacroRow, 2)).toBe("Dose 1");
+      expect(doseButtonShortLabel({ doseNumber: 2 } as MacroRow, 2)).toBe("Dose 2");
+      expect(doseButtonShortLabel({ doseNumber: 3 } as MacroRow, 3)).toBe("Dose 3");
     });
   });
 

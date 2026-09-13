@@ -9,6 +9,7 @@ import {
   buildMacroCode,
   buildMacroRows,
   DEFAULT_MACRO_VIEW_MODE,
+  doseButtonShortLabel,
   filterMacroTopGroups,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
@@ -78,8 +79,8 @@ import DateTextInput from "@/app/date-text-input";
  *   full label text unchanged from round 7.
  * - Version B: one row per product, three columns — family name |
  *   plain-text product name + age (macroProductNameWithAge) | short
- *   dose buttons ("Dose 1"/"Dose 2", or "Copy" for a single-dose
- *   product — see doseButtonShortLabel below).
+ *   dose buttons ("Dose 1"/"Dose 2", or "One dose" for a single-dose
+ *   product — see lib/macro-codes.ts's doseButtonShortLabel).
  * - Version C: a from-scratch "scan grid" — see its own comment at
  *   renderSectionVersionC for the design rationale.
  *
@@ -128,6 +129,22 @@ import DateTextInput from "@/app/date-text-input";
  * cancel/close) posts `vaccine-assist:macro-cancel` and closes the same
  * way. A copy FAILURE (clipboard denied) does not post/close — the
  * existing manual-copy fallback UI shows instead, same as non-embed.
+ *
+ * ROUND 10 (Will's verbatim feedback, 2026-09-13): "Change 'Copy' to
+ * 'One dose.' Add one tiny deemphasized line on the buttons for 1-3
+ * dose items that includes the schedule for when to get those doses."
+ * Both changes live in version B/C's short dose-button label/subLabel
+ * (embed reuses C, so it inherits both automatically) — version A is
+ * left alone: its buttons already carry a full descriptive label
+ * ("Shingrix (Dose 2) (50+, 19+ IC)") with no separate short-label
+ * column next to them the way B/C have, so appending a second clause
+ * with Gardasil/MMR's multi-part schedule text there read as clutter on
+ * an already-dense label rather than a helpful addition; the doseSchedule
+ * data itself is still computed for every version (lib/macro-codes.ts's
+ * MacroRow.doseInterval), just not rendered by renderSectionVersionA.
+ * doseButtonShortLabel moved to lib/macro-codes.ts (was local to this
+ * file) so both the "One dose" label and the interval piping are
+ * unit-tested there rather than only exercised by hand in the browser.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -748,20 +765,27 @@ function MacroCodesPageContent() {
    * three versions can share it (per the brief: copy/modal/⚙/hidden-
    * price behavior must be identical, reused, not reimplemented):
    * - `visibleLabel`: shown instead of the full `dose.label` (e.g.
-   *   version B/C's short "Dose 1"/"Copy" — see doseButtonShortLabel
-   *   below) while every click/copy/modal/tooltip/title still uses the
-   *   full descriptive label underneath, unchanged.
+   *   version B/C's short "Dose 1"/"One dose" — see lib/macro-codes.ts's
+   *   doseButtonShortLabel) while every click/copy/modal/tooltip/title
+   *   still uses the full descriptive label underneath, unchanged.
    * - `block`: version A's one-per-line vertical stack — full width,
    *   left-aligned text, instead of an inline pill sized to its label.
    * - `large`: version C's bigger hit target (Will's brief: "larger hit
    *   targets").
+   * - `subLabel` (ROUND 10): an optional second, tiny/muted line —
+   *   version B/C's per-dose schedule interval (MacroRow.doseInterval,
+   *   e.g. "2 mo" under a "Dose 2" button) — capped to a fixed max-width
+   *   with an ellipsis so a long interval (Gardasil/MMR's multi-clause
+   *   text) can't blow up the button; the FULL text still reaches the
+   *   button's `title` (see the title computation below) so nothing is
+   *   lost, just not all visible at once.
    * The click handler, disabled state, "Copied ✓" swap, missing-lot/exp
    * red dot, and copy-failure fallback are untouched from round 7.
    */
   function renderDoseButton(
     dose: MacroDoseButton,
     colors: SectionColors,
-    options?: { visibleLabel?: string; block?: boolean; large?: boolean }
+    options?: { visibleLabel?: string; subLabel?: string; block?: boolean; large?: boolean }
   ) {
     const { row, label } = dose;
     const key = rowKey(row);
@@ -771,6 +795,10 @@ function MacroCodesPageContent() {
     const block = options?.block ?? false;
     const large = options?.large ?? false;
     const visibleText = isCopied ? COPIED_FLAG : options?.visibleLabel ?? label;
+    // ROUND 10: hidden while showing "Copied ✓" — that flag already
+    // says everything the button needs to say for that 1.5s.
+    const subLabel = !isCopied ? options?.subLabel : undefined;
+    const defaultTitle = subLabel ? `Copy ${label} macro code — ${subLabel}` : `Copy ${label} macro code`;
 
     return (
       <span
@@ -781,7 +809,7 @@ function MacroCodesPageContent() {
           type="button"
           disabled={isNoShortCode}
           onClick={() => void handleCopy(row, label)}
-          title={isNoShortCode ? "no short code set" : note ? note : `Copy ${label} macro code`}
+          title={isNoShortCode ? "no short code set" : note ? note : defaultTitle}
           className="macro-dose-button"
           style={{
             border: `1px solid ${isNoShortCode ? "#ccc" : colors.border}`,
@@ -793,12 +821,22 @@ function MacroCodesPageContent() {
             // every button a consistent, clearly-clickable ~32px tall
             // regardless of label length, instead of growing vertically.
             // Version C bumps this further (`large`) for bigger hit
-            // targets per Will's brief.
-            minHeight: large ? 38 : 32,
+            // targets per Will's brief. ROUND 10: a button carrying a
+            // subLabel (schedule interval) grows just enough for its
+            // second line — height only, never width beyond the capped
+            // subLabel column below.
+            minHeight: subLabel ? (large ? 46 : 40) : large ? 38 : 32,
             padding: large ? "0 0.75rem" : "0 0.5rem",
             display: "inline-flex",
-            alignItems: "center",
-            justifyContent: block ? "flex-start" : "center",
+            // ROUND 10: a subLabel switches the button to a vertical
+            // (column) flex so the two lines stack — main/cross axes
+            // swap accordingly, so alignItems/justifyContent trade
+            // places to keep the SAME visual alignment (block: left,
+            // otherwise centered) the row layout had below.
+            flexDirection: subLabel ? "column" : "row",
+            alignItems: subLabel ? (block ? "flex-start" : "center") : "center",
+            justifyContent: subLabel ? "center" : block ? "flex-start" : "center",
+            gap: subLabel ? 1 : undefined,
             fontSize: large ? "13px" : "12px",
             fontWeight: 600,
             cursor: isNoShortCode ? "default" : "pointer",
@@ -809,6 +847,23 @@ function MacroCodesPageContent() {
           }}
         >
           {visibleText}
+          {subLabel && (
+            <span
+              aria-hidden="true"
+              style={{
+                display: "block",
+                maxWidth: large ? 112 : 96,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontSize: large ? "11px" : "10px",
+                fontWeight: 400,
+                color: isNoShortCode ? "#999" : "#666",
+              }}
+            >
+              {subLabel}
+            </span>
+          )}
         </button>
         {!isNoShortCode && note && (
           <span
@@ -829,20 +884,6 @@ function MacroCodesPageContent() {
         {copyFailure?.key === key && <CopyFallback code={copyFailure.code} />}
       </span>
     );
-  }
-
-  /** Version B/C's short dose-button label (Will's verbatim brief:
-   * "Dose 1 button... for a single-dose product, one button — pick
-   * either 'Copy' or the product's short code as its label and use that
-   * choice consistently across the whole version, don't mix"). Chose
-   * "Copy" over the raw short code: the product name + age is already
-   * spelled out in its own column right next to the button (unlike
-   * version A, where the button IS the only place the name appears), so
-   * the button just needs to say what clicking it does. Used identically
-   * by both version B and version C so the choice stays consistent
-   * across every version that uses short labels. */
-  function doseButtonShortLabel(row: MacroRow, doseCount: number): string {
-    return doseCount > 1 ? `Dose ${row.doseNumber}` : "Copy";
   }
 
   function renderSettingsMenu(product: MacroProductGroup) {
@@ -917,8 +958,10 @@ function MacroCodesPageContent() {
    * original Excel sheet's own Type column, which repeated per row
    * too), product name + age as PLAIN TEXT (macroProductNameWithAge —
    * not a button, not clickable), then the dose buttons themselves
-   * (doseButtonShortLabel: "Dose 1"/"Dose 2", or "Copy" for a single-
-   * dose product). The ⚙ menu is unchanged, once per product.
+   * (doseButtonShortLabel: "Dose 1"/"Dose 2", or "One dose" for a
+   * single-dose product), each carrying its ROUND 10 schedule-interval
+   * subLabel when the row has one. The ⚙ menu is unchanged, once per
+   * product.
    */
   function renderSectionVersionB(section: MacroSectionGroup) {
     const colors = SECTION_COLORS[section.section];
@@ -933,7 +976,12 @@ function MacroCodesPageContent() {
               </div>
               <div className="macro-product-name-cell">{macroProductNameWithAge(product)}</div>
               <div className="macro-dose-buttons-b">
-                {product.doses.map((dose) => renderDoseButton(dose, colors, { visibleLabel: doseButtonShortLabel(dose.row, doseCount) }))}
+                {product.doses.map((dose) =>
+                  renderDoseButton(dose, colors, {
+                    visibleLabel: doseButtonShortLabel(dose.row, doseCount),
+                    subLabel: dose.row.doseInterval,
+                  })
+                )}
               </div>
               <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
             </div>
@@ -1060,7 +1108,11 @@ function MacroCodesPageContent() {
               </div>
               <div className="macro-dose-buttons-c">
                 {product.doses.map((dose) =>
-                  renderDoseButton(dose, colors, { visibleLabel: doseButtonShortLabel(dose.row, doseCount), large: true })
+                  renderDoseButton(dose, colors, {
+                    visibleLabel: doseButtonShortLabel(dose.row, doseCount),
+                    subLabel: dose.row.doseInterval,
+                    large: true,
+                  })
                 )}
               </div>
               <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
