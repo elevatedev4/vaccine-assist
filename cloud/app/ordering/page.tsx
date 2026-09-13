@@ -128,6 +128,13 @@ type UploadResult = { inserted: number; unmatched: string[] };
 
 const EMAIL_MODAL_DISMISSED_KEY = "ordering-email-setup-dismissed";
 
+// To-order table NDC button (V-to-order-table-emphasis): the button's
+// visible text swaps to this on a successful copy, for ~1.2s, WITHOUT
+// changing the button's width — same "reserve width for the longer of
+// the two labels" trick as app/macro-codes/page.tsx's MIN_BUTTON_CH.
+const NDC_COPIED_FLAG = "Copied";
+const NDC_COPY_FLASH_MS = 1200;
+
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1000 },
   toolbar: { display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" as const, marginBottom: "0.5rem" },
@@ -159,13 +166,46 @@ const styles = {
   // Section heading separating the "To order" table from the full
   // vaccine list below it (V-ordering-layout-round3 item 3).
   sectionHeading: { marginTop: "2rem", marginBottom: "0.25rem" },
-  // Succinct "To order" table cells (V-ordering-layout-round3 item 2):
-  // smaller font + tighter padding than the main table's already-
-  // compact styles.
-  toOrderTh: { textAlign: "left" as const, padding: "1px 5px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const, fontSize: "12px" },
-  toOrderThRight: { textAlign: "right" as const, padding: "1px 5px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const, fontSize: "12px" },
-  toOrderTd: { textAlign: "left" as const, padding: "1px 5px", borderBottom: "1px solid #eee", fontSize: "12px", lineHeight: 1.15 },
-  toOrderTdRight: { textAlign: "right" as const, padding: "1px 5px", borderBottom: "1px solid #eee", fontSize: "12px", lineHeight: 1.15 },
+  // "To order" table — visually emphasized (V-to-order-table-emphasis,
+  // Will 2026-09-13, verbatim: "make it more visually emphasized...
+  // decrease the width to just use the space that is needed"): bigger
+  // text + roomier row padding than the compact main table below it, and
+  // the table itself sized to its content (width: fit-content, not
+  // stretched to the page) rather than 100%.
+  toOrderTable: { borderCollapse: "collapse" as const, width: "fit-content" as const, fontSize: "16px", lineHeight: 1.3 },
+  toOrderTh: { textAlign: "left" as const, padding: "10px 14px", borderBottom: "2px solid #bbb", whiteSpace: "nowrap" as const, fontWeight: 700 },
+  toOrderThRight: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "2px solid #bbb", whiteSpace: "nowrap" as const, fontWeight: 700 },
+  toOrderTd: { textAlign: "left" as const, padding: "10px 14px", borderBottom: "1px solid #eee" },
+  toOrderTdRight: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "1px solid #eee" },
+  // Order qty (pkg) is the number staff actually act on — bold per
+  // Will's brief so it can't be skimmed past.
+  toOrderTdOrderQty: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "1px solid #eee", fontWeight: 700 },
+  // NDC copy button (V-to-order-table-emphasis: "Make NDC a button that
+  // they can click to copy it like we've used on macro codes") — same
+  // colored-bordered-button posture as app/macro-codes/page.tsx's dose
+  // buttons, monospace NDC text inside.
+  ndcCopyButton: {
+    fontFamily: "ui-monospace, monospace",
+    fontSize: "14px",
+    border: "1px solid #4a7fc9",
+    background: "#eef3fb",
+    color: "#1c3f66",
+    borderRadius: 5,
+    padding: "4px 10px",
+    cursor: "pointer",
+    boxSizing: "border-box" as const,
+  },
+  ndcCopyButtonDisabled: {
+    fontFamily: "ui-monospace, monospace",
+    fontSize: "14px",
+    border: "1px solid #ccc",
+    background: "#f2f2f2",
+    color: "#888",
+    borderRadius: 5,
+    padding: "4px 10px",
+    cursor: "default",
+    boxSizing: "border-box" as const,
+  },
   error: { color: "#b00020" },
   success: { color: "#0a7d27" },
   muted: { color: "#555", fontSize: "0.875rem" },
@@ -196,13 +236,6 @@ const styles = {
   walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   saveStatus: { fontSize: "0.7rem", marginLeft: "0.35rem" },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
-  // To-order table (V-T-ordering-unify, Will 2026-09-11): compact,
-  // same look as the main table — the row itself is the "Copy NDC"
-  // control (macro-codes'-page row-click-copy pattern), so its cells
-  // stay plain styles.td/tdRight and the click affordance lives in the
-  // .to-order-row <style> rule below.
-  copyHint: { color: "#888", fontWeight: 400 as const },
-  copiedFlag: { color: "#1a7f37", fontWeight: 600 },
   modalOverlay: {
     position: "fixed" as const,
     inset: 0,
@@ -604,29 +637,23 @@ export default function OrderingPage() {
     }
   }
 
-  // To-order table row click/keyboard handler — clicking or pressing
-  // Enter/Space anywhere on a row copies its NDC (digits-with-dashes,
-  // as displayed), same "click anywhere on the row" pattern as
-  // app/macro-codes/page.tsx's row copy. A row with no NDC on file has
-  // nothing to copy, so it isn't made interactive at all (see the
-  // toOrderRows.map render below).
+  // To-order table NDC button (V-to-order-table-emphasis: "Make NDC a
+  // button that they can click to copy it like we've used on macro
+  // codes") — clicking copies the digits-with-dashes NDC as displayed,
+  // same clipboard-copy behavior the old row-click affordance had. A
+  // button with no NDC on file has nothing to copy, so it's rendered
+  // disabled rather than omitted (see the toOrderRows.map render below).
   async function handleCopyOrderNdc(row: { key: string; ndc: string | null }) {
     if (!row.ndc) return;
     const text = formatNdcDashed(row.ndc);
     try {
       await navigator.clipboard.writeText(text);
       setCopiedNdcKey(row.key);
-      setTimeout(() => setCopiedNdcKey((current) => (current === row.key ? null : current)), 1500);
+      setTimeout(() => setCopiedNdcKey((current) => (current === row.key ? null : current)), NDC_COPY_FLASH_MS);
     } catch {
       // Clipboard API unavailable/denied — the NDC is still visible in
-      // the cell, so this is a soft failure.
+      // the button, so this is a soft failure.
     }
-  }
-
-  function handleToOrderRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, row: { key: string; ndc: string | null }) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    void handleCopyOrderNdc(row);
   }
 
   // Raw PUT /api/ordering/targets call with NO reload afterward — split
@@ -799,6 +826,14 @@ export default function OrderingPage() {
   // shape, since that lib is other coders' territory this round.
   const onHandByKey = useMemo(() => new Map((data?.rows ?? []).map((row) => [row.key, row.onHand] as const)), [data]);
 
+  // V-to-order-table-emphasis: the To-order table's Target column — the
+  // row's effective target (Your target override when set, else the
+  // recommended target), same number the main table's Target box shows.
+  // Looked up by row key rather than threaded through
+  // lib/ordering-to-order.ts's ToOrderRow, same "other coders' territory"
+  // reasoning as onHandByKey above.
+  const targetByKey = useMemo(() => new Map((data?.rows ?? []).map((row) => [row.key, row.effectiveTarget] as const)), [data]);
+
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -942,13 +977,14 @@ export default function OrderingPage() {
       {toOrderRows.length === 0 ? (
         <p style={styles.muted}>Nothing to order</p>
       ) : (
-        <table style={{ ...styles.table, marginTop: "0.5rem" }} className="to-order-table">
+        <table style={{ ...styles.toOrderTable, marginTop: "0.5rem" }} className="to-order-table">
           <thead>
             <tr>
               <th style={styles.toOrderTh}>Product</th>
               <th style={styles.toOrderTh}>NDC</th>
-              <th style={styles.toOrderThRight}>Order qty</th>
               <th style={styles.toOrderThRight}>BOH</th>
+              <th style={styles.toOrderThRight}>Target</th>
+              <th style={styles.toOrderThRight}>Order qty (pkg)</th>
             </tr>
           </thead>
           <tbody>
@@ -956,25 +992,32 @@ export default function OrderingPage() {
               const ndcText = formatNdcDashed(row.ndc) || "—";
               const isCopied = copiedNdcKey === row.key;
               const canCopy = !!row.ndc;
+              const ndcButtonText = isCopied ? NDC_COPIED_FLAG : ndcText;
+              const target = targetByKey.get(row.key) ?? null;
               return (
-                <tr
-                  key={row.key}
-                  className={canCopy ? "to-order-row" : undefined}
-                  role={canCopy ? "button" : undefined}
-                  tabIndex={canCopy ? 0 : undefined}
-                  aria-label={canCopy ? `Copy ${row.displayName} NDC ${ndcText}` : undefined}
-                  onClick={canCopy ? () => void handleCopyOrderNdc(row) : undefined}
-                  onKeyDown={canCopy ? (e) => handleToOrderRowKeyDown(e, row) : undefined}
-                >
+                <tr key={row.key}>
                   <td style={styles.toOrderTd}>{row.displayName}</td>
                   <td style={styles.toOrderTd}>
-                    {ndcText}
-                    {canCopy && (isCopied ? <span style={{ ...styles.copiedFlag, marginLeft: "0.4rem" }}>Copied ✓</span> : <span style={{ ...styles.copyHint, marginLeft: "0.4rem" }}>Copy</span>)}
-                  </td>
-                  <td style={styles.toOrderTdRight}>
-                    {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
+                    <button
+                      type="button"
+                      disabled={!canCopy}
+                      onClick={() => void handleCopyOrderNdc(row)}
+                      title={canCopy ? `Copy ${row.displayName} NDC` : "no NDC on file for this product"}
+                      aria-label={canCopy ? `Copy ${row.displayName} NDC ${ndcText}` : undefined}
+                      style={{
+                        ...(canCopy ? styles.ndcCopyButton : styles.ndcCopyButtonDisabled),
+                        minWidth: `${Math.max(ndcText.length, NDC_COPIED_FLAG.length)}ch`,
+                        textAlign: "center",
+                      }}
+                    >
+                      {ndcButtonText}
+                    </button>
                   </td>
                   <td style={styles.toOrderTdRight}>{onHandDisplay(onHandByKey.get(row.key) ?? null)}</td>
+                  <td style={styles.toOrderTdRight}>{target ?? "—"}</td>
+                  <td style={styles.toOrderTdOrderQty}>
+                    {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
+                  </td>
                 </tr>
               );
             })}
@@ -1149,14 +1192,13 @@ export default function OrderingPage() {
         </div>
       )}
 
-      {/* To-order table row interaction (hover/focus affordance for the
-       * click-to-copy row) — same "no external library" <style> posture
-       * as app/macro-codes/page.tsx's row styling. */}
+      {/* To-order table NDC button hover/focus affordance — same "no
+       * external library" <style> posture as app/macro-codes/page.tsx's
+       * button styling. */}
       <style>{`
-        .to-order-table tbody tr.to-order-row { cursor: pointer; }
-        .to-order-table tbody tr.to-order-row:hover,
-        .to-order-table tbody tr.to-order-row:focus-visible {
-          background: #f2f6fb;
+        .to-order-table button:not(:disabled):hover,
+        .to-order-table button:not(:disabled):focus-visible {
+          background: #dde9f9;
           outline: none;
         }
       `}</style>
