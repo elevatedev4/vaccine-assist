@@ -14,6 +14,7 @@ import {
   SCREENER_RULES,
   type ConditionKey,
   type DerivedConditionKey,
+  type PriorPneumoHistory,
   type ScreenerConditions,
   type ScreenerStatus,
   type ScreenerTier,
@@ -28,8 +29,9 @@ export interface ScreenerResult {
   sourceUrl: string;
 }
 
-/** `null` = the optional question was left unanswered. */
-export type PriorPneumoAnswer = "yes" | "no" | null;
+/** Re-exported so callers (app/screener/page.tsx) can import the prior-
+ * pneumococcal-history type from either lib file. */
+export type { PriorPneumoHistory } from "./screener-rules";
 
 type DerivedConditions = Record<DerivedConditionKey, boolean>;
 
@@ -54,7 +56,7 @@ function tierMatches(
   tier: ScreenerTier,
   age: number,
   derived: DerivedConditions,
-  priorPneumo: PriorPneumoAnswer
+  priorPneumo: PriorPneumoHistory
 ): boolean {
   const min = tier.ageMin ?? 0;
   const max = tier.ageMax ?? Infinity;
@@ -66,35 +68,56 @@ function tierMatches(
   return true;
 }
 
+/** First matching tier's {status, reason} (or the rule's fallback if
+ * none match). `skipCaution` re-runs the same walk ignoring "caution"
+ * tiers — used to find the routine/risk recommendation a caution is
+ * standing in front of, so evaluateVaccine can surface it (see this
+ * file's header / screener-rules.ts's "Precedence" note). */
+function firstMatch(
+  rule: ScreenerVaccineRule,
+  age: number,
+  derived: DerivedConditions,
+  priorPneumo: PriorPneumoHistory,
+  skipCaution: boolean
+): { status: ScreenerStatus; reason: string } {
+  for (const tier of rule.tiers) {
+    if (skipCaution && tier.status === "caution") continue;
+    if (tierMatches(tier, age, derived, priorPneumo)) {
+      return { status: tier.status, reason: tier.reason };
+    }
+  }
+  return rule.fallback;
+}
+
 function evaluateVaccine(
   rule: ScreenerVaccineRule,
   age: number,
   derived: DerivedConditions,
-  priorPneumo: PriorPneumoAnswer
+  priorPneumo: PriorPneumoHistory
 ): ScreenerResult {
-  for (const tier of rule.tiers) {
-    if (tierMatches(tier, age, derived, priorPneumo)) {
-      return { id: rule.id, name: rule.name, status: tier.status, reason: tier.reason, sourceUrl: rule.sourceUrl };
+  const matched = firstMatch(rule, age, derived, priorPneumo, false);
+  let reason = matched.reason;
+  // A caution never hides a routine/risk recommendation outright — the
+  // pharmacist still sees what it would otherwise be.
+  if (matched.status === "caution") {
+    const underlying = firstMatch(rule, age, derived, priorPneumo, true);
+    if (underlying.status === "routine" || underlying.status === "risk") {
+      reason = `${matched.reason} (Would otherwise be ${underlying.status}: ${underlying.reason})`;
     }
   }
-  return {
-    id: rule.id,
-    name: rule.name,
-    status: rule.fallback.status,
-    reason: rule.fallback.reason,
-    sourceUrl: rule.sourceUrl,
-  };
+  return { id: rule.id, name: rule.name, status: matched.status, reason, sourceUrl: rule.sourceUrl };
 }
 
 /**
  * Evaluate every vaccine in SCREENER_RULES for one patient. `age` is in
  * years (0.5 = 6 months); `priorPneumo` is the optional pneumococcal
- * question, `null` when unanswered.
+ * history question (Prevnar 20 / Capvaxive only), defaulting to "none"
+ * when unanswered — same result as an explicit "none".
  */
 export function screen(
   age: number,
   conditions: ScreenerConditions,
-  priorPneumo: PriorPneumoAnswer = null
+  priorPneumo: PriorPneumoHistory = "none"
 ): ScreenerResult[] {
   const derived = deriveConditions(conditions);
   return SCREENER_RULES.map((rule) => evaluateVaccine(rule, age, derived, priorPneumo));

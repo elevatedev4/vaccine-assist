@@ -4,8 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
-import { CONDITION_ITEMS, DEFAULT_CONDITIONS, DIABETES_SUB_KEYS, type ConditionKey, type ScreenerConditions } from "@/lib/screener-rules";
-import { groupScreenerResults, screen, type PriorPneumoAnswer } from "@/lib/screener";
+import {
+  CONDITION_ITEMS,
+  DEFAULT_CONDITIONS,
+  DIABETES_SUB_KEYS,
+  type ConditionKey,
+  type PriorPneumoHistory,
+  type ScreenerConditions,
+} from "@/lib/screener-rules";
+import { groupScreenerResults, screen } from "@/lib/screener";
 import type { FormEvent } from "react";
 
 /**
@@ -136,7 +143,7 @@ export default function ScreenerPage() {
 
   const [ageInput, setAgeInput] = useState("");
   const [conditions, setConditions] = useState<ScreenerConditions>(DEFAULT_CONDITIONS);
-  const [priorPneumo, setPriorPneumo] = useState<PriorPneumoAnswer>(null);
+  const [priorPneumo, setPriorPneumo] = useState<PriorPneumoHistory>("none");
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -191,7 +198,7 @@ export default function ScreenerPage() {
   function handleClear() {
     setAgeInput("");
     setConditions(DEFAULT_CONDITIONS);
-    setPriorPneumo(null);
+    setPriorPneumo("none");
   }
 
   const diabetesSubChecked = DIABETES_SUB_KEYS.some((key) => conditions[key]);
@@ -281,36 +288,22 @@ export default function ScreenerPage() {
           ))}
 
           <div style={styles.priorPneumoRow}>
-            <span style={styles.label}>Had a pneumococcal vaccine before?</span>
-            <div style={styles.radioRow}>
-              <label style={styles.radioLabel}>
-                <input
-                  type="radio"
-                  name="prior-pneumo"
-                  checked={priorPneumo === "yes"}
-                  onChange={() => setPriorPneumo("yes")}
-                />
-                Yes
-              </label>
-              <label style={styles.radioLabel}>
-                <input
-                  type="radio"
-                  name="prior-pneumo"
-                  checked={priorPneumo === "no"}
-                  onChange={() => setPriorPneumo("no")}
-                />
-                No
-              </label>
-              <label style={styles.radioLabel}>
-                <input
-                  type="radio"
-                  name="prior-pneumo"
-                  checked={priorPneumo === null}
-                  onChange={() => setPriorPneumo(null)}
-                />
-                Unknown
-              </label>
-            </div>
+            <label style={styles.label} htmlFor="prior-pneumo-select">
+              Prior pneumococcal vaccine history (Prevnar 20 / Capvaxive)
+            </label>
+            <select
+              id="prior-pneumo-select"
+              style={{ ...styles.ageInput, marginTop: "0.3rem" }}
+              value={priorPneumo}
+              onChange={(event) => setPriorPneumo(event.target.value as PriorPneumoHistory)}
+            >
+              <option value="none">None</option>
+              <option value="pcv13">PCV13 only</option>
+              <option value="ppsv23">PPSV23 only</option>
+              <option value="both">Both PCV13 and PPSV23</option>
+              <option value="pcv15_20_21">PCV15, PCV20, or PCV21 (series complete)</option>
+              <option value="unknown">Unknown</option>
+            </select>
           </div>
 
           <button type="button" style={styles.clearButton} onClick={handleClear}>

@@ -14,10 +14,15 @@
  * age-only DB row — hence its own file, its own types, and no shared
  * table. Do not merge the two.
  *
- * Every rule below carries the CDC/ACIP/FDA/label source it was read
- * from (`sourceUrl` on the vaccine) so a pharmacist can verify before
- * administering — see the "Guidance current as of Sept 2026" note
- * rendered at the top of app/screener/page.tsx.
+ * ROUND 2 (2026-09-13, coordinator brief): every vaccine's tiers were
+ * relinked against a full multi-source review (CDC/ACIP + FDA label +
+ * AAP/ACOG) run earlier the same session — see that review's "Changes
+ * vs. the prior CDC-only pass" and "Could not confirm" sections for the
+ * clinical rationale behind each change below. Every rule below carries
+ * the CDC/ACIP/FDA/label source it was read from (`sourceUrl` on the
+ * vaccine) so a pharmacist can verify before administering — see the
+ * "Guidance current as of Sept 2026" note rendered at the top of
+ * app/screener/page.tsx.
  *
  * Shape: each vaccine is a small ordered list of `tiers` (first match
  * wins) plus a `fallback` used when no tier matches. A tier gates on an
@@ -26,6 +31,16 @@
  * semantics — there is no rule below that needs "all of these", so an
  * "all" mode was not added). `lib/screener.ts` is the pure evaluator
  * that walks this data; keep behavior changes here, not there.
+ *
+ * Precedence (coordinator brief, round 2): a "caution" tier is always
+ * checked ahead of that vaccine's routine/risk tiers so it is never
+ * silently hidden behind an age/condition match — but so the pharmacist
+ * doesn't lose the underlying recommendation, `lib/screener.ts`'s
+ * `evaluateVaccine` appends "(Would otherwise be routine/risk: ...)" to
+ * a caution's displayed reason when a routine/risk tier would otherwise
+ * have matched. Abrysvo's pregnancy tier is deliberately "risk", not
+ * "caution" (Abrysvo IS the recommended product in pregnancy), so it is
+ * never subject to this append.
  */
 
 /** Every checkbox on the form, in the exact order Will specified. The
@@ -33,7 +48,9 @@
  * implies the "Diabetes" parent is checked (see lib/screener.ts's
  * `deriveConditions` — checking a sub-item auto-ticks "Diabetes" for
  * rule-matching purposes; the page does the same for the on-screen
- * checkbox). */
+ * checkbox). Per the round-2 review, the four diabetes sub-items are
+ * used ONLY by the RSV (Abrysvo/Arexvy) rules below — every other rule
+ * keys on the plain "Diabetes" checkbox. */
 export type ConditionKey =
   | "asplenia"
   | "cancer"
@@ -65,13 +82,21 @@ export type ScreenerConditions = Record<ConditionKey, boolean>;
  * the form) that rules are also allowed to gate on:
  *  - `diabetesSubItem`: true when any of the 4 diabetes sub-checkboxes
  *    is checked — used where the rule is "diabetes-RELATED conditions,
- *    not plain diabetes alone" (Arexvy/Abrysvo's 50-74 risk list).
- *  - `anyCondition`: true when ANY checkbox at all is checked — used
- *    for Comirnaty/mNEXSPIKE's "benefit greatest with a risk factor
- *    present" branch. */
+ *    not plain diabetes alone" (Arexvy/Abrysvo's 50-74 risk list, per
+ *    ACIP: "diabetes with complications", not diabetes alone).
+ *  - `anyCondition`: true when ANY checkbox at all is checked. (Not
+ *    used by any round-2 rule — Comirnaty/mNEXSPIKE's risk gate is now
+ *    a specific condition list, not "any checkbox" — kept for future
+ *    use.) */
 export type DerivedConditionKey = ConditionKey | "diabetesSubItem" | "anyCondition";
 
 export type ScreenerStatus = "routine" | "risk" | "consider" | "caution" | "not-indicated" | "info";
+
+/** The optional "prior pneumococcal vaccine" question, used only by
+ * Prevnar 20 / Capvaxive's adult tiers (round 2, coordinator brief:
+ * replaces the old yes/no toggle with the actual product-sequencing
+ * history so the reason text can say what to give next). */
+export type PriorPneumoHistory = "none" | "pcv13" | "ppsv23" | "both" | "pcv15_20_21" | "unknown";
 
 export interface ScreenerTier {
   /** Inclusive lower bound, in years (0.5 = 6 months). Default 0. */
@@ -81,9 +106,9 @@ export interface ScreenerTier {
   /** Tier matches if the age band matches AND (this list is empty/absent
    * OR at least one listed key is true). */
   requiredConditions?: DerivedConditionKey[];
-  /** Gate on the optional "had a pneumococcal vaccine before?" answer.
+  /** Gate on the "had a pneumococcal vaccine before, and what?" answer.
    * Only used by Prevnar 20 / Capvaxive. */
-  requirePriorPneumo?: "yes" | "no";
+  requirePriorPneumo?: PriorPneumoHistory;
   status: ScreenerStatus;
   reason: string;
 }
@@ -168,96 +193,180 @@ const RSV_50_74_RISK_CONDITIONS: DerivedConditionKey[] = [
   "longTermCare",
 ];
 
-const PNEUMOCOCCAL_19_49_RISK_CONDITIONS: DerivedConditionKey[] = [
-  "chronicLungDisease",
-  "coronaryArteryDisease",
-  "heartFailure",
-  "chronicLiverDisease",
-  "chronicKidneyDisease",
-  "diabetes",
-  "alcohol3Plus",
-  "smoking",
+// Round 2 correction (coordinator, after review): Heart Failure IS on
+// this list — ACIP's "chronic heart disease" trigger explicitly
+// includes congestive heart failure and cardiomyopathies (MMWR
+// RR-72(3), 2023; cdc.gov/pneumococcal/hcp/vaccine-recommendations).
+// Renamed from "19-49" to "adult" since it's also used, unchanged, as
+// the 50+ condition list is age-only (no condition gate at 50+).
+const PNEUMOCOCCAL_ADULT_RISK_CONDITIONS: DerivedConditionKey[] = [
   "asplenia",
   "cancer",
+  "csfLeak",
+  "cochlearImplant",
+  "coronaryArteryDisease",
+  "heartFailure",
+  "chronicKidneyDisease",
+  "chronicLiverDisease",
+  "chronicLungDisease",
+  "diabetes",
   "hiv",
   "immunocompromised",
+  "alcohol3Plus",
   "sickleCellOrThalassemia",
+  "smoking",
   "solidOrganTransplant",
+];
+
+// Round 2 addition: children 2-18 (Prevnar 20) / 2-17 (Capvaxive) with
+// one of these become eligible too — a materially narrower list than
+// the adult one (no alcohol/smoking/CAD, since those aren't pediatric
+// risk factors per the review's child-risk-based ACIP source).
+const PNEUMOCOCCAL_CHILD_RISK_CONDITIONS: DerivedConditionKey[] = [
+  "asplenia",
+  "sickleCellOrThalassemia",
   "cochlearImplant",
   "csfLeak",
+  "immunocompromised",
+  "hiv",
+  "cancer",
+  "chronicKidneyDisease",
+  "chronicLiverDisease",
+  "solidOrganTransplant",
+  "chronicLungDisease",
 ];
 
 const RSV_ONE_LIFETIME_DOSE_NOTE =
   "One lifetime dose — no revaccination if previously vaccinated with either brand.";
 
-// Comirnaty's "benefit greatest" risk trigger is a SPECIFIC list, not
-// "any checkbox at all" (review fix, coordinator 2026-09-13: Asplenia,
-// CSF leak, Cochlear implant, Long-term care resident, or 3+ drinks/day
-// alone must NOT bump a 12+ patient from "consider" to "risk"). Per
-// spec: any chronic condition (chronic lung, CAD, heart failure,
-// chronic liver, CKD, diabetes — "diabetes" already covers its 4
-// sub-items via lib/screener.ts's deriveConditions auto-tick), plus
-// Pregnant, Immunocompromised, Cancer, HIV, Solid organ transplant,
-// Severe obesity, Smoking. mNEXSPIKE's broader "anyCondition" gate is
-// intentionally different and left as-is (correct per spec).
-const COMIRNATY_RISK_CONDITIONS: DerivedConditionKey[] = [
-  "chronicLungDisease",
+// Comirnaty and mNEXSPIKE are round-2-identical per the coordinator
+// brief (both gated to the same 2025-26 FDA label risk framework) —
+// hence one shared condition list and one shared rule factory
+// (`covidRule` below) instead of each vaccine hand-rolling its own.
+const COVID_RISK_CONDITIONS: DerivedConditionKey[] = [
+  "cancer",
   "coronaryArteryDisease",
   "heartFailure",
-  "chronicLiverDisease",
+  "chronicLungDisease",
   "chronicKidneyDisease",
+  "chronicLiverDisease",
   "diabetes",
-  "pregnant",
-  "immunocompromised",
-  "cancer",
   "hiv",
-  "solidOrganTransplant",
+  "immunocompromised",
   "severeObesity",
+  "sickleCellOrThalassemia",
   "smoking",
+  "solidOrganTransplant",
+  "pregnant",
+  "longTermCare",
 ];
 
-const PNEUMOCOCCAL_PRIOR_DOSE_INFO_REASON =
-  "Prior PPSV23 only: give PCV20/21 ≥1 year later. Prior PCV20/21: no further dose needed.";
-
-function pneumococcalRule(id: string, name: string): ScreenerVaccineRule {
-  const sourceUrl = "https://www.cdc.gov/pneumococcal/hcp/vaccine-recommendations/index.html";
+function covidRule(id: string, name: string, sourceUrl: string): ScreenerVaccineRule {
   return {
     id,
     name,
     sourceUrl,
     tiers: [
-      // The priorPneumo="yes" sequencing note only replaces an
-      // otherwise-routine/risk recommendation (review fix, coordinator
-      // 2026-09-13) — it must NOT fire for a patient who wouldn't be
-      // getting PCV at all (e.g. age 30, no risk condition), so each
-      // "yes" tier mirrors the age/condition gate of the tier it
-      // overrides and both are checked before those tiers.
+      { ageMin: 65, status: "routine", reason: "Routine, age 65+." },
       {
-        requirePriorPneumo: "yes",
-        ageMin: 50,
-        status: "info",
-        reason: PNEUMOCOCCAL_PRIOR_DOSE_INFO_REASON,
-      },
-      {
-        requirePriorPneumo: "yes",
-        ageMin: 19,
-        ageMax: 49,
-        requiredConditions: PNEUMOCOCCAL_19_49_RISK_CONDITIONS,
-        status: "info",
-        reason: PNEUMOCOCCAL_PRIOR_DOSE_INFO_REASON,
-      },
-      { ageMin: 50, status: "routine", reason: "Routine, one dose, age 50+." },
-      {
-        ageMin: 19,
-        ageMax: 49,
-        requiredConditions: PNEUMOCOCCAL_19_49_RISK_CONDITIONS,
+        ageMin: 12,
+        ageMax: 64,
+        requiredConditions: COVID_RISK_CONDITIONS,
         status: "risk",
-        reason: "Age 19-49 with a qualifying risk condition.",
+        reason: "Age 12-64 with a qualifying risk condition (2025-26 FDA label).",
+      },
+      {
+        ageMin: 12,
+        ageMax: 64,
+        status: "consider",
+        reason: "Shared clinical decision-making; outside the 2025-26 FDA label.",
+      },
+    ],
+    fallback: { status: "not-indicated", reason: "Below minimum age (12 years)." },
+  };
+}
+
+// Reason text for the adult pneumococcal tiers, keyed by prior-vaccine
+// history — "none" and "unknown" both fall through to the plain "One
+// dose." tiers below (no requirePriorPneumo gate needed for those two).
+function pneumococcalHistoryReason(history: "pcv13" | "ppsv23" | "both"): string {
+  switch (history) {
+    case "pcv13":
+      return "PCV20/21 ≥1 year after PCV13.";
+    case "ppsv23":
+      return "PCV20/21 ≥1 year after PPSV23.";
+    case "both":
+      return "PCV20/21 ≥5 years after the last dose.";
+  }
+}
+
+/**
+ * Shared factory for Prevnar 20 and Capvaxive — round 2 rewrite adds
+ * the full prior-dose sequencing logic (a specific history, not a
+ * yes/no) and a pediatric risk-based tier (only Capvaxive's differs:
+ * "consider" not "risk", per its newer/less-settled 2-17y label).
+ *
+ * `adultRiskAgeMin` (coordinator correction after round 2): Prevnar
+ * 20's condition-based adult tier starts at 19 per the ACIP adult
+ * schedule (an 18-year-old with a qualifying condition falls under its
+ * own 2-18 child/adolescent tier instead) — but Capvaxive's FDA label
+ * is 18+ for adults, so its condition-based tier starts at 18, one year
+ * earlier than Prevnar 20's.
+ */
+function pneumococcalRule(
+  id: string,
+  name: string,
+  sourceUrl: string,
+  childAgeMax: number,
+  childStatus: "risk" | "consider",
+  childReason: string,
+  adultRiskAgeMin: number = 19
+): ScreenerVaccineRule {
+  const historyTiers: ScreenerTier[] = (["pcv15_20_21", "pcv13", "ppsv23", "both"] as const).flatMap(
+    (history) => {
+      const isComplete = history === "pcv15_20_21";
+      const reason = isComplete ? "Series complete — no further dose needed." : pneumococcalHistoryReason(history);
+      const status: ScreenerStatus = isComplete ? "not-indicated" : "routine";
+      const riskStatus: ScreenerStatus = isComplete ? "not-indicated" : "risk";
+      return [
+        { requirePriorPneumo: history, ageMin: 50, status, reason },
+        {
+          requirePriorPneumo: history,
+          ageMin: adultRiskAgeMin,
+          ageMax: 49,
+          requiredConditions: PNEUMOCOCCAL_ADULT_RISK_CONDITIONS,
+          status: riskStatus,
+          reason,
+        },
+      ];
+    }
+  );
+
+  return {
+    id,
+    name,
+    sourceUrl,
+    tiers: [
+      ...historyTiers,
+      {
+        ageMin: 2,
+        ageMax: childAgeMax,
+        requiredConditions: PNEUMOCOCCAL_CHILD_RISK_CONDITIONS,
+        status: childStatus,
+        reason: childReason,
+      },
+      { ageMin: 50, status: "routine", reason: "One dose." },
+      {
+        ageMin: adultRiskAgeMin,
+        ageMax: 49,
+        requiredConditions: PNEUMOCOCCAL_ADULT_RISK_CONDITIONS,
+        status: "risk",
+        reason: "One dose.",
       },
     ],
     fallback: {
       status: "not-indicated",
-      reason: "Age 19-49 without a qualifying risk condition.",
+      reason: `Below age 2, or age ${adultRiskAgeMin}-49 without a qualifying risk condition.`,
     },
   };
 }
@@ -266,7 +375,7 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
   {
     id: "flucelvax",
     name: "Flucelvax",
-    sourceUrl: "https://www.cdc.gov/flu/vaccines-work/vaccineeffect.htm",
+    sourceUrl: "https://labeling.seqirus.com/PI/US/Flucelvax/EN/Flucelvax-Prescribing-Information.pdf",
     tiers: [
       {
         ageMin: 0.5,
@@ -279,51 +388,12 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
   {
     id: "fluad",
     name: "Fluad",
-    sourceUrl: "https://labeling.seqirus.com/PI/US/FLUAD/EN/FLUAD-Prescribing-Information.pdf",
+    sourceUrl: "https://www.fda.gov/media/94583",
     tiers: [{ ageMin: 65, status: "routine", reason: "Routine annual flu vaccine, age 65+." }],
     fallback: { status: "not-indicated", reason: "Under 65 — use Flucelvax instead." },
   },
-  {
-    id: "comirnaty",
-    name: "Comirnaty",
-    sourceUrl: "https://www.cdc.gov/covid/hcp/vaccine-considerations/routine-guidance.html",
-    tiers: [
-      {
-        ageMin: 12,
-        requiredConditions: COMIRNATY_RISK_CONDITIONS,
-        status: "risk",
-        reason: "Benefit is greatest with a chronic condition or other checked risk factor.",
-      },
-      {
-        ageMin: 12,
-        status: "consider",
-        reason: "Shared clinical decision-making — offered to all ages 12+.",
-      },
-    ],
-    fallback: { status: "not-indicated", reason: "Below minimum age (12 years)." },
-  },
-  {
-    id: "mnexspike",
-    name: "mNEXSPIKE",
-    sourceUrl: "https://www.fda.gov/vaccines-blood-biologics/mnexspike",
-    tiers: [
-      { ageMin: 65, status: "routine", reason: "Routine, age 65+." },
-      {
-        ageMin: 12,
-        ageMax: 64,
-        requiredConditions: ["anyCondition"],
-        status: "risk",
-        reason: "Age 12-64 with a checked risk factor.",
-      },
-      {
-        ageMin: 12,
-        ageMax: 64,
-        status: "not-indicated",
-        reason: "No risk factor checked — use Comirnaty instead.",
-      },
-    ],
-    fallback: { status: "not-indicated", reason: "Below minimum age (12 years)." },
-  },
+  covidRule("comirnaty", "Comirnaty", "https://www.fda.gov/media/188486"),
+  covidRule("mnexspike", "mNEXSPIKE", "https://www.fda.gov/media/188486"),
   {
     id: "arexvy",
     name: "Arexvy",
@@ -332,31 +402,8 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
       {
         requiredConditions: ["pregnant"],
         status: "caution",
-        reason: "Not recommended in pregnancy — use Abrysvo instead.",
-      },
-      { ageMin: 75, status: "routine", reason: `Routine, age 75+. ${RSV_ONE_LIFETIME_DOSE_NOTE}` },
-      {
-        ageMin: 50,
-        ageMax: 74,
-        requiredConditions: RSV_50_74_RISK_CONDITIONS,
-        status: "risk",
-        reason: `Age 50-74 with a qualifying risk condition. ${RSV_ONE_LIFETIME_DOSE_NOTE}`,
-      },
-    ],
-    fallback: {
-      status: "not-indicated",
-      reason: "Below age 50, or age 50-74 without a qualifying risk condition.",
-    },
-  },
-  {
-    id: "abrysvo",
-    name: "Abrysvo",
-    sourceUrl: "https://www.cdc.gov/rsv/hcp/vaccine-clinical-guidance/index.html",
-    tiers: [
-      {
-        requiredConditions: ["pregnant"],
-        status: "risk",
-        reason: "One dose at 32-36 weeks of pregnancy, September-January.",
+        reason:
+          "Not recommended in pregnancy (maternal trial halted for a preterm-birth safety signal) — use Abrysvo instead.",
       },
       { ageMin: 75, status: "routine", reason: `Routine, age 75+. ${RSV_ONE_LIFETIME_DOSE_NOTE}` },
       {
@@ -371,7 +418,38 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
         ageMax: 49,
         requiredConditions: RSV_50_74_RISK_CONDITIONS,
         status: "consider",
-        reason: "FDA label only, not ACIP-recommended.",
+        reason: `FDA label (2025) — ACIP endorsement pending. ${RSV_ONE_LIFETIME_DOSE_NOTE}`,
+      },
+    ],
+    fallback: {
+      status: "not-indicated",
+      reason: "Below age 18, or age 18-74 without a qualifying risk condition.",
+    },
+  },
+  {
+    id: "abrysvo",
+    name: "Abrysvo",
+    sourceUrl: "https://www.cdc.gov/rsv/hcp/vaccine-clinical-guidance/index.html",
+    tiers: [
+      {
+        requiredConditions: ["pregnant"],
+        status: "risk",
+        reason: "One dose at 32-36 weeks of pregnancy, September-January — Abrysvo only.",
+      },
+      { ageMin: 75, status: "routine", reason: `Routine, age 75+. ${RSV_ONE_LIFETIME_DOSE_NOTE}` },
+      {
+        ageMin: 50,
+        ageMax: 74,
+        requiredConditions: RSV_50_74_RISK_CONDITIONS,
+        status: "risk",
+        reason: `Age 50-74 with a qualifying risk condition. ${RSV_ONE_LIFETIME_DOSE_NOTE}`,
+      },
+      {
+        ageMin: 18,
+        ageMax: 49,
+        requiredConditions: RSV_50_74_RISK_CONDITIONS,
+        status: "consider",
+        reason: `FDA label (2025) — ACIP endorsement pending. ${RSV_ONE_LIFETIME_DOSE_NOTE}`,
       },
     ],
     fallback: {
@@ -391,16 +469,16 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
         reason: "Routine, age 50+, 2 doses 2-6 months apart.",
       },
       {
-        ageMin: 19,
+        ageMin: 18,
         ageMax: 49,
         requiredConditions: ["immunocompromised", "hiv", "cancer", "solidOrganTransplant"],
         status: "risk",
-        reason: "Age 19-49 with a qualifying immunocompromising condition. 1-2 month interval.",
+        reason: "FDA label 18+, ACIP 19+; 1-2 month interval.",
       },
     ],
     fallback: {
       status: "not-indicated",
-      reason: "Below age 19, or age 19-49 without a qualifying condition.",
+      reason: "Below age 18, or age 18-49 without a qualifying condition.",
     },
   },
   {
@@ -408,10 +486,11 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
     name: "Engerix-B",
     sourceUrl: "https://www.cdc.gov/mmwr/volumes/71/wr/pdfs/mm7113-h.pdf",
     tiers: [
+      { ageMax: 18, status: "routine", reason: "Catch-up routine hepatitis B series, under 19." },
       { ageMin: 19, ageMax: 59, status: "routine", reason: "Routine universal hepatitis B series, 3 doses." },
       {
         ageMin: 60,
-        requiredConditions: ["chronicLiverDisease", "hiv", "diabetes"],
+        requiredConditions: ["diabetes", "chronicKidneyDisease", "chronicLiverDisease", "hiv"],
         status: "risk",
         reason: "Age 60+ with a qualifying condition.",
       },
@@ -422,10 +501,27 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
           "Also indicated for injection drug use, incarceration, sexual exposure, or travel to endemic areas — not asked on this form.",
       },
     ],
-    fallback: { status: "not-indicated", reason: "Below routine age range (19-59)." },
+    // Unreachable in practice — the tiers above cover the full 0-120
+    // range — kept for type-safety and in case a future tier narrows.
+    fallback: { status: "not-indicated", reason: "Not applicable." },
   },
-  pneumococcalRule("prevnar20", "Prevnar 20"),
-  pneumococcalRule("capvaxive", "Capvaxive"),
+  pneumococcalRule(
+    "prevnar20",
+    "Prevnar 20",
+    "https://www.cdc.gov/pneumococcal/hcp/vaccine-recommendations/index.html",
+    18,
+    "risk",
+    "Risk-based series, ages 2-18 (PCV20 licensed 6 weeks+)."
+  ),
+  pneumococcalRule(
+    "capvaxive",
+    "Capvaxive",
+    "https://www.fda.gov/media/179426",
+    17,
+    "consider",
+    "2026 pediatric label; ACIP adoption pending — confirm before administering.",
+    18
+  ),
   {
     id: "boostrix",
     name: "Boostrix",
@@ -436,15 +532,27 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
         status: "risk",
         reason: "Every pregnancy, at 27-36 weeks.",
       },
-      { ageMin: 11, status: "routine", reason: "One adult Tdap booster, then every 10 years." },
+      { ageMin: 10, status: "routine", reason: "One adult Tdap booster, then every 10 years." },
     ],
-    fallback: { status: "not-indicated", reason: "Below age 11." },
+    fallback: { status: "not-indicated", reason: "Below age 10." },
   },
   {
     id: "gardasil9",
     name: "Gardasil 9",
     sourceUrl: "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-notes.html",
     tiers: [
+      {
+        requiredConditions: ["pregnant"],
+        status: "caution",
+        reason: "Defer remaining doses to postpartum.",
+      },
+      {
+        ageMin: 9,
+        ageMax: 26,
+        requiredConditions: ["immunocompromised", "hiv", "cancer", "solidOrganTransplant"],
+        status: "risk",
+        reason: "3-dose series regardless of start age.",
+      },
       { ageMin: 9, ageMax: 26, status: "routine", reason: "Routine HPV series, ages 9-26." },
       {
         ageMin: 27,
@@ -461,18 +569,37 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
     sourceUrl: "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7527029/",
     tiers: [
       {
-        ageMin: 2,
-        requiredConditions: ["asplenia", "hiv", "immunocompromised"],
+        ageMin: 2 / 12,
+        ageMax: 55,
+        requiredConditions: ["asplenia", "hiv", "sickleCellOrThalassemia"],
         status: "risk",
-        reason: "2-dose series, 8-12 weeks apart, booster every 5 years.",
+        reason: "2 doses 8-12 weeks apart; booster every 5 years while the condition persists.",
       },
       {
-        ageMin: 2,
-        status: "not-indicated",
-        reason: "Also indicated for complement deficiency/inhibitor use — not asked on this form.",
+        ageMin: 55,
+        requiredConditions: ["asplenia", "hiv", "sickleCellOrThalassemia"],
+        status: "info",
+        reason: "Outside Menveo's label (age ≤55) — a different meningococcal product is needed.",
+      },
+      {
+        // Coordinator correction: immunocompromised isn't on the
+        // asplenia/HIV/sickle-cell risk list, but shouldn't be told
+        // "not indicated" either — surface it as a discussion point
+        // (complement deficiency and eculizumab/ravulizumab therapy are
+        // separate ACIP-recognized triggers this form doesn't ask about).
+        ageMin: 2 / 12,
+        requiredConditions: ["immunocompromised"],
+        status: "consider",
+        reason: "Complement deficiency / eculizumab users are not on the form — ask.",
+      },
+      {
+        ageMin: 2 / 12,
+        status: "info",
+        reason:
+          "Also indicated for complement deficiency/eculizumab therapy, travel, or first-year dorm residence — not asked on this form.",
       },
     ],
-    fallback: { status: "not-indicated", reason: "Below minimum age (2 years)." },
+    fallback: { status: "not-indicated", reason: "Below minimum age (2 months)." },
   },
   {
     id: "vaqta",
@@ -483,7 +610,7 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
         ageMin: 1,
         requiredConditions: ["chronicLiverDisease", "hiv"],
         status: "risk",
-        reason: "2-dose hepatitis A series.",
+        reason: "2-dose hepatitis A series, 6-18 months apart.",
       },
       { ageMin: 1, status: "info", reason: "Travel or behavioral risk — ask." },
     ],
@@ -492,19 +619,25 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
   {
     id: "typhim-vi",
     name: "Typhim Vi",
-    // No source URL was given in the brief for Typhim Vi specifically —
-    // using CDC's typhoid vaccine considerations page (matches the same
-    // /<disease>/hcp/vaccine-considerations/index.html convention as
-    // Shingrix's and RSV's sourceUrls above; not brief-verified like the
-    // other sourceUrls). Flagged for Will to confirm it resolves.
-    sourceUrl: "https://www.cdc.gov/typhoid-fever/hcp/vaccine-considerations/index.html",
-    tiers: [],
-    fallback: { status: "info", reason: "Travel only — ask about travel." },
+    // Multi-source review flagged a label-vs-practice conflict: Sanofi's
+    // SmPC/label states a 3-year revaccination interval, but CDC/ACIP
+    // Yellow Book practice guidance (this brief's instruction) says 2
+    // years for continued exposure — using CDC's 2-year figure per the
+    // brief, noting the label conflict in the reason text.
+    sourceUrl: "https://www.drugs.com/pro/typhim-vi.html",
+    tiers: [
+      {
+        ageMin: 2,
+        status: "info",
+        reason: "Travel only — ask; revaccinate every 2 years (per CDC; label says 3).",
+      },
+    ],
+    fallback: { status: "not-indicated", reason: "Below minimum age (2 years)." },
   },
   {
     id: "mmr",
     name: "M-M-R II",
-    sourceUrl: "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-notes.html",
+    sourceUrl: "https://www.cdc.gov/measles/hcp/vaccine-considerations/index.html",
     tiers: [
       {
         requiredConditions: ["pregnant"],
@@ -512,9 +645,14 @@ export const SCREENER_RULES: ScreenerVaccineRule[] = [
         reason: "Contraindicated — live vaccine. Avoid pregnancy for 1 month after.",
       },
       {
-        requiredConditions: ["immunocompromised", "hiv", "cancer", "solidOrganTransplant"],
+        requiredConditions: ["immunocompromised", "cancer", "solidOrganTransplant"],
         status: "caution",
-        reason: "Live vaccine — pharmacist judgment (contraindicated if severely immunocompromised).",
+        reason: "Live vaccine — contraindicated if immunosuppressed.",
+      },
+      {
+        requiredConditions: ["hiv"],
+        status: "caution",
+        reason: "Live vaccine — OK unless severely immunosuppressed (low CD4); pharmacist review.",
       },
       {
         ageMin: 1,
