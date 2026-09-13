@@ -37,7 +37,13 @@ const styles = {
     borderRadius: 6,
     color: "#1a4971",
     fontSize: "0.72rem",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: "0.75rem",
+    flexWrap: "wrap" as const,
   },
+  infoLink: { color: "#1a4971", whiteSpace: "nowrap" as const },
   columns: {
     display: "grid",
     gridTemplateColumns: "minmax(280px, 360px) 1fr",
@@ -221,7 +227,10 @@ export default function ScreenerPage() {
     <main style={styles.main}>
       <h1 style={styles.heading}>Vaccine eligibility screener</h1>
       <p style={styles.note}>
-        Guidance current as of Sept 2026 (CDC/ACIP); verify before administering.
+        <span>Guidance current as of Sept 2026 (CDC/ACIP); verify before administering.</span>
+        <a href="/screener/info" style={styles.infoLink}>
+          Full list of conditions and ages →
+        </a>
       </p>
 
       <div style={styles.columns}>
