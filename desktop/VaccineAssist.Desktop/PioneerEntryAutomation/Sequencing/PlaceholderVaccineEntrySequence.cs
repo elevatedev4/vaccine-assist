@@ -56,20 +56,31 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 ///   7. InputLotAndExpirationStep — lot + expiration, plain text entry.
 ///   8. ConfirmEntryStep — locates PioneerRx's Save &amp; Continue button
 ///      but does not click it (safety stop before the real Rx save).
+///
+/// PRIORITY POPUP FIX (2026-09-13): `priorityValue` (optional, default
+/// "Vaccine") threads Settings.AppSettings.PriorityValue down to step 2 —
+/// see SendF3AndDismissPreEntryDialogsStep's own doc comment. Defaulted so
+/// every existing caller/test that constructs this with no arguments
+/// keeps working unchanged.
 /// </summary>
 public sealed class PlaceholderVaccineEntrySequence : IPioneerEntrySequence
 {
     public string Name => "Vaccine entry (Add New Rx)";
 
-    public IReadOnlyList<IPioneerEntryStep> Steps { get; } = new IPioneerEntryStep[]
+    public IReadOnlyList<IPioneerEntryStep> Steps { get; }
+
+    public PlaceholderVaccineEntrySequence(string priorityValue = "Vaccine")
     {
-        new FocusPioneerWindowStep(),
-        new SendF3AndDismissPreEntryDialogsStep(),
-        new SelectPrescriberStep(),
-        new InputVaccineCodeStep(),
-        new InputQuantityStep(),
-        new InputDirectionsStep(),
-        new InputLotAndExpirationStep(),
-        new ConfirmEntryStep(),
-    };
+        Steps = new IPioneerEntryStep[]
+        {
+            new FocusPioneerWindowStep(),
+            new SendF3AndDismissPreEntryDialogsStep(priorityValue),
+            new SelectPrescriberStep(),
+            new InputVaccineCodeStep(),
+            new InputQuantityStep(),
+            new InputDirectionsStep(),
+            new InputLotAndExpirationStep(),
+            new ConfirmEntryStep(),
+        };
+    }
 }

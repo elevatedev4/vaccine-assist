@@ -55,7 +55,40 @@ public class SendF3AndDismissPreEntryDialogsStepTests
         Assert.Contains("Priority", result.Message);
         Assert.Contains("Scan Hard Copy", result.Message);
         Assert.Contains("Patient on Cycle Fill", result.Message); // MSG893 hotfix: third recognized dialog
+        Assert.Contains("Vaccine", result.Message); // priority-popup fix (2026-09-13): default PriorityValue
         Assert.Null(context.AttachedWindow); // dry run never attaches
+    }
+
+    // --- Priority popup fix (V-..., 2026-09-13): PriorityValue is now
+    // selected in the "Priority" dialog, not ESC'd — see
+    // SendF3AndDismissPreEntryDialogsStep's own doc comment. ---
+
+    [Fact]
+    public async Task DryRunDescribesSelectingAConfiguredPriorityValueInsteadOfEscapingIt()
+    {
+        var step = new SendF3AndDismissPreEntryDialogsStep("Flu Shot");
+        var context = new PioneerEntryStepContext(SamplePayload(), dryRun: true, _ => { });
+
+        var result = await step.ExecuteAsync(context);
+
+        Assert.True(result.Success);
+        Assert.Contains("select", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Flu Shot", result.Message);
+        Assert.DoesNotContain("Vaccine", result.Message); // custom value replaces the default wording
+        // The other two dialogs are still described as ESC'd — only Priority's wording changed.
+        Assert.Contains("Scan Hard Copy", result.Message);
+        Assert.Contains("Patient on Cycle Fill", result.Message);
+    }
+
+    [Fact]
+    public async Task BlankPriorityValueFallsBackToTheDefaultVaccine()
+    {
+        var step = new SendF3AndDismissPreEntryDialogsStep("   ");
+        var context = new PioneerEntryStepContext(SamplePayload(), dryRun: true, _ => { });
+
+        var result = await step.ExecuteAsync(context);
+
+        Assert.Contains("Vaccine", result.Message);
     }
 
     [Fact]

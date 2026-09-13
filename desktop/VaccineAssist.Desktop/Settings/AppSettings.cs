@@ -21,4 +21,17 @@ public sealed class AppSettings
 
     /// <summary>Pre-fills the Login screen's email field; never stores a password.</summary>
     public string? LastSignedInEmail { get; set; }
+
+    /// <summary>
+    /// The value auto-selected in PioneerRx's "Priority" pre-entry popup
+    /// during guided vaccine data entry (see
+    /// PioneerEntryAutomation/Sequencing/Steps/SendF3AndDismissPreEntryDialogsStep.cs) —
+    /// Will, 2026-09-13, verbatim: "It's getting stuck because it's missing
+    /// the 'Priority' popup that comes up before data entry can begin. It
+    /// needs to set the priority to Vaccine when that window comes up."
+    /// Exposed here (not hardcoded in the step) so a workstation whose
+    /// Priority list uses different wording can be fixed by editing
+    /// settings.json, no rebuild required.
+    /// </summary>
+    public string PriorityValue { get; set; } = "Vaccine";
 }

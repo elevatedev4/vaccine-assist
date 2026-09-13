@@ -90,7 +90,10 @@ public partial class App : Application
         // PioneerEntryAutomation/Sequencing/PlaceholderVaccineEntrySequence.cs.
         // Swapping in the real sequence once vaccine-add-new.mxe is available
         // is a one-line change here, not a rebuild of MainWindow/DataEntryPopupViewModel.
-        _pioneerEntrySequence = new PlaceholderVaccineEntrySequence();
+        // _settings.PriorityValue (2026-09-13 priority-popup fix) is threaded
+        // through here so a workstation can change it via settings.json with
+        // no rebuild — see SendF3AndDismissPreEntryDialogsStep's own doc comment.
+        _pioneerEntrySequence = new PlaceholderVaccineEntrySequence(_settings.PriorityValue);
 
         ShowLoginWindow(attemptAutoLogin: true);
     }
