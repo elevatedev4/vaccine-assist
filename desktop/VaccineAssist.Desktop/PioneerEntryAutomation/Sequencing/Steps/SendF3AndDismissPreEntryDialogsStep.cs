@@ -95,9 +95,54 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// FlaUI/UIA calls below (like every other step's live branch in this
 /// sequence) can only be proven against a real Pioneer install on
 /// Windows.
+///
+/// PRIORITY POPUP FIX (V-..., 2026-09-13 — Will, verbatim): "It's getting
+/// stuck because it's missing the 'Priority' popup that comes up before
+/// data entry can begin. It needs to set the priority to Vaccine when
+/// that window comes up. All of this should've been in the original
+/// macro file I sent you." Recon for that macro file (and any live UIA
+/// dump of this dialog) found neither anywhere in this repo — every other
+/// reference to vaccine-add-new.mxe (VaccineEntryPayload.cs lines 32-36,
+/// AdminSite.cs lines 49-66, this folder's TODO.md lines 79-80/298-337/
+/// 322-325) quotes OTHER sections of it (clipboard payload format, the
+/// admin-site letter code, the final Add New Rx keystroke sequence, the
+/// Medicare home-visit prompt), and PreEntryDialogTitles.cs's own doc
+/// comment already flagged Priority/Scan Hard Copy/Patient on Cycle Fill
+/// as dialogs no live dump exists for. So Priority's real control shape
+/// (ComboBox vs. ListBox vs. DataGrid) is still unconfirmed — but "ESC
+/// past it" was simply wrong (it must be SET, not dismissed), so this
+/// round changes Priority's handling from ESC to select-and-confirm:
+/// TryHandlePriorityIfShowing looks for a ComboBox first (expand + select
+/// the item whose Name contains PriorityValue), then any other selectable
+/// ListItem/DataItem anywhere in the dialog, and only if neither can be
+/// found falls back to focusing the dialog and typing the value + Enter —
+/// "same as the original macro" per Will's own framing, since a macro
+/// script would have driven this the same blind-keystroke way. Whichever
+/// path runs, TryConfirmDialog then looks for an OK/Confirm button
+/// (Invoke pattern) before falling back to a plain Enter keypress.
+/// Scan Hard Copy and Patient on Cycle Fill are UNCHANGED (still ESC'd).
+/// Every sub-step logs via context.Log (throttled to attempt 1 and every
+/// 5th retry after that, AutoWatchRetry.ShouldLogRetry — same throttle
+/// QuickSearchFieldEntry already uses for its own "still waiting" spam
+/// fix) so a miss is diagnosable from app.log: which UIA shape was tried,
+/// which item Names were actually seen, and whether the fallback typed
+/// path ran instead.
 /// </summary>
 public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 {
+    /// <summary>The value selected in the "Priority" dialog — see the
+    /// class doc comment's PRIORITY POPUP FIX section. Defaults to
+    /// "Vaccine" (Settings.AppSettings.PriorityValue's own default) so a
+    /// caller that doesn't thread the setting through (e.g. every existing
+    /// test that uses the parameterless constructor) still gets the
+    /// behavior Will asked for.</summary>
+    private readonly string _priorityValue;
+
+    public SendF3AndDismissPreEntryDialogsStep(string priorityValue = "Vaccine")
+    {
+        _priorityValue = string.IsNullOrWhiteSpace(priorityValue) ? "Vaccine" : priorityValue;
+    }
+
     /// <summary>V-..., 2026-09-10: ONE overall cap for the whole
     /// post-F3 combined loop (dismiss known/stray dialogs, wait for Add
     /// New Rx) — replaces the old CombinedDialogsTimeout (12s) +
@@ -122,11 +167,14 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             // Built from PreEntryDialogTitles.All rather than hardcoded
             // (MSG893 hotfix, 2026-09-07-ish) so adding a new recognized
             // dialog there — like "Patient on Cycle Fill" was — can't go
-            // stale in this description again.
-            var dialogList = string.Join(", ", PreEntryDialogTitles.All.Select(t => $"\"{t}\""));
+            // stale in this description again. Priority is called out
+            // separately (select, not ESC) since the 2026-09-13 fix.
+            var otherDialogs = string.Join(", ",
+                PreEntryDialogTitles.All.Where(t => t != PreEntryDialogTitles.Priority).Select(t => $"\"{t}\""));
             return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
-                $"Would press F3 from the Rx Profile, then ESC through the {dialogList} dialog(s) if any appear " +
-                "(no PioneerRx call made).");
+                $"Would press F3 from the Rx Profile, then select \"{_priorityValue}\" in the \"{PreEntryDialogTitles.Priority}\" " +
+                $"dialog (or type \"{_priorityValue}\" + Enter if no selectable list is found) if it appears, and ESC through " +
+                $"the {otherDialogs} dialog(s) if any appear (no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)
@@ -190,6 +238,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         context.Log($"[{Name}] Sent F3 (took {f3Stopwatch.ElapsedMilliseconds}ms).");
 
         var strayAttempts = new Dictionary<IntPtr, int>();
+        var priorityAttempt = 0;
         AutomationElement? addNewRxWindow = null;
 
         bool IsAddNewRxReady()
@@ -206,7 +255,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
 
         string? TryDismissNext() =>
-            TryDismissNextPendingDialogOrStrayWindow(attachedWindow, baselineHandles, previousHandle, strayAttempts);
+            TryDismissNextPendingDialogOrStrayWindow(attachedWindow, baselineHandles, previousHandle, strayAttempts, ref priorityAttempt, context.Log);
 
         var loopStopwatch = Stopwatch.StartNew();
         CombinedPreEntryLoopResult loopResult;
@@ -430,12 +479,24 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// (see TryDismissNextStrayPioneerWindow). Returns the dismissed
     /// window's title, or null if nothing was found to dismiss this
     /// tick.
+    ///
+    /// PRIORITY POPUP FIX (2026-09-13): "Priority" is checked FIRST, via
+    /// TryHandlePriorityIfShowing (select-and-confirm), and skipped in the
+    /// plain ESC-dismiss loop below — Scan Hard Copy and Patient on Cycle
+    /// Fill are unchanged. See class doc comment.
     /// </summary>
-    private static string? TryDismissNextPendingDialogOrStrayWindow(
-        AutomationElement attachedWindow, IReadOnlySet<IntPtr> baselineHandles, IntPtr excludeHandle, Dictionary<IntPtr, int> strayAttempts)
+    private string? TryDismissNextPendingDialogOrStrayWindow(
+        AutomationElement attachedWindow, IReadOnlySet<IntPtr> baselineHandles, IntPtr excludeHandle,
+        Dictionary<IntPtr, int> strayAttempts, ref int priorityAttempt, Action<string> log)
     {
+        if (TryHandlePriorityIfShowing(attachedWindow, ref priorityAttempt, log))
+        {
+            return PreEntryDialogTitles.Priority;
+        }
+
         foreach (var title in PreEntryDialogTitles.All)
         {
+            if (title == PreEntryDialogTitles.Priority) continue; // handled above — select+confirm, not ESC
             if (TryDismissIfShowing(attachedWindow, title)) return title;
         }
         return TryDismissNextStrayPioneerWindow(baselineHandles, excludeHandle, strayAttempts);
@@ -454,6 +515,255 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         var descendant = FindDialogDescendant(attachedWindow, titleSubstring);
         return descendant is not null && TryDismiss(descendant);
+    }
+
+    /// <summary>
+    /// PRIORITY POPUP FIX (see class doc comment) — finds the "Priority"
+    /// dialog the same way TryDismissIfShowing finds every other pre-entry
+    /// dialog (top-level Pioneer window first, then a UIA descendant of
+    /// the attached window), but instead of ESCing it, selects
+    /// `_priorityValue` and confirms. Returns false (no dialog found —
+    /// caller moves on to the plain ESC-dismiss titles) or true (dialog
+    /// found and an attempt was made — success or failure of that attempt
+    /// is only reflected in the log, same "found it, attempted the
+    /// action" posture as TryDismissIfShowing's own callers use for the
+    /// other dialogs). `attempt` is a per-ExecuteAsync-call counter
+    /// (declared in ExecuteAsync, threaded by ref through
+    /// TryDismissNextPendingDialogOrStrayWindow) used only to throttle
+    /// logging via AutoWatchRetry.ShouldLogRetry — the dialog itself is
+    /// re-scanned fresh every tick regardless of whether this tick logs.
+    /// </summary>
+    private bool TryHandlePriorityIfShowing(AutomationElement attachedWindow, ref int attempt, Action<string> log)
+    {
+        var dialog = FindTopLevelPioneerWindowByTitle(name => PreEntryDialogTitles.MatchesWithAliases(name, PreEntryDialogTitles.Priority))
+            ?? FindDialogDescendant(attachedWindow, PreEntryDialogTitles.Priority);
+        if (dialog is null) return false;
+
+        attempt++;
+        var announce = AutoWatchRetry.ShouldLogRetry(attempt);
+        if (announce)
+        {
+            log($"[{Name}] \"Priority\" dialog: selecting \"{_priorityValue}\" — starting (attempt {attempt})...");
+        }
+
+        if (TrySelectPriorityValue(dialog, announce, log, out var howSelected))
+        {
+            if (announce) log($"[{Name}] \"Priority\" dialog: OK — selected \"{_priorityValue}\" via {howSelected}.");
+
+            if (TryConfirmDialog(dialog))
+            {
+                if (announce) log($"[{Name}] \"Priority\" dialog: OK — confirmed (OK/Confirm button or Enter).");
+            }
+            else if (announce)
+            {
+                log($"[{Name}] \"Priority\" dialog: FAILED to confirm the selection via an OK button or Enter key.");
+            }
+            return true;
+        }
+
+        if (announce)
+        {
+            log($"[{Name}] \"Priority\" dialog: FAILED to find a selectable \"{_priorityValue}\" item via UIA " +
+                "(no matching ComboBox/ListBox/DataGrid item) — falling back to typing " +
+                $"\"{_priorityValue}\" + Enter, same as the original macro.");
+        }
+
+        var typed = TryTypeFallback(dialog, _priorityValue);
+        if (announce)
+        {
+            log(typed
+                ? $"[{Name}] \"Priority\" dialog: OK — typed \"{_priorityValue}\" and pressed Enter (fallback)."
+                : $"[{Name}] \"Priority\" dialog: FAILED — the typing fallback threw; the dialog may still be showing.");
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Tries, in the order PioneerRx's confirmed "Add New Rx" dumps suggest
+    /// is most likely for a value picker: (1) a ComboBox — expand it (best
+    /// effort; some combo boxes list items without needing an explicit
+    /// expand), then select whichever child item's Name contains
+    /// `_priorityValue` (PriorityValueMatcher.Matches); (2) any other
+    /// selectable ListItem/DataItem anywhere else in the dialog (covers a
+    /// plain ListBox or a DataGrid row) whose Name matches. `howSelected`
+    /// names which shape actually worked, for the caller's OK log line.
+    /// Every item Name actually seen is logged (when `announce`) so a miss
+    /// is diagnosable from app.log even without a live UIA dump to compare
+    /// against. Never throws — any UIA exception is treated as "not
+    /// found," same posture as every other scan in this file.
+    /// </summary>
+    private bool TrySelectPriorityValue(AutomationElement dialog, bool announce, Action<string> log, out string howSelected)
+    {
+        howSelected = "";
+        try
+        {
+            var comboCondition = dialog.ConditionFactory.ByControlType(ControlType.ComboBox);
+            foreach (var combo in dialog.FindAllDescendants(comboCondition))
+            {
+                try
+                {
+                    if (combo.Patterns.ExpandCollapse.IsSupported)
+                    {
+                        combo.Patterns.ExpandCollapse.Pattern.Expand();
+                    }
+                }
+                catch
+                {
+                    // Best-effort — see doc comment above.
+                }
+
+                var seen = new List<string>();
+                var item = FindMatchingSelectableItem(combo, _priorityValue, seen);
+                if (item is not null && TrySelectItem(item))
+                {
+                    howSelected = "ComboBox";
+                    return true;
+                }
+                if (announce && seen.Count > 0)
+                {
+                    log($"[{Name}] \"Priority\" dialog: ComboBox item(s) seen: {string.Join(", ", seen)}.");
+                }
+            }
+
+            var seenTopLevel = new List<string>();
+            var listOrGridItem = FindMatchingSelectableItem(dialog, _priorityValue, seenTopLevel);
+            if (listOrGridItem is not null && TrySelectItem(listOrGridItem))
+            {
+                howSelected = "ListBox/DataGrid";
+                return true;
+            }
+            if (announce && seenTopLevel.Count > 0)
+            {
+                log($"[{Name}] \"Priority\" dialog: list/grid item(s) seen: {string.Join(", ", seenTopLevel)}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (announce) log($"[{Name}] \"Priority\" dialog: error while scanning for a selectable item: {ex.Message}");
+        }
+        return false;
+    }
+
+    /// <summary>Scans `root`'s ListItem/DataItem descendants (ComboBox
+    /// items and ListBox/DataGrid rows are both exposed this way in UIA)
+    /// for one whose Name matches `priorityValue`
+    /// (PriorityValueMatcher.Matches), recording every Name actually seen
+    /// into `seenNames` for the caller's diagnostic log. Never throws.</summary>
+    private static AutomationElement? FindMatchingSelectableItem(AutomationElement root, string priorityValue, List<string> seenNames)
+    {
+        try
+        {
+            var condition = new OrCondition(new ConditionBase[]
+            {
+                root.ConditionFactory.ByControlType(ControlType.ListItem),
+                root.ConditionFactory.ByControlType(ControlType.DataItem),
+            });
+
+            foreach (var candidate in root.FindAllDescendants(condition))
+            {
+                var name = SafeName(candidate);
+                if (!string.IsNullOrEmpty(name)) seenNames.Add(name);
+                if (PriorityValueMatcher.Matches(name, priorityValue)) return candidate;
+            }
+        }
+        catch
+        {
+            // Treated as "not found," same posture as the rest of this file's UIA scans.
+        }
+        return null;
+    }
+
+    /// <summary>Selects `item` via the UIA SelectionItem pattern (the
+    /// normal way to pick a ComboBox/ListBox/DataGrid entry); falls back
+    /// to Invoke for a legacy control that only exposes that. Never
+    /// throws.</summary>
+    private static bool TrySelectItem(AutomationElement item)
+    {
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                return true;
+            }
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                return true;
+            }
+        }
+        catch
+        {
+            // Treated as "couldn't select this candidate" — caller falls back to typing.
+        }
+        return false;
+    }
+
+    /// <summary>Looks for an explicit OK/Confirm button in the dialog
+    /// first (UIA Invoke pattern, falling back to FocusNative + Enter if a
+    /// matching button isn't invokable); falls back to sending a plain
+    /// ENTER to the dialog itself — the same generic "confirm whatever's
+    /// focused" action every other field-typing step in this sequence
+    /// already relies on (see QuickSearchFieldEntry). Never throws.</summary>
+    private static bool TryConfirmDialog(AutomationElement dialog)
+    {
+        try
+        {
+            var buttonCondition = dialog.ConditionFactory.ByControlType(ControlType.Button);
+            foreach (var button in dialog.FindAllDescendants(buttonCondition))
+            {
+                var name = SafeName(button);
+                if (!name.Contains("OK", StringComparison.OrdinalIgnoreCase) &&
+                    !name.Contains("Confirm", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (button.Patterns.Invoke.IsSupported)
+                {
+                    button.Patterns.Invoke.Pattern.Invoke();
+                    return true;
+                }
+                button.FocusNative();
+                Keyboard.Type(VirtualKeyShort.RETURN);
+                return true;
+            }
+        }
+        catch
+        {
+            // Fall through to the plain Enter fallback below.
+        }
+
+        try
+        {
+            dialog.FocusNative();
+            Keyboard.Type(VirtualKeyShort.RETURN);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Last-resort fallback when no selectable UIA control could
+    /// be found/selected in the Priority dialog — types the value as
+    /// plain keystrokes and presses ENTER, the way a Macro Express script
+    /// (Will: "all of this is in the original macro I gave you") would
+    /// have driven this same dialog. Never throws.</summary>
+    private static bool TryTypeFallback(AutomationElement dialog, string priorityValue)
+    {
+        try
+        {
+            dialog.FocusNative();
+            Keyboard.Type(priorityValue);
+            Keyboard.Type(VirtualKeyShort.RETURN);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>Live scan+ESC for one stray (unrecognized, non-baseline,

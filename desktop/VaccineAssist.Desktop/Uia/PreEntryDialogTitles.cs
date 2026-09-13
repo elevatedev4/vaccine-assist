@@ -31,6 +31,22 @@ namespace VaccineAssist.Desktop.Uia;
 /// </summary>
 public static class PreEntryDialogTitles
 {
+    /// <summary>
+    /// V-..., 2026-09-13 (Will, verbatim): "It's getting stuck because it's
+    /// missing the 'Priority' popup that comes up before data entry can
+    /// begin. It needs to set the priority to Vaccine when that window
+    /// comes up. All of this should've been in the original macro file I
+    /// sent you." Neither that macro file nor a live UIA dump of this
+    /// dialog exists anywhere in this repo (see this class's own doc
+    /// comment above and SendF3AndDismissPreEntryDialogsStep's — still
+    /// true after this change). Unlike <see cref="ScanHardCopy"/> and
+    /// <see cref="PatientOnCycleFill"/> below, this title is NO LONGER
+    /// just ESC'd when found — SendF3AndDismissPreEntryDialogsStep selects
+    /// <c>Settings.AppSettings.PriorityValue</c> (default "Vaccine") in it
+    /// and confirms; it is NEVER simply ESC'd anymore. A UIA control it
+    /// can't find/select falls back to typing the value + Enter instead of
+    /// dismissing — see that step's TryHandlePriorityIfShowing.
+    /// </summary>
     public const string Priority = "Priority";
     public const string ScanHardCopy = "Scan Hard Copy";
     public const string PatientOnCycleFill = "Patient on Cycle Fill";
