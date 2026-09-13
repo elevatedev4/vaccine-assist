@@ -186,6 +186,38 @@ describe("lookupMacroCatalog", () => {
     expect(result.note).toBeUndefined();
   });
 
+  describe("ROUND 10: doseSchedule (Will's verbatim interval figures)", () => {
+    it("Shingrix: dose 2 is '2 mo' after dose 1", () => {
+      expect(lookupMacroCatalog("shingrix").doseSchedule).toEqual({ 2: "2 mo" });
+    });
+
+    it("Gardasil 9: dose 2 and dose 3 carry the age-split interval text", () => {
+      expect(lookupMacroCatalog("gardasil").doseSchedule).toEqual({
+        2: "1–2 mo (15+) · 6 mo (9–14)",
+        3: "6 mo (15+ only)",
+      });
+    });
+
+    it("Engerix-B: dose 2 '1 mo', dose 3 '6 mo'", () => {
+      expect(lookupMacroCatalog("engerix").doseSchedule).toEqual({ 2: "1 mo", 3: "6 mo" });
+    });
+
+    it("Vaqta: dose 2 '6 mo'", () => {
+      expect(lookupMacroCatalog("vaqtaadult").doseSchedule).toEqual({ 2: "6 mo" });
+    });
+
+    it("M-M-R II: dose 2 carries the 28-day/eligible-groups note; Priorix (a distinct MMR product) has none", () => {
+      expect(lookupMacroCatalog("mmr").doseSchedule).toEqual({
+        2: "28 d — students, healthcare, travelers, HIV, IC contacts",
+      });
+      expect(lookupMacroCatalog("priorix").doseSchedule).toBeUndefined();
+    });
+
+    it("a product with no interval data (Boostrix) has no doseSchedule", () => {
+      expect(lookupMacroCatalog("boostrix").doseSchedule).toBeUndefined();
+    });
+  });
+
   it("every catalog entry (looked up by every code in the round-3 age table) carries a non-empty age label and a finite ageMinMonths", () => {
     const codes = [
       "comirnaty12",

@@ -136,6 +136,23 @@ export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
  * tooltip; filterMacroTopGroups now also matches a query against
  * `note`, per Will's brief ("filter box should also match the note
  * text").
+ *
+ * ROUND 10 (Will's verbatim feedback, 2026-09-13): "Change 'Copy' to
+ * 'One dose.' Add one tiny deemphasized line on the buttons for 1-3
+ * dose items that includes the schedule for when to get those doses."
+ * Two changes, both to version B/C's short per-dose button label (the
+ * embed popup reuses C, so it inherits both automatically):
+ * (1) doseButtonShortLabel (moved here from app/macro-codes/page.tsx,
+ * exported, so it's unit-testable like doseButtonLabel/
+ * macroProductNameWithAge above) now returns "One dose" instead of
+ * "Copy" for a single-dose product; (2) MacroRow grows `doseInterval`,
+ * piped straight from lib/macro-catalog.ts's new MacroCatalogEntry.
+ * doseSchedule, keyed by THIS row's dose number — undefined for dose 1
+ * and for any single-dose product, regardless of whether the catalog
+ * even has a doseSchedule for it. The page renders this as a second,
+ * muted line on the dose button (page.tsx's renderDoseButton `subLabel`
+ * option); this file only computes the value, same "pure data, page
+ * renders it" split as ageBase/note above.
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -230,6 +247,12 @@ export type MacroRow = {
   /** Numeric floor of `age` in months, for sorting a section's products
    * youngest-eligible-first. Unrecognized codes sort last. */
   ageMinMonths: number;
+  /** ROUND 10: the interval text for THIS dose, stated as time after
+   * the previous dose (lib/macro-catalog.ts's MacroCatalogEntry.
+   * doseSchedule, keyed by doseNumber). Undefined for dose 1, for a
+   * single-dose product (doseCount === 1), and for a product with no
+   * doseSchedule entry for this dose number at all. */
+  doseInterval?: string;
   /** How many real dose rows this product has (1 for a single-dose
    * product or one with no short code at all) — used by the UI to blank
    * the Dose column for single-dose products. */
@@ -347,6 +370,7 @@ export function buildMacroRows(
         ageBase: MACRO_CATALOG_OTHER.ageBase,
         note: MACRO_CATALOG_OTHER.note,
         ageMinMonths: MACRO_CATALOG_OTHER.ageMinMonths,
+        doseInterval: undefined,
         doseCount: 1,
         vaccineIds: product.vaccineIds,
       });
@@ -373,6 +397,10 @@ export function buildMacroRows(
       const expirationIso = currentLot?.expiration ?? null;
       const macroResult = buildMacroCode({ shortCode, doseNumber, doseCount: 1, lotNumber, expirationIso });
       const catalogEntry = lookupMacroCatalog(shortCode);
+      // ROUND 10: only a dose past the first, of a genuinely multi-dose
+      // product, ever carries an interval — see MacroRow.doseInterval's
+      // doc comment above.
+      const doseInterval = doseCount > 1 && doseNumber > 1 ? catalogEntry.doseSchedule?.[doseNumber] : undefined;
 
       rows.push({
         productKey: product.productKey,
@@ -393,6 +421,7 @@ export function buildMacroRows(
         ageBase: catalogEntry.ageBase,
         note: catalogEntry.note,
         ageMinMonths: catalogEntry.ageMinMonths,
+        doseInterval,
         doseCount,
         vaccineIds: product.vaccineIds,
       });
@@ -484,6 +513,23 @@ function doseButtonLabel(row: MacroRow, doseCount: number): string {
  */
 export function macroProductNameWithAge(product: Pick<MacroProductGroup, "displayName" | "age">): string {
   return product.age ? `${product.displayName} (${flattenAgeForLabel(product.age)})` : product.displayName;
+}
+
+/**
+ * Round-8 version B/C's short per-dose button label (Will's verbatim
+ * brief: "Dose 1 button... for a single-dose product, one button — pick
+ * either 'Copy' or the product's short code as its label and use that
+ * choice consistently across the whole version, don't mix"). Moved here
+ * from app/macro-codes/page.tsx in ROUND 10 so it's unit-testable, same
+ * posture as doseButtonLabel/macroProductNameWithAge above.
+ *
+ * ROUND 10 (Will's verbatim feedback, 2026-09-13): "Change 'Copy' to
+ * 'One dose.'" — a single-dose product's button now reads "One dose"
+ * instead of round 8's "Copy"; a multi-dose product's buttons are
+ * unchanged ("Dose 1"/"Dose 2"/"Dose 3").
+ */
+export function doseButtonShortLabel(row: MacroRow, doseCount: number): string {
+  return doseCount > 1 ? `Dose ${row.doseNumber}` : "One dose";
 }
 
 /**

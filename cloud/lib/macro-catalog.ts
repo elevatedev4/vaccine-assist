@@ -174,6 +174,18 @@ export type MacroCatalogEntry = {
   /** Numeric floor of `age`, in months, for sorting a section's products
    * youngest-eligible-first. An unrecognized code sorts last. */
   ageMinMonths: number;
+  /** ROUND 10 (Will's verbatim feedback, 2026-09-13): "Add one tiny
+   * deemphasized line on the buttons for 1-3 dose items that includes
+   * the schedule for when to get those doses." Keyed by dose NUMBER
+   * (2, 3, ...) to the interval text for THAT dose, stated as time
+   * AFTER THE PREVIOUS DOSE — e.g. Shingrix's {2: "2 mo"} means "give
+   * dose 2 two months after dose 1." Never keyed at 1 (a first dose has
+   * no "after the previous dose" interval by definition) and undefined
+   * entirely for a single-dose product. See lib/macro-codes.ts's
+   * buildMacroRows for how this becomes each dose row's `doseInterval`
+   * (undefined for dose 1 and for single-dose products, regardless of
+   * whether the product even has a doseSchedule). */
+  doseSchedule?: Readonly<Record<number, string>>;
 };
 
 /** sheetOrder for a short code with no catalog entry — sorts after
@@ -189,7 +201,15 @@ export const MACRO_CATALOG_OTHER: MacroCatalogEntry = {
   ageMinMonths: Number.MAX_SAFE_INTEGER,
 };
 
-type RawCatalogEntry = { type: string; sheetOrder: number; age: string; ageBase: string; note?: string; ageMinMonths: number };
+type RawCatalogEntry = {
+  type: string;
+  sheetOrder: number;
+  age: string;
+  ageBase: string;
+  note?: string;
+  ageMinMonths: number;
+  doseSchedule?: Readonly<Record<number, string>>;
+};
 
 /** Keyed by short_code (see this file's header for the exact-vs-base
  * key convention). sheetOrder values are the sheet's original row
@@ -203,7 +223,14 @@ type RawCatalogEntry = { type: string; sheetOrder: number; age: string; ageBase:
  * three of the five notes reword the source clause for a clearer
  * tooltip (Shingrix "19+ IC" -> "19+ if immunocompromised", Abrysvo
  * "18+ high-risk" -> "18+ if high risk") rather than just stripping
- * parens — a generic parser can't produce that wording. */
+ * parens — a generic parser can't produce that wording.
+ *
+ * ROUND 10 (Will's verbatim feedback, 2026-09-13): adds `doseSchedule`
+ * (see MacroCatalogEntry's doc comment) to every multi-dose product
+ * Will gave an interval for — Shingrix, Gardasil 9, Engerix-B, Vaqta,
+ * M-M-R II (NOT Priorix, a distinct MMR product Will's brief didn't
+ * mention) — hand-entered per his exact figures, each stated as time
+ * after the PREVIOUS dose. */
 const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
   comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageBase: "12+", ageMinMonths: 144 },
   mnexspike: { type: "Moderna 12+", sheetOrder: 2, age: "12+", ageBase: "12+", ageMinMonths: 144 },
@@ -237,8 +264,16 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
     ageBase: "50+",
     note: "19+ if immunocompromised",
     ageMinMonths: 228,
+    doseSchedule: { 2: "2 mo" },
   },
-  engerix: { type: "Hep B (adult)", sheetOrder: 10, age: "20+", ageBase: "20+", ageMinMonths: 240 },
+  engerix: {
+    type: "Hep B (adult)",
+    sheetOrder: 10,
+    age: "20+",
+    ageBase: "20+",
+    ageMinMonths: 240,
+    doseSchedule: { 2: "1 mo", 3: "6 mo" },
+  },
   prevnar20: {
     type: "Pneumonia 20",
     sheetOrder: 11,
@@ -256,11 +291,32 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
     ageMinMonths: 24,
   },
   boostrix: { type: "Tetanus (TDaP)", sheetOrder: 13, age: "10+", ageBase: "10+", ageMinMonths: 120 },
-  gardasil: { type: "HPV", sheetOrder: 14, age: "9–45", ageBase: "9–45", ageMinMonths: 108 },
+  gardasil: {
+    type: "HPV",
+    sheetOrder: 14,
+    age: "9–45",
+    ageBase: "9–45",
+    ageMinMonths: 108,
+    doseSchedule: { 2: "1–2 mo (15+) · 6 mo (9–14)", 3: "6 mo (15+ only)" },
+  },
   menveo: { type: "Meningitis", sheetOrder: 15, age: "2 mo–55", ageBase: "2 mo–55", ageMinMonths: 2 },
-  vaqtaadult: { type: "Hepatitis A (19+)", sheetOrder: 16, age: "19+", ageBase: "19+", ageMinMonths: 228 },
+  vaqtaadult: {
+    type: "Hepatitis A (19+)",
+    sheetOrder: 16,
+    age: "19+",
+    ageBase: "19+",
+    ageMinMonths: 228,
+    doseSchedule: { 2: "6 mo" },
+  },
   typhim: { type: "Typhoid", sheetOrder: 17, age: "2+", ageBase: "2+", ageMinMonths: 24 },
-  mmr: { type: "MMR", sheetOrder: 18, age: "12 mo+", ageBase: "12 mo+", ageMinMonths: 12 },
+  mmr: {
+    type: "MMR",
+    sheetOrder: 18,
+    age: "12 mo+",
+    ageBase: "12 mo+",
+    ageMinMonths: 12,
+    doseSchedule: { 2: "28 d — students, healthcare, travelers, HIV, IC contacts" },
+  },
   priorix: { type: "MMR", sheetOrder: 19, age: "12 mo+", ageBase: "12 mo+", ageMinMonths: 12 },
 };
 
