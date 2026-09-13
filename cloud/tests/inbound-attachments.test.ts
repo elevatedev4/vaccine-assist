@@ -125,6 +125,15 @@ describe("isVaccinationLogHeaderLine", () => {
     expect(isVaccinationLogHeaderLine("Patient | COMPLETED DATE | Vaccine")).toBe(true);
     expect(isVaccinationLogHeaderLine("Item Name | NDC/UPC | Current BOH")).toBe(false);
   });
+
+  // V-import-doses-file, 2026-09-13: Will's manually-exported "8/1
+  // onward" backfill uses "Completed On" (not "Completed date") as its
+  // date column header — a different manual export path in PioneerRx for
+  // the same underlying report.
+  it("recognizes the 'Completed On' header variant (manual export path)", () => {
+    expect(isVaccinationLogHeaderLine("Completed On | Dispensed Item Name | Dispensed Quantity")).toBe(true);
+    expect(isVaccinationLogHeaderLine("completed on | dispensed item name")).toBe(true);
+  });
 });
 
 // Security review fix (2026-09-11): app_setting is a SHARED table (also
