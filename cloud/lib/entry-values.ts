@@ -1,5 +1,6 @@
 import { buildProductViews, type ProductViewVaccine } from "@/lib/product-view";
 import { lookupMacroCatalog } from "@/lib/macro-catalog";
+import { doseCountByVaccineId } from "@/lib/dose-family";
 
 /**
  * Pure row-building for the /entry-values tab (V-entry-values, Will's
@@ -39,7 +40,12 @@ export type EntryValueRow = {
   doseNumber: number;
   /** Total number of ACTIVE dose rows in this product's series — 1 for
    * a single-dose product, e.g. 2 for Shingrix. Feeds
-   * lib/entry-defaults.ts's defaultDirections. */
+   * lib/entry-defaults.ts's defaultDirections. Computed via
+   * lib/dose-family.ts's doseCountByVaccineId, which regroups by cleaned
+   * display name rather than trusting buildProductViews' own grouping —
+   * a product whose dose rows carry mismatched NDCs (e.g. Shingrix) gets
+   * split into separate ProductViews upstream, which would otherwise
+   * report doseCount 1 for each half instead of the real family size. */
   doseCount: number;
   /** The row's own short_code, verbatim — feeds
    * lib/entry-defaults.ts's defaultQuantity (exact-then-base lookup),
@@ -82,11 +88,12 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
   const activeVaccines = vaccines.filter((v) => v.active);
   const byId = new Map(activeVaccines.map((v) => [v.id, v]));
   const products = buildProductViews(activeVaccines);
+  const doseCountById = doseCountByVaccineId(products);
 
   const rows: EntryValueRow[] = [];
   for (const product of products) {
-    const doseCount = product.vaccineIds.length;
     for (const id of product.vaccineIds) {
+      const doseCount = doseCountById.get(id) ?? product.vaccineIds.length;
       const vaccine = byId.get(id);
       if (!vaccine) continue;
       const catalogEntry = lookupMacroCatalog(vaccine.short_code ?? "");
