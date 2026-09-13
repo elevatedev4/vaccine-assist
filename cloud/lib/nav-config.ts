@@ -16,6 +16,7 @@ export const NAV_TABS: readonly NavTab[] = [
   { label: "Schedule", href: "/appointments" },
   { label: "Ordering", href: "/ordering" },
   { label: "Data Entry", href: "/data-entry" },
+  { label: "Screener", href: "/screener" },
   { label: "Lots", href: "/lots" },
   { label: "Macro codes", href: "/macro-codes" },
   { label: "Entry values", href: "/entry-values" },
