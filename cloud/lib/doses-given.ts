@@ -298,6 +298,45 @@ export function orderProductsByGroup(products: string[]): string[] {
   return ordered;
 }
 
+/**
+ * Weekday (0 = Sunday .. 6 = Saturday) for a "YYYY-MM-DD" Chicago
+ * calendar-day string. Pure calendar-date arithmetic anchored at noon UTC
+ * — same "no timezone/DST involved, the string IS the calendar day"
+ * technique as addDaysToChicagoDate (lib/chicago-date.ts) — since a date
+ * already produced as a Chicago day string needs no further zone
+ * conversion to find its weekday.
+ */
+function chicagoDateWeekday(dateStr: string): number {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, 12)).getUTCDay();
+}
+
+/** The subset of a "By day" table row visibleDayRows needs: the row's
+ * date and its total-doses count. Generic over `T` so callers can pass
+ * their actual row/date-with-total shape straight through and get it
+ * back filtered, rather than a stripped-down copy. */
+export type DosesGivenDayRow = { date: string; total: number };
+
+/**
+ * Filters the "By day" table's rows for display (V-doses-given, Will
+ * 2026-09-13 verbatim: "We're closed on sat/sun, so if there is no data
+ * on those days, then no need to show them.") — drops a Saturday or
+ * Sunday row whose total is 0, since the pharmacy is closed those days
+ * and a zero row there is never meaningful, just noise. A weekday row
+ * with 0 doses is kept (it's still a day the pharmacy was open and could
+ * have given doses), and a weekend row WITH doses is kept too (e.g. a
+ * one-off Saturday clinic). Only affects what the page renders — the CSV
+ * export (dosesGivenPivotToCsv) reads pivot.dates directly and keeps
+ * every day, unchanged.
+ */
+export function visibleDayRows<T extends DosesGivenDayRow>(rows: readonly T[]): T[] {
+  return rows.filter((row) => {
+    if (row.total > 0) return true;
+    const weekday = chicagoDateWeekday(row.date);
+    return weekday !== 0 && weekday !== 6;
+  });
+}
+
 /** "8/4" from "2026-08-04" — same short month/day convention as the
  * Schedule page's formatDayLabel, minus the weekday prefix (this is a
  * compact range headline, not a table row label). */

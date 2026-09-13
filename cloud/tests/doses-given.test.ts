@@ -12,6 +12,7 @@ import {
   quickPickRange,
   resolveDoseProductName,
   thisMonthRange,
+  visibleDayRows,
   yesterdayInChicago,
   type DosesGivenSourceDay,
 } from "@/lib/doses-given";
@@ -239,6 +240,50 @@ describe("orderProductsByGroup", () => {
 
   it("handles an empty product list", () => {
     expect(orderProductsByGroup([])).toEqual([]);
+  });
+});
+
+// V-doses-given (Will 2026-09-13, verbatim: "We're closed on sat/sun, so
+// if there is no data on those days, then no need to show them.")
+// 2026-09-05 is a Saturday, 2026-09-06 a Sunday, 2026-09-07 a Monday.
+describe("visibleDayRows", () => {
+  it("hides a Saturday row with 0 doses", () => {
+    const rows = [{ date: "2026-09-05", total: 0 }];
+    expect(visibleDayRows(rows)).toEqual([]);
+  });
+
+  it("keeps a Saturday row that has doses", () => {
+    const rows = [{ date: "2026-09-05", total: 2 }];
+    expect(visibleDayRows(rows)).toEqual([{ date: "2026-09-05", total: 2 }]);
+  });
+
+  it("hides a Sunday row with 0 doses", () => {
+    const rows = [{ date: "2026-09-06", total: 0 }];
+    expect(visibleDayRows(rows)).toEqual([]);
+  });
+
+  it("keeps a weekday (Monday) row even with 0 doses", () => {
+    const rows = [{ date: "2026-09-07", total: 0 }];
+    expect(visibleDayRows(rows)).toEqual([{ date: "2026-09-07", total: 0 }]);
+  });
+
+  it("filters a mixed week, keeping only weekdays and non-zero weekend days", () => {
+    const rows = [
+      { date: "2026-09-04", total: 3 }, // Friday, has doses
+      { date: "2026-09-05", total: 0 }, // Saturday, closed, no doses
+      { date: "2026-09-06", total: 1 }, // Sunday, but had a dose
+      { date: "2026-09-07", total: 0 }, // Monday, open, no doses
+    ];
+    expect(visibleDayRows(rows)).toEqual([
+      { date: "2026-09-04", total: 3 },
+      { date: "2026-09-06", total: 1 },
+      { date: "2026-09-07", total: 0 },
+    ]);
+  });
+
+  it("passes through extra fields on the row unchanged (generic over row shape)", () => {
+    const rows = [{ date: "2026-09-07", total: 0, extra: "kept" }];
+    expect(visibleDayRows(rows)).toEqual([{ date: "2026-09-07", total: 0, extra: "kept" }]);
   });
 });
 
