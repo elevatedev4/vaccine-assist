@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { buildNavItems, shouldShowNav } from "@/lib/nav-config";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, type SessionState } from "@/lib/supabase/session";
+import { fetchMacroCodesPayload, getMacroCodesCacheStorage, writeMacroCodesCache } from "@/lib/macro-codes-cache";
 
 /**
  * Shared top tab strip (V-cloud-tabs) — rendered once, from the root
@@ -148,6 +149,23 @@ export default function TopNav() {
       unsubscribe?.();
     };
   }, []);
+
+  // V-macro-codes-round12 (Will's verbatim brief: "preload the info when
+  // the app is first loaded so it will start fast"): warms the SAME
+  // vaccines+lots cache app/macro-codes/page.tsx reads on mount
+  // (lib/macro-codes-cache.ts, keyed per signed-in user) as soon as a
+  // session appears — TopNav renders on every route, so this fires right
+  // after login (or on a fresh page load with an already-persisted
+  // session) regardless of which tab the user actually opens first, and
+  // /macro-codes is instant whenever it's opened afterward. Read-only,
+  // best-effort: a failure here just means that later page falls back to
+  // its own foreground load, same as if this prefetch never ran.
+  useEffect(() => {
+    if (!session) return;
+    void fetchMacroCodesPayload(session.accessToken).then((result) => {
+      if (result.ok) writeMacroCodesCache(getMacroCodesCacheStorage(), session.email, result.payload);
+    });
+  }, [session]);
 
   // Closes the account menu on any click/tap outside it, and on Escape —
   // standard menu behavior, listened for only while the menu is open.
