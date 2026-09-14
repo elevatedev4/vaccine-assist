@@ -142,11 +142,15 @@ export interface ScreenerResultGroup {
 }
 
 /** Buckets screen()'s flat result list into STATUS_GROUPS order,
- * dropping any group that ended up empty. */
+ * dropping any group that ended up empty. Runs dropRedundantByTypeResults
+ * first (ROUND 14) so a type already recommended elsewhere never also
+ * shows a redundant not-indicated/consider row — see that function's
+ * doc comment (below groupStatusResultsByType) for the exact rule. */
 export function groupScreenerResults(results: ScreenerResult[]): ScreenerResultGroup[] {
+  const filtered = dropRedundantByTypeResults(results);
   return STATUS_GROUPS.map((group) => ({
     ...group,
-    results: results.filter((result) => result.status === group.status),
+    results: filtered.filter((result) => result.status === group.status),
   })).filter((group) => group.results.length > 0);
 }
 
@@ -198,7 +202,11 @@ export const SCREENER_RULE_MACRO_INFO: Readonly<
 export interface ScreenerTypeReason {
   status: ScreenerStatus;
   reason: string;
-  sourceUrl: string;
+  /** null when this reason's "source" link would be a same-URL repeat
+   * of the very next reason's link in this row (see ROUND 14 note on
+   * groupStatusResultsByType below) — app/screener/page.tsx skips
+   * rendering the <a> for a null sourceUrl. */
+  sourceUrl: string | null;
 }
 
 /** One TYPE row within a single STATUS group (app/screener/page.tsx's
@@ -215,11 +223,13 @@ export interface ScreenerTypeRow {
    * the handful of types with two rules that landed in this same status
    * for this patient. */
   results: ScreenerResult[];
-  /** Every unique (status, reason, sourceUrl) triple across this row's
-   * results, in first-seen order — two results sharing identical reason
-   * text (Comirnaty/mNEXSPIKE's shared rule) collapse to one line;
-   * genuinely different reasons (rare within one status, e.g. a future
-   * rule change) each still show. */
+  /** Every unique reason across this row's results, in first-seen
+   * order — two results whose reason text is identical after trimming/
+   * lowercasing (Comirnaty/mNEXSPIKE's shared rule) collapse to one
+   * line; reasons that differ (even by a small suffix, e.g. Arexvy vs.
+   * Abrysvo's "/pregnancy") each still show as their own line. See
+   * ScreenerTypeReason.sourceUrl for the same-URL back-to-back-link
+   * suppression. */
   reasons: ScreenerTypeReason[];
 }
 
@@ -249,6 +259,27 @@ export interface ScreenerTypeRow {
  * inline text next to the type name instead of real macro dose buttons
  * under it; the type-level grouping/merging/dedup logic below didn't
  * need to change.
+ *
+ * ROUND 14 (text-dedupe fix, 2026-09-14): two defects reported live at
+ * age 30 + Diabetes. (a) The reason dedupe below compared raw reason
+ * strings, so two products with the SAME reason modulo whitespace/case
+ * still produced two lines; it now dedupes on trimmed+lowercased text.
+ * Reasons that genuinely differ (Arexvy vs. Abrysvo's not-indicated
+ * fallback, which differs only by a "/pregnancy" suffix) still both
+ * show — that's real information, not a duplicate — but since both
+ * point at the same CDC RSV guidance URL, showing a "source" link after
+ * each read as two identical links back to back; the pass below
+ * suppresses a reason's link when the NEXT reason in the row shares its
+ * exact URL, leaving one trailing link for the run. (b) A type already
+ * shown under a "Recommended" group (routine/risk) — or, failing that,
+ * under "Consider / discuss" — no longer also gets a redundant row
+ * under "Not indicated" (Fluad's "Under 65 — use Flucelvax instead."
+ * fallback showing up under Not indicated while Flucelvax itself was
+ * already Recommended for the same patient); see
+ * dropRedundantByTypeResults, called from groupScreenerResults before
+ * results ever reach this function. "caution" and "info" rows are
+ * unaffected either way — they carry warnings that must survive
+ * regardless of what else is recommended for the same type.
  */
 export function groupStatusResultsByType(results: readonly ScreenerResult[]): ScreenerTypeRow[] {
   const bySection = new Map<MacroSection, ScreenerResult[]>();
@@ -268,11 +299,58 @@ export function groupStatusResultsByType(results: readonly ScreenerResult[]): Sc
     const reasons: ScreenerTypeReason[] = [];
     const seen = new Set<string>();
     for (const result of list) {
-      if (seen.has(result.reason)) continue;
-      seen.add(result.reason);
+      const key = result.reason.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
       reasons.push({ status: result.status, reason: result.reason, sourceUrl: result.sourceUrl });
     }
+    // Never render two "source" links back to back for the identical
+    // URL — keep the link only on the LAST reason of a same-URL run
+    // (e.g. Arexvy's not-indicated fallback immediately followed by
+    // Abrysvo's near-identical one, both citing the same CDC page).
+    for (let i = 0; i < reasons.length - 1; i++) {
+      if (reasons[i].sourceUrl === reasons[i + 1].sourceUrl) {
+        reasons[i] = { ...reasons[i], sourceUrl: null };
+      }
+    }
     return { section, results: list, reasons };
+  });
+}
+
+/**
+ * ROUND 14 (see groupStatusResultsByType's doc comment above): drops a
+ * screen() result whose vaccine type already has a STRONGER
+ * recommendation elsewhere, so it never reaches groupScreenerResults'
+ * per-status buckets in the first place. "Stronger" here means: a
+ * "not-indicated" or "consider" result is redundant once the same type
+ * already has a "routine" or "risk" result (a real, active
+ * recommendation supersedes a "not indicated"/"consider" note about a
+ * DIFFERENT product of the same type), and a "not-indicated" result is
+ * further redundant once the type already has a "consider" result.
+ * "caution" and "info" results are never dropped, and never count as
+ * "stronger" for this comparison — they're warnings/questions, not
+ * recommendations, and must survive regardless of what else is shown
+ * for the same type. Exported (and covered directly in
+ * tests/screener.test.ts) since it's the piece with the actual
+ * decision logic; groupScreenerResults just calls it as a first pass.
+ */
+export function dropRedundantByTypeResults(results: readonly ScreenerResult[]): ScreenerResult[] {
+  const statusesBySection = new Map<MacroSection, Set<ScreenerStatus>>();
+  for (const result of results) {
+    const info = SCREENER_RULE_MACRO_INFO[result.id];
+    if (!info) continue;
+    if (!statusesBySection.has(info.section)) statusesBySection.set(info.section, new Set());
+    statusesBySection.get(info.section)!.add(result.status);
+  }
+
+  return results.filter((result) => {
+    const info = SCREENER_RULE_MACRO_INFO[result.id];
+    if (!info) return true;
+    const statuses = statusesBySection.get(info.section)!;
+    const hasRecommended = statuses.has("routine") || statuses.has("risk");
+    if (result.status === "not-indicated" && (hasRecommended || statuses.has("consider"))) return false;
+    if (result.status === "consider" && hasRecommended) return false;
+    return true;
   });
 }
 

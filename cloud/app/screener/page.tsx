@@ -345,9 +345,11 @@ export default function ScreenerPage() {
                     {row.reasons.map((r, i) => (
                       <span key={r.reason}>
                         <span style={styles.resultReason}>{r.reason}</span>{" "}
-                        <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={styles.resultSource}>
-                          source
-                        </a>
+                        {r.sourceUrl && (
+                          <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={styles.resultSource}>
+                            source
+                          </a>
+                        )}
                         {i < row.reasons.length - 1 ? " " : null}
                       </span>
                     ))}

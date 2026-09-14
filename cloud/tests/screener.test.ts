@@ -3,10 +3,13 @@ import {
   screen,
   groupScreenerResults,
   groupStatusResultsByType,
+  dropRedundantByTypeResults,
   screenerMacroShortCodes,
   shortCodeMatchesScreenerRule,
   SCREENER_RULE_MACRO_INFO,
   STATUS_GROUPS,
+  type ScreenerResult,
+  type ScreenerStatus,
 } from "@/lib/screener";
 import { SCREENER_RULES } from "@/lib/screener-rules";
 import { MACRO_SECTION_ORDER } from "@/lib/macro-catalog";
@@ -500,10 +503,14 @@ describe("groupStatusResultsByType", () => {
     const flu = routineRows.find((r) => r.section === "Flu");
     expect(flu?.results.map((r) => r.id)).toEqual(["flucelvax"]);
 
-    // Fluad lands in "not-indicated" instead, as its own single-result row.
+    // ROUND 14 (bug b): Fluad's "Under 65 — use Flucelvax instead."
+    // fallback used to still surface as its own not-indicated row here
+    // even though Flu is already Recommended (Flucelvax); that's the
+    // exact defect reported live at age 30 — dropRedundantByTypeResults
+    // now drops it since Flu already has a "routine" row.
     const notIndicatedRows = typeRowsForStatus(results, "not-indicated");
     const fluNotIndicated = notIndicatedRows.find((r) => r.section === "Flu");
-    expect(fluNotIndicated?.results.map((r) => r.id)).toEqual(["fluad"]);
+    expect(fluNotIndicated).toBeUndefined();
   });
 
   it("merges Comirnaty + mNEXSPIKE (identical rule) into one row with one deduped reason", () => {
@@ -523,12 +530,16 @@ describe("groupStatusResultsByType", () => {
     expect(pneumonia?.reasons).toHaveLength(1);
   });
 
-  it("keeps Prevnar 20 (risk) and Capvaxive (consider) as separate single-result rows when statuses differ", () => {
+  it("ROUND 14: drops Capvaxive's 'consider' row once Prevnar 20 already covers Pneumonia as 'risk'", () => {
     const results = screen(10, conditions({ asplenia: true }));
     const riskRows = typeRowsForStatus(results, "risk");
     const considerRows = typeRowsForStatus(results, "consider");
     expect(riskRows.find((r) => r.section === "Pneumonia")?.results.map((r) => r.id)).toEqual(["prevnar20"]);
-    expect(considerRows.find((r) => r.section === "Pneumonia")?.results.map((r) => r.id)).toEqual(["capvaxive"]);
+    // Same "already recommended elsewhere" rule as the Flu/Fluad case
+    // above — Pneumonia already has a "risk" row, so Capvaxive's
+    // separate "consider" row for the same type is redundant and gets
+    // dropped before it ever reaches groupScreenerResults' buckets.
+    expect(considerRows.find((r) => r.section === "Pneumonia")).toBeUndefined();
   });
 
   it("a type with a single result in a status is a one-result row (unchanged shape)", () => {
@@ -551,5 +562,113 @@ describe("groupStatusResultsByType", () => {
     const fakeResult = { id: "not-a-real-rule", name: "Fake", status: "routine" as const, reason: "x", sourceUrl: "y" };
     expect(() => groupStatusResultsByType([fakeResult])).not.toThrow();
     expect(groupStatusResultsByType([fakeResult])).toEqual([]);
+  });
+
+  // --- ROUND 14 (bug a): near-duplicate reason text + shared-URL links ---
+
+  it("dedupes reasons that are identical after trimming/lowercasing (not just exact string match)", () => {
+    const a: ScreenerResult = {
+      id: "arexvy",
+      name: "Arexvy",
+      status: "not-indicated",
+      reason: "  Below age 18. ",
+      sourceUrl: "https://example.com/rsv",
+    };
+    const b: ScreenerResult = {
+      id: "abrysvo",
+      name: "Abrysvo",
+      status: "not-indicated",
+      reason: "below age 18.",
+      sourceUrl: "https://example.com/rsv",
+    };
+    const rsv = groupStatusResultsByType([a, b]).find((r) => r.section === "RSV");
+    expect(rsv?.reasons).toHaveLength(1);
+  });
+
+  it("bug repro (age 30 + Diabetes): RSV not-indicated keeps Arexvy's and Abrysvo's differing reasons, but suppresses the first 'source' link since both cite the identical CDC URL", () => {
+    const results = screen(30, conditions({ diabetes: true }));
+    const notIndicatedRows = typeRowsForStatus(results, "not-indicated");
+    const rsv = notIndicatedRows.find((r) => r.section === "RSV");
+    expect(rsv?.results.map((r) => r.id)).toEqual(["arexvy", "abrysvo"]);
+    // Differ only by the "/pregnancy" suffix -> real information, both kept.
+    expect(rsv?.reasons).toHaveLength(2);
+    expect(rsv?.reasons[0].reason).toBe("Below age 18, or age 18-74 without a qualifying risk condition.");
+    expect(rsv?.reasons[1].reason).toBe("Below age 18, or age 18-74 without a qualifying risk condition/pregnancy.");
+    // Same URL for both -> never two "source" links back to back; only
+    // the trailing reason keeps its link.
+    expect(rsv?.reasons[0].sourceUrl).toBeNull();
+    expect(rsv?.reasons[1].sourceUrl).toBe("https://www.cdc.gov/rsv/hcp/vaccine-clinical-guidance/index.html");
+  });
+
+  it("does not suppress a source link when consecutive reasons cite different URLs", () => {
+    const a: ScreenerResult = {
+      id: "arexvy",
+      name: "Arexvy",
+      status: "not-indicated",
+      reason: "Reason one.",
+      sourceUrl: "https://example.com/a",
+    };
+    const b: ScreenerResult = {
+      id: "abrysvo",
+      name: "Abrysvo",
+      status: "not-indicated",
+      reason: "Reason two.",
+      sourceUrl: "https://example.com/b",
+    };
+    const rsv = groupStatusResultsByType([a, b]).find((r) => r.section === "RSV");
+    expect(rsv?.reasons.map((r) => r.sourceUrl)).toEqual(["https://example.com/a", "https://example.com/b"]);
+  });
+
+  // --- ROUND 14 (bug b): live pipeline repro at age 30 + Diabetes --------
+
+  it("bug repro (age 30 + Diabetes): Flu shows once under Recommended, never redundantly under Not indicated", () => {
+    const results = screen(30, conditions({ diabetes: true }));
+    const groups = groupScreenerResults(results);
+
+    const routine = groups.find((g) => g.status === "routine");
+    expect(groupStatusResultsByType(routine?.results ?? []).some((r) => r.section === "Flu")).toBe(true);
+
+    const notIndicated = groups.find((g) => g.status === "not-indicated");
+    const flu = groupStatusResultsByType(notIndicated?.results ?? []).find((r) => r.section === "Flu");
+    expect(flu).toBeUndefined();
+  });
+});
+
+// --- dropRedundantByTypeResults (ROUND 14, bug b) -----------------------
+
+describe("dropRedundantByTypeResults", () => {
+  function fake(id: string, status: ScreenerStatus, reason = "reason"): ScreenerResult {
+    return { id, name: id, status, reason, sourceUrl: "https://example.com" };
+  }
+
+  it("drops a not-indicated result once the same type already has a routine result", () => {
+    const kept = dropRedundantByTypeResults([fake("flucelvax", "routine"), fake("fluad", "not-indicated")]);
+    expect(kept.map((r) => r.id)).toEqual(["flucelvax"]);
+  });
+
+  it("drops a consider result once the same type already has a risk result", () => {
+    const kept = dropRedundantByTypeResults([fake("prevnar20", "risk"), fake("capvaxive", "consider")]);
+    expect(kept.map((r) => r.id)).toEqual(["prevnar20"]);
+  });
+
+  it("drops a not-indicated result once the same type already has a consider result", () => {
+    const kept = dropRedundantByTypeResults([fake("comirnaty", "consider"), fake("mnexspike", "not-indicated")]);
+    expect(kept.map((r) => r.id)).toEqual(["comirnaty"]);
+  });
+
+  it("never drops caution or info rows, and a caution row never counts as a stronger recommendation for another product of the same type", () => {
+    const kept = dropRedundantByTypeResults([fake("arexvy", "caution"), fake("abrysvo", "not-indicated")]);
+    expect(kept.map((r) => r.id).sort()).toEqual(["abrysvo", "arexvy"]);
+  });
+
+  it("leaves a result alone when its type has only one status present", () => {
+    const kept = dropRedundantByTypeResults([fake("shingrix", "not-indicated")]);
+    expect(kept.map((r) => r.id)).toEqual(["shingrix"]);
+  });
+
+  it("skips an id with no SCREENER_RULE_MACRO_INFO entry instead of throwing", () => {
+    const unmapped = fake("not-a-real-rule", "not-indicated");
+    expect(() => dropRedundantByTypeResults([unmapped])).not.toThrow();
+    expect(dropRedundantByTypeResults([unmapped])).toEqual([unmapped]);
   });
 });
