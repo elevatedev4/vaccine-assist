@@ -70,35 +70,51 @@ public class PhysiciansViewModelVaccineGroupSupportTests
     }
 
     [Fact]
-    public async Task UnsupportedFlagBlocksAddRuleEvenIfAStaleGroupOptionIsSomehowSelected()
+    public void UnsupportedFlagBlocksAddRuleEvenIfAStaleGroupOptionIsSomehowSelected()
     {
         // Belt-and-suspenders: simulate a stale selection (e.g. picked
         // right before a reload flipped the flag) reaching AddRuleAsync
         // directly, bypassing whatever BuildVaccineOptions would normally
         // offer.
-        var viewModel = CreateViewModel(out var apiService);
-        apiService.VaccineGroupSupported = true;
-        apiService.Vaccines.Add(new Vaccine { Id = Guid.NewGuid(), Name = "Comirnaty 2025-26 12+", ShortCode = "comirnaty" });
-        var physician = new Physician { Id = Guid.NewGuid(), DisplayName = "Kim, David", AlternateId = "ALTSECOND" };
-        apiService.PhysicianRows.Add(physician);
-        await viewModel.LoadAsync();
+        //
+        // CI FIX (2026-09-14): AddRuleCommand is an AsyncRelayCommand,
+        // whose Execute calls RaiseCanExecuteChanged() —
+        // CommandManager.InvalidateRequerySuggested() under the hood —
+        // which marshals onto the calling thread's Dispatcher via a
+        // Background-priority BeginInvoke rather than running inline (see
+        // RelayCommandRequeryTests.cs). xunit's default MTA thread-pool
+        // threads have no Dispatcher pumping that queue, so this failed on
+        // GitHub Actions' windows-latest runner even though the actual
+        // ErrorMessage/PhysicianRuleRows assertions below don't depend on
+        // that notification firing — the test now runs the whole body on
+        // a dedicated, actively-pumped STA thread (StaTestRunner.RunStaAsync)
+        // so nothing queued mid-test is silently dropped.
+        StaTestRunner.RunStaAsync(async () =>
+        {
+            var viewModel = CreateViewModel(out var apiService);
+            apiService.VaccineGroupSupported = true;
+            apiService.Vaccines.Add(new Vaccine { Id = Guid.NewGuid(), Name = "Comirnaty 2025-26 12+", ShortCode = "comirnaty" });
+            var physician = new Physician { Id = Guid.NewGuid(), DisplayName = "Kim, David", AlternateId = "ALTSECOND" };
+            apiService.PhysicianRows.Add(physician);
+            await viewModel.LoadAsync();
 
-        var staleGroupOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
+            var staleGroupOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
 
-        // Flag flips false (e.g. a concurrent reload elsewhere) without a
-        // fresh LoadAsync happening on THIS view model instance yet.
-        apiService.VaccineGroupSupported = false;
-        viewModel.NewRulePhysician = viewModel.Physicians.Single();
-        viewModel.NewRuleVaccineOption = staleGroupOption;
+            // Flag flips false (e.g. a concurrent reload elsewhere) without a
+            // fresh LoadAsync happening on THIS view model instance yet.
+            apiService.VaccineGroupSupported = false;
+            viewModel.NewRulePhysician = viewModel.Physicians.Single();
+            viewModel.NewRuleVaccineOption = staleGroupOption;
 
-        // CanExecute doesn't re-check the live flag (it's cheap/local,
-        // same as every other CanExecute here) — the hard stop is inside
-        // AddRuleAsync itself, exercised via Execute.
-        viewModel.AddRuleCommand.Execute(null);
-        await Task.Delay(20);
+            // CanExecute doesn't re-check the live flag (it's cheap/local,
+            // same as every other CanExecute here) — the hard stop is inside
+            // AddRuleAsync itself, exercised via Execute.
+            viewModel.AddRuleCommand.Execute(null);
+            await Task.Delay(20);
 
-        Assert.Empty(apiService.PhysicianRuleRows);
-        Assert.Contains("migration hasn't run", viewModel.ErrorMessage);
+            Assert.Empty(apiService.PhysicianRuleRows);
+            Assert.Contains("migration hasn't run", viewModel.ErrorMessage);
+        });
     }
 
     [Fact]
