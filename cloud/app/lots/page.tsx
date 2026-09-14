@@ -4,7 +4,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormE
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
-import { isLotRowDue, pickCurrentActiveLot, resolveLotRowHighlight } from "@/lib/lots-table";
+import { pickCurrentActiveLot } from "@/lib/lots-table";
+import { lotRowExpiredOn, lotRowStatus } from "@/lib/lots-row-status";
 import { dedupeLotsByNumber, partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { buildProductViews, type ProductView } from "@/lib/product-view";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
@@ -69,8 +70,20 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  *     nowrap) plus `table-layout: fixed` with an explicit <colgroup> so no
  *     column's width is ever recomputed from row content. See
  *     lib/lots-autosave.ts's rowStatusLabel for the pure priority logic
- *     (saving > error > justSaved) and savedFlashByKey/flashSaved below
- *     for the ~1.5s fade timing.
+ *     (saving > error > justSaved > expired > missing > nothing) and
+ *     savedFlashByKey/flashSaved below for the ~1.5s fade timing.
+ *   - V-lots-row-status (Will 2026-09-14 verbatim: "If a lot is missing,
+ *     highlight the row in yellow. If it's expired, highlight it in red.
+ *     And add a note at the end of the row that shows that status."): an
+ *     ACTIVE row's background is pale yellow when it has no lot number
+ *     on file, pale red when its earliest set date (expiration, or
+ *     beyond-use date if earlier) is in the past — see
+ *     lib/lots-row-status.ts's lotRowStatus, which replaces this page's
+ *     old isLotRowDue/resolveLotRowHighlight highlight entirely (that one
+ *     didn't know about a missing lot at all, and used an inclusive
+ *     "expires today" boundary this brief deliberately does not).
+ *     Inactive still wins over either, same as before — an inactive
+ *     product's own missing/expired lot is no longer actionable.
  *
  * Saving/deleting a product row's lot still fans out server-side to
  * every dose vaccine_id in the group (POST/PATCH/DELETE /api/lots,
@@ -138,6 +151,12 @@ const styles = {
   },
   savedText: { color: "#1a7f37", fontSize: "0.8rem", transition: "opacity 300ms ease-out" },
   statusError: { color: "#b00020", fontSize: "0.75rem" },
+  // V-lots-row-status: the trailing status column's idle-state note text
+  // for a row with no lot on file (amber, matching styles.note's existing
+  // amber tone) vs. one whose earliest set date is in the past (red,
+  // matching styles.statusError's existing red).
+  statusMissing: { color: "#8a5300", fontSize: "0.75rem" },
+  statusExpired: { color: "#b00020", fontSize: "0.75rem" },
   // Darkened heading (matches Ordering — Will, 2026-09-09: "Darken the
   // heading color to make it easier to distinguish").
   groupRow: { background: "#d9dde3", fontWeight: 600 },
@@ -149,7 +168,11 @@ const styles = {
   // number is free text but rarely runs past a dozen-odd characters.
   lotInput: { width: "14ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   dateInput: { width: "13ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
-  dueRow: { background: "#fde8e8" },
+  // V-lots-row-status (Will 2026-09-14 verbatim: "If a lot is missing,
+  // highlight the row in yellow. If it's expired, highlight it in red.")
+  // — background only; text stays the default color for readability.
+  missingRow: { background: "#fff8d6" },
+  expiredRow: { background: "#fde2e2" },
   field: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" },
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem" },
   // ⚙ settings menu — a native <details>/<summary> disclosure. Native
@@ -917,10 +940,6 @@ export default function LotsPage() {
 
   function renderProductRow(view: ProductView) {
     const draft = drafts[view.productKey] ?? { matchLotNumber: null, lotNumber: "", expiration: "", beyondUseDate: "" };
-    const due = isLotRowDue(
-      { expiration: draft.expiration || null, beyond_use_date: draft.beyondUseDate || null },
-      today
-    );
     const rowError = rowErrors[view.productKey];
     const saving = !!savingByKey[view.productKey];
     const activeError = activeErrorByKey[view.productKey];
@@ -929,13 +948,33 @@ export default function LotsPage() {
     const budBusy = budBusyKey === view.productKey;
     const budEnabledForThisProduct = budEnabledKeys.has(view.productKey);
     const savedFlash = savedFlashByKey[view.productKey];
-    const status = rowStatusLabel({ saving, justSaved: !!savedFlash, error: rowError || null });
 
-    // Inactive wins over due (review follow-up: an inactive product's
-    // expired lot must never mask the grey inactive style with the red
-    // due one) — lib/lots-table.ts's resolveLotRowHighlight.
-    const highlight = resolveLotRowHighlight(view.active, due);
-    const rowStyle = highlight === "inactive" ? styles.inactiveRow : highlight === "due" ? styles.dueRow : undefined;
+    // V-lots-row-status: inactive products never get the missing/expired
+    // highlight or note (same "inactive wins" reasoning the old due-row
+    // highlight used) — an inactive product isn't in rotation, so a lot
+    // it happens to have on file is no longer actionable.
+    const rowStatus = view.active
+      ? lotRowStatus({ lotNumber: draft.lotNumber, expiration: draft.expiration, beyondUseDate: draft.beyondUseDate, today })
+      : "ok";
+    const expiredOn = view.active
+      ? lotRowExpiredOn({ lotNumber: draft.lotNumber, expiration: draft.expiration, beyondUseDate: draft.beyondUseDate, today })
+      : null;
+
+    const status = rowStatusLabel({
+      saving,
+      justSaved: !!savedFlash,
+      error: rowError || null,
+      rowStatus,
+      expiredOnDisplay: expiredOn ? isoToMaskedDate(expiredOn) : null,
+    });
+
+    const rowStyle = !view.active
+      ? styles.inactiveRow
+      : rowStatus === "expired"
+        ? styles.expiredRow
+        : rowStatus === "missing"
+          ? styles.missingRow
+          : undefined;
 
     return (
       <tr key={view.productKey} style={rowStyle}>
@@ -1034,12 +1073,17 @@ export default function LotsPage() {
             </div>
           </details>
         </td>
-        <td style={styles.statusTd} title={status?.kind === "error" ? status.text : undefined}>
+        <td
+          style={styles.statusTd}
+          title={status?.kind === "error" || status?.kind === "expired" ? status.text : undefined}
+        >
           {status?.kind === "saving" && <span style={styles.muted}>Saving…</span>}
           {status?.kind === "saved" && (
             <span style={{ ...styles.savedText, opacity: savedFlash === "fading" ? 0 : 1 }}>Saved ✓</span>
           )}
           {status?.kind === "error" && <span style={styles.statusError}>{status.text}</span>}
+          {status?.kind === "expired" && <span style={styles.statusExpired}>{status.text}</span>}
+          {status?.kind === "missing" && <span style={styles.statusMissing}>{status.text}</span>}
         </td>
       </tr>
     );

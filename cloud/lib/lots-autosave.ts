@@ -1,4 +1,5 @@
 import { digitsToIso, onlyDigits } from "@/lib/date-mask";
+import type { LotRowStatus } from "@/lib/lots-row-status";
 
 /**
  * Pure "should this field autosave right now" decisions for the /lots
@@ -102,28 +103,52 @@ export type RowSaveState = {
 };
 
 export type RowStatus = {
-  kind: "saving" | "saved" | "error";
+  kind: "saving" | "saved" | "error" | "expired" | "missing";
   text: string;
+};
+
+/**
+ * Extra, static (non-transient) input to rowStatusLabel: this row's
+ * lib/lots-row-status.ts lotRowStatus() result, plus (only when that's
+ * 'expired') the date to display, already formatted "MM/DD/YYYY" (see
+ * lib/date-mask.ts's isoToMaskedDate). Both optional — every existing
+ * caller that only cares about the transient saving/error/justSaved
+ * states keeps working unchanged.
+ */
+export type RowStatusExtra = {
+  rowStatus?: LotRowStatus;
+  expiredOnDisplay?: string | null;
 };
 
 /**
  * Pure "what should this row's dedicated status column show right now"
  * decision (Will 2026-09-14 verbatim: "when updating, it shows 'saving'
  * and messes up the formatting of the whole table... make it append to
- * the end of the row"). The /lots page renders exactly one of these at a
- * time in a fixed-width trailing column instead of inline next to the ⚙
- * menu, so nothing else in the row ever shifts.
+ * the end of the row" — and, same day, verbatim: "If a lot is missing,
+ * highlight the row in yellow. If it's expired, highlight it in red. And
+ * add a note at the end of the row that shows that status."). The /lots
+ * page renders exactly one of these at a time in a fixed-width trailing
+ * column instead of inline next to the ⚙ menu, so nothing else in the
+ * row ever shifts.
  *
- * Priority is saving > error > justSaved: a request that's actively in
- * flight always wins (e.g. a new edit started while a previous "Saved ✓"
- * flash was still fading), a live error always wins over a stale flash,
- * and only once neither applies does the flash show. Returns null when
- * the row has nothing to report.
+ * Priority is saving > error > justSaved > expired > missing > nothing:
+ * a request that's actively in flight always wins (e.g. a new edit
+ * started while a previous "Saved ✓" flash was still fading), a live
+ * error always wins over a stale flash, a flash wins over the row's
+ * static missing/expired status (which will simply reappear once the
+ * flash finishes fading), and expired wins over missing since a row
+ * always has AT MOST one of those two anyway (lotRowStatus never returns
+ * both — see that function's own doc comment). Returns null when the row
+ * has nothing to report.
  */
-export function rowStatusLabel(state: RowSaveState): RowStatus | null {
+export function rowStatusLabel(state: RowSaveState & RowStatusExtra): RowStatus | null {
   if (state.saving) return { kind: "saving", text: "Saving…" };
   if (state.error) return { kind: "error", text: state.error };
   if (state.justSaved) return { kind: "saved", text: "Saved ✓" };
+  if (state.rowStatus === "expired") {
+    return { kind: "expired", text: state.expiredOnDisplay ? `Expired ${state.expiredOnDisplay}` : "Expired" };
+  }
+  if (state.rowStatus === "missing") return { kind: "missing", text: "No lot" };
   return null;
 }
 

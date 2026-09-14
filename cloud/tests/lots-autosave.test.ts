@@ -177,3 +177,86 @@ describe("rowStatusLabel", () => {
     });
   });
 });
+
+// --- V-lots-row-status (Will 2026-09-14 verbatim: "If a lot is missing,
+// highlight the row in yellow. If it's expired, highlight it in red. And
+// add a note at the end of the row that shows that status."): the full
+// precedence chain once lib/lots-row-status.ts's static rowStatus/
+// expiredOnDisplay are folded in alongside the existing transient
+// saving/error/justSaved flags — saving > error > justSaved > expired >
+// missing > nothing. ---
+describe("rowStatusLabel with a static row status (missing/expired)", () => {
+  it("shows 'Expired MM/DD/YYYY' when the row status is expired and nothing transient is happening", () => {
+    expect(
+      rowStatusLabel({ saving: false, justSaved: false, error: null, rowStatus: "expired", expiredOnDisplay: "06/30/2025" })
+    ).toEqual({ kind: "expired", text: "Expired 06/30/2025" });
+  });
+
+  it("shows 'No lot' when the row status is missing and nothing transient is happening", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: null, rowStatus: "missing" })).toEqual({
+      kind: "missing",
+      text: "No lot",
+    });
+  });
+
+  it("shows nothing when the row status is ok and nothing transient is happening", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: null, rowStatus: "ok" })).toBeNull();
+  });
+
+  it("prioritizes Saving… over an expired row status", () => {
+    expect(
+      rowStatusLabel({ saving: true, justSaved: false, error: null, rowStatus: "expired", expiredOnDisplay: "06/30/2025" })
+    ).toEqual({ kind: "saving", text: "Saving…" });
+  });
+
+  it("prioritizes Saving… over a missing row status", () => {
+    expect(rowStatusLabel({ saving: true, justSaved: false, error: null, rowStatus: "missing" })).toEqual({
+      kind: "saving",
+      text: "Saving…",
+    });
+  });
+
+  it("prioritizes a live error over an expired row status", () => {
+    expect(
+      rowStatusLabel({
+        saving: false,
+        justSaved: false,
+        error: "Failed to save lot.",
+        rowStatus: "expired",
+        expiredOnDisplay: "06/30/2025",
+      })
+    ).toEqual({ kind: "error", text: "Failed to save lot." });
+  });
+
+  it("prioritizes a live error over a missing row status", () => {
+    expect(
+      rowStatusLabel({ saving: false, justSaved: false, error: "Failed to save lot.", rowStatus: "missing" })
+    ).toEqual({ kind: "error", text: "Failed to save lot." });
+  });
+
+  it("prioritizes a just-saved flash over an expired row status", () => {
+    expect(
+      rowStatusLabel({ saving: false, justSaved: true, error: null, rowStatus: "expired", expiredOnDisplay: "06/30/2025" })
+    ).toEqual({ kind: "saved", text: "Saved ✓" });
+  });
+
+  it("prioritizes a just-saved flash over a missing row status", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: true, error: null, rowStatus: "missing" })).toEqual({
+      kind: "saved",
+      text: "Saved ✓",
+    });
+  });
+
+  it("prioritizes expired over missing (defensive — lotRowStatus never actually returns both)", () => {
+    expect(
+      rowStatusLabel({ saving: false, justSaved: false, error: null, rowStatus: "expired", expiredOnDisplay: "06/30/2025" })
+    ).toEqual({ kind: "expired", text: "Expired 06/30/2025" });
+  });
+
+  it("falls back to a bare 'Expired' when no display date is given", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: null, rowStatus: "expired" })).toEqual({
+      kind: "expired",
+      text: "Expired",
+    });
+  });
+});
