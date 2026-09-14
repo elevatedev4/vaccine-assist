@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDebouncedRunner, decideDateAutosave, decideLotNumberAutosave } from "@/lib/lots-autosave";
+import { createDebouncedRunner, decideDateAutosave, decideLotNumberAutosave, rowStatusLabel } from "@/lib/lots-autosave";
 
 describe("decideDateAutosave", () => {
   it("saves a valid, complete, changed date", () => {
@@ -124,5 +124,56 @@ describe("createDebouncedRunner", () => {
     runner.flushNow();
 
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- V-lots-status-column (Will 2026-09-14 verbatim: "when updating, it
+// shows 'saving' and messes up the formatting of the whole table... make
+// it append to the end of the row"): rowStatusLabel is the pure decision
+// behind the /lots page's dedicated, fixed-width trailing status column —
+// these tests lock down which single status wins when more than one flag
+// is true at once. ---
+describe("rowStatusLabel", () => {
+  it("returns null when the row has nothing to report", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: null })).toBeNull();
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: "" })).toBeNull();
+    expect(rowStatusLabel({ saving: false, justSaved: false })).toBeNull();
+  });
+
+  it("shows Saving… while a request is in flight", () => {
+    expect(rowStatusLabel({ saving: true, justSaved: false, error: null })).toEqual({
+      kind: "saving",
+      text: "Saving…",
+    });
+  });
+
+  it("shows the error message once the request fails", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: "Network error" })).toEqual({
+      kind: "error",
+      text: "Network error",
+    });
+  });
+
+  it("shows the Saved ✓ flash once neither saving nor error apply", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: true, error: null })).toEqual({
+      kind: "saved",
+      text: "Saved ✓",
+    });
+  });
+
+  it("prioritizes saving over a lingering Saved ✓ flash from a prior save", () => {
+    // e.g. a new edit's autosave starts before the previous save's ~1.5s
+    // flash has finished fading out.
+    expect(rowStatusLabel({ saving: true, justSaved: true, error: null })).toEqual({
+      kind: "saving",
+      text: "Saving…",
+    });
+  });
+
+  it("prioritizes a live error over a lingering Saved ✓ flash", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: true, error: "Failed to save lot." })).toEqual({
+      kind: "error",
+      text: "Failed to save lot.",
+    });
   });
 });
