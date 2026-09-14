@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
@@ -104,18 +103,15 @@ public partial class MacroCodesWindow : Window
     {
         try
         {
-            var userDataFolder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "VaccineAssist", "webview2");
-            Directory.CreateDirectory(userDataFolder);
-
-            // Per-app user data folder (not WebView2's process-default
-            // location) so the signed-in session the cloud page's normal
-            // sign-in establishes persists across popup opens/closes —
-            // see the brief: "the page shows its normal sign-in if the
-            // WebView has no session (session persists in the WebView2
-            // user-data folder afterwards)".
-            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder);
+            // Shared across every WebView2 surface in the app (this popup
+            // AND the cloud-parity tabs — see
+            // Services/SharedCloudWebView2Environment.cs) so a session
+            // signed into on any one of them is signed in everywhere else
+            // too. Same %LocalAppData%\VaccineAssist\webview2 user-data
+            // folder as before this change — the brief: "the page shows
+            // its normal sign-in if the WebView has no session (session
+            // persists in the WebView2 user-data folder afterwards)".
+            var environment = await SharedCloudWebView2Environment.GetAsync();
             await WebView.EnsureCoreWebView2Async(environment);
 
             WebView.CoreWebView2.WebMessageReceived += CoreWebView2_OnWebMessageReceived;

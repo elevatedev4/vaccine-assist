@@ -4,6 +4,13 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!--
+      2026-09-13 (tray icon, Will's brief): only System.Windows.Forms.NotifyIcon
+      + ContextMenuStrip are used from WinForms (see Tray/TrayIconController.cs)
+      — a standard, supported WPF+WinForms combination, chosen specifically
+      to avoid a new third-party NuGet package for the tray icon.
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>VaccineAssist.Desktop</RootNamespace>
@@ -12,6 +19,24 @@
     <!-- Add <ApplicationIcon>Assets\vaccineassist.ico</ApplicationIcon> once a real icon exists;
          omitted for phase 1 so the project builds as-is. -->
   </PropertyGroup>
+
+  <!--
+    Defensive guard for UseWindowsForms above: if the SDK's implicit-usings
+    machinery ever globally imports System.Windows.Forms/System.Drawing for
+    a UseWindowsForms=true project (it does for the WindowsDesktop "Windows
+    Forms" flavor — see Microsoft's project-SDK docs), that would collide
+    with every existing file's `using System.Windows;` for unqualified
+    types both namespaces define (MessageBox, Application, Clipboard, ...).
+    This ItemGroup removes those two implicit usings if they were ever
+    added — a no-op otherwise, since every file in this project (including
+    the new Tray/TrayIconController.cs) already spells out its own
+    `using System.Windows.Forms;`/`using System.Drawing;` explicitly rather
+    than relying on an implicit one.
+  -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
   <ItemGroup>
     <!--
@@ -49,6 +74,16 @@
       on Windows 10/11 — no separate install expected in the field.
     -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+
+    <!--
+      2026-09-13 (90-day sign-in, Will's brief): DPAPI-encrypts the
+      persisted Supabase refresh token at rest (Settings/SessionStore.cs)
+      — CurrentUser-scoped, decryptable only by the same Windows account
+      on the same machine, no separate secret of our own to manage. Not
+      part of the base net8.0-windows shared framework; explicitly asked
+      for in the brief by name.
+    -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="5.0.0" />
   </ItemGroup>
 
 </Project>

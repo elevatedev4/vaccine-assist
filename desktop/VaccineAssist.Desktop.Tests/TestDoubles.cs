@@ -26,9 +26,19 @@ internal sealed class FakeAuthService : IAuthService
 
     public bool IsSignedIn { get; private set; }
     public string? AccessToken { get; private set; }
+    public string? RefreshToken { get; private set; }
     public int SignInCallCount { get; private set; }
     public string? LastEmail { get; private set; }
     public string? LastPassword { get; private set; }
+
+    /// <summary>Set to make TryRestoreSessionAsync return a different
+    /// outcome than the constructor's SignInAsync result — defaults to
+    /// mirroring it so existing callers that never touch session-restore
+    /// keep working unchanged.</summary>
+    public AuthResult? RestoreResult { get; set; }
+    public int TryRestoreSessionCallCount { get; private set; }
+    public string? LastRestoreAccessToken { get; private set; }
+    public string? LastRestoreRefreshToken { get; private set; }
 
     public Task<AuthResult> SignInAsync(string email, string password)
     {
@@ -39,14 +49,32 @@ internal sealed class FakeAuthService : IAuthService
         {
             IsSignedIn = true;
             AccessToken = "fake-token";
+            RefreshToken = "fake-refresh-token";
         }
         return Task.FromResult(_result);
+    }
+
+    public Task<AuthResult> TryRestoreSessionAsync(string accessToken, string refreshToken)
+    {
+        TryRestoreSessionCallCount++;
+        LastRestoreAccessToken = accessToken;
+        LastRestoreRefreshToken = refreshToken;
+
+        var result = RestoreResult ?? _result;
+        if (result.Success)
+        {
+            IsSignedIn = true;
+            AccessToken = "fake-restored-access-token";
+            RefreshToken = "fake-restored-refresh-token";
+        }
+        return Task.FromResult(result);
     }
 
     public Task SignOutAsync()
     {
         IsSignedIn = false;
         AccessToken = null;
+        RefreshToken = null;
         return Task.CompletedTask;
     }
 }
@@ -90,6 +118,41 @@ internal sealed class FakeAutoLoginConfigService : IAutoLoginConfigService
     }
 
     public AutoLoginConfig? Load() => _config;
+}
+
+/// <summary>
+/// In-memory stand-in for ISessionStore — no real file IO or DPAPI, so
+/// LoginViewModelSessionRestoreTests.cs can run anywhere the rest of this
+/// suite does. Load() returns whatever Session currently holds (starts
+/// as whatever the constructor was given), and Save()/Delete() just
+/// update that same field, mirroring the real file-backed contract.
+/// </summary>
+internal sealed class FakeSessionStore : ISessionStore
+{
+    public FakeSessionStore(PersistedSession? initial = null)
+    {
+        Session = initial;
+    }
+
+    public PersistedSession? Session { get; private set; }
+    public int SaveCallCount { get; private set; }
+    public int DeleteCallCount { get; private set; }
+    public PersistedSession? LastSaved { get; private set; }
+
+    public PersistedSession? Load() => Session;
+
+    public void Save(PersistedSession session)
+    {
+        SaveCallCount++;
+        LastSaved = session;
+        Session = session;
+    }
+
+    public void Delete()
+    {
+        DeleteCallCount++;
+        Session = null;
+    }
 }
 
 /// <summary>

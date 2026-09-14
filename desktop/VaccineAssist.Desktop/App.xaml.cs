@@ -23,6 +23,7 @@ public partial class App : Application
 {
     private ILocalSettingsService _localSettingsService = null!;
     private IAutoLoginConfigService _autoLoginConfigService = null!;
+    private ISessionStore _sessionStore = null!;
     private AppSettings _settings = null!;
     private HttpClient _httpClient = null!;
     private IAuthService _authService = null!;
@@ -62,6 +63,7 @@ public partial class App : Application
 
         _localSettingsService = new LocalSettingsService();
         _autoLoginConfigService = new AutoLoginConfigService();
+        _sessionStore = new SessionStore();
         _settings = _localSettingsService.Load();
 
         _httpClient = new HttpClient();
@@ -95,37 +97,105 @@ public partial class App : Application
         // no rebuild — see SendF3AndDismissPreEntryDialogsStep's own doc comment.
         _pioneerEntrySequence = new PlaceholderVaccineEntrySequence(_settings.PriorityValue);
 
-        ShowLoginWindow(attemptAutoLogin: true);
+        _ = StartSignInFlowAsync();
     }
 
     /// <summary>
-    /// Shows a fresh LoginWindow. A local `signedIn` flag (not a shared
-    /// field) tracks whether THIS window's Closed event should shut the
-    /// app down — closing a login window without signing in means quit;
-    /// closing it because sign-in just succeeded (see below) does not.
-    ///
+    /// Startup sign-in orchestration (Will, 2026-09-13 — "The login screen
+    /// is still showing momentarily and then disappearing without me
+    /// needing to do anything ... don't let it flash the way it is now."
+    /// / "If a user already has a login on the computer, don't show the
+    /// login screen at all"). Replaces the old
+    /// "Show LoginWindow immediately, then try auto-login in the
+    /// background" flow (which is exactly what caused the flash) with:
+    ///   1. Build the LoginViewModel but do NOT show it yet.
+    ///   2. If there's a stored credential worth trying at all
+    ///      (LoginViewModel.HasStoredCredential — a not-yet-90-day-expired
+    ///      session.json, or a seeded autologin.json), show a tiny
+    ///      borderless "Signing in…" splash instead and await the full
+    ///      silent attempt (TrySilentSignInAsync: session-restore, then
+    ///      autologin.json) before deciding what to do next.
+    ///   3. If that succeeded, go straight to MainWindow — the Login
+    ///      window is never shown at all, so it can't flash.
+    ///   4. If nothing was stored, or the silent attempt failed, show the
+    ///      (already-constructed, so any ErrorMessage from the failed
+    ///      attempt carries over) LoginViewModel's window now.
+    /// </summary>
+    private async Task StartSignInFlowAsync()
+    {
+        var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService, _sessionStore, allowAutoLogin: true);
+
+        SplashWindow? splash = null;
+        if (loginViewModel.HasStoredCredential())
+        {
+            splash = new SplashWindow();
+            MainWindow = splash;
+            splash.Show();
+
+            await loginViewModel.TrySilentSignInAsync();
+        }
+
+        if (_authService.IsSignedIn)
+        {
+            ShowMainWindow();
+            splash?.Close();
+            return;
+        }
+
+        splash?.Close();
+        ShowLoginWindowWithViewModel(loginViewModel);
+    }
+
+    /// <summary>
+    /// Shows a LoginWindow for an ALREADY-CONSTRUCTED LoginViewModel —
+    /// used both by StartSignInFlowAsync above (the silent attempt, if
+    /// any, already ran; showing this window is the fallback) and
+    /// implicitly covers "nothing was stored at all," where
+    /// TrySilentSignInAsync was never even called. A local `signedIn`
+    /// flag (not a shared field) tracks whether THIS window's Closed
+    /// event should shut the app down — closing a login window without
+    /// signing in means quit; closing it because sign-in just succeeded
+    /// (see below) does not.
+    /// </summary>
+    private void ShowLoginWindowWithViewModel(LoginViewModel loginViewModel)
+    {
+        var loginWindow = new LoginWindow(loginViewModel);
+        var signedIn = false;
+
+        loginViewModel.SignedIn += (_, _) =>
+        {
+            signedIn = true;
+            ShowMainWindow();
+            loginWindow.Close();
+        };
+
+        loginWindow.Closed += (_, _) =>
+        {
+            if (!signedIn)
+            {
+                Shutdown();
+            }
+        };
+
+        MainWindow = loginWindow;
+        loginWindow.Show();
+    }
+
+    /// <summary>
+    /// Shows a fresh LoginWindow with a brand-new LoginViewModel — used
+    /// ONLY by ShowMainWindow's Sign-out handler below.
     /// <paramref name="attemptAutoLogin"/> is passed straight through to
-    /// LoginViewModel's allowAutoLogin constructor parameter: true for the
-    /// initial app-startup call (OnStartup, above), false for the call
-    /// from ShowMainWindow's Sign-out handler below. Without that
-    /// distinction, a workstation with autologin.json seeded would
+    /// LoginViewModel's allowAutoLogin constructor parameter; it is
+    /// always false here. Without that, a workstation with autologin.json
+    /// (or the 90-day session.json — deleted on sign-out anyway, see
+    /// below, but autologin.json is untouched by sign-out) seeded would
     /// silently re-authenticate the instant Sign out finished, making the
     /// button a no-op — Sign-out must always land on the manual form, not
     /// retry the same shared credentials.
-    ///
-    /// When auto-login is allowed, immediately after showing the window
-    /// this kicks off one silent auto-login attempt (fire-and-forget —
-    /// see LoginViewModel.TryAutoSignInAsync) if bootstrap-fresh.ps1
-    /// seeded a per-machine auto-login config. No interactive prompt is
-    /// involved either way: on success the SignedIn handler above swaps
-    /// in the main window before the user would ordinarily have finished
-    /// reading the screen; on failure the same window is simply left
-    /// showing the normal manual form with the error, never retried
-    /// automatically.
     /// </summary>
     private void ShowLoginWindow(bool attemptAutoLogin)
     {
-        var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService, attemptAutoLogin);
+        var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService, _sessionStore, attemptAutoLogin);
         var loginWindow = new LoginWindow(loginViewModel);
         var signedIn = false;
 
@@ -158,20 +228,30 @@ public partial class App : Application
     /// </summary>
     private void ShowMainWindow()
     {
-        var lotsViewModel = new LotsViewModel(_vaccineApiService);
-        // Backs the Active vaccines tab — see MainWindow.xaml.cs's
-        // constructor comment and VaccinesViewModel's doc comment.
-        var vaccinesViewModel = new VaccinesViewModel(_vaccineApiService);
-
+        // 2026-09-13 cloud-parity change (Will's brief): Scheduling/Lots/
+        // Active vaccines/Ordering/Physicians now each host a
+        // CloudPageView (WebView2) instead of a native
+        // SchedulingViewModel/LotsViewModel/VaccinesViewModel/
+        // OrderingViewModel/PhysiciansViewModel-backed view — see
+        // MainWindow.xaml.cs's own doc comment. Those ViewModel classes
+        // themselves are unchanged and still independently unit-tested
+        // (LotsViewModelTests.cs, PhysiciansViewModelTests.cs, etc.);
+        // MainWindow simply no longer constructs/consumes them.
         var mainWindow = new MainWindow(
-            lotsViewModel, vaccinesViewModel, _authService,
-            _vaccineApiService, _clipboardService, _pioneerEntrySequence,
-            _settings.CloudApiBaseUrl);
+            _authService, _vaccineApiService, _clipboardService,
+            _pioneerEntrySequence, _settings.CloudApiBaseUrl);
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>
         {
             loggingOut = true;
+            // Will, 2026-09-13: sign out must actually sign out — delete
+            // the persisted 90-day session so the next launch doesn't
+            // silently restore right back in. (autologin.json, a
+            // separate/older per-machine mechanism, is left untouched;
+            // ShowLoginWindow's attemptAutoLogin: false below already
+            // covers suppressing that one on this screen.)
+            _sessionStore.Delete();
             mainWindow.Close();
             // attemptAutoLogin: false — see ShowLoginWindow's doc comment.
             // Sign out must actually sign out, even when autologin.json is
