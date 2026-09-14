@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using VaccineAssist.Desktop.Hotkeys;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
@@ -54,7 +55,15 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
-    private readonly EntryViewModel _entryViewModel;
+    /// <summary>
+    /// BUG FIX (2026-09-14, MainWindow resilience): null when building the
+    /// Data entry tab's view/view-model throws — see the constructor's
+    /// try/catch around it. Guarded the same way as _trayIconController
+    /// below (every use site null-checked) so a failure here degrades to a
+    /// visible error panel on that one tab instead of failing the whole
+    /// MainWindow construction.
+    /// </summary>
+    private EntryViewModel? _entryViewModel;
     private readonly IAuthService _authService;
     private readonly IVaccineApiService _vaccineApiService;
     private readonly IClipboardService _clipboardService;
@@ -127,15 +136,47 @@ public partial class MainWindow : Window
         IPioneerEntrySequence pioneerEntrySequence,
         string cloudApiBaseUrl)
     {
-        InitializeComponent();
+        // BUG FIX (2026-09-14, MainWindow resilience bug hunt): these
+        // constructor-parameter fields are now assigned BEFORE
+        // InitializeComponent() runs, not after. Previously they were
+        // assigned after, which meant they were still at their default
+        // values (null for the strings/interfaces) for the entire duration
+        // of InitializeComponent() — including whatever that call does
+        // synchronously while parsing MainWindow.xaml, such as the
+        // TabControl selecting its initial tab(s) and raising
+        // SelectionChanged (see MainTabs_OnSelectionChanged ->
+        // EnsureCloudTabLoaded, which reads _cloudApiBaseUrl). A
+        // SelectionChanged firing mid-InitializeComponent would have built
+        // a CloudPageView pointed at a blank/relative URL that's baked in
+        // for that tab's whole lifetime. Assigning first removes that
+        // whole class of "field read before it's set" hazard regardless of
+        // exactly when/whether TabControl fires that event during parsing.
         _authService = authService;
         _vaccineApiService = vaccineApiService;
         _clipboardService = clipboardService;
         _pioneerEntrySequence = pioneerEntrySequence;
         _cloudApiBaseUrl = cloudApiBaseUrl;
 
-        _entryViewModel = new EntryViewModel(ShowDataEntryPopup, _clipboardService);
-        DataEntryTabContent.Content = new EntryView(_entryViewModel);
+        InitializeComponent();
+
+        // BUG FIX (2026-09-14): building the Data entry tab's view-model/
+        // view is now wrapped the same way TrayIconController already is
+        // below — a throw here (e.g. a future change to EntryViewModel's
+        // constructor) previously escaped straight out of MainWindow's own
+        // constructor, which is exactly the kind of throw App.xaml.cs's
+        // TryShowMainWindow catch falls back to LoginWindow for. Now it
+        // degrades to an in-place error panel on just that one tab instead.
+        try
+        {
+            var entryViewModel = new EntryViewModel(ShowDataEntryPopup, _clipboardService);
+            DataEntryTabContent.Content = new EntryView(entryViewModel);
+            _entryViewModel = entryViewModel;
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.DataEntryTab", ex);
+            DataEntryTabContent.Content = BuildErrorPanel("The Data entry tab", ex);
+        }
         // Scheduling/Lots/Active vaccines/Ordering/Physicians are built
         // lazily by EnsureCloudTabLoaded, the first time each tab is
         // actually selected — see MainTabs_OnSelectionChanged.
@@ -157,9 +198,47 @@ public partial class MainWindow : Window
         }
 
         SourceInitialized += MainWindow_OnSourceInitialized;
+        Loaded += MainWindow_OnLoaded;
         Closed += MainWindow_OnClosed;
         Closing += MainWindow_OnClosing;
         StateChanged += MainWindow_OnStateChanged;
+    }
+
+    /// <summary>
+    /// Fallback content for a child view that failed to construct (see the
+    /// Data entry tab's try/catch above and EnsureCloudTabLoaded's below) —
+    /// same visual language as CloudPageView.xaml's own FailurePanel
+    /// (bold headline + gray detail line) so a broken tab still looks like
+    /// part of this app rather than a raw crash dialog. Never throws itself
+    /// — plain literals and ex.GetType().Name/ex.Message only.
+    /// </summary>
+    private static UIElement BuildErrorPanel(string label, Exception ex)
+    {
+        var panel = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(32),
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{label} couldn't load.",
+            FontWeight = FontWeights.Bold,
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{ex.GetType().Name}: {ex.Message}",
+            Foreground = Brushes.Gray,
+            FontSize = 11,
+            Margin = new Thickness(0, 10, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 500,
+            TextAlignment = TextAlignment.Center,
+        });
+        return panel;
     }
 
     /// <summary>Raised after a successful sign-out — App.xaml.cs shows a
@@ -183,7 +262,14 @@ public partial class MainWindow : Window
         _dataEntryHotKey.Pressed += (_, _) => ShowDataEntryPopup();
 
         var registered = _dataEntryHotKey.Register();
-        _entryViewModel.IsHotkeyActive = registered;
+        // Null when the Data entry tab's view-model failed to construct
+        // (see the constructor's try/catch) — there's no status text left
+        // to update in that case, but the hotkey itself still registers
+        // and works fine independent of that tab's UI.
+        if (_entryViewModel is not null)
+        {
+            _entryViewModel.IsHotkeyActive = registered;
+        }
 
         if (!registered)
         {
@@ -304,38 +390,113 @@ public partial class MainWindow : Window
     /// content.Content is already set (never rebuilds/reloads on
     /// subsequent visits to an already-loaded tab).
     /// </summary>
-    private void EnsureCloudTabLoaded(TabItem tabItem, ContentControl content, string relativePath)
+    private void EnsureCloudTabLoaded(TabItem? tabItem, ContentControl? content, string relativePath)
     {
+        if (tabItem is null || content is null)
+        {
+            // CONFIRMED BUG (2026-09-14, Will's app.log): this is exactly
+            // the null dereference that threw — see
+            // MainWindowTabSelectionPolicy's doc comment for the full story.
+            // Unreachable in normal operation now that
+            // MainTabs_OnSelectionChanged never runs this logic before
+            // Window.Loaded (by which point every x:Name'd field below is
+            // guaranteed assigned), but guarded here too so
+            // EnsureCloudTabLoaded is safe to call under any circumstance,
+            // not just the one bug that's fixed today.
+            AppFileLog.Log($"[MainWindow.EnsureCloudTabLoaded] Skipped \"{relativePath}\" — tabItem or content not yet assigned.");
+            return;
+        }
+
         if (!tabItem.IsSelected || content.Content is not null)
         {
             return;
         }
 
-        content.Content = new CloudPageView(_cloudApiBaseUrl, relativePath);
+        // BUG FIX (2026-09-14): CloudPageView's own constructor is cheap
+        // (InitializeComponent + a Loaded hookup — see its doc comment;
+        // the actual WebView2 init is async and already isolated inside
+        // CloudPageView's own try/catch), so this shouldn't throw in
+        // practice. Wrapped anyway per the "every child view gets a
+        // try/catch + fallback panel" resilience pass — this runs from
+        // MainWindow_OnLoaded and MainTabs_OnSelectionChanged, so an
+        // uncaught throw here would surface as a DispatcherUnhandledException
+        // instead of a clean per-tab failure.
+        try
+        {
+            content.Content = new CloudPageView(_cloudApiBaseUrl, relativePath);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException($"MainWindow.EnsureCloudTabLoaded({relativePath})", ex);
+            content.Content = BuildErrorPanel($"The {tabItem.Header} tab", ex);
+        }
     }
 
     /// <summary>
-    /// TabControl.SelectionChanged is a routed event that bubbles up from
-    /// any Selector-derived control living inside a tab's content (a
-    /// ComboBox, ListBox, etc.) — this guard makes sure only an actual
-    /// MainTabs selection change runs the lazy-load checks below, not
-    /// some unrelated control inside whichever tab happens to be showing.
-    /// Cloud routes here are the cloud app's REAL route folders (checked
-    /// against cloud/app/*), which don't all match the tab names 1:1 —
-    /// "Scheduling" is cloud's /appointments, for example.
+    /// Runs the lazy-load check for all five cloud-parity tabs —
+    /// EnsureCloudTabLoaded only actually builds a CloudPageView for
+    /// whichever one is currently selected, so calling all five here is
+    /// cheap and simply a no-op for the other four. Shared by
+    /// MainWindow_OnLoaded (the initial check, once the window has fully
+    /// loaded and every field below is guaranteed assigned — see this
+    /// method's and MainWindowTabSelectionPolicy's doc comments for why
+    /// the FIRST check must happen there and not any earlier) and
+    /// MainTabs_OnSelectionChanged
+    /// (every subsequent user tab click). Cloud routes here are the cloud
+    /// app's REAL route folders (checked against cloud/app/*), which don't
+    /// all match the tab names 1:1 — "Scheduling" is cloud's /appointments,
+    /// for example.
     /// </summary>
-    private void MainTabs_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void RunCloudTabLazyLoadChecks()
     {
-        if (!ReferenceEquals(e.OriginalSource, MainTabs))
-        {
-            return;
-        }
-
         EnsureCloudTabLoaded(SchedulingTabItem, SchedulingContent, "/appointments");
         EnsureCloudTabLoaded(LotsTabItem, LotsContent, "/lots");
         EnsureCloudTabLoaded(ActiveVaccinesTabItem, ActiveVaccinesContent, "/vaccines");
         EnsureCloudTabLoaded(OrderingTabItem, OrderingContent, "/ordering");
         EnsureCloudTabLoaded(PhysiciansTabItem, PhysiciansContent, "/physicians");
+    }
+
+    /// <summary>
+    /// THE 2026-09-14 bug, confirmed via Will's app.log: every launch that
+    /// silently restored a session threw a NullReferenceException at
+    /// EnsureCloudTabLoaded's very first line and fell back to LoginWindow.
+    /// Root cause: MainWindow.xaml sets DataEntryTabItem's
+    /// IsSelected="True", and TabControl auto-selects its first item by
+    /// default — BOTH selection changes fire SelectionChanged SYNCHRONOUSLY
+    /// while InitializeComponent() is still parsing the REST of
+    /// MainWindow.xaml, i.e. before the constructor body has run at all
+    /// and before x:Name'd fields for TabItems/ContentControls declared
+    /// LATER in the document (Lots, Active vaccines, Ordering, Physicians)
+    /// have even been assigned yet — MainTabs_OnSelectionChanged was
+    /// calling EnsureCloudTabLoaded(LotsTabItem, ...) etc. with those
+    /// fields still null.
+    ///
+    /// Runs Window.Loaded, at which point every named field in
+    /// MainWindow.xaml is guaranteed assigned — this is now the ONLY place
+    /// the initial tab's cloud page (if the currently-selected tab happens
+    /// to be one of the five cloud tabs) gets loaded, rather than relying
+    /// on the XAML-triggered SelectionChanged event that caused the crash.
+    /// </summary>
+    private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
+    {
+        RunCloudTabLazyLoadChecks();
+    }
+
+    /// <summary>
+    /// Guard against the 2026-09-14 bug (see MainWindow_OnLoaded's doc
+    /// comment and MainWindowTabSelectionPolicy.ShouldHandleTabSelection,
+    /// which holds the actual — unit-tested — decision): only run the
+    /// lazy-load checks once the window has fully loaded AND the event
+    /// really originated from MainTabs itself.
+    /// </summary>
+    private void MainTabs_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!MainWindowTabSelectionPolicy.ShouldHandleTabSelection(IsLoaded, ReferenceEquals(e.OriginalSource, MainTabs)))
+        {
+            return;
+        }
+
+        RunCloudTabLazyLoadChecks();
     }
 
     private void MainWindow_OnClosed(object? sender, EventArgs e)

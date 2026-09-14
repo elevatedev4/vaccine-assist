@@ -41,6 +41,25 @@ public class AppFileLogTests
     }
 
     [Fact]
+    public void LogExceptionIncludesInnerExceptionChain()
+    {
+        // 2026-09-14 (MainWindow resilience bug hunt): LogException used to
+        // log only the outermost exception, dropping the real cause when it
+        // was wrapped (e.g. a TargetInvocationException around the actual
+        // failure). It now walks the full InnerException chain.
+        var marker = $"test-marker-{Guid.NewGuid()}";
+        var inner = new InvalidOperationException($"root cause {marker}");
+        var outer = new ApplicationException("wrapper", inner);
+
+        AppFileLog.LogException("UnitTest", outer);
+        var recent = AppFileLog.ReadRecentLines();
+
+        Assert.Contains("ApplicationException", recent);
+        Assert.Contains("InvalidOperationException", recent);
+        Assert.Contains($"root cause {marker}", recent);
+    }
+
+    [Fact]
     public void ReadRecentLinesNeverThrowsEvenBeforeAnyLogCall()
     {
         // Can't guarantee a truly pristine (never-written) log file inside

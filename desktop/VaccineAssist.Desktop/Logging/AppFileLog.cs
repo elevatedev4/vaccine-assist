@@ -81,13 +81,49 @@ public static class AppFileLog
         }
     }
 
-    /// <summary>Convenience for exception logging — includes the exception
-    /// type, message, and stack trace (never any argument/state that might
-    /// carry PHI). <paramref name="context"/> is a short label for where
-    /// this came from (e.g. "AsyncRelayCommand", "DispatcherUnhandledException").</summary>
+    /// <summary>Convenience for exception logging — includes the FULL
+    /// exception: type, message, stack trace, and every inner exception
+    /// (recursively, including every branch of an AggregateException),
+    /// never any argument/state that might carry PHI.
+    /// <paramref name="context"/> is a short label for where this came
+    /// from (e.g. "AsyncRelayCommand", "DispatcherUnhandledException").
+    ///
+    /// 2026-09-14 (MainWindow resilience bug hunt): previously only logged
+    /// the outermost exception's type/message/stack — if the real failure
+    /// was wrapped (e.g. a TargetInvocationException from XamlParseException,
+    /// or an AggregateException from an awaited Task), the actual cause
+    /// never made it into app.log at all. Every inner exception is now
+    /// walked and appended so the next "couldn't be opened" report names
+    /// the real culprit.</summary>
     public static void LogException(string context, Exception ex)
     {
-        Log($"[{context}] {ex.GetType().Name}: {ex.Message}{Environment.NewLine}{ex.StackTrace}");
+        var sb = new StringBuilder();
+        sb.Append('[').Append(context).Append(']').Append(' ');
+        AppendExceptionChain(sb, ex, 0);
+        Log(sb.ToString());
+    }
+
+    private static void AppendExceptionChain(StringBuilder sb, Exception ex, int depth)
+    {
+        if (depth > 0)
+        {
+            sb.Append(Environment.NewLine).Append(new string(' ', depth * 2)).Append("Caused by: ");
+        }
+
+        sb.Append(ex.GetType().FullName).Append(": ").Append(ex.Message)
+          .Append(Environment.NewLine).Append(ex.StackTrace);
+
+        if (ex is AggregateException aggregate)
+        {
+            foreach (var inner in aggregate.InnerExceptions)
+            {
+                AppendExceptionChain(sb, inner, depth + 1);
+            }
+        }
+        else if (ex.InnerException is not null)
+        {
+            AppendExceptionChain(sb, ex.InnerException, depth + 1);
+        }
     }
 
     /// <summary>Reads back the last <paramref name="maxLines"/> lines for
