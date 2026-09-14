@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { DESKTOP_HANDOFF_COOKIE_NAME } from "@/lib/desktop-handoff";
+import { DESKTOP_HANDOFF_COOKIE_NAME, isTrustedDesktopRequest } from "@/lib/desktop-handoff";
 
 /**
  * Desktop -> embedded-WebView2 session handoff (Will's brief: "Require
@@ -35,7 +35,9 @@ import { DESKTOP_HANDOFF_COOKIE_NAME } from "@/lib/desktop-handoff";
  * classic text/plain-form trick and sign a victim's browser into the
  * ATTACKER's account (the attacker supplies their own valid
  * access_token/refresh_token; nothing here checked where the request came
- * from). isTrustedDesktopRequest now requires ALL of: the desktop-only
+ * from). isTrustedDesktopRequest (lib/desktop-handoff.ts — moved out of
+ * this file since a route file may only export HTTP handlers/config) now
+ * requires ALL of: the desktop-only
  * X-Vaccine-Assist-Desktop header (set only by
  * CloudPageView.PerformDesktopHandoffAsync — see that method), a JSON
  * content type, and — when the browser sends them at all — Origin/
@@ -54,39 +56,6 @@ type DesktopHandoffBody = {
 
 function isPlausibleToken(value: unknown, minLength: number): value is string {
   return typeof value === "string" && value.trim().length >= minLength;
-}
-
-/**
- * See the class doc's CSRF fix note. Exported for direct unit testing.
- * Deliberately permissive about ABSENT headers (older WebView2/Chromium
- * builds, or a direct same-machine test call, may not send
- * Origin/Sec-Fetch-Site at all) — the ONE header this app controls and
- * always sends (X-Vaccine-Assist-Desktop) is the hard requirement; the
- * other two are checked only when present, exactly per the brief ("Origin
- * header is present and not the app's own origin" / "Sec-Fetch-Site must
- * be same-origin/none IF present").
- */
-export function isTrustedDesktopRequest(request: Request): boolean {
-  if (request.headers.get("x-vaccine-assist-desktop") !== "1") {
-    return false;
-  }
-
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    return false;
-  }
-
-  const secFetchSite = request.headers.get("sec-fetch-site");
-  if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "none") {
-    return false;
-  }
-
-  const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(request.url).origin) {
-    return false;
-  }
-
-  return true;
 }
 
 export async function POST(request: Request) {
