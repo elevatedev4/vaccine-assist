@@ -151,6 +151,20 @@ public partial class CloudPageView : UserControl
     /// SAME navigation, so a single NavigationCompleted here covers the
     /// whole round trip, landing on "/" already signed in.
     ///
+    /// SECURITY REVIEW FIX (login CSRF, blocker): the request now carries
+    /// X-Vaccine-Assist-Desktop: 1 — the route rejects any POST missing
+    /// this header (see route.ts's isTrustedDesktopRequest), which is the
+    /// whole point: an ordinary web page can POST JSON at this endpoint
+    /// via the text/plain-form trick but cannot set a custom header on
+    /// that kind of request, so it can never pass this check.
+    ///
+    /// SECURITY REVIEW FIX (stale embedded session, blocker): clears this
+    /// WebView2 profile's site data BEFORE every handoff attempt (not just
+    /// on sign-out — see MainWindow.SignOutAndRaiseLoggedOutAsync for
+    /// that half) so a second pharmacist signing in on a shared
+    /// workstation never lands inside the previous one's still-cached
+    /// localStorage session; see ClearBrowsingDataAsync's own doc comment.
+    ///
     /// Caps the wait at <paramref name="timeout"/> (App.xaml.cs passes
     /// 10s) and NEVER throws: a timeout, a non-2xx/network failure, or any
     /// exception all just return false — the caller logs a single
@@ -167,6 +181,12 @@ public partial class CloudPageView : UserControl
             return false;
         }
 
+        // Always clear first — see this method's doc comment. Best-effort
+        // (never throws, capped separately below); a failure here still
+        // lets the handoff itself proceed rather than aborting the whole
+        // sign-in flow over a cache-clearing hiccup.
+        await ClearBrowsingDataAsync(TimeSpan.FromSeconds(5));
+
         EventHandler<CoreWebView2NavigationCompletedEventArgs>? navigationCompletedHandler = null;
 
         try
@@ -178,7 +198,7 @@ public partial class CloudPageView : UserControl
                 BuildUrl("/api/auth/desktop-handoff"),
                 "POST",
                 postDataStream,
-                "Content-Type: application/json\r\n");
+                "Content-Type: application/json\r\nX-Vaccine-Assist-Desktop: 1\r\n");
 
             var completionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             navigationCompletedHandler = (_, e) => completionSource.TrySetResult(e.IsSuccess);
@@ -206,6 +226,66 @@ public partial class CloudPageView : UserControl
         {
             AppFileLog.LogException("CloudPageView.PerformDesktopHandoffAsync", ex);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// SECURITY REVIEW FIX (stale embedded session, blocker): the shared
+    /// WebView2 profile (%LocalAppData%\VaccineAssist\webview2 — see
+    /// Services/SharedCloudWebView2Environment.cs) persists localStorage
+    /// across app restarts and across different Windows users on the same
+    /// workstation, since it's keyed by folder, not by which pharmacist is
+    /// currently signed into the DESKTOP app. Without this, sign-out only
+    /// cleared the desktop's own native session (SessionStore/IAuthService)
+    /// — the embedded page's OWN supabase-js session in that profile's
+    /// localStorage would silently survive, so the NEXT person signing in
+    /// on this workstation could land inside the PREVIOUS pharmacist's
+    /// cloud account the instant the WebView2 re-showed a cached page.
+    ///
+    /// Called from two places: MainWindow.SignOutAndRaiseLoggedOutAsync
+    /// (BEFORE LoggedOut fires, so the stale session is gone before a new
+    /// LoginWindow can start a new one), and PerformDesktopHandoffAsync
+    /// (unconditionally, before every handoff attempt — the simplest way
+    /// to make "whoever the desktop just signed in as" and "who the
+    /// embedded page is signed in as" deterministic, since a silent
+    /// 90-day restore never routes through Sign out at all).
+    ///
+    /// CoreWebView2BrowsingDataKinds.AllSite covers cookies, localStorage,
+    /// IndexedDB, cache, etc. for every site in this profile — this
+    /// profile is dedicated to this app's own WebView2 surfaces
+    /// (CloudPageView + MacroCodesWindow, both pointed at the same cloud
+    /// origin), so clearing everything is safe and simplest; there's no
+    /// other site's data in this profile to preserve.
+    ///
+    /// Never throws (a clear failure just means the OLD session might
+    /// still be visible — logged, not fatal) and capped at
+    /// <paramref name="timeout"/> so a hung clear call can never block
+    /// sign-out or the handoff indefinitely.
+    /// </summary>
+    public async Task ClearBrowsingDataAsync(TimeSpan timeout)
+    {
+        await EnsureInitializedAsync();
+        var profile = WebView.CoreWebView2?.Profile;
+        if (profile is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var clearTask = profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllSite);
+            var completed = await Task.WhenAny(clearTask, Task.Delay(timeout));
+            if (completed != clearTask)
+            {
+                AppFileLog.Log("[CloudPageView] ClearBrowsingDataAsync timed out — a stale session may still be visible.");
+                return;
+            }
+
+            await clearTask; // observe/log a faulted task rather than letting it go unobserved
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("CloudPageView.ClearBrowsingDataAsync", ex);
         }
     }
 

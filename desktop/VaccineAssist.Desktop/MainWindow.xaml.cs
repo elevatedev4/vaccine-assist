@@ -492,10 +492,21 @@ public partial class MainWindow : Window
     /// FIRST so App.xaml.cs's LoggedOut handler (which calls
     /// mainWindow.Close()) isn't intercepted by MainWindow_OnClosing and
     /// redirected back to the tray.
+    ///
+    /// SECURITY REVIEW FIX (stale embedded session, blocker): clears the
+    /// embedded WebView2's own browsing data (cookies/localStorage — see
+    /// CloudPageView.ClearBrowsingDataAsync's doc comment) BEFORE raising
+    /// LoggedOut, i.e. before App.xaml.cs can show a fresh LoginWindow for
+    /// the next pharmacist. Previously only the native/desktop session
+    /// (_authService.SignOutAsync/SessionStore.Delete) was cleared —
+    /// the cloud page's OWN supabase-js session in that shared profile
+    /// would silently survive, so the NEXT sign-in's embedded page could
+    /// still show the PREVIOUS pharmacist's account.
     /// </summary>
     private async System.Threading.Tasks.Task SignOutAndRaiseLoggedOutAsync()
     {
         _allowRealClose = true;
+        await _cloudPageView.ClearBrowsingDataAsync(TimeSpan.FromSeconds(5));
         await _authService.SignOutAsync();
         LoggedOut?.Invoke(this, EventArgs.Empty);
     }
