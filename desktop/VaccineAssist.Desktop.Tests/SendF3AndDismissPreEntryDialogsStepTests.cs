@@ -141,6 +141,34 @@ public class SendF3AndDismissPreEntryDialogsStepTests
         Assert.Equal(expected, PreEntryDialogTitles.MatchesWithAliases(windowTitle, dialogTitleSubstring));
     }
 
+    // --- V-T41 broadened classification: PreEntryDialogTitles.ContainsPriority / ContainsScanAndHardCopy ---
+
+    [Theory]
+    [InlineData("Priority", true)]
+    [InlineData("priority", true)]
+    [InlineData("Select Priority", true)]
+    [InlineData("Window title contains Priority somewhere", true)]
+    [InlineData("Scan Hard Copy", false)]
+    [InlineData("", false)]
+    public void ContainsPriorityIsContainsCaseInsensitive(string text, bool expected)
+    {
+        Assert.Equal(expected, PreEntryDialogTitles.ContainsPriority(text));
+    }
+
+    [Theory]
+    [InlineData("Scan Hard Copy", true)]
+    [InlineData("scan hard copy order", true)]
+    [InlineData("Scan the Hard Copy prescription", true)] // words need not be adjacent
+    [InlineData("Hard Copy Scan", true)] // order doesn't matter either
+    [InlineData("Scan only", false)] // missing "Hard Copy"
+    [InlineData("Hard Copy only", false)] // missing "Scan"
+    [InlineData("Priority", false)]
+    [InlineData("", false)]
+    public void ContainsScanAndHardCopyRequiresBothWordsAsSeparateSubstrings(string text, bool expected)
+    {
+        Assert.Equal(expected, PreEntryDialogTitles.ContainsScanAndHardCopy(text));
+    }
+
     // --- RunCombinedPreEntryLoopAsync: the combined dismiss+wait loop ---
 
     private static Task NoOpWait() => Task.CompletedTask;

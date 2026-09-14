@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using FlaUI.Core.AutomationElements;
@@ -127,6 +128,35 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// fix) so a miss is diagnosable from app.log: which UIA shape was tried,
 /// which item Names were actually seen, and whether the fallback typed
 /// path ran instead.
+///
+/// STILL STUCK FIX (V-T41, Will, 2026-09-13 night, verbatim): "the app is
+/// still getting stuck on the pre-data entry popup windows." That night's
+/// app.log showed the combined loop below finish with "0 window(s)
+/// dismissed, ready=True," then SelectPrescriberStep burn its whole
+/// 40+s retry budget on ElementNotEnabledException — i.e. IsAddNewRxReady
+/// declared victory while the prescriber field was still present-but-
+/// disabled (and/or some window this repo didn't recognize was still
+/// covering the screen). Two fixes:
+///   1. HasNextStepField now ALSO requires the field to be ENABLED, not
+///      merely present in the UIA tree — a disabled field no longer looks
+///      "ready" (see IsEnabledSafe).
+///   2. IsAddNewRxReady additionally refuses to report ready while any
+///      OTHER enabled top-level Pioneer window (besides the main/attached
+///      window and whichever window it just found as the Add New Rx
+///      candidate) is showing — see HasBlockingPioneerWindow. That keeps
+///      the loop in its dismiss-and-recheck cycle instead of handing
+///      control to the next step with a modal still up.
+/// Also: TryDismissNextStrayPioneerWindow (an UNRECOGNIZED top-level
+/// window — matched no known dialog title) now classifies it by title
+/// AND visible button/text content before ESCing blind — "contains
+/// Priority" runs the same select-and-confirm handling as a normally
+/// recognized Priority dialog, "contains Scan and Hard Copy" dismisses
+/// the same way ScanHardCopy always has, otherwise it logs the
+/// unrecognized window (title/class/controls) and ESCs once, same as
+/// before. And: whenever the combined loop below finishes having
+/// dismissed ZERO windows (the exact shape of the V-T41 log line above,
+/// including a "ready=True" finish), a full PioneerWindowInventory.Describe()
+/// is logged once so the NEXT stall names every window actually on screen.
 /// </summary>
 public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 {
@@ -250,6 +280,21 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 if (current is not null && HasNextStepField(current)) found = current;
             }
             if (found is null) return false;
+
+            // V-T41: don't declare ready while some OTHER enabled
+            // top-level Pioneer window (a modal this step doesn't
+            // recognize, or Add New Rx still rendering behind one) is
+            // showing — see class doc comment's STILL STUCK FIX section.
+            // baselineHandles is excluded too (same as
+            // TryDismissNextStrayPioneerWindow's own exclusion) — a window
+            // the pharmacist already had open before F3 (e.g. a second
+            // Rx Profile on another workflow) is legitimate, not a
+            // blocking modal, and this step should never touch it.
+            if (HasBlockingPioneerWindow(previousHandle, SafeNativeHandle(found), baselineHandles))
+            {
+                return false;
+            }
+
             addNewRxWindow = found;
             return true;
         }
@@ -273,6 +318,17 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
         context.Log($"[{Name}] Combined dialog/wait loop finished after {loopStopwatch.ElapsedMilliseconds}ms " +
             $"({loopResult.DismissedTitles.Count} window(s) dismissed, ready={loopResult.AddNewRxReady}).");
+
+        // V-T41: this is the exact shape of the night's stuck log line
+        // ("0 window(s) dismissed, ready=True" followed by 40+s of
+        // ElementNotEnabledException on the very next step) — log a full
+        // window inventory here, once, regardless of whether this run
+        // declared ready or not, so the NEXT stall names every PioneerRx
+        // window actually on screen instead of just "still waiting."
+        if (loopResult.DismissedTitles.Count == 0)
+        {
+            context.Log($"[{Name}] 0 windows dismissed by the combined loop — PioneerRx window inventory: {PioneerWindowInventory.Describe()}");
+        }
 
         if (!loopResult.AddNewRxReady || addNewRxWindow is null)
         {
@@ -499,7 +555,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             if (title == PreEntryDialogTitles.Priority) continue; // handled above — select+confirm, not ESC
             if (TryDismissIfShowing(attachedWindow, title)) return title;
         }
-        return TryDismissNextStrayPioneerWindow(baselineHandles, excludeHandle, strayAttempts);
+        return TryDismissNextStrayPioneerWindow(baselineHandles, excludeHandle, strayAttempts, ref priorityAttempt, log);
     }
 
     /// <summary>
@@ -540,7 +596,27 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         if (dialog is null) return false;
 
         attempt++;
-        var announce = AutoWatchRetry.ShouldLogRetry(attempt);
+        HandlePriorityDialog(dialog, attempt, AutoWatchRetry.ShouldLogRetry(attempt), log);
+        return true;
+    }
+
+    /// <summary>
+    /// V-T41: the ACTION half of TryHandlePriorityIfShowing (select
+    /// `_priorityValue`, confirm, or fall back to typing it), split out so
+    /// it can also be called from TryDismissNextStrayPioneerWindow below
+    /// for an UNRECOGNIZED top-level window whose title/visible text
+    /// merely CONTAINS "Priority" (Will's broadened brief: "any
+    /// dialog/window whose title or visible text contains 'Priority'" —
+    /// not just an exact/aliased title match against the known constant).
+    /// `attempt` is only used for the "(attempt N)" log wording; `announce`
+    /// is the caller's own already-computed AutoWatchRetry.ShouldLogRetry
+    /// throttle decision (both callers share ONE attempt counter, threaded
+    /// by ref through TryDismissNextPendingDialogOrStrayWindow, so the
+    /// throttle behaves the same regardless of which path found the
+    /// dialog).
+    /// </summary>
+    private void HandlePriorityDialog(AutomationElement dialog, int attempt, bool announce, Action<string> log)
+    {
         if (announce)
         {
             log($"[{Name}] \"Priority\" dialog: selecting \"{_priorityValue}\" — starting (attempt {attempt})...");
@@ -558,7 +634,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             {
                 log($"[{Name}] \"Priority\" dialog: FAILED to confirm the selection via an OK button or Enter key.");
             }
-            return true;
+            return;
         }
 
         if (announce)
@@ -575,7 +651,6 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 ? $"[{Name}] \"Priority\" dialog: OK — typed \"{_priorityValue}\" and pressed Enter (fallback)."
                 : $"[{Name}] \"Priority\" dialog: FAILED — the typing fallback threw; the dialog may still be showing.");
         }
-        return true;
     }
 
     /// <summary>
@@ -766,13 +841,28 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
     }
 
-    /// <summary>Live scan+ESC for one stray (unrecognized, non-baseline,
+    /// <summary>Live scan+classify for one stray (unrecognized, non-baseline,
     /// non-main) Pioneer top-level window. `attempts` caps retries per
     /// handle (maxAttemptsPerWindow) so a window whose ESC never actually
     /// closes it can't spin this loop forever on the same stubborn window
-    /// instead of eventually giving up and letting the step continue.</summary>
-    private static string? TryDismissNextStrayPioneerWindow(
-        IReadOnlySet<IntPtr> baselineHandles, IntPtr excludeHandle, Dictionary<IntPtr, int> attempts)
+    /// instead of eventually giving up and letting the step continue.
+    ///
+    /// V-T41 BROADENED MATCH (Will, verbatim): "any dialog/window whose
+    /// title or visible text contains 'Priority' -> run the Priority
+    /// handler ... contains 'Scan' and 'Hard Copy' -> the existing
+    /// dismiss; otherwise log it and press Escape once, then re-check."
+    /// Before ESCing an unrecognized window blind (the old behavior),
+    /// this now builds its title + first ~10 visible button/text names
+    /// (BuildClassificationText) and checks that combined text for
+    /// "Priority" (PreEntryDialogTitles.ContainsPriority — handled via
+    /// HandlePriorityDialog, the same select-and-confirm logic a normally
+    /// recognized Priority dialog gets) or "Scan"+"Hard Copy"
+    /// (PreEntryDialogTitles.ContainsScanAndHardCopy — plain ESC, same as
+    /// always). Only when NEITHER matches does it fall back to logging the
+    /// unrecognized window and ESCing it once, same as before.</summary>
+    private string? TryDismissNextStrayPioneerWindow(
+        IReadOnlySet<IntPtr> baselineHandles, IntPtr excludeHandle, Dictionary<IntPtr, int> attempts,
+        ref int priorityAttempt, Action<string> log)
     {
         const int maxAttemptsPerWindow = 3;
         try
@@ -791,6 +881,39 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
                 var title = SafeName(window);
                 attempts[handle] = count + 1;
+
+                // NO PHI IN LOGS: same "truncate before ' - '" convention
+                // as DescribeAnyPioneerWindowForLog/PioneerRxAttachment.TryAttach's
+                // own DescribeForLog — a PioneerRx window title can be
+                // "Rx Profile - Lastname, Firstname". `title` itself
+                // (untruncated) is fine to use for classification/matching
+                // and as the returned dismissed-window identifier (same as
+                // before this round), but every LOG line below must use
+                // screenNameOnly instead.
+                var screenNameOnly = title.Split(new[] { " - " }, 2, StringSplitOptions.None)[0];
+
+                var classificationText = BuildClassificationText(window, title);
+
+                if (PreEntryDialogTitles.ContainsPriority(classificationText))
+                {
+                    priorityAttempt++;
+                    var announce = AutoWatchRetry.ShouldLogRetry(priorityAttempt);
+                    if (announce)
+                    {
+                        log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Priority\" — treating it as the Priority dialog.");
+                    }
+                    HandlePriorityDialog(window, priorityAttempt, announce, log);
+                    return PreEntryDialogTitles.Priority;
+                }
+
+                if (PreEntryDialogTitles.ContainsScanAndHardCopy(classificationText))
+                {
+                    log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Scan\"/\"Hard Copy\" — dismissing.");
+                    if (TryDismiss(window)) return PreEntryDialogTitles.ScanHardCopy;
+                    continue;
+                }
+
+                log($"[{Name}] Unrecognized pre-entry window \"{screenNameOnly}\" (class '{SafeClassNameForLog(window)}') — pressing Escape once.");
                 if (TryDismiss(window)) return title;
             }
         }
@@ -800,6 +923,98 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             // every other UIA scan in this file.
         }
         return null;
+    }
+
+    /// <summary>Title plus the first ~10 visible button/text-control names
+    /// found in `window`, space-joined — enough surface for
+    /// PreEntryDialogTitles.ContainsPriority/ContainsScanAndHardCopy to
+    /// classify a window whose OWN title doesn't carry the recognizable
+    /// word (Will's "title OR visible text" brief). Never throws; falls
+    /// back to just the title on any UIA failure.
+    ///
+    /// NO PHI: the returned text is for MATCHING ONLY (a substring check
+    /// against "Priority"/"Scan"/"Hard Copy") and must NEVER be logged —
+    /// unlike a window's own title (which at least gets truncated before
+    /// " - " at every log call site, see TryDismissNextStrayPioneerWindow),
+    /// this string can also carry raw button/text-control content from
+    /// inside the window with no truncation at all.</summary>
+    private static string BuildClassificationText(AutomationElement window, string title)
+    {
+        var sb = new StringBuilder(title);
+        try
+        {
+            var condition = new OrCondition(new ConditionBase[]
+            {
+                window.ConditionFactory.ByControlType(ControlType.Text),
+                window.ConditionFactory.ByControlType(ControlType.Button),
+            });
+
+            var count = 0;
+            foreach (var element in window.FindAllDescendants(condition))
+            {
+                if (count >= 10) break;
+                var name = SafeName(element);
+                if (string.IsNullOrEmpty(name)) continue;
+                sb.Append(' ').Append(name);
+                count++;
+            }
+        }
+        catch
+        {
+            // Best-effort — title alone is still usable for classification.
+        }
+        return sb.ToString();
+    }
+
+    private static string SafeClassNameForLog(AutomationElement element)
+    {
+        try { return element.ClassName ?? "<null>"; } catch { return "<unknown>"; }
+    }
+
+    /// <summary>V-T41: true when some Pioneer top-level window OTHER THAN
+    /// `mainHandle`, `foundHandle` (the just-found Add New Rx candidate —
+    /// these two are frequently the SAME handle in this single-window app,
+    /// but not always, see class doc comment), and anything in
+    /// `baselineHandles` (windows the pharmacist already had open BEFORE
+    /// F3 — same exclusion TryDismissNextStrayPioneerWindow already
+    /// applies, so a legitimate second Pioneer window open for other work
+    /// is never treated as a blocking modal) is both a genuine PioneerRx
+    /// window and currently ENABLED — i.e. a modal is up and nothing else
+    /// has recognized/dismissed it yet. Used by IsAddNewRxReady to refuse
+    /// "ready" while that's true, so the combined loop keeps cycling
+    /// through dismiss attempts instead of handing control to the next
+    /// step with a blocking window still on screen. Best-effort/never
+    /// throws — a scan failure is treated as "no blocking window seen,"
+    /// same posture as every other UIA scan in this file (a false negative
+    /// here just means the OLD "ready=True with a modal up" bug could
+    /// still happen on a machine where this scan itself fails, not a
+    /// worse outcome than before this fix).</summary>
+    private static bool HasBlockingPioneerWindow(IntPtr mainHandle, IntPtr foundHandle, IReadOnlySet<IntPtr> baselineHandles)
+    {
+        try
+        {
+            using var automation = new UIA3Automation();
+            var desktop = automation.GetDesktop();
+            foreach (var window in desktop.FindAllChildren())
+            {
+                if (!IsPioneerProcessWindow(window)) continue;
+
+                var handle = SafeNativeHandle(window);
+                if (handle == IntPtr.Zero || handle == mainHandle || handle == foundHandle) continue;
+                if (baselineHandles.Contains(handle)) continue;
+
+                bool isEnabled;
+                try { isEnabled = window.Properties.IsEnabled.ValueOrDefault; }
+                catch { isEnabled = true; } // best-effort: treat "can't tell" as potentially blocking
+
+                if (isEnabled) return true;
+            }
+        }
+        catch
+        {
+            // Best-effort only — see doc comment above.
+        }
+        return false;
     }
 
     /// <summary>Every top-level window currently owned by the Pioneer
@@ -900,21 +1115,37 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// AutomationIds SelectPrescriberStep/InputVaccineCodeStep already
     /// search for — meaning this window is (or already looks like) the
     /// "Add New Rx" screen even if its title never changed. Never
-    /// throws.</summary>
+    /// throws.
+    ///
+    /// V-T41 FIX: now ALSO requires the field to be ENABLED, not merely
+    /// present in the UIA tree — see class doc comment's STILL STUCK FIX
+    /// section. A field can exist well before PioneerRx finishes
+    /// initializing the screen (or while a modal this step doesn't
+    /// recognize still covers it), and QuickSearchFieldEntry.WaitForFieldAsync's
+    /// own doc comment documents exactly that same "present but disabled"
+    /// gap for the SAME AutomationIds — this was the one place that gap
+    /// hadn't been closed yet: declaring the whole SCREEN ready just
+    /// because the field object exists, regardless of whether it's usable.</summary>
     private static bool HasNextStepField(AutomationElement window)
     {
         try
         {
             var prescriberField = window.FindFirstDescendant(cf => cf.ByAutomationId(SelectPrescriberStep.PrescriberQuickSearchAutomationId));
-            if (prescriberField is not null) return true;
+            if (prescriberField is not null && IsEnabledSafe(prescriberField)) return true;
 
             var ndcField = window.FindFirstDescendant(cf => cf.ByAutomationId(InputVaccineCodeStep.PrescribedItemQuickSearchAutomationId));
-            return ndcField is not null;
+            return ndcField is not null && IsEnabledSafe(ndcField);
         }
         catch
         {
             return false;
         }
+    }
+
+    private static bool IsEnabledSafe(AutomationElement element)
+    {
+        try { return element.Properties.IsEnabled.ValueOrDefault; }
+        catch { return false; }
     }
 
     /// <summary>Wraps a known window handle back into an AutomationElement

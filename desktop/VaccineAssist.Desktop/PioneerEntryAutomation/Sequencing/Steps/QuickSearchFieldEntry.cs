@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -7,6 +8,7 @@ using System.Threading.Tasks;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
+using VaccineAssist.Desktop.Uia;
 
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 
@@ -68,6 +70,24 @@ public static class QuickSearchFieldEntry
 
     private static readonly TimeSpan FieldWaitPollInterval = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>V-T41 (Will, 2026-09-13 night): "still getting stuck on the
+    /// pre-data entry popup windows" — once a quick-search field has been
+    /// observed present-but-disabled for longer than this, WaitForFieldAsync
+    /// logs a full PioneerWindowInventory.Describe() ONCE for that stall
+    /// (not every tick) so app.log names whatever's actually blocking it
+    /// (an unrecognized modal, or the screen still rendering) instead of
+    /// just "present but disabled — waiting."</summary>
+    private static readonly TimeSpan StallInventoryThreshold = TimeSpan.FromSeconds(2);
+
+    /// <summary>V-T41: throttles the "Still waiting to enter the X" log
+    /// line in TypeAndConfirmAsync's retry loop to roughly once per this
+    /// interval (Will's brief, verbatim: "throttle the repeated 'Still
+    /// waiting' line to every 5s") — replaces that call site's previous use
+    /// of AutoWatchRetry.ShouldLogRetry (an ATTEMPT-count throttle that
+    /// assumed a ~200ms poll interval, producing a line roughly every 1s —
+    /// too chatty per this round's brief). See ShouldLogByElapsedInterval.</summary>
+    private static readonly TimeSpan StillWaitingLogInterval = TimeSpan.FromSeconds(5);
+
     public readonly record struct Outcome(bool Success, string Message);
 
     /// <summary>
@@ -107,6 +127,8 @@ public static class QuickSearchFieldEntry
         try { window.FocusNative(); } catch { /* best-effort, same as InputLotAndExpirationStep.TryRefocusAttachedWindow */ }
 
         var loggedDisabled = false;
+        Stopwatch? disabledSince = null;
+        var loggedStallInventory = false;
 
         AutomationElement? TryFind()
         {
@@ -114,7 +136,17 @@ public static class QuickSearchFieldEntry
             try { candidate = window.FindFirstDescendant(cf => cf.ByAutomationId(automationId)); }
             catch { return null; }
 
-            if (candidate is null) return null;
+            if (candidate is null)
+            {
+                // Not present at all (yet) -- distinct from "present but
+                // disabled" below, so a field that briefly disappears
+                // (e.g. a modal covering it) gets its own fresh stall
+                // clock once it's found disabled again, rather than
+                // inheriting an unrelated earlier stall's elapsed time.
+                disabledSince = null;
+                loggedStallInventory = false;
+                return null;
+            }
 
             bool isEnabled;
             try { isEnabled = candidate.Properties.IsEnabled.ValueOrDefault; }
@@ -127,9 +159,23 @@ public static class QuickSearchFieldEntry
                     loggedDisabled = true;
                     log?.Invoke($"'{automationId}' present but disabled — waiting");
                 }
+
+                // V-T41: log the window inventory ONCE per stall, only
+                // once the field has actually been disabled for more than
+                // StallInventoryThreshold — see that constant's doc
+                // comment.
+                disabledSince ??= Stopwatch.StartNew();
+                if (!loggedStallInventory && disabledSince.Elapsed >= StallInventoryThreshold)
+                {
+                    loggedStallInventory = true;
+                    log?.Invoke($"'{automationId}' still disabled after {disabledSince.Elapsed.TotalSeconds:0.0}s — " +
+                        $"PioneerRx window inventory: {PioneerWindowInventory.Describe()}");
+                }
+
                 return null;
             }
 
+            disabledSince = null;
             return candidate;
         }
 
@@ -228,12 +274,17 @@ public static class QuickSearchFieldEntry
 
         try
         {
-            // V-..., 2026-09-11: throttled per AutoWatchRetry.ShouldLogRetry
-            // (own doc comment) — this counter is local to THIS field's
-            // retry run, so a later field's wait always starts fresh at
-            // attempt 1 (logs immediately) rather than inheriting an
-            // earlier field's count.
-            var retryAttempt = 0;
+            // V-T41 (Will, verbatim: "throttle the repeated 'Still waiting'
+            // line to every 5s"): elapsed-time bucket throttle (see
+            // ShouldLogByElapsedInterval), NOT the attempt-count-based
+            // AutoWatchRetry.ShouldLogRetry this used before — that one
+            // assumed a fixed ~200ms poll interval and fired roughly every
+            // 1s, which is what generated the 40+-line "Still waiting"
+            // spam in the night's app.log. `lastLoggedBucket` is local to
+            // THIS field's retry run, so a later field's wait always logs
+            // immediately on its own first attempt rather than inheriting
+            // an earlier field's timing.
+            var lastLoggedBucket = -1;
             await AutoWatchRetry.RunAsync(
                 attempt: () =>
                 {
@@ -249,8 +300,7 @@ public static class QuickSearchFieldEntry
                 now: () => DateTime.UtcNow,
                 onRecoverableWait: async (ex, elapsed) =>
                 {
-                    retryAttempt++;
-                    if (AutoWatchRetry.ShouldLogRetry(retryAttempt))
+                    if (ShouldLogByElapsedInterval(elapsed, StillWaitingLogInterval, ref lastLoggedBucket))
                     {
                         log?.Invoke($"Still waiting to enter the {fieldLabel} (AutomationId '{automationId}') after " +
                             $"{elapsed.TotalSeconds:0.0}s — {ex.GetType().Name}: {ex.Message}. PioneerRx may be busy; retrying...");
@@ -261,10 +311,106 @@ public static class QuickSearchFieldEntry
         }
         catch (Exception ex)
         {
-            return new Outcome(false, $"Failed to enter the {fieldLabel} (AutomationId '{automationId}'): {DescribeException(ex)}");
+            // V-T41: once the whole retry budget is exhausted (almost
+            // always ElementNotEnabledException — the field exists but
+            // PioneerRx hasn't enabled it, usually because some dialog
+            // this repo doesn't recognize is still covering "Add New Rx"),
+            // try ONE more thing before giving up outright — see
+            // TryRefocusAndClickThenRetryOnce's own doc comment.
+            if (AutoWatchErrorClassifier.IsRecoverable(ex))
+            {
+                var retried = TryRefocusAndClickThenRetryOnce(window, automationId, fieldLabel, value, enterPresses, log);
+                if (retried is { } outcome) return outcome;
+            }
+
+            var inventory = PioneerWindowInventory.Describe();
+            return new Outcome(false,
+                $"Failed to enter the {fieldLabel} (AutomationId '{automationId}'): {DescribeException(ex)}. " +
+                $"Last PioneerRx window inventory: {inventory}");
         }
 
         return new Outcome(true, $"Entered {fieldLabel} \"{value}\" and pressed ENTER {enterPresses} time(s).");
+    }
+
+    /// <summary>
+    /// V-T41 (Will, verbatim): "If the field is still disabled after
+    /// dialogs are clear, retry focusing the Add New Rx window (bring to
+    /// front, click into the field area) before giving up." FocusNative
+    /// alone (as used everywhere else on this path) gives OS keyboard
+    /// focus to the WINDOW, not necessarily the specific control inside
+    /// it — see this class's own doc comment on why FocusNative is used at
+    /// all for these legacy WinForms controls. This adds one more
+    /// concrete action beyond that: a real mouse click into the field's
+    /// own on-screen bounds (FlaUI.Core.Input.Mouse.LeftClick), THEN the
+    /// exact same SetValue/FocusNative/ENTER sequence, exactly once — no
+    /// further retry loop of its own. Returns null (caller reports its own
+    /// original failure, with a window inventory attached) if the field
+    /// can't be re-found, still isn't enabled, or this attempt also
+    /// throws. Never throws.
+    /// </summary>
+    private static Outcome? TryRefocusAndClickThenRetryOnce(
+        AutomationElement window, string automationId, string fieldLabel, string value, int enterPresses, Action<string>? log)
+    {
+        try
+        {
+            log?.Invoke($"Retrying the {fieldLabel} field (AutomationId '{automationId}') once more after " +
+                "re-focusing the Add New Rx window and clicking into the field...");
+
+            window.FocusNative();
+
+            var field = window.FindFirstDescendant(cf => cf.ByAutomationId(automationId));
+            if (field is null) return null;
+
+            try
+            {
+                var rect = field.BoundingRectangle;
+                if (!rect.IsEmpty)
+                {
+                    Mouse.LeftClick(new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2));
+                }
+            }
+            catch
+            {
+                // Best-effort click -- still try SetValue below even if the click itself failed.
+            }
+
+            if (!field.Patterns.Value.IsSupported) return null;
+            if (!field.Properties.IsEnabled.ValueOrDefault) return null;
+
+            field.Patterns.Value.Pattern.SetValue(value);
+            field.FocusNative();
+            for (var i = 0; i < enterPresses; i++)
+            {
+                Keyboard.Type(VirtualKeyShort.RETURN);
+            }
+
+            return new Outcome(true, $"Entered {fieldLabel} \"{value}\" and pressed ENTER {enterPresses} time(s) (after a refocus-and-click retry).");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// V-T41: pure "should I log this periodic status line" gate based on
+    /// WALL-CLOCK elapsed time rather than an attempt counter — unlike
+    /// AutoWatchRetry.ShouldLogRetry (which assumes a roughly-fixed poll
+    /// interval between attempts), this fires on elapsed-time BUCKET
+    /// boundaries, so the throttle interval means what it says regardless
+    /// of how often the caller actually gets invoked. Fires on the very
+    /// FIRST call (elapsed starts at/near zero, bucket 0 > the initial -1)
+    /// and then again every time `elapsed` crosses into a further bucket.
+    /// `lastLoggedBucket` is the caller's own persisted state across calls
+    /// (start at -1) — mutated in place. Pure, no clock/UIA dependency of
+    /// its own — directly unit-testable with plain TimeSpan values.
+    /// </summary>
+    public static bool ShouldLogByElapsedInterval(TimeSpan elapsed, TimeSpan interval, ref int lastLoggedBucket)
+    {
+        var bucket = (int)(elapsed.TotalMilliseconds / interval.TotalMilliseconds);
+        if (bucket <= lastLoggedBucket) return false;
+        lastLoggedBucket = bucket;
+        return true;
     }
 
     /// <summary>

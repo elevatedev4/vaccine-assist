@@ -167,6 +167,75 @@ public class QuickSearchFieldEntryWaitTests
                 () => null, "uxPrescriberQuickSearch", maxEmptyTicks: 5, NoOpWait, log: null, cts.Token));
     }
 
+    // --- V-T41: ShouldLogByElapsedInterval (elapsed-time throttle for the
+    // "Still waiting" line, replacing the attempt-count-based
+    // AutoWatchRetry.ShouldLogRetry at that one call site) ---
+
+    [Fact]
+    public void ShouldLogByElapsedIntervalFiresOnTheFirstCall()
+    {
+        var lastLoggedBucket = -1;
+
+        var result = QuickSearchFieldEntry.ShouldLogByElapsedInterval(
+            TimeSpan.Zero, TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+
+        Assert.True(result);
+        Assert.Equal(0, lastLoggedBucket);
+    }
+
+    [Fact]
+    public void ShouldLogByElapsedIntervalDoesNotFireAgainWithinTheSameInterval()
+    {
+        var lastLoggedBucket = -1;
+        QuickSearchFieldEntry.ShouldLogByElapsedInterval(TimeSpan.Zero, TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+
+        var firedAt1s = QuickSearchFieldEntry.ShouldLogByElapsedInterval(
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+        var firedAt4Point9s = QuickSearchFieldEntry.ShouldLogByElapsedInterval(
+            TimeSpan.FromSeconds(4.9), TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+
+        Assert.False(firedAt1s);
+        Assert.False(firedAt4Point9s);
+    }
+
+    [Fact]
+    public void ShouldLogByElapsedIntervalFiresAgainOnceElapsedCrossesTheNextInterval()
+    {
+        var lastLoggedBucket = -1;
+        QuickSearchFieldEntry.ShouldLogByElapsedInterval(TimeSpan.Zero, TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+
+        var firedAt5s = QuickSearchFieldEntry.ShouldLogByElapsedInterval(
+            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+        var firedAt7s = QuickSearchFieldEntry.ShouldLogByElapsedInterval(
+            TimeSpan.FromSeconds(7), TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+        var firedAt10s = QuickSearchFieldEntry.ShouldLogByElapsedInterval(
+            TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(5), ref lastLoggedBucket);
+
+        Assert.True(firedAt5s);
+        Assert.False(firedAt7s);
+        Assert.True(firedAt10s);
+    }
+
+    [Fact]
+    public void ShouldLogByElapsedIntervalHandlesManyRapidCallsWithinOneIntervalAsOnlyOneLog()
+    {
+        // Simulates the real call site: many ~200ms retry ticks between
+        // 0s and 5s should still only log ONCE (at the first tick), not
+        // once per tick — this is the exact "40+ line spam" behavior
+        // being fixed.
+        var lastLoggedBucket = -1;
+        var logCount = 0;
+        for (var ms = 0; ms < 5000; ms += 200)
+        {
+            if (QuickSearchFieldEntry.ShouldLogByElapsedInterval(TimeSpan.FromMilliseconds(ms), TimeSpan.FromSeconds(5), ref lastLoggedBucket))
+            {
+                logCount++;
+            }
+        }
+
+        Assert.Equal(1, logCount);
+    }
+
     // --- DescribeException ---
 
     [Fact]
