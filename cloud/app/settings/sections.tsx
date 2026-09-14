@@ -45,6 +45,9 @@ export function OtherSettingsLinks() {
         <li>
           <a href="/physicians">Physicians</a> — protocol physicians and the vaccine/age-range assignment rules.
         </li>
+        <li>
+          <a href="/settings/sessions">Sessions</a> — devices signed into the shared login, with revoke and sign-out-everywhere.
+        </li>
       </ul>
     </section>
   );
