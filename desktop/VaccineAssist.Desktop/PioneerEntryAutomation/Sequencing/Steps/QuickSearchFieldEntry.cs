@@ -311,14 +311,33 @@ public static class QuickSearchFieldEntry
         }
         catch (Exception ex)
         {
-            // V-T41: once the whole retry budget is exhausted (almost
-            // always ElementNotEnabledException — the field exists but
-            // PioneerRx hasn't enabled it, usually because some dialog
-            // this repo doesn't recognize is still covering "Add New Rx"),
-            // try ONE more thing before giving up outright — see
-            // TryRefocusAndClickThenRetryOnce's own doc comment.
+            // V-... 2026-09-14 (Will, verbatim): "The app is not
+            // recognizing the Pioneer windows that pop up and is instead
+            // trying to stay focused and work in the Pioneer main
+            // window." TryRefocusAndClickThenRetryOnce clicks and types
+            // into `window` (the main/Add New Rx window) — exactly the
+            // wrong move when the REAL cause of ElementNotEnabledException
+            // is a Priority/Cycle Fill/Scan Hard Copy modal sitting on top
+            // of it. Before attempting that retry, check for one; if a
+            // blocking window is found, STOP and name it instead of
+            // clicking/typing into the main window while it's up.
             if (AutoWatchErrorClassifier.IsRecoverable(ex))
             {
+                var blocker = PioneerWindowInventory.FindBlockingWindow(SafeNativeHandle(window));
+                if (blocker is not null)
+                {
+                    return new Outcome(false,
+                        $"Couldn't enter the {fieldLabel} (AutomationId '{automationId}') — a PioneerRx window is blocking " +
+                        $"data entry: {blocker}. Dismiss it before retrying (never typing into the main window while a modal is up).");
+                }
+
+                // V-T41: once the whole retry budget is exhausted (almost
+                // always ElementNotEnabledException — the field exists but
+                // PioneerRx hasn't enabled it, and no OTHER Pioneer window
+                // was found blocking it, so this is more likely the screen
+                // still rendering), try ONE more thing before giving up
+                // outright — see TryRefocusAndClickThenRetryOnce's own doc
+                // comment.
                 var retried = TryRefocusAndClickThenRetryOnce(window, automationId, fieldLabel, value, enterPresses, log);
                 if (retried is { } outcome) return outcome;
             }
@@ -389,6 +408,24 @@ public static class QuickSearchFieldEntry
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>Same pattern as
+    /// SendF3AndDismissPreEntryDialogsStep.SafeNativeHandle — reads the
+    /// underlying HWND via FlaUI's FrameworkAutomationElement, returning
+    /// IntPtr.Zero (never throwing) if it can't be read. Used by
+    /// TypeAndConfirmAsync's blocking-window check (see class doc comment
+    /// on that catch block).</summary>
+    private static IntPtr SafeNativeHandle(AutomationElement element)
+    {
+        try
+        {
+            return element.FrameworkAutomationElement.NativeWindowHandle ?? IntPtr.Zero;
+        }
+        catch
+        {
+            return IntPtr.Zero;
         }
     }
 

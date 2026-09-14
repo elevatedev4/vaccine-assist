@@ -216,6 +216,14 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         var attachedWindow = context.AttachedWindow;
         var previousHandle = SafeNativeHandle(attachedWindow);
         var baselineHandles = SnapshotPioneerWindowHandles();
+        // V-... 2026-09-14 (popup-detection fix — see class doc comment's
+        // TOP-LEVEL WINDOW DETECTION FIX section): every dialog-candidate
+        // scan below is scoped to THIS SAME PioneerRx process (not merely
+        // "any process named PioneerPharmacy/PioneerRx" — see
+        // PioneerDialogCandidates.Select) so a stray second Pioneer
+        // instance never gets treated as a dialog for THIS attached
+        // window.
+        var mainProcessId = TryGetProcessId(attachedWindow);
 
         Task WaitTick() => Task.Delay(PollInterval, cancellationToken);
 
@@ -273,7 +281,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         bool IsAddNewRxReady()
         {
-            var found = FindTopLevelPioneerWindowByTitle(name => name.Contains("New Rx", StringComparison.OrdinalIgnoreCase), previousHandle);
+            var found = FindTopLevelPioneerWindowByTitle(name => name.Contains("New Rx", StringComparison.OrdinalIgnoreCase), previousHandle, mainProcessId);
             if (found is null)
             {
                 var current = TryGetElementFromHandle(previousHandle);
@@ -290,7 +298,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             // the pharmacist already had open before F3 (e.g. a second
             // Rx Profile on another workflow) is legitimate, not a
             // blocking modal, and this step should never touch it.
-            if (HasBlockingPioneerWindow(previousHandle, SafeNativeHandle(found), baselineHandles))
+            if (HasBlockingPioneerWindow(previousHandle, SafeNativeHandle(found), baselineHandles, mainProcessId))
             {
                 return false;
             }
@@ -300,7 +308,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
 
         string? TryDismissNext() =>
-            TryDismissNextPendingDialogOrStrayWindow(attachedWindow, baselineHandles, previousHandle, strayAttempts, ref priorityAttempt, context.Log);
+            TryDismissNextPendingDialogOrStrayWindow(attachedWindow, baselineHandles, previousHandle, mainProcessId, strayAttempts, ref priorityAttempt, context.Log);
 
         var loopStopwatch = Stopwatch.StartNew();
         CombinedPreEntryLoopResult loopResult;
@@ -542,10 +550,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// Fill are unchanged. See class doc comment.
     /// </summary>
     private string? TryDismissNextPendingDialogOrStrayWindow(
-        AutomationElement attachedWindow, IReadOnlySet<IntPtr> baselineHandles, IntPtr excludeHandle,
+        AutomationElement attachedWindow, IReadOnlySet<IntPtr> baselineHandles, IntPtr mainHandle, int mainProcessId,
         Dictionary<IntPtr, int> strayAttempts, ref int priorityAttempt, Action<string> log)
     {
-        if (TryHandlePriorityIfShowing(attachedWindow, ref priorityAttempt, log))
+        if (TryHandlePriorityIfShowing(attachedWindow, mainHandle, mainProcessId, ref priorityAttempt, log))
         {
             return PreEntryDialogTitles.Priority;
         }
@@ -553,24 +561,66 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         foreach (var title in PreEntryDialogTitles.All)
         {
             if (title == PreEntryDialogTitles.Priority) continue; // handled above — select+confirm, not ESC
-            if (TryDismissIfShowing(attachedWindow, title)) return title;
+            if (TryDismissIfShowing(attachedWindow, title, mainHandle, mainProcessId)) return title;
         }
-        return TryDismissNextStrayPioneerWindow(baselineHandles, excludeHandle, strayAttempts, ref priorityAttempt, log);
+        return TryDismissNextStrayPioneerWindow(baselineHandles, mainHandle, mainProcessId, strayAttempts, ref priorityAttempt, log);
     }
 
     /// <summary>
-    /// Scans BOTH top-level windows owned by the Pioneer process AND UIA
-    /// descendants of the attached window (ControlType Window/Pane/Custom)
-    /// for a title matching `titleSubstring` (via
+    /// Scans BOTH real dialog candidates (see FindPioneerDialogCandidates
+    /// — top-level windows of the SAME PioneerRx process, found via the
+    /// combined UIA+Win32 enumeration, not just UIA descendants of the
+    /// attached window) AND UIA descendants of the attached window
+    /// (ControlType Window/Pane/Custom, for the case where a dialog turns
+    /// out to be a child pane rather than a separate top-level window) for
+    /// a title matching `titleSubstring` (via
     /// PreEntryDialogTitles.MatchesWithAliases) — see class doc comment.
     /// </summary>
-    private static bool TryDismissIfShowing(AutomationElement attachedWindow, string titleSubstring)
+    private static bool TryDismissIfShowing(AutomationElement attachedWindow, string titleSubstring, IntPtr mainHandle, int mainProcessId)
     {
-        var topLevel = FindTopLevelPioneerWindowByTitle(name => PreEntryDialogTitles.MatchesWithAliases(name, titleSubstring));
-        if (topLevel is not null) return TryDismiss(topLevel);
+        foreach (var (element, info) in FindPioneerDialogCandidates(mainHandle, mainProcessId))
+        {
+            if (PreEntryDialogTitles.MatchesWithAliases(info.Title, titleSubstring))
+            {
+                return TryDismiss(element);
+            }
+        }
 
         var descendant = FindDialogDescendant(attachedWindow, titleSubstring);
         return descendant is not null && TryDismiss(descendant);
+    }
+
+    /// <summary>
+    /// V-... 2026-09-14 (popup-detection fix): every top-level window of
+    /// the ATTACHED main window's own PioneerRx process (`mainProcessId`),
+    /// excluding the main window itself (`mainHandle`) — gathered from
+    /// PioneerWindowInventory.EnumerateAllWindows (UIA desktop scan UNION
+    /// a raw Win32 EnumWindows/EnumThreadWindows walk — see
+    /// Win32WindowEnumerator's own doc comment) and filtered through
+    /// PioneerDialogCandidates.Select. THIS is the fix for Will's
+    /// verbatim report: "The app is not recognizing the Pioneer windows
+    /// that pop up and is instead trying to stay focused and work in the
+    /// Pioneer main window" — every dialog lookup in this file
+    /// (TryDismissIfShowing, TryHandlePriorityIfShowing,
+    /// TryDismissNextStrayPioneerWindow, HasBlockingPioneerWindow) now
+    /// scans THIS candidate list instead of a UIA-only desktop walk, so a
+    /// Priority/Cycle Fill/Scan Hard Copy dialog that UIA's own walk never
+    /// cataloged (but that genuinely exists as a top-level HWND) is still
+    /// found. Never throws — a scan failure comes back as an empty list.
+    /// </summary>
+    private static List<(AutomationElement Element, WindowInfo Info)> FindPioneerDialogCandidates(IntPtr mainHandle, int mainProcessId)
+    {
+        try
+        {
+            var all = PioneerWindowInventory.EnumerateAllWindows();
+            var candidateInfos = PioneerDialogCandidates.Select(all.Select(pair => pair.Info), mainProcessId, mainHandle);
+            var candidateHandles = new HashSet<IntPtr>(candidateInfos.Select(info => info.Handle));
+            return all.Where(pair => candidateHandles.Contains(pair.Info.Handle)).ToList();
+        }
+        catch
+        {
+            return new List<(AutomationElement, WindowInfo)>();
+        }
     }
 
     /// <summary>
@@ -589,10 +639,18 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// logging via AutoWatchRetry.ShouldLogRetry — the dialog itself is
     /// re-scanned fresh every tick regardless of whether this tick logs.
     /// </summary>
-    private bool TryHandlePriorityIfShowing(AutomationElement attachedWindow, ref int attempt, Action<string> log)
+    private bool TryHandlePriorityIfShowing(AutomationElement attachedWindow, IntPtr mainHandle, int mainProcessId, ref int attempt, Action<string> log)
     {
-        var dialog = FindTopLevelPioneerWindowByTitle(name => PreEntryDialogTitles.MatchesWithAliases(name, PreEntryDialogTitles.Priority))
-            ?? FindDialogDescendant(attachedWindow, PreEntryDialogTitles.Priority);
+        AutomationElement? dialog = null;
+        foreach (var (element, info) in FindPioneerDialogCandidates(mainHandle, mainProcessId))
+        {
+            if (PreEntryDialogTitles.MatchesWithAliases(info.Title, PreEntryDialogTitles.Priority))
+            {
+                dialog = element;
+                break;
+            }
+        }
+        dialog ??= FindDialogDescendant(attachedWindow, PreEntryDialogTitles.Priority);
         if (dialog is null) return false;
 
         attempt++;
@@ -859,27 +917,32 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// recognized Priority dialog gets) or "Scan"+"Hard Copy"
     /// (PreEntryDialogTitles.ContainsScanAndHardCopy — plain ESC, same as
     /// always). Only when NEITHER matches does it fall back to logging the
-    /// unrecognized window and ESCing it once, same as before.</summary>
+    /// unrecognized window and ESCing it once, same as before.
+    ///
+    /// V-... 2026-09-14 (popup-detection fix): the candidate list now comes
+    /// from FindPioneerDialogCandidates (combined UIA+Win32 enumeration,
+    /// scoped to the attached window's own PioneerRx process — see that
+    /// method's doc comment) instead of a bare UIA desktop walk, and
+    /// classification uses DialogClassifier.Classify (PatientOnCycleFill —
+    /// "Cycle Fill" — is now recognized here too, not just Priority/Scan
+    /// Hard Copy, dismissed the same ESC way it always has been via
+    /// TryDismissIfShowing's title match).</summary>
     private string? TryDismissNextStrayPioneerWindow(
-        IReadOnlySet<IntPtr> baselineHandles, IntPtr excludeHandle, Dictionary<IntPtr, int> attempts,
+        IReadOnlySet<IntPtr> baselineHandles, IntPtr mainHandle, int mainProcessId, Dictionary<IntPtr, int> attempts,
         ref int priorityAttempt, Action<string> log)
     {
         const int maxAttemptsPerWindow = 3;
         try
         {
-            using var automation = new UIA3Automation();
-            var desktop = automation.GetDesktop();
-            foreach (var window in desktop.FindAllChildren())
+            foreach (var (window, info) in FindPioneerDialogCandidates(mainHandle, mainProcessId))
             {
-                if (!IsPioneerProcessWindow(window)) continue;
-
-                var handle = SafeNativeHandle(window);
-                if (handle == IntPtr.Zero || handle == excludeHandle) continue;
+                var handle = info.Handle;
+                if (handle == IntPtr.Zero) continue;
                 if (baselineHandles.Contains(handle)) continue;
                 attempts.TryGetValue(handle, out var count);
                 if (count >= maxAttemptsPerWindow) continue;
 
-                var title = SafeName(window);
+                var title = info.Title;
                 attempts[handle] = count + 1;
 
                 // NO PHI IN LOGS: same "truncate before ' - '" convention
@@ -893,8 +956,9 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 var screenNameOnly = title.Split(new[] { " - " }, 2, StringSplitOptions.None)[0];
 
                 var classificationText = BuildClassificationText(window, title);
+                var kind = DialogClassifier.Classify(classificationText);
 
-                if (PreEntryDialogTitles.ContainsPriority(classificationText))
+                if (kind == DialogKind.Priority)
                 {
                     priorityAttempt++;
                     var announce = AutoWatchRetry.ShouldLogRetry(priorityAttempt);
@@ -906,10 +970,17 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                     return PreEntryDialogTitles.Priority;
                 }
 
-                if (PreEntryDialogTitles.ContainsScanAndHardCopy(classificationText))
+                if (kind == DialogKind.ScanHardCopy)
                 {
                     log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Scan\"/\"Hard Copy\" — dismissing.");
                     if (TryDismiss(window)) return PreEntryDialogTitles.ScanHardCopy;
+                    continue;
+                }
+
+                if (kind == DialogKind.PatientOnCycleFill)
+                {
+                    log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Cycle Fill\" — dismissing.");
+                    if (TryDismiss(window)) return PreEntryDialogTitles.PatientOnCycleFill;
                     continue;
                 }
 
@@ -989,18 +1060,14 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// here just means the OLD "ready=True with a modal up" bug could
     /// still happen on a machine where this scan itself fails, not a
     /// worse outcome than before this fix).</summary>
-    private static bool HasBlockingPioneerWindow(IntPtr mainHandle, IntPtr foundHandle, IReadOnlySet<IntPtr> baselineHandles)
+    private static bool HasBlockingPioneerWindow(IntPtr mainHandle, IntPtr foundHandle, IReadOnlySet<IntPtr> baselineHandles, int mainProcessId)
     {
         try
         {
-            using var automation = new UIA3Automation();
-            var desktop = automation.GetDesktop();
-            foreach (var window in desktop.FindAllChildren())
+            foreach (var (window, info) in FindPioneerDialogCandidates(mainHandle, mainProcessId))
             {
-                if (!IsPioneerProcessWindow(window)) continue;
-
-                var handle = SafeNativeHandle(window);
-                if (handle == IntPtr.Zero || handle == mainHandle || handle == foundHandle) continue;
+                var handle = info.Handle;
+                if (handle == IntPtr.Zero || handle == foundHandle) continue;
                 if (baselineHandles.Contains(handle)) continue;
 
                 bool isEnabled;
@@ -1047,27 +1114,24 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         return handles;
     }
 
-    /// <summary>Scans top-level desktop windows for one belonging to the
+    /// <summary>Scans top-level windows (combined UIA+Win32 enumeration —
+    /// see PioneerWindowInventory.EnumerateAllWindows) belonging to the
     /// Pioneer process whose title satisfies `titleMatches`, optionally
-    /// excluding one handle. Never throws — treated as "not found," same
-    /// posture as PioneerRxAttachment.TryAttach.</summary>
-    private static AutomationElement? FindTopLevelPioneerWindowByTitle(Func<string, bool> titleMatches, IntPtr excludeHandle = default)
+    /// excluding one handle and (when `mainProcessId` > 0) scoped to that
+    /// exact process id rather than merely "any process named
+    /// PioneerPharmacy/PioneerRx." Never throws — treated as "not found,"
+    /// same posture as PioneerRxAttachment.TryAttach.</summary>
+    private static AutomationElement? FindTopLevelPioneerWindowByTitle(Func<string, bool> titleMatches, IntPtr excludeHandle = default, int mainProcessId = 0)
     {
         try
         {
-            using var automation = new UIA3Automation();
-            var desktop = automation.GetDesktop();
-            foreach (var window in desktop.FindAllChildren())
+            foreach (var (window, info) in PioneerWindowInventory.EnumerateAllWindows())
             {
-                string? name;
-                try { name = window.Name; } catch { continue; }
-                if (string.IsNullOrEmpty(name)) continue;
-                if (!IsPioneerProcessWindow(window)) continue;
+                if (string.IsNullOrEmpty(info.Title)) continue;
+                if (excludeHandle != IntPtr.Zero && info.Handle == excludeHandle) continue;
+                if (mainProcessId > 0 && info.ProcessId != mainProcessId) continue;
 
-                var handle = SafeNativeHandle(window);
-                if (excludeHandle != IntPtr.Zero && handle == excludeHandle) continue;
-
-                if (titleMatches(name)) return window;
+                if (titleMatches(info.Title)) return window;
             }
         }
         catch
@@ -1172,6 +1236,19 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         var processName = TryGetProcessName(window);
         return processName is not null &&
             PioneerRxTitles.TargetProcessNames.Any(target => string.Equals(target, processName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>The attached main window's own OS process id — used to
+    /// scope every dialog-candidate scan in this file
+    /// (FindPioneerDialogCandidates via PioneerDialogCandidates.Select) to
+    /// THIS SAME PioneerRx instance, not merely "any process named
+    /// PioneerPharmacy/PioneerRx." Never throws — 0 on failure (Select
+    /// then matches nothing, same safe-empty posture as every other UIA
+    /// read in this file).</summary>
+    private static int TryGetProcessId(AutomationElement window)
+    {
+        try { return window.FrameworkAutomationElement.ProcessId; }
+        catch { return 0; }
     }
 
     /// <summary>Same pattern as PioneerRxAttachment's own process-name
