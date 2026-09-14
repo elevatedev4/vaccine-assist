@@ -197,7 +197,11 @@ public partial class App : Application
 
             if (result.Outcome == StartupSignInOutcome.SignedIn)
             {
-                EndStartupWithMainWindow(loginViewModel, splash, ref startupResolved);
+                // Part 1 (Will's brief): the WebView2 + cloud session
+                // handoff happens here, WHILE the splash is still up —
+                // see PrepareMainCloudPageViewAsync's own doc comment.
+                var cloudPageView = await PrepareMainCloudPageViewAsync();
+                EndStartupWithMainWindow(loginViewModel, splash, cloudPageView, ref startupResolved);
             }
             else
             {
@@ -229,7 +233,7 @@ public partial class App : Application
     /// window standing. Falls back to the manual LoginWindow (with the
     /// ErrorMessage TryShowMainWindow already set) if MainWindow couldn't
     /// be shown.</summary>
-    private void EndStartupWithMainWindow(LoginViewModel loginViewModel, SplashWindow splash, ref bool startupResolved)
+    private void EndStartupWithMainWindow(LoginViewModel loginViewModel, SplashWindow splash, CloudPageView cloudPageView, ref bool startupResolved)
     {
         if (startupResolved)
         {
@@ -237,7 +241,7 @@ public partial class App : Application
         }
         startupResolved = true;
 
-        var shown = TryShowMainWindow(loginViewModel);
+        var shown = TryShowMainWindow(loginViewModel, cloudPageView);
 
         try
         {
@@ -299,9 +303,15 @@ public partial class App : Application
         var loginWindow = new LoginWindow(loginViewModel);
         var signedIn = false;
 
-        loginViewModel.SignedIn += (_, _) =>
+        loginViewModel.SignedIn += async (_, _) =>
         {
-            if (TryShowMainWindow(loginViewModel))
+            // Part 1 (Will's brief): manual sign-in also gets the
+            // WebView2 + cloud session handoff BEFORE MainWindow is shown
+            // — see PrepareMainCloudPageViewAsync's own doc comment. This
+            // LoginWindow is still up (showing "Signing in…"/busy state
+            // via LoginViewModel.IsBusy) while that runs.
+            var cloudPageView = await PrepareMainCloudPageViewAsync();
+            if (TryShowMainWindow(loginViewModel, cloudPageView))
             {
                 signedIn = true;
                 loginWindow.Close();
@@ -340,9 +350,12 @@ public partial class App : Application
         var loginWindow = new LoginWindow(loginViewModel);
         var signedIn = false;
 
-        loginViewModel.SignedIn += (_, _) =>
+        loginViewModel.SignedIn += async (_, _) =>
         {
-            if (TryShowMainWindow(loginViewModel))
+            // Part 1 — same handoff-before-MainWindow sequencing as
+            // ShowLoginWindowWithViewModel's SignedIn handler above.
+            var cloudPageView = await PrepareMainCloudPageViewAsync();
+            if (TryShowMainWindow(loginViewModel, cloudPageView))
             {
                 signedIn = true;
                 loginWindow.Close();
@@ -366,6 +379,60 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// Part 1 (Will's brief): builds and initializes the SINGLE main
+    /// CloudPageView WebView2 surface used as MainWindow's whole content
+    /// area (see MainWindow.xaml's own doc comment for the one-tab-row
+    /// change), and — if the just-completed sign-in produced tokens —
+    /// POSTs them to the cloud's desktop-handoff endpoint
+    /// (cloud/app/api/auth/desktop-handoff/route.ts) so the WebView2 lands
+    /// on "/" already signed in instead of showing its own separate
+    /// cloud login form. Called from every path that's about to show
+    /// MainWindow — the silent startup path and both manual-sign-in
+    /// paths — so the handoff always happens BEFORE MainWindow itself is
+    /// shown, while the caller's own "signing in" UI (splash or
+    /// LoginWindow) is still up.
+    ///
+    /// Never throws — a WebView2 init failure here just means MainWindow's
+    /// CloudPageView will show ITS OWN "couldn't load" panel once actually
+    /// displayed (see CloudPageView.EnsureInitializedAsync's existing
+    /// try/catch), and a handoff timeout/failure just means the page shows
+    /// its own cloud login form — both explicitly acceptable per the
+    /// brief ("on timeout/failure log a [Startup] line and continue — the
+    /// page will just show its own login").
+    /// </summary>
+    private async Task<CloudPageView> PrepareMainCloudPageViewAsync()
+    {
+        var cloudPageView = new CloudPageView(_settings.CloudApiBaseUrl);
+        try
+        {
+            await cloudPageView.EnsureInitializedAsync();
+
+            if (_authService.AccessToken is { Length: > 0 } accessToken &&
+                _authService.RefreshToken is { Length: > 0 } refreshToken)
+            {
+                var handoffOk = await cloudPageView.PerformDesktopHandoffAsync(accessToken, refreshToken, TimeSpan.FromSeconds(10));
+                AppFileLog.Log(handoffOk
+                    ? "[Startup] cloud session handoff: ok"
+                    : "[Startup] cloud session handoff: failed or timed out — the embedded page will show its own sign-in form");
+            }
+            else
+            {
+                // Shouldn't happen right after a successful sign-in, but
+                // degrade to a plain "/" load rather than leaving the
+                // WebView2 on a blank page if it ever does.
+                AppFileLog.Log("[Startup] cloud session handoff: skipped (no tokens available)");
+                cloudPageView.NavigateToPath("/");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("PrepareMainCloudPageViewAsync", ex);
+        }
+
+        return cloudPageView;
+    }
+
+    /// <summary>
     /// Wraps ShowMainWindow() for the two manual-sign-in paths above
     /// (ShowLoginWindowWithViewModel/ShowLoginWindow's SignedIn handlers) —
     /// StartSignInFlowAsync's own silent-sign-in path has its own copy of
@@ -378,11 +445,11 @@ public partial class App : Application
     /// it ends up with no window and a swallowed exception the moment this
     /// runs inside a fire-and-forget async continuation.
     /// </summary>
-    private bool TryShowMainWindow(LoginViewModel loginViewModel)
+    private bool TryShowMainWindow(LoginViewModel loginViewModel, CloudPageView cloudPageView)
     {
         try
         {
-            ShowMainWindow();
+            ShowMainWindow(cloudPageView);
             return true;
         }
         catch (Exception ex)
@@ -414,20 +481,16 @@ public partial class App : Application
     /// immediately opens a new LoginWindow) must not also shut the app
     /// down; closing it via the window chrome/Alt+F4 must.
     /// </summary>
-    private void ShowMainWindow()
+    private void ShowMainWindow(CloudPageView cloudPageView)
     {
-        // 2026-09-13 cloud-parity change (Will's brief): Scheduling/Lots/
-        // Active vaccines/Ordering/Physicians now each host a
-        // CloudPageView (WebView2) instead of a native
-        // SchedulingViewModel/LotsViewModel/VaccinesViewModel/
-        // OrderingViewModel/PhysiciansViewModel-backed view — see
-        // MainWindow.xaml.cs's own doc comment. Those ViewModel classes
-        // themselves are unchanged and still independently unit-tested
-        // (LotsViewModelTests.cs, PhysiciansViewModelTests.cs, etc.);
-        // MainWindow simply no longer constructs/consumes them.
+        // V-T-single-nav (Will's brief, 2026-09-14): MainWindow now hosts
+        // exactly ONE CloudPageView (already constructed/initialized —
+        // and, for a fresh sign-in, already hand-off'd — by
+        // PrepareMainCloudPageViewAsync above) instead of five, one per
+        // former tab. See MainWindow.xaml.cs's own doc comment.
         var mainWindow = new MainWindow(
             _authService, _vaccineApiService, _clipboardService,
-            _pioneerEntrySequence, _settings.CloudApiBaseUrl);
+            _pioneerEntrySequence, cloudPageView, _localSettingsService, _settings);
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>

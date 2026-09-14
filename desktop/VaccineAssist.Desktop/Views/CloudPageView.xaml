@@ -3,21 +3,19 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf">
     <!--
-        Will, 2026-09-13 (verbatim): "Make sure the other pages, like
-        scheduling, lots, etc all match the format and layout of the
-        cloud version exactly. All the features that are in the cloud
-        version should be in the desktop version." Hosts one page of the
-        cloud app (vaccine-assist.vercel.app) in a WebView2 control —
-        MainWindow.xaml.cs lazily creates one of these per tab (Scheduling/
-        Lots/Ordering/Active vaccines/Physicians) the first time it's
-        selected, all sharing ONE CoreWebView2Environment/user-data folder
-        with the macro-codes popup (Services/SharedCloudWebView2Environment.cs)
-        so a sign-in on any one of them is shared everywhere.
+        V-T-single-nav (Will, 2026-09-14: "all the tabs in the app match
+        exactly what is in the cloud ... remove that extra row of tabs"):
+        MainWindow now hosts exactly ONE instance of this control,
+        full-window, loading the cloud app's root ("/") — the cloud app's
+        OWN top nav is the only tab row. See CloudPageView.xaml.cs's own
+        doc comment for the Part 1 (session-handoff) lifecycle change.
+        Shares ONE CoreWebView2Environment/user-data folder with the
+        macro-codes popup (Services/SharedCloudWebView2Environment.cs) so
+        a sign-in on either surface is shared with the other.
 
         Same failure-panel pattern as MacroCodesWindow.xaml (WebView2
         Runtime missing/init failure never crashes the app), plus a Retry
-        button since this is a long-lived tab rather than a one-shot
-        popup — worth letting staff retry without restarting the app.
+        button — worth letting staff retry without restarting the app.
     -->
     <Grid>
         <wv2:WebView2 x:Name="WebView"/>

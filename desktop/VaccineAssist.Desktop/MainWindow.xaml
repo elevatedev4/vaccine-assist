@@ -4,49 +4,33 @@
         Title="Vaccine Assist"
         Width="1000" Height="650"
         WindowStartupLocation="CenterScreen">
-    <DockPanel>
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" HorizontalAlignment="Right"
-                    Background="#F2F2F2" Margin="0,0,0,0">
-            <Button x:Name="LogoutButton" Content="Sign out" Height="32" Padding="12,0"
-                    Margin="0,6,10,6" Click="LogoutButton_OnClick"/>
-        </StackPanel>
+    <!--
+        V-T-single-nav (Will, 2026-09-14, verbatim: "I also asked for all
+        the tabs in the app to match exactly what is in the cloud too,
+        currently they dont. You have an extra row of tabs that are all
+        showing the same screen (that matches the cloud). Remove that
+        extra row of tabs."): MainWindow now hosts exactly ONE
+        CloudPageView, filling the whole window — the cloud app's OWN top
+        nav (see cloud/lib/nav-config.ts / app/top-nav.tsx) is the only
+        tab row now. The previous six-TabItem TabControl (Scheduling/Data
+        entry/Lots/Active vaccines/Ordering/Physicians — five of which
+        each hosted their OWN CloudPageView, duplicating the cloud's nav
+        five times over) is gone; data entry stays reachable via
+        Ctrl+NumPad7, the tray menu, and the Pioneer overlay icon
+        (DataEntryPopupWindow, unchanged) rather than a native tab.
 
-        <!--
-            Will, 2026-09-13: "Make sure data entry page is the main page
-            that is shown" — DataEntryTabItem below sets IsSelected="True"
-            explicitly (TabControl would otherwise default to the first
-            tab, Scheduling).
+        The previous native "Sign out" bar above the tabs is removed too,
+        for the same "no extra row above the cloud's own nav" reason —
+        the cloud's account menu (top-nav.tsx) has its own sign-out, and a
+        full desktop-level sign-out (clearing the persisted 90-day
+        session) is still one click away from the tray menu's own
+        "Sign out" item (Tray/TrayMenuBuilder.cs).
 
-            Scheduling/Lots/Active vaccines/Ordering/Physicians each host a
-            CloudPageView (a WebView2 view of the matching cloud-app page —
-            see that control's own doc comment) instead of the old native
-            view, for cloud-parity ("All the features that are in the cloud
-            version should be in the desktop version"). MainWindow.xaml.cs
-            builds each one LAZILY, the first time its tab is actually
-            selected (via MainTabs.SelectionChanged), rather than all five
-            up front — staff who "just run it and minimize it immediately"
-            per the brief should never pay for five WebView2 browser
-            processes they never look at.
-        -->
-        <TabControl x:Name="MainTabs" SelectionChanged="MainTabs_OnSelectionChanged">
-            <TabItem x:Name="SchedulingTabItem" Header="Scheduling">
-                <ContentControl x:Name="SchedulingContent"/>
-            </TabItem>
-            <TabItem x:Name="DataEntryTabItem" Header="Data entry" IsSelected="True">
-                <ContentControl x:Name="DataEntryTabContent"/>
-            </TabItem>
-            <TabItem x:Name="LotsTabItem" Header="Lots">
-                <ContentControl x:Name="LotsContent"/>
-            </TabItem>
-            <TabItem x:Name="ActiveVaccinesTabItem" Header="Active vaccines">
-                <ContentControl x:Name="ActiveVaccinesContent"/>
-            </TabItem>
-            <TabItem x:Name="OrderingTabItem" Header="Ordering">
-                <ContentControl x:Name="OrderingContent"/>
-            </TabItem>
-            <TabItem x:Name="PhysiciansTabItem" Header="Physicians">
-                <ContentControl x:Name="PhysiciansContent"/>
-            </TabItem>
-        </TabControl>
-    </DockPanel>
+        MainContent's Content is set in code-behind to the CloudPageView
+        instance App.xaml.cs already built, initialized, and (for a fresh
+        sign-in) handed off to the cloud's session — see
+        App.xaml.cs's PrepareMainCloudPageViewAsync and this window's own
+        constructor — BEFORE this window was even shown.
+    -->
+    <ContentControl x:Name="MainContent"/>
 </Window>
