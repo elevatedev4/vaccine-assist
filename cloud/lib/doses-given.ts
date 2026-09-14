@@ -335,8 +335,10 @@ export type DosesGivenDayRow = { date: string; total: number };
  * Only affects what the page renders — the CSV export
  * (dosesGivenPivotToCsv) reads pivot.dates directly and keeps every day
  * in its original ascending order, unchanged. The table's Total row is
- * NOT part of this list — the page renders it separately, at the bottom,
- * after these rows (V-doses-given-round6: "total at the bottom").
+ * NOT part of this list — the page renders it separately, ABOVE these
+ * rows, directly under the header (V-doses-given round 5, Will
+ * 2026-09-14: "Move the total to the top line on doses given, instead of
+ * bottom").
  */
 export function visibleDayRows<T extends DosesGivenDayRow>(rows: readonly T[]): T[] {
   return rows
