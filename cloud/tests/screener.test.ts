@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { screen, groupScreenerResults, STATUS_GROUPS } from "@/lib/screener";
+import {
+  screen,
+  groupScreenerResults,
+  groupScreenerResultsByType,
+  screenerMacroShortCodes,
+  shortCodeMatchesScreenerRule,
+  SCREENER_RULE_MACRO_INFO,
+  STATUS_GROUPS,
+} from "@/lib/screener";
+import { SCREENER_RULES } from "@/lib/screener-rules";
+import { MACRO_SECTION_ORDER } from "@/lib/macro-catalog";
 import { DEFAULT_CONDITIONS, type ConditionKey, type PriorPneumoHistory, type ScreenerConditions } from "@/lib/screener-rules";
 
 function conditions(overrides: Partial<Record<ConditionKey, boolean>> = {}): ScreenerConditions {
@@ -417,5 +427,114 @@ describe("groupScreenerResults", () => {
     for (const group of groups) {
       expect(group.results.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// --- SCREENER_RULE_MACRO_INFO ------------------------------------------
+
+describe("SCREENER_RULE_MACRO_INFO", () => {
+  it("maps every SCREENER_RULES id to a type + at least one short code", () => {
+    for (const rule of SCREENER_RULES) {
+      const info = SCREENER_RULE_MACRO_INFO[rule.id];
+      expect(info, `missing SCREENER_RULE_MACRO_INFO entry for "${rule.id}"`).toBeDefined();
+      expect(MACRO_SECTION_ORDER).toContain(info.section);
+      expect(info.shortCodes.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("shortCodeMatchesScreenerRule / screenerMacroShortCodes", () => {
+  it("matches a rule's own short code, case/whitespace-insensitively", () => {
+    expect(shortCodeMatchesScreenerRule("shingrix", "shingrix")).toBe(true);
+    expect(shortCodeMatchesScreenerRule("  SHINGRIX  ", "shingrix")).toBe(true);
+  });
+
+  it("matches a per-dose short code via the digit-stripped base, same as lookupMacroCatalog", () => {
+    expect(shortCodeMatchesScreenerRule("shingrix2", "shingrix")).toBe(true);
+    expect(shortCodeMatchesScreenerRule("engerix3", "engerix-b")).toBe(true);
+  });
+
+  it("does not match an unrelated code or rule", () => {
+    expect(shortCodeMatchesScreenerRule("shingrix", "mmr")).toBe(false);
+    expect(shortCodeMatchesScreenerRule("comirnaty12", "shingrix")).toBe(false);
+  });
+
+  it("a rule spanning multiple real packagings (flucelvax) matches any of them", () => {
+    expect(shortCodeMatchesScreenerRule("flucelvaxmdv", "flucelvax")).toBe(true);
+    expect(shortCodeMatchesScreenerRule("flucelvaxpfs", "flucelvax")).toBe(true);
+    expect(shortCodeMatchesScreenerRule("afluriapfs", "flucelvax")).toBe(true);
+    // Fluad is a DIFFERENT screener rule (65+ only) — never matches flucelvax.
+    expect(shortCodeMatchesScreenerRule("fluad", "flucelvax")).toBe(false);
+  });
+
+  it("screenerMacroShortCodes returns [] for an unknown id", () => {
+    expect(screenerMacroShortCodes("not-a-real-rule")).toEqual([]);
+  });
+});
+
+// --- groupScreenerResultsByType -----------------------------------------
+
+describe("groupScreenerResultsByType", () => {
+  it("groups eligible results by vaccine TYPE in MACRO_SECTION_ORDER order", () => {
+    // Age 55, immunocompromised: routine Shingrix (Shingles), risk RSV
+    // pair (RSV, on RSV_50_74_RISK_CONDITIONS), routine pneumococcal
+    // pair (Pneumonia, age-only at 50+), routine Engerix-B (Hep B,
+    // age-only 19-59), routine Boostrix (Tetanus), not-indicated
+    // Gardasil (HPV, 46+) — HPV must be absent.
+    const results = screen(55, conditions({ immunocompromised: true }));
+    const groups = groupScreenerResultsByType(results);
+    const sections = groups.map((g) => g.section);
+
+    // Stable order: a subsequence of MACRO_SECTION_ORDER, never reordered.
+    const orderIndices = sections.map((s) => MACRO_SECTION_ORDER.indexOf(s));
+    expect(orderIndices).toEqual([...orderIndices].sort((a, b) => a - b));
+
+    expect(sections).toContain("Shingles");
+    expect(sections).toContain("RSV");
+    expect(sections).toContain("Pneumonia");
+    expect(sections).toContain("Hep B");
+    expect(sections).toContain("Tetanus");
+    // HPV's only rule (Gardasil 9) is not-indicated at 55 -> excluded entirely.
+    expect(sections).not.toContain("HPV");
+  });
+
+  it("excludes not-indicated results but keeps every other status (including info)", () => {
+    // Age 45, no conditions: Typhim Vi is "info" (travel-only, always) —
+    // still shown; Boostrix's rule is the sole Tetanus rule and IS
+    // routine at 45, so use age 5 for a clean not-indicated exclusion
+    // check instead.
+    const results45 = screen(45, conditions());
+    const groups45 = groupScreenerResultsByType(results45);
+    const typhoid = groups45.find((g) => g.section === "Typhoid");
+    expect(typhoid).toBeDefined();
+    expect(typhoid?.results.map((r) => r.id)).toEqual(["typhim-vi"]);
+    expect(typhoid?.results[0].status).toBe("info");
+
+    const results5 = screen(5, conditions());
+    const groups5 = groupScreenerResultsByType(results5);
+    // Boostrix (Tetanus) is not-indicated below age 10 -> Tetanus absent.
+    expect(groups5.map((g) => g.section)).not.toContain("Tetanus");
+  });
+
+  it("merges identical reasons across products in the same type into one, keeps distinct ones separate", () => {
+    // Comirnaty and mNEXSPIKE (COVID) are round-2-identical -> one reason.
+    const covidResults = screen(40, conditions());
+    const covid = groupScreenerResultsByType(covidResults).find((g) => g.section === "COVID");
+    expect(covid?.results).toHaveLength(2);
+    expect(covid?.reasons).toHaveLength(1);
+
+    // Prevnar 20 (risk) vs Capvaxive (consider) at age 10 + asplenia have
+    // DIFFERENT reason text -> two separate reason lines.
+    const pneumoResults = screen(10, conditions({ asplenia: true }));
+    const pneumonia = groupScreenerResultsByType(pneumoResults).find((g) => g.section === "Pneumonia");
+    expect(pneumonia?.results.map((r) => r.id).sort()).toEqual(["capvaxive", "prevnar20"]);
+    expect(pneumonia?.reasons).toHaveLength(2);
+  });
+
+  it("keeps result order stable (SCREENER_RULES order) within a type across repeated calls", () => {
+    const results = screen(30, conditions({ pregnant: true }));
+    const first = groupScreenerResultsByType(results).map((g) => g.results.map((r) => r.id));
+    const second = groupScreenerResultsByType(results).map((g) => g.results.map((r) => r.id));
+    expect(second).toEqual(first);
   });
 });

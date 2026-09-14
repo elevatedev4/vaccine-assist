@@ -32,6 +32,15 @@ import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { postToHost } from "@/lib/macro-embed";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
+import {
+  CopyFallback,
+  SECTION_COLORS,
+  copyToClipboard,
+  macroRowKey,
+  missingNote,
+  renderMacroDoseButton,
+  type SectionColors,
+} from "@/lib/macro-dose-button";
 
 /**
  * /macro-codes tab, round 6 (Will's verbatim feedback, 2026-09-12,
@@ -150,28 +159,6 @@ import DateTextInput from "@/app/date-text-input";
 type VaccineRow = MacroRowVaccine;
 type LotRow = { id: string; vaccine_id: string; lot_number: string; expiration: string; status: string };
 
-type SectionColors = { bg: string; border: string; text: string };
-
-/** One hue per section (Will's brief: "Colors: one hue per SECTION...
- * readable text, subtle (light background + darker border/text)").
- * Every MacroSection has an explicit entry so the palette is fully
- * deterministic — no runtime hashing/cycling logic to get wrong. */
-const SECTION_COLORS: Readonly<Record<MacroSection, SectionColors>> = {
-  Flu: { bg: "#e8f1fd", border: "#7fa8dd", text: "#1a4c8f" },
-  COVID: { bg: "#f2ebfa", border: "#a67fd6", text: "#5a2d92" },
-  Pneumonia: { bg: "#fdf1e3", border: "#e0a55e", text: "#8f5a17" },
-  RSV: { bg: "#e5f7f4", border: "#5cc0b3", text: "#136a5e" },
-  Shingles: { bg: "#fdecec", border: "#e07a7a", text: "#8f1f1f" },
-  "Hep B": { bg: "#eaf7e8", border: "#7bc069", text: "#2d6b1e" },
-  Tetanus: { bg: "#eceffb", border: "#8d97d4", text: "#32389b" },
-  HPV: { bg: "#fbeaf3", border: "#d97fb0", text: "#96285f" },
-  Meningitis: { bg: "#e7f6fb", border: "#63b6d5", text: "#155e78" },
-  "Hep A": { bg: "#f3f0e6", border: "#b7a468", text: "#6b5a1c" },
-  Typhoid: { bg: "#eef3f5", border: "#8ea6af", text: "#33505c" },
-  MMR: { bg: "#f6ece6", border: "#c98f68", text: "#7a4419" },
-  Other: { bg: "#f2f2f2", border: "#aaaaaa", text: "#4d4d4d" },
-};
-
 /** Round 8: switcher button labels, verbatim per Will's brief ("Make
  * the two different versions and add buttons at the top for me to
  * switch between them"). */
@@ -197,15 +184,6 @@ const styles = {
     margin: "0 0 0.35rem",
     paddingBottom: "0.15rem",
     borderBottom: "2px solid #999",
-  },
-  copyFallback: { margin: "0.15rem 0 0.4rem", width: "100%" },
-  copyFallbackInput: {
-    fontFamily: "ui-monospace, monospace",
-    fontSize: "0.8rem",
-    width: "100%",
-    padding: "2px 4px",
-    boxSizing: "border-box" as const,
-    border: "1px solid #b00020",
   },
   // ⚙ settings menu — a native <details>/<summary> disclosure, same
   // pattern as round 3 (and /lots' row cog menus): a document
@@ -270,70 +248,10 @@ const styles = {
   },
 } as const;
 
-/** "Copied ✓" is 8 characters — a button's reserved width is at least
- * that (plus a little breathing room) so swapping the label to the
- * copied flag never shifts layout, per Will's brief ("'Copied ✓'
- * feedback on the button for 1.5s without layout shift"). */
-const COPIED_FLAG = "Copied ✓";
-const MIN_BUTTON_CH = COPIED_FLAG.length + 1;
-
-/** Copies text via the Clipboard API, falling back to a hidden
- * textarea + execCommand for non-secure (http, non-localhost) contexts
- * where navigator.clipboard is unavailable. */
-async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // fall through to the execCommand fallback below
-  }
-  try {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
-  } catch {
-    return false;
-  }
-}
-
-/** Read-only, auto-selected text field shown when copyToClipboard
- * returns false — the code is still visible/selectable so a manual
- * Cmd/Ctrl+C still works even though the programmatic copy didn't. */
-function CopyFallback({ code }: { code: string }) {
-  return (
-    <p style={styles.copyFallback}>
-      <span style={styles.error}>Couldn&apos;t copy — select and copy manually:</span>
-      <br />
-      <input
-        type="text"
-        readOnly
-        autoFocus
-        value={code}
-        style={styles.copyFallbackInput}
-        onFocus={(e) => e.currentTarget.select()}
-      />
-    </p>
-  );
-}
-
-function missingNote(row: MacroRow): string | null {
-  if (row.complete || row.shortCode === null) return null;
-  const missingLot = !row.lotNumber;
-  const missingExp = !row.expirationIso;
-  if (missingLot && missingExp) return "lot + exp missing";
-  if (missingLot) return "lot missing";
-  if (missingExp) return "exp missing";
-  return null;
-}
+// Round 11: CopyFallback/copyToClipboard/missingNote/SECTION_COLORS now
+// live in lib/macro-dose-button.tsx (see this file's new import block)
+// so app/screener/page.tsx can render the exact same buttons — see that
+// file's header comment for why.
 
 // Hidden on versions A/B per Will 2026-09-12 ("Hide prices for now") —
 // still unused by renderSectionVersionA/B below. ROUND 9 (Will's
@@ -541,9 +459,7 @@ function MacroCodesPageContent() {
     [effectiveViewMode, topGroups, filterQuery]
   );
 
-  function rowKey(row: MacroRow): string {
-    return `${row.productKey}:${row.doseNumber}`;
-  }
+  const rowKey = macroRowKey;
 
   // Closes every open ⚙ menu on an outside click/tap, and on Escape —
   // same pattern as /lots' row cog menus.
@@ -785,133 +701,25 @@ function MacroCodesPageContent() {
   function renderDoseButton(
     dose: MacroDoseButton,
     colors: SectionColors,
-    options?: { visibleLabel?: string; subLabel?: string; block?: boolean; large?: boolean }
+    options?: {
+      visibleLabel?: string;
+      subLabel?: string;
+      block?: boolean;
+      large?: boolean;
+      fitRow?: boolean;
+      doseCountInRow?: number;
+      reserveSubLabelSlot?: boolean;
+    }
   ) {
     const { row, label } = dose;
     const key = rowKey(row);
-    const isNoShortCode = row.shortCode === null;
-    const isCopied = copiedKey === key;
-    const note = missingNote(row);
-    const block = options?.block ?? false;
-    const large = options?.large ?? false;
-    const visibleText = isCopied ? COPIED_FLAG : options?.visibleLabel ?? label;
-    // ROUND 10: hidden while showing "Copied ✓" — that flag already
-    // says everything the button needs to say for that 1.5s.
-    const subLabel = !isCopied ? options?.subLabel : undefined;
-    const defaultTitle = subLabel ? `Copy ${label} macro code — ${subLabel}` : `Copy ${label} macro code`;
-
-    return (
-      <span
-        key={key}
-        style={{
-          position: "relative",
-          display: block ? "block" : "inline-block",
-          width: block ? "100%" : undefined,
-          // ROUND 10 FIX: inside a flex-wrap button group (version C), a
-          // button must never be squeezed narrower than its own content —
-          // that's what let "Dose 1" wrap onto two lines when a sibling
-          // Dose 2/3 button was wide. flexShrink: 0 keeps every button at
-          // its natural width; the GROUP wraps to a new line instead.
-          flexShrink: block ? undefined : 0,
-        }}
-      >
-        <button
-          type="button"
-          disabled={isNoShortCode}
-          onClick={() => void handleCopy(row, label)}
-          title={isNoShortCode ? "no short code set" : note ? note : defaultTitle}
-          className="macro-dose-button"
-          style={{
-            border: `1px solid ${isNoShortCode ? "#ccc" : colors.border}`,
-            background: isNoShortCode ? "#f2f2f2" : colors.bg,
-            color: isNoShortCode ? "#888" : colors.text,
-            borderRadius: 5,
-            // Age is now part of the label (round 5), so labels run
-            // longer — a fixed minHeight + horizontal-only padding keeps
-            // every button a consistent, clearly-clickable ~32px tall
-            // regardless of label length, instead of growing vertically.
-            // Version C bumps this further (`large`) for bigger hit
-            // targets per Will's brief. ROUND 10: a button carrying a
-            // subLabel (schedule interval) grows just enough for its
-            // second line — height only, never width beyond the capped
-            // subLabel column below.
-            // Embed compact (2026-09-13, target 980x760): a flat 28px
-            // minHeight regardless of subLabel — the 11px label + 9px
-            // subLabel stack fits inside 28px with the reduced padding
-            // below, and a fixed height (instead of subLabel's usual
-            // +6/+8px bump) keeps every button in a row the same height
-            // even when only some doses have a subLabel.
-            minHeight: embed ? 28 : subLabel ? (large ? 46 : 40) : large ? 38 : 32,
-            padding: embed ? "0 0.5rem" : large ? "0 0.75rem" : "0 0.5rem",
-            display: "inline-flex",
-            // ROUND 10: a subLabel switches the button to a vertical
-            // (column) flex so the two lines stack — main/cross axes
-            // swap accordingly, so alignItems/justifyContent trade
-            // places to keep the SAME visual alignment (block: left,
-            // otherwise centered) the row layout had below.
-            flexDirection: subLabel ? "column" : "row",
-            alignItems: subLabel ? (block ? "flex-start" : "center") : "center",
-            justifyContent: subLabel ? "center" : block ? "flex-start" : "center",
-            gap: subLabel ? 1 : undefined,
-            fontSize: embed ? "11px" : large ? "13px" : "12px",
-            fontWeight: 600,
-            // ROUND 10 FIX: the main label itself must never wrap (that's
-            // the "Dose 1" wrapping-onto-two-lines bug) — its width is
-            // sized to fit via minWidth below, so nowrap just stops a
-            // narrow flex context from breaking it mid-word.
-            whiteSpace: "nowrap",
-            cursor: isNoShortCode ? "default" : "pointer",
-            width: block ? "100%" : undefined,
-            minWidth: block ? undefined : `${Math.max(visibleText.length, MIN_BUTTON_CH)}ch`,
-            textAlign: block ? "left" : "center",
-            boxSizing: "border-box",
-          }}
-        >
-          {visibleText}
-          {subLabel && (
-            <span
-              aria-hidden="true"
-              style={{
-                display: "block",
-                // ROUND 10 FIX (live screenshot, layout C): dropped from
-                // 96/112px — even the shortened round-10-fix catalog
-                // strings (e.g. Gardasil's "1–2 mo · 9–14: 6 mo") could
-                // still widen the button enough to shove the group over
-                // the product name at 1456px; the full text is always
-                // still reachable via the button's title (defaultTitle
-                // above).
-                maxWidth: embed ? 70 : 88,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                fontSize: embed ? "9px" : large ? "11px" : "10px",
-                fontWeight: 400,
-                color: isNoShortCode ? "#999" : "#666",
-              }}
-            >
-              {subLabel}
-            </span>
-          )}
-        </button>
-        {!isNoShortCode && note && (
-          <span
-            aria-hidden="true"
-            title={note}
-            style={{
-              position: "absolute",
-              top: -2,
-              right: -2,
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: "#c62828",
-              border: "1px solid #fff",
-            }}
-          />
-        )}
-        {copyFailure?.key === key && <CopyFallback code={copyFailure.code} />}
-      </span>
-    );
+    return renderMacroDoseButton(dose, colors, {
+      isCopied: copiedKey === key,
+      copyFailureCode: copyFailure?.key === key ? copyFailure.code : null,
+      onClick: () => void handleCopy(row, label),
+      compact: embed,
+      ...options,
+    });
   }
 
   function renderSettingsMenu(product: MacroProductGroup) {
@@ -1150,6 +958,20 @@ function MacroCodesPageContent() {
                     visibleLabel: doseButtonShortLabel(dose.row, doseCount),
                     subLabel: dose.row.doseInterval,
                     large: true,
+                    // ROUND 11 (Will's verbatim feedback: "I want all the
+                    // buttons to fit on one row, so if there are 3 doses,
+                    // they all need to fit" + "dose 1 doesn't have a date
+                    // on it, so you need to adjust for that to make sure
+                    // the heights all match"): every dose button in this
+                    // product's row flexes to share the row (never
+                    // wraps — see .macro-dose-buttons-c's flex-wrap:
+                    // nowrap below), shrinks its text/padding once 3+
+                    // doses share it, and reserves the interval sub-line
+                    // even on a dose (usually dose 1) that has none, so
+                    // every button in the row is the same height.
+                    fitRow: true,
+                    doseCountInRow: doseCount,
+                    reserveSubLabelSlot: product.doses.some((d) => Boolean(d.row.doseInterval)),
                   })
                 )}
               </div>
@@ -1603,10 +1425,15 @@ function MacroCodesPageContent() {
         }
         .macro-dose-buttons-c {
           display: flex;
-          flex-wrap: wrap;
+          /* ROUND 11 (Will's verbatim feedback: "I want all the buttons
+           * to fit on one row, so if there are 3 doses, they all need to
+           * fit"): never wrap to a second line — each button flexes to
+           * share the row instead (renderDoseButton's fitRow option) and
+           * shrinks its text/padding once doseCountInRow hits 3+. */
+          flex-wrap: nowrap;
           gap: 0.3rem;
           justify-content: flex-end;
-          max-width: 60%;
+          max-width: 68%;
           /* Pushes the button group (and the settings ⚙ after it) to the
            * row's right edge, hugging together, instead of the name-cell
            * -> buttons -> settings gaps splitting evenly (which left an
@@ -1626,6 +1453,12 @@ function MacroCodesPageContent() {
           .macro-dose-buttons-c {
             justify-content: flex-start;
             margin-left: 0;
+            /* Phone-width fallback: the row is already stacked (name
+             * above, buttons below, full width) here, so there's no
+             * "layout C / embed column" fit-on-one-row constraint to
+             * honor — let a genuinely long dose group wrap instead of
+             * squeezing to unreadable sizes. */
+            flex-wrap: wrap;
           }
           .macro-row-b {
             grid-template-columns: 1fr;
