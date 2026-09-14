@@ -202,12 +202,12 @@ export interface ScreenerTypeReason {
 }
 
 /** One TYPE row within a single STATUS group (app/screener/page.tsx's
- * per-status sections, restored round-12): one or more screener results
- * of the SAME status that share a vaccine type/family — Flucelvax +
- * Fluad both "routine" at 65+, or Comirnaty + mNEXSPIKE both "consider"
- * at 40 with no risk condition — rendered as one row (type name, each
- * product labeled small before its own dose buttons) instead of two
- * separate rows. */
+ * per-status sections, restored round-12, rendered as plain inline text
+ * since round-13): one or more screener results of the SAME status that
+ * share a vaccine type/family — Flucelvax + Fluad both "routine" at
+ * 65+, or Comirnaty + mNEXSPIKE both "consider" at 40 with no risk
+ * condition — rendered as one row (type name + its reason(s)) instead
+ * of two separate rows. */
 export interface ScreenerTypeRow {
   section: MacroSection;
   /** The underlying results this row represents, in first-seen (i.e.
@@ -231,14 +231,24 @@ export interface ScreenerTypeRow {
  * code buttons"). Restores the original per-STATUS grouping
  * (groupScreenerResults/STATUS_GROUPS, unchanged) as the outer
  * structure; this function is the new INNER step app/screener/page.tsx
- * runs on each status group's own results list — merging same-type
- * results (already all the same status, since the caller pre-filtered
- * by status) into one row apiece, in first-seen order (not
- * MACRO_SECTION_ORDER — keeps the original per-status row order stable
- * rather than reshuffling by family). A result whose id isn't in
- * SCREENER_RULE_MACRO_INFO is skipped (shouldn't happen — every
- * SCREENER_RULES id is mapped above; guarded so a future new rule fails
- * soft instead of throwing).
+ * runs on EVERY status group's own results list (round-13 dropped the
+ * round-12 routine/risk/consider-only split — every group renders the
+ * same way now) — merging same-type results (already all the same
+ * status, since the caller pre-filtered by status) into one row apiece,
+ * in first-seen order (not MACRO_SECTION_ORDER — keeps the original
+ * per-status row order stable rather than reshuffling by family). A
+ * result whose id isn't in SCREENER_RULE_MACRO_INFO is skipped
+ * (shouldn't happen — every SCREENER_RULES id is mapped above; guarded
+ * so a future new rule fails soft instead of throwing).
+ *
+ * ROUND 13 (Will verbatim, 2026-09-14): "Remove all the macro code
+ * buttons, it's not looking good. Just do the vaccine that is
+ * recommended (Flu, Tdap, etc, as it already is) then add the explainer
+ * text after it, not below it." This function's OUTPUT shape is
+ * unchanged — app/screener/page.tsx just renders `reasons` as plain
+ * inline text next to the type name instead of real macro dose buttons
+ * under it; the type-level grouping/merging/dedup logic below didn't
+ * need to change.
  */
 export function groupStatusResultsByType(results: readonly ScreenerResult[]): ScreenerTypeRow[] {
   const bySection = new Map<MacroSection, ScreenerResult[]>();

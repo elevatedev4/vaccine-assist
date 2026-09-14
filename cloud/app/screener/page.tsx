@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
@@ -12,33 +12,8 @@ import {
   type PriorPneumoHistory,
   type ScreenerConditions,
 } from "@/lib/screener-rules";
-import {
-  groupScreenerResults,
-  groupStatusResultsByType,
-  screen,
-  type ScreenerResultGroup,
-  type ScreenerStatus,
-  type ScreenerTypeRow,
-} from "@/lib/screener";
-import { matchScreenerProducts } from "@/lib/screener-macro";
-import { buildProductViews } from "@/lib/product-view";
-import {
-  buildMacroCode,
-  buildMacroRows,
-  doseButtonShortLabel,
-  macroSectionDisplayName,
-  type MacroLotLike,
-  type MacroRow,
-  type MacroRowVaccine,
-} from "@/lib/macro-codes";
-import {
-  SECTION_COLORS,
-  copyToClipboard,
-  macroRowKey,
-  renderMacroDoseButton,
-  type SectionColors,
-} from "@/lib/macro-dose-button";
-import DateTextInput from "@/app/date-text-input";
+import { groupScreenerResults, groupStatusResultsByType, screen, type ScreenerResultGroup } from "@/lib/screener";
+import { macroSectionDisplayName } from "@/lib/macro-codes";
 import type { FormEvent } from "react";
 
 /**
@@ -50,46 +25,33 @@ import type { FormEvent } from "react";
  * vaccines are simply based on age.").
  *
  * Same client-page shell as app/doses-given/page.tsx (SignInGate +
- * subscribeToSessionState + AuthLoading) for the shared pharmacy login.
- * Eligibility itself is still every rule is code (lib/screener-rules.ts)
- * evaluated client-side by lib/screener.ts's pure `screen()`, so
- * eligibility updates live as the form changes with no network round
- * trip for the RULES themselves. Deliberately separate from the
- * existing age-only eligibility system (lib/eligibility.ts, app/api/
- * eligibility/*) — see this page's lib files for why.
+ * subscribeToSessionState + AuthLoading) for the shared pharmacy login,
+ * but there is no API route here — every rule is code (lib/screener-
+ * rules.ts) evaluated client-side by lib/screener.ts's pure `screen()`,
+ * so results update live as the form changes with no network round
+ * trip. Deliberately separate from the existing age-only eligibility
+ * system (lib/eligibility.ts, app/api/eligibility/*) — see this page's
+ * lib files for why.
  *
- * ROUND 12 (2026-09-13): round 11 tried grouping the whole results list
- * by vaccine TYPE first (one card per type, statuses mixed inside). Will
- * rejected that, verbatim: "The format/layout you had before was good,
- * showing recommendations by age, then by health condition, etc. I just
- * wanted you to say 'Flu' and then have the available product options
- * listed as copyable macro code buttons." This restores the ORIGINAL
- * per-STATUS structure (groupScreenerResults/STATUS_GROUPS, byte-
- * identical to before round 11) as the outer grouping. The only change
- * from the pre-round-11 page: within the three ACTIONABLE status groups
- * (routine/risk/consider — the ones where there's something to actually
- * give), a row is now keyed by vaccine TYPE instead of by product name,
- * and shows that type's real, eligible products as the same copy-to-
- * clipboard macro dose buttons app/macro-codes/page.tsx uses
- * (lib/macro-dose-button.tsx's renderMacroDoseButton, extracted from
- * that page — see its header). lib/screener.ts's groupStatusResultsByType
- * merges two rules of the same type that landed in the SAME status into
- * one row (Flucelvax + Fluad both routine at 65+; Comirnaty + mNEXSPIKE
- * sharing a status since their rule is identical; Prevnar 20 + Capvaxive
- * whenever they land in the same tier) — each real product gets a small
- * label before its own dose buttons whenever more than one is being
- * shown in that row, so it's still clear which button is which product.
- * The caution/not-indicated/info groups are UNTOUCHED from the original
- * page — one row per product, plain reason + source link, no buttons —
- * both because there's no "eligible product to copy" in those groups
- * (caution explicitly means don't give it; not-indicated/info mean it
- * doesn't apply or needs more info) and because Will's own examples
- * (Prevnar 20/Capvaxive, Flucelvax/Fluad, Comirnaty/mNEXSPIKE) are all
- * routine/risk/consider scenarios. Fetching /api/vaccines + /api/lots
- * (new — the rule evaluation itself is still 100% client-side/no-I/O) is
- * needed only to build those real macro code buttons; the eligibility
- * logic, the prior-pneumococcal dropdown, and lib/screener-rules.ts are
- * all untouched by this round.
+ * ROUND 13 (2026-09-14, Will verbatim, replying to round 12's type-name-
+ * plus-macro-buttons rows): "Remove all the macro code buttons, it's
+ * not looking good. Just do the vaccine that is recommended (Flu, Tdap,
+ * etc, as it already is) then add the explainer text after it, not
+ * below it. To see if that cleans up the look a little better." Drops
+ * the copy-to-clipboard buttons and the /api/vaccines+/api/lots fetch
+ * entirely (round 12's only reason for that network round trip) — this
+ * page is back to 100% client-side/no-I/O, same as before round 11.
+ * Every row (in every status group, not just the actionable ones) is
+ * now one line: the vaccine TYPE name in bold, the reason text
+ * immediately after it on the SAME line (wrapping naturally), then the
+ * small "source" link at the end — lib/screener.ts's
+ * groupStatusResultsByType still does the type-level grouping/merging
+ * (Flucelvax + Fluad, Comirnaty + mNEXSPIKE, Prevnar 20 + Capvaxive
+ * share one row when they land in the same status, reasons deduped),
+ * just rendered as plain text instead of dose buttons. Status groups,
+ * headings, colors, the prior-pneumococcal dropdown, and the info-page
+ * link are all unchanged. app/macro-codes/page.tsx and lib/macro-dose-
+ * button.tsx are untouched — that page keeps its buttons.
  */
 
 const styles = {
@@ -152,8 +114,6 @@ const styles = {
   },
   resultsWrap: { display: "flex", flexDirection: "column" as const, gap: "1rem" },
   emptyState: { color: "#666", fontSize: "0.8rem" },
-  loadingNote: { color: "#666", fontSize: "0.75rem" },
-  errorNote: { color: "#b00020", fontSize: "0.75rem" },
   group: { border: "1px solid #d5dce3", borderRadius: 8, overflow: "hidden" as const },
   groupHeader: {
     margin: 0,
@@ -163,44 +123,18 @@ const styles = {
     background: "#f4f6f8",
     borderBottom: "1px solid #d5dce3",
   },
+  // ROUND 13: one line per row — name, reason, and source link all flow
+  // as normal inline text (no flex split into a left/right column the
+  // way the button-based row needed) so the reason text wraps naturally
+  // right after the name instead of sitting on its own line below it.
   resultRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "baseline",
-    gap: "0.75rem",
     padding: "0.45rem 0.75rem",
     borderBottom: "1px solid #eee",
+    lineHeight: 1.5,
   },
-  resultMain: { display: "flex", flexDirection: "column" as const, gap: "0.1rem", minWidth: 0, flex: "1 1 auto" },
   resultName: { fontWeight: 700, fontSize: "0.8rem" },
   resultReason: { fontSize: "0.72rem", color: "#333" },
-  resultSource: { fontSize: "0.68rem", color: "#1a6ecf", whiteSpace: "nowrap" as const },
-  sourceColumn: { display: "flex", flexDirection: "column" as const, gap: "0.2rem", alignItems: "flex-end" as const },
-  noMacroNote: { fontSize: "0.72rem", color: "#888" },
-  typeProductLabel: { fontSize: "0.68rem", fontWeight: 700, color: "#555", marginBottom: "0.1rem" },
-  modalOverlay: {
-    position: "fixed" as const,
-    inset: 0,
-    background: "rgba(0,0,0,0.35)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 1000,
-    padding: "1rem",
-  },
-  modalCard: {
-    background: "#fff",
-    borderRadius: 8,
-    padding: "1.5rem",
-    maxWidth: 420,
-    width: "100%",
-    boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
-  },
-  modalField: { display: "block", width: "100%", marginBottom: "0.75rem", padding: "0.5rem", boxSizing: "border-box" as const, border: "1px solid #bbb" },
-  modalLabel: { display: "block", fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" },
-  modalCheckboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
-  modalMuted: { color: "#555", fontSize: "0.8rem" },
-  modalButton: { padding: "0.3rem 0.6rem", fontSize: "13px" },
+  resultSource: { fontSize: "0.68rem", color: "#1a6ecf" },
 } as const;
 
 function statusGroupColor(status: string): string {
@@ -220,10 +154,6 @@ function statusGroupColor(status: string): string {
   }
 }
 
-/** The three statuses where a row shows real, copy-to-clipboard macro
- * dose buttons instead of plain text — see this file's header. */
-const BUTTON_STATUSES: ReadonlySet<ScreenerStatus> = new Set(["routine", "risk", "consider"]);
-
 export default function ScreenerPage() {
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -236,32 +166,6 @@ export default function ScreenerPage() {
   const [conditions, setConditions] = useState<ScreenerConditions>(DEFAULT_CONDITIONS);
   const [priorPneumo, setPriorPneumo] = useState<PriorPneumoHistory>("none");
 
-  // Live vaccines+lots data, fetched the same way app/macro-codes/
-  // page.tsx does, so the real per-dose macro code buttons
-  // (lib/macro-dose-button.tsx) can be rendered under an eligible type.
-  const [vaccines, setVaccines] = useState<MacroRowVaccine[]>([]);
-  const [lots, setLots] = useState<{ id: string; vaccine_id: string; lot_number: string; expiration: string; status: string }[]>(
-    []
-  );
-  const [productsLoading, setProductsLoading] = useState(false);
-  const [productsError, setProductsError] = useState<string | null>(null);
-
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [copyFailure, setCopyFailure] = useState<{ key: string; code: string } | null>(null);
-
-  type ModalState = {
-    row: MacroRow;
-    label: string;
-    lotNumber: string;
-    expirationIso: string;
-    saveToSystem: boolean;
-    submitting: boolean;
-    error: string | null;
-    copyResult: { copied: boolean; code: string } | null;
-    saved: boolean;
-  };
-  const [modal, setModal] = useState<ModalState | null>(null);
-
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     try {
@@ -269,11 +173,6 @@ export default function ScreenerPage() {
       unsubscribe = subscribeToSessionState(supabase, (state) => {
         setSession(state);
         setAuthChecked(true);
-        if (!state) {
-          setVaccines([]);
-          setLots([]);
-          setProductsError(null);
-        }
       });
     } catch {
       setAuthChecked(true);
@@ -282,45 +181,6 @@ export default function ScreenerPage() {
       unsubscribe?.();
     };
   }, []);
-
-  const loadProducts = useCallback(async (token: string) => {
-    setProductsLoading(true);
-    setProductsError(null);
-    try {
-      const headers = { Authorization: `Bearer ${token}` };
-      const [vaccinesRes, lotsRes] = await Promise.all([
-        fetch("/api/vaccines?includeInactive=true", { headers }),
-        fetch("/api/lots", { headers }),
-      ]);
-      const [vaccinesData, lotsData] = await Promise.all([vaccinesRes.json(), lotsRes.json()]);
-
-      if (!vaccinesRes.ok) {
-        setProductsError(vaccinesData.error ?? "Could not load vaccines.");
-        return;
-      }
-      if (!lotsRes.ok) {
-        setProductsError(lotsData.error ?? "Could not load lots.");
-        return;
-      }
-
-      setVaccines(vaccinesData.vaccines ?? []);
-      setLots(lotsData.lots ?? []);
-    } catch (err) {
-      setProductsError(err instanceof Error ? err.message : "Could not load macro codes.");
-    } finally {
-      setProductsLoading(false);
-    }
-  }, []);
-
-  const refetchLots = useCallback(async (token: string) => {
-    const response = await fetch("/api/lots", { headers: { Authorization: `Bearer ${token}` } });
-    const data = await response.json();
-    if (response.ok) setLots(data.lots ?? []);
-  }, []);
-
-  useEffect(() => {
-    if (session) void loadProducts(session.accessToken);
-  }, [session, loadProducts]);
 
   async function handleSignIn(event: FormEvent) {
     event.preventDefault();
@@ -371,222 +231,6 @@ export default function ScreenerPage() {
     const results = screen(ageValue, conditions, priorPneumo);
     return groupScreenerResults(results);
   }, [ageValid, ageValue, conditions, priorPneumo]);
-
-  // Real per-product dose data, built the same way app/macro-codes/
-  // page.tsx does (buildProductViews -> buildMacroRows), so
-  // matchScreenerProducts can hand an eligible screener result its real
-  // macro code button(s).
-  const rows = useMemo<MacroRow[]>(() => {
-    const productViews = buildProductViews(vaccines);
-    const activeLotsByVaccineId: Record<string, MacroLotLike[]> = {};
-    for (const lot of lots) {
-      (activeLotsByVaccineId[lot.vaccine_id] ??= []).push({
-        status: lot.status,
-        expiration: lot.expiration,
-        lot_number: lot.lot_number,
-      });
-    }
-    return buildMacroRows(productViews, vaccines, activeLotsByVaccineId);
-  }, [vaccines, lots]);
-
-  function productsFor(screenerId: string) {
-    return matchScreenerProducts(rows, screenerId);
-  }
-
-  async function handleCopy(row: MacroRow, label: string) {
-    if (!row.macro || !row.shortCode) return;
-    if (row.complete) {
-      const key = macroRowKey(row);
-      const ok = await copyToClipboard(row.macro);
-      if (ok) {
-        setCopyFailure(null);
-        setCopiedKey(key);
-        setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1500);
-      } else {
-        setCopiedKey(null);
-        setCopyFailure({ key, code: row.macro });
-      }
-      return;
-    }
-    setCopyFailure(null);
-    setModal({
-      row,
-      label,
-      lotNumber: row.lotNumber ?? "",
-      expirationIso: row.expirationIso ?? "",
-      saveToSystem: row.packageSize !== 1,
-      submitting: false,
-      error: null,
-      copyResult: null,
-      saved: false,
-    });
-  }
-
-  function requestCloseModal() {
-    setModal((current) => (current && !current.submitting ? null : current));
-  }
-
-  async function handleModalSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (!modal || !session) return;
-    const trimmedLot = modal.lotNumber.trim();
-    if (!trimmedLot || !modal.expirationIso) return;
-
-    const finalCode = modal.row.shortCode
-      ? buildMacroCode({
-          shortCode: modal.row.shortCode,
-          doseNumber: modal.row.doseNumber,
-          doseCount: 1,
-          lotNumber: trimmedLot,
-          expirationIso: modal.expirationIso,
-        }).text
-      : null;
-
-    // Copy FIRST, before any await touches the network — same Safari/iOS
-    // clipboard-permission reasoning as app/macro-codes/page.tsx's
-    // handleModalSubmit.
-    const copied = finalCode ? await copyToClipboard(finalCode) : false;
-
-    setModal({ ...modal, submitting: true, error: null, copyResult: finalCode ? { copied, code: finalCode } : null });
-
-    if (modal.saveToSystem && !modal.saved) {
-      try {
-        const response = await fetch("/api/lots", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-          body: JSON.stringify({
-            vaccine_ids: modal.row.vaccineIds,
-            lot_number: trimmedLot,
-            expiration: modal.expirationIso,
-            status: "active",
-          }),
-        });
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          setModal((current) =>
-            current ? { ...current, submitting: false, error: body.error ?? "Could not save the lot." } : current
-          );
-          return;
-        }
-        setModal((current) => (current ? { ...current, saved: true } : current));
-        await refetchLots(session.accessToken);
-      } catch (err) {
-        setModal((current) =>
-          current ? { ...current, submitting: false, error: err instanceof Error ? err.message : "Could not save the lot." } : current
-        );
-        return;
-      }
-    }
-
-    if (copied) {
-      setModal(null);
-    } else {
-      setModal((current) => (current ? { ...current, submitting: false } : current));
-    }
-  }
-
-  useEffect(() => {
-    if (!modal) return;
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") requestCloseModal();
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modal !== null]);
-
-  function renderDoseButton(
-    dose: { row: MacroRow; label: string },
-    colors: SectionColors,
-    options: { visibleLabel?: string; subLabel?: string; doseCountInRow: number; reserveSubLabelSlot: boolean }
-  ) {
-    const key = macroRowKey(dose.row);
-    return renderMacroDoseButton(dose, colors, {
-      isCopied: copiedKey === key,
-      copyFailureCode: copyFailure?.key === key ? copyFailure.code : null,
-      onClick: () => void handleCopy(dose.row, dose.label),
-      large: true,
-      // No `fitRow` here (unlike macro-codes' narrow layout-C column) —
-      // the screener's results column has plenty of width, so buttons
-      // size to their own content and the row wraps if it ever needs
-      // to, rather than being squeezed to fit one line. reserveSubLabelSlot
-      // (passed by the caller) still keeps a product's own dose buttons
-      // the same height, per the round-11 fix.
-      ...options,
-    });
-  }
-
-  /**
-   * A routine/risk/consider row: heading is the vaccine TYPE name
-   * ("Flu", not "Flucelvax"), followed by every real, eligible product
-   * for that type/status as copy-to-clipboard dose buttons. When more
-   * than one real product is being shown in the row (either because two
-   * screener rules of this type landed in the same status — Flucelvax +
-   * Fluad, Comirnaty + mNEXSPIKE, Prevnar 20 + Capvaxive — or because
-   * one rule resolves to more than one real packaging), each product
-   * gets a small label before its own buttons so it's clear which is
-   * which; a single product needs no extra label (the type heading
-   * already says enough, same as Will's "Flu" example). Reason/source
-   * lines are the SAME text+link the original page showed per product,
-   * just deduped when identical (lib/screener.ts's
-   * groupStatusResultsByType).
-   */
-  function renderTypeRow(row: ScreenerTypeRow) {
-    const colors = SECTION_COLORS[row.section];
-    const allMatches = row.results.flatMap((result) =>
-      productsFor(result.id).map((product) => ({ result, product }))
-    );
-    const showProductLabels = allMatches.length > 1;
-
-    return (
-      <div key={row.section} style={styles.resultRow}>
-        <div style={styles.resultMain}>
-          <span style={styles.resultName}>{macroSectionDisplayName(row.section)}</span>
-
-          {allMatches.length === 0 && <span style={styles.noMacroNote}>No macro code on file.</span>}
-
-          {allMatches.length > 0 && (
-            <div className="screener-type-products">
-              {allMatches.map(({ product }) => {
-                const doseCount = product.doses.length;
-                const reserveSubLabelSlot = product.doses.some((d) => Boolean(d.row.doseInterval));
-                return (
-                  <div key={product.productKey} className="screener-type-product">
-                    {showProductLabels && <div style={styles.typeProductLabel}>{product.displayName}</div>}
-                    <div className="screener-dose-buttons">
-                      {product.doses.map((dose) =>
-                        renderDoseButton(dose, colors, {
-                          visibleLabel: doseButtonShortLabel(dose.row, doseCount),
-                          subLabel: dose.row.doseInterval,
-                          doseCountInRow: doseCount,
-                          reserveSubLabelSlot,
-                        })
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {row.reasons.map((r) => (
-            <span key={r.reason} style={styles.resultReason}>
-              {r.reason}
-            </span>
-          ))}
-        </div>
-        <div style={styles.sourceColumn}>
-          {row.reasons.map((r) => (
-            <a key={r.reason} href={r.sourceUrl} target="_blank" rel="noreferrer" style={styles.resultSource}>
-              source
-            </a>
-          ))}
-        </div>
-      </div>
-    );
-  }
 
   if (!authChecked) {
     return <AuthLoading />;
@@ -691,149 +335,28 @@ export default function ScreenerPage() {
         <div style={styles.resultsWrap}>
           {!groups && <p style={styles.emptyState}>Enter a patient age to see recommendations.</p>}
 
-          {groups && productsLoading && <p style={styles.loadingNote}>Loading macro codes…</p>}
-          {groups && productsError && (
-            <p style={styles.errorNote}>{productsError} — product names still show, but without copy buttons.</p>
-          )}
-
           {groups &&
             groups.map((group) => (
               <div key={group.status} style={styles.group}>
                 <h2 style={{ ...styles.groupHeader, background: statusGroupColor(group.status) }}>{group.label}</h2>
-                {BUTTON_STATUSES.has(group.status)
-                  ? groupStatusResultsByType(group.results).map((row) => renderTypeRow(row))
-                  : group.results.map((result) => (
-                      <div key={result.id} style={styles.resultRow}>
-                        <div style={styles.resultMain}>
-                          <span style={styles.resultName}>{result.name}</span>
-                          <span style={styles.resultReason}>{result.reason}</span>
-                        </div>
-                        <a href={result.sourceUrl} target="_blank" rel="noreferrer" style={styles.resultSource}>
+                {groupStatusResultsByType(group.results).map((row) => (
+                  <div key={row.section} style={styles.resultRow}>
+                    <span style={styles.resultName}>{macroSectionDisplayName(row.section)}</span>{" "}
+                    {row.reasons.map((r, i) => (
+                      <span key={r.reason}>
+                        <span style={styles.resultReason}>{r.reason}</span>{" "}
+                        <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={styles.resultSource}>
                           source
                         </a>
-                      </div>
+                        {i < row.reasons.length - 1 ? " " : null}
+                      </span>
                     ))}
+                  </div>
+                ))}
               </div>
             ))}
         </div>
       </div>
-
-      {modal && (
-        <div
-          style={styles.modalOverlay}
-          role="dialog"
-          aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) requestCloseModal();
-          }}
-        >
-          <div style={styles.modalCard}>
-            <h2 style={{ marginTop: 0 }}>
-              Enter lot / exp for {modal.row.displayName} dose {modal.row.doseNumber}
-            </h2>
-            {modal.copyResult && !modal.copyResult.copied && (
-              <p style={{ color: "#b00020", fontSize: "0.8rem" }}>
-                Couldn&apos;t copy — select and copy manually:
-                <br />
-                <input
-                  type="text"
-                  readOnly
-                  autoFocus
-                  value={modal.copyResult.code}
-                  style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.8rem", width: "100%", boxSizing: "border-box" }}
-                  onFocus={(e) => e.currentTarget.select()}
-                />
-              </p>
-            )}
-            <form onSubmit={handleModalSubmit}>
-              <label style={styles.modalLabel} htmlFor="screener-modal-lot">
-                Lot number
-              </label>
-              <input
-                id="screener-modal-lot"
-                style={styles.modalField}
-                type="text"
-                value={modal.lotNumber}
-                onChange={(e) => setModal({ ...modal, lotNumber: e.target.value })}
-                autoFocus
-              />
-
-              <label style={styles.modalLabel} htmlFor="screener-modal-exp">
-                Expiration
-              </label>
-              <DateTextInput
-                value={modal.expirationIso}
-                onChange={(iso) => setModal((current) => (current ? { ...current, expirationIso: iso } : current))}
-                ariaLabel="Expiration"
-                style={styles.modalField}
-              />
-
-              <label style={styles.modalCheckboxRow}>
-                <input
-                  type="checkbox"
-                  checked={modal.saveToSystem}
-                  onChange={(e) => setModal({ ...modal, saveToSystem: e.target.checked })}
-                />
-                <span>
-                  Save this lot/exp to the system
-                  {modal.row.packageSize === 1 && (
-                    <>
-                      <br />
-                      <span style={styles.modalMuted}>Not recommended for single-dose packages (pkg size 1).</span>
-                    </>
-                  )}
-                </span>
-              </label>
-
-              {modal.error && (
-                <p style={{ color: "#b00020", fontSize: "0.8rem" }}>
-                  {modal.error}
-                  {modal.copyResult?.copied && " (the code was already copied to your clipboard)"}
-                </p>
-              )}
-
-              <p style={{ textAlign: "right", marginBottom: 0 }}>
-                <button type="button" style={styles.modalButton} onClick={requestCloseModal} disabled={modal.submitting}>
-                  Cancel
-                </button>{" "}
-                <button
-                  type="submit"
-                  style={styles.modalButton}
-                  disabled={modal.submitting || !modal.lotNumber.trim() || !modal.expirationIso}
-                >
-                  {modal.submitting ? "Saving…" : "Submit"}
-                </button>
-              </p>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Buttons keep their natural content-sized width here (the
-       * results column has plenty of room, unlike app/macro-codes/
-       * page.tsx's narrow layout-C column) and just wrap if a product
-       * ever has enough doses to need it; reserveSubLabelSlot (passed
-       * per product above) still keeps every dose button in one
-       * product's row the same height regardless of which doses carry
-       * a schedule interval — the round-11 fix, unchanged. */}
-      <style>{`
-        .screener-type-products {
-          display: flex;
-          flex-direction: column;
-          gap: 0.35rem;
-          margin: 0.15rem 0;
-        }
-        .screener-dose-buttons {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 0.3rem;
-        }
-        .macro-dose-button:hover, .macro-dose-button:focus-visible {
-          filter: brightness(0.96);
-          outline: none;
-        }
-        .macro-dose-button:disabled { cursor: default; }
-      `}</style>
     </main>
   );
 }
