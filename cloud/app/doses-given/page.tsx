@@ -71,6 +71,16 @@ import {
  * visibleDayRows). CSV export is unaffected — handleDownloadCsv reads
  * pivot.dates directly, so every day (including empty weekends) still
  * exports.
+ *
+ * ROUND 4 (V-doses-given-round6, Will, verbatim: "Make the doses-given be
+ * listed in reverse daily order with the total at the bottom, so we can
+ * see most recent days first at the top.") — the "By day" table's date
+ * rows are now newest-first (lib/doses-given.ts's visibleDayRows reverses
+ * after filtering, since pivot.dates arrives oldest-first). The Total row
+ * was already the last row rendered in the tbody (after the visibleDates
+ * map) — unaffected by this change, still at the bottom. CSV export is
+ * unaffected — handleDownloadCsv still reads pivot.dates directly in its
+ * original ascending order.
  */
 
 type ViewMode = "byDay" | "byProduct";

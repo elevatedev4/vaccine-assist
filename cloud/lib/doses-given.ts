@@ -318,23 +318,34 @@ function chicagoDateWeekday(dateStr: string): number {
 export type DosesGivenDayRow = { date: string; total: number };
 
 /**
- * Filters the "By day" table's rows for display (V-doses-given, Will
- * 2026-09-13 verbatim: "We're closed on sat/sun, so if there is no data
- * on those days, then no need to show them.") — drops a Saturday or
- * Sunday row whose total is 0, since the pharmacy is closed those days
- * and a zero row there is never meaningful, just noise. A weekday row
- * with 0 doses is kept (it's still a day the pharmacy was open and could
- * have given doses), and a weekend row WITH doses is kept too (e.g. a
- * one-off Saturday clinic). Only affects what the page renders — the CSV
- * export (dosesGivenPivotToCsv) reads pivot.dates directly and keeps
- * every day, unchanged.
+ * Filters and orders the "By day" table's rows for display:
+ *   - drops a Saturday or Sunday row whose total is 0 (V-doses-given,
+ *     Will 2026-09-13 verbatim: "We're closed on sat/sun, so if there is
+ *     no data on those days, then no need to show them.") — the pharmacy
+ *     is closed those days and a zero row there is never meaningful, just
+ *     noise. A weekday row with 0 doses is kept (it's still a day the
+ *     pharmacy was open and could have given doses), and a weekend row
+ *     WITH doses is kept too (e.g. a one-off Saturday clinic).
+ *   - reverses to NEWEST day first (V-doses-given-round6, Will: "Make the
+ *     doses-given be listed in reverse daily order... so we can see most
+ *     recent days first at the top") — callers pass rows in ascending
+ *     (oldest-first) date order (pivot.dates is built that way), so a
+ *     plain .reverse() after filtering is enough to get descending order
+ *     without re-sorting by date.
+ * Only affects what the page renders — the CSV export
+ * (dosesGivenPivotToCsv) reads pivot.dates directly and keeps every day
+ * in its original ascending order, unchanged. The table's Total row is
+ * NOT part of this list — the page renders it separately, at the bottom,
+ * after these rows (V-doses-given-round6: "total at the bottom").
  */
 export function visibleDayRows<T extends DosesGivenDayRow>(rows: readonly T[]): T[] {
-  return rows.filter((row) => {
-    if (row.total > 0) return true;
-    const weekday = chicagoDateWeekday(row.date);
-    return weekday !== 0 && weekday !== 6;
-  });
+  return rows
+    .filter((row) => {
+      if (row.total > 0) return true;
+      const weekday = chicagoDateWeekday(row.date);
+      return weekday !== 0 && weekday !== 6;
+    })
+    .reverse();
 }
 
 /** "8/4" from "2026-08-04" — same short month/day convention as the
