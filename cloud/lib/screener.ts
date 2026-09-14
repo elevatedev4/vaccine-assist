@@ -20,7 +20,7 @@ import {
   type ScreenerTier,
   type ScreenerVaccineRule,
 } from "./screener-rules";
-import { MACRO_SECTION_ORDER, macroBaseShortCode, type MacroSection } from "./macro-catalog";
+import { macroBaseShortCode, type MacroSection } from "./macro-catalog";
 
 export interface ScreenerResult {
   id: string;
@@ -33,6 +33,7 @@ export interface ScreenerResult {
 /** Re-exported so callers (app/screener/page.tsx) can import the prior-
  * pneumococcal-history type from either lib file. */
 export type { PriorPneumoHistory } from "./screener-rules";
+export type { ScreenerStatus };
 
 type DerivedConditions = Record<DerivedConditionKey, boolean>;
 
@@ -194,58 +195,66 @@ export const SCREENER_RULE_MACRO_INFO: Readonly<
   mmr: { section: "MMR", shortCodes: ["mmr"] },
 };
 
-/** Statuses NOT shown in the by-type layout — "not-indicated" is the
- * only status meaning "this genuinely doesn't apply to this patient."
- * Every other status (routine/risk/consider/caution/info) is kept —
- * this reformat only changes how results are GROUPED, not which ones
- * are visible (the original per-product list also showed every
- * non-"not-indicated" status, just under status-first headings instead
- * of type-first ones); dropping caution/info here would silently hide
- * safety-relevant flags (e.g. "not recommended in pregnancy") the old
- * layout always surfaced. */
-const HIDDEN_TYPE_VIEW_STATUSES: ReadonlySet<ScreenerStatus> = new Set(["not-indicated"]);
-
 export interface ScreenerTypeReason {
   status: ScreenerStatus;
   reason: string;
   sourceUrl: string;
 }
 
-export interface ScreenerTypeGroup {
+/** One TYPE row within a single STATUS group (app/screener/page.tsx's
+ * per-status sections, restored round-12): one or more screener results
+ * of the SAME status that share a vaccine type/family — Flucelvax +
+ * Fluad both "routine" at 65+, or Comirnaty + mNEXSPIKE both "consider"
+ * at 40 with no risk condition — rendered as one row (type name, each
+ * product labeled small before its own dose buttons) instead of two
+ * separate rows. */
+export interface ScreenerTypeRow {
   section: MacroSection;
-  /** Visible (non-"not-indicated") results for this type, in
-   * SCREENER_RULES order — stable regardless of how many are eligible. */
+  /** The underlying results this row represents, in first-seen (i.e.
+   * SCREENER_RULES) order — almost always length 1; length 2 only for
+   * the handful of types with two rules that landed in this same status
+   * for this patient. */
   results: ScreenerResult[];
-  /** Every unique (status, reason) pair across this type's results, in
-   * first-seen order — "if products in a type have different reasons,
-   * list each reason once" (coordinator brief, verbatim). Two products
-   * sharing the identical reason text (e.g. Comirnaty/mNEXSPIKE, whose
-   * rules are intentionally identical) collapse to one line. */
+  /** Every unique (status, reason, sourceUrl) triple across this row's
+   * results, in first-seen order — two results sharing identical reason
+   * text (Comirnaty/mNEXSPIKE's shared rule) collapse to one line;
+   * genuinely different reasons (rare within one status, e.g. a future
+   * rule change) each still show. */
   reasons: ScreenerTypeReason[];
 }
 
 /**
- * Buckets screen()'s flat result list by vaccine TYPE instead of by
- * status — MACRO_SECTION_ORDER order, dropping a type with no visible
- * results. A result whose id isn't in SCREENER_RULE_MACRO_INFO is
- * skipped (shouldn't happen — every SCREENER_RULES id is mapped above;
- * guarded so a future new rule fails soft instead of throwing).
+ * ROUND 12 (Will rejected the round-11 by-type reformat verbatim: "The
+ * format/layout you had before was good, showing recommendations by
+ * age, then by health condition, etc. I just wanted you to say 'Flu'
+ * and then have the available product options listed as copyable macro
+ * code buttons"). Restores the original per-STATUS grouping
+ * (groupScreenerResults/STATUS_GROUPS, unchanged) as the outer
+ * structure; this function is the new INNER step app/screener/page.tsx
+ * runs on each status group's own results list — merging same-type
+ * results (already all the same status, since the caller pre-filtered
+ * by status) into one row apiece, in first-seen order (not
+ * MACRO_SECTION_ORDER — keeps the original per-status row order stable
+ * rather than reshuffling by family). A result whose id isn't in
+ * SCREENER_RULE_MACRO_INFO is skipped (shouldn't happen — every
+ * SCREENER_RULES id is mapped above; guarded so a future new rule fails
+ * soft instead of throwing).
  */
-export function groupScreenerResultsByType(results: readonly ScreenerResult[]): ScreenerTypeGroup[] {
+export function groupStatusResultsByType(results: readonly ScreenerResult[]): ScreenerTypeRow[] {
   const bySection = new Map<MacroSection, ScreenerResult[]>();
+  const order: MacroSection[] = [];
   for (const result of results) {
-    if (HIDDEN_TYPE_VIEW_STATUSES.has(result.status)) continue;
     const info = SCREENER_RULE_MACRO_INFO[result.id];
     if (!info) continue;
-    const list = bySection.get(info.section) ?? [];
-    list.push(result);
-    bySection.set(info.section, list);
+    if (!bySection.has(info.section)) {
+      bySection.set(info.section, []);
+      order.push(info.section);
+    }
+    bySection.get(info.section)!.push(result);
   }
 
-  const groups: ScreenerTypeGroup[] = [];
-  for (const section of MACRO_SECTION_ORDER) {
-    const list = bySection.get(section);
-    if (!list || list.length === 0) continue;
+  return order.map((section) => {
+    const list = bySection.get(section)!;
     const reasons: ScreenerTypeReason[] = [];
     const seen = new Set<string>();
     for (const result of list) {
@@ -253,9 +262,8 @@ export function groupScreenerResultsByType(results: readonly ScreenerResult[]): 
       seen.add(result.reason);
       reasons.push({ status: result.status, reason: result.reason, sourceUrl: result.sourceUrl });
     }
-    groups.push({ section, results: list, reasons });
-  }
-  return groups;
+    return { section, results: list, reasons };
+  });
 }
 
 /** Every real macro-catalog short code a screener result could resolve

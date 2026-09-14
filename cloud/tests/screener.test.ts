@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   screen,
   groupScreenerResults,
-  groupScreenerResultsByType,
+  groupStatusResultsByType,
   screenerMacroShortCodes,
   shortCodeMatchesScreenerRule,
   SCREENER_RULE_MACRO_INFO,
@@ -472,69 +472,84 @@ describe("shortCodeMatchesScreenerRule / screenerMacroShortCodes", () => {
   });
 });
 
-// --- groupScreenerResultsByType -----------------------------------------
+// --- groupStatusResultsByType (round 12: per-status inner grouping) -----
 
-describe("groupScreenerResultsByType", () => {
-  it("groups eligible results by vaccine TYPE in MACRO_SECTION_ORDER order", () => {
-    // Age 55, immunocompromised: routine Shingrix (Shingles), risk RSV
-    // pair (RSV, on RSV_50_74_RISK_CONDITIONS), routine pneumococcal
-    // pair (Pneumonia, age-only at 50+), routine Engerix-B (Hep B,
-    // age-only 19-59), routine Boostrix (Tetanus), not-indicated
-    // Gardasil (HPV, 46+) — HPV must be absent.
-    const results = screen(55, conditions({ immunocompromised: true }));
-    const groups = groupScreenerResultsByType(results);
-    const sections = groups.map((g) => g.section);
+// Helper matching how app/screener/page.tsx now calls this: run the
+// original status grouping first, then group EACH status's own results
+// by type — groupStatusResultsByType itself only ever sees one status's
+// results at a time.
+function typeRowsForStatus(results: ReturnType<typeof screen>, status: string) {
+  const group = groupScreenerResults(results).find((g) => g.status === status);
+  return groupStatusResultsByType(group?.results ?? []);
+}
 
-    // Stable order: a subsequence of MACRO_SECTION_ORDER, never reordered.
-    const orderIndices = sections.map((s) => MACRO_SECTION_ORDER.indexOf(s));
-    expect(orderIndices).toEqual([...orderIndices].sort((a, b) => a - b));
-
-    expect(sections).toContain("Shingles");
-    expect(sections).toContain("RSV");
-    expect(sections).toContain("Pneumonia");
-    expect(sections).toContain("Hep B");
-    expect(sections).toContain("Tetanus");
-    // HPV's only rule (Gardasil 9) is not-indicated at 55 -> excluded entirely.
-    expect(sections).not.toContain("HPV");
+describe("groupStatusResultsByType", () => {
+  it("merges two same-type results sharing a status into one row (Flucelvax + Fluad, both routine at 65+)", () => {
+    const results = screen(70, conditions());
+    const rows = typeRowsForStatus(results, "routine");
+    const flu = rows.find((r) => r.section === "Flu");
+    expect(flu).toBeDefined();
+    expect(flu?.results.map((r) => r.id)).toEqual(["flucelvax", "fluad"]);
+    // Different reason text (6mo+ vs 65+ wording) -> two reason lines.
+    expect(flu?.reasons).toHaveLength(2);
   });
 
-  it("excludes not-indicated results but keeps every other status (including info)", () => {
-    // Age 45, no conditions: Typhim Vi is "info" (travel-only, always) —
-    // still shown; Boostrix's rule is the sole Tetanus rule and IS
-    // routine at 45, so use age 5 for a clean not-indicated exclusion
-    // check instead.
-    const results45 = screen(45, conditions());
-    const groups45 = groupScreenerResultsByType(results45);
-    const typhoid = groups45.find((g) => g.section === "Typhoid");
-    expect(typhoid).toBeDefined();
-    expect(typhoid?.results.map((r) => r.id)).toEqual(["typhim-vi"]);
-    expect(typhoid?.results[0].status).toBe("info");
+  it("does NOT merge Flucelvax and Fluad when only one is routine (under 65)", () => {
+    const results = screen(40, conditions());
+    const routineRows = typeRowsForStatus(results, "routine");
+    const flu = routineRows.find((r) => r.section === "Flu");
+    expect(flu?.results.map((r) => r.id)).toEqual(["flucelvax"]);
 
-    const results5 = screen(5, conditions());
-    const groups5 = groupScreenerResultsByType(results5);
-    // Boostrix (Tetanus) is not-indicated below age 10 -> Tetanus absent.
-    expect(groups5.map((g) => g.section)).not.toContain("Tetanus");
+    // Fluad lands in "not-indicated" instead, as its own single-result row.
+    const notIndicatedRows = typeRowsForStatus(results, "not-indicated");
+    const fluNotIndicated = notIndicatedRows.find((r) => r.section === "Flu");
+    expect(fluNotIndicated?.results.map((r) => r.id)).toEqual(["fluad"]);
   });
 
-  it("merges identical reasons across products in the same type into one, keeps distinct ones separate", () => {
-    // Comirnaty and mNEXSPIKE (COVID) are round-2-identical -> one reason.
-    const covidResults = screen(40, conditions());
-    const covid = groupScreenerResultsByType(covidResults).find((g) => g.section === "COVID");
-    expect(covid?.results).toHaveLength(2);
+  it("merges Comirnaty + mNEXSPIKE (identical rule) into one row with one deduped reason", () => {
+    const results = screen(40, conditions());
+    const considerRows = typeRowsForStatus(results, "consider");
+    const covid = considerRows.find((r) => r.section === "COVID");
+    expect(covid?.results.map((r) => r.id).sort()).toEqual(["comirnaty", "mnexspike"]);
     expect(covid?.reasons).toHaveLength(1);
-
-    // Prevnar 20 (risk) vs Capvaxive (consider) at age 10 + asplenia have
-    // DIFFERENT reason text -> two separate reason lines.
-    const pneumoResults = screen(10, conditions({ asplenia: true }));
-    const pneumonia = groupScreenerResultsByType(pneumoResults).find((g) => g.section === "Pneumonia");
-    expect(pneumonia?.results.map((r) => r.id).sort()).toEqual(["capvaxive", "prevnar20"]);
-    expect(pneumonia?.reasons).toHaveLength(2);
   });
 
-  it("keeps result order stable (SCREENER_RULES order) within a type across repeated calls", () => {
-    const results = screen(30, conditions({ pregnant: true }));
-    const first = groupScreenerResultsByType(results).map((g) => g.results.map((r) => r.id));
-    const second = groupScreenerResultsByType(results).map((g) => g.results.map((r) => r.id));
+  it("merges Prevnar 20 + Capvaxive when they share a status (age 50+, no condition -> both routine)", () => {
+    const results = screen(55, conditions());
+    const routineRows = typeRowsForStatus(results, "routine");
+    const pneumonia = routineRows.find((r) => r.section === "Pneumonia");
+    expect(pneumonia?.results.map((r) => r.id).sort()).toEqual(["capvaxive", "prevnar20"]);
+    // Identical "One dose." reason for both -> deduped to one line.
+    expect(pneumonia?.reasons).toHaveLength(1);
+  });
+
+  it("keeps Prevnar 20 (risk) and Capvaxive (consider) as separate single-result rows when statuses differ", () => {
+    const results = screen(10, conditions({ asplenia: true }));
+    const riskRows = typeRowsForStatus(results, "risk");
+    const considerRows = typeRowsForStatus(results, "consider");
+    expect(riskRows.find((r) => r.section === "Pneumonia")?.results.map((r) => r.id)).toEqual(["prevnar20"]);
+    expect(considerRows.find((r) => r.section === "Pneumonia")?.results.map((r) => r.id)).toEqual(["capvaxive"]);
+  });
+
+  it("a type with a single result in a status is a one-result row (unchanged shape)", () => {
+    const results = screen(55, conditions());
+    const routineRows = typeRowsForStatus(results, "routine");
+    const shingles = routineRows.find((r) => r.section === "Shingles");
+    expect(shingles?.results.map((r) => r.id)).toEqual(["shingrix"]);
+    expect(shingles?.reasons).toHaveLength(1);
+  });
+
+  it("keeps row order stable (first-seen order) across repeated calls", () => {
+    const results = screen(70, conditions());
+    const routineResults = groupScreenerResults(results).find((g) => g.status === "routine")!.results;
+    const first = groupStatusResultsByType(routineResults).map((r) => r.section);
+    const second = groupStatusResultsByType(routineResults).map((r) => r.section);
     expect(second).toEqual(first);
+  });
+
+  it("skips an id with no SCREENER_RULE_MACRO_INFO entry instead of throwing", () => {
+    const fakeResult = { id: "not-a-real-rule", name: "Fake", status: "routine" as const, reason: "x", sourceUrl: "y" };
+    expect(() => groupStatusResultsByType([fakeResult])).not.toThrow();
+    expect(groupStatusResultsByType([fakeResult])).toEqual([]);
   });
 });
