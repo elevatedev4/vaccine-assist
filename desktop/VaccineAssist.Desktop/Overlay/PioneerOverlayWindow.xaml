@@ -1,0 +1,42 @@
+<Window x:Class="VaccineAssist.Desktop.Overlay.PioneerOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Vaccine Assist"
+        Width="36" Height="36"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Topmost="True"
+        WindowStartupLocation="Manual">
+    <!--
+        Will's brief, Part 4: "make an overlay mode that attaches to the
+        top right side of Pioneer like RxVerify does ... a single icon you
+        can click to show a menu ... Scheduling, Order, Macro codes, etc."
+
+        Borderless/chrome-free 36x36 DIP surface — PioneerOverlayController
+        positions it every ~250ms via Win32 SetWindowPos in PHYSICAL
+        pixels (see Overlay/NativeOverlayPositioning.cs and
+        Overlay/OverlayPlacement.cs), so this window's own Left/Top are
+        never read once shown; WindowStartupLocation="Manual" just avoids
+        WPF picking an initial position before the first tick moves it.
+        ShowActivated="False" (plus the WS_EX_NOACTIVATE/WS_EX_TOOLWINDOW
+        extended styles set in code-behind's OnSourceInitialized) means
+        Show()/repositioning never steals keyboard focus from PioneerRx —
+        same mechanism rx-verify's own ControlBoxWindow uses.
+
+        The border/glyph below is a plain syringe emoji rather than an
+        image asset (no icon asset ships with this project yet — see
+        Tray/TrayIconController.LoadAppIcon's own comment on that) —
+        left-click OR right-click either one pops the same nav menu
+        (Overlay_OnClick), matching the brief: "a single icon you can
+        click to show a menu (similar to a right click menu)."
+    -->
+    <Border x:Name="IconBorder" Background="#1F6FEB" CornerRadius="6"
+            BorderBrush="#0D3C78" BorderThickness="1"
+            MouseLeftButtonUp="Overlay_OnClick" MouseRightButtonUp="Overlay_OnClick">
+        <TextBlock Text="&#128137;" FontSize="18" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+</Window>
