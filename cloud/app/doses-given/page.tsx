@@ -81,6 +81,16 @@ import {
  * map) — unaffected by this change, still at the bottom. CSV export is
  * unaffected — handleDownloadCsv still reads pivot.dates directly in its
  * original ascending order.
+ *
+ * ROUND 5 (V-doses-given, Will 2026-09-14 verbatim: "Move the total to
+ * the top line on doses given, instead of bottom. Everything else looks
+ * fine so far.") — the "By day" table's Total row now renders FIRST in
+ * the tbody, directly under the header, followed by the newest-first day
+ * rows from visibleDates — same bold styling, just moved. No total row
+ * at the bottom anymore. The "By product" view's own Total row (a
+ * different table) is unaffected. CSV export is unaffected — it still
+ * appends Total as the trailing row (lib/doses-given.ts's
+ * dosesGivenPivotToCsv), unrelated to this on-screen table's row order.
  */
 
 type ViewMode = "byDay" | "byProduct";
@@ -637,6 +647,15 @@ export default function DosesGivenPage() {
                   </tr>
                 </thead>
                 <tbody>
+                  <tr style={styles.totalRow}>
+                    <td style={styles.totalRowLabel}>Total</td>
+                    <td style={styles.totalCell}>{pivot.grandTotal}</td>
+                    {orderedProducts.map((product) => (
+                      <td key={product} style={styles.totalCell}>
+                        {pivot.totalsByProduct[product]}
+                      </td>
+                    ))}
+                  </tr>
                   {visibleDates.map((date) => (
                     <tr key={date}>
                       <td style={styles.tdType}>{formatDayLabel(date)}</td>
@@ -651,15 +670,6 @@ export default function DosesGivenPage() {
                       })}
                     </tr>
                   ))}
-                  <tr style={styles.totalRow}>
-                    <td style={styles.totalRowLabel}>Total</td>
-                    <td style={styles.totalCell}>{pivot.grandTotal}</td>
-                    {orderedProducts.map((product) => (
-                      <td key={product} style={styles.totalCell}>
-                        {pivot.totalsByProduct[product]}
-                      </td>
-                    ))}
-                  </tr>
                 </tbody>
               </table>
             </div>
