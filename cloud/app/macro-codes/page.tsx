@@ -1087,19 +1087,26 @@ function MacroCodesPageContent() {
                     visibleLabel: doseButtonShortLabel(dose.row, doseCount),
                     subLabel: dose.row.doseInterval,
                     large: true,
-                    // ROUND 11 (Will's verbatim feedback: "I want all the
-                    // buttons to fit on one row, so if there are 3 doses,
-                    // they all need to fit" + "dose 1 doesn't have a date
-                    // on it, so you need to adjust for that to make sure
-                    // the heights all match"): every dose button in this
-                    // product's row flexes to share the row (never
-                    // wraps — see .macro-dose-buttons-c's flex-wrap:
-                    // nowrap below), shrinks its text/padding once 3+
-                    // doses share it, and reserves the interval sub-line
-                    // even on a dose (usually dose 1) that has none, so
-                    // every button in the row is the same height.
-                    fitRow: true,
-                    doseCountInRow: doseCount,
+                    // ROUND 13 (Will's verbatim feedback via the
+                    // coordinator, 2026-09-13, on top of round 12's font-
+                    // parity fix: at common widths like 1456px, layout C
+                    // was dropping to two columns with "Other" wrapping
+                    // underneath — a big empty area on the right, exactly
+                    // the "dead space" complaint this whole round started
+                    // from). `fitRow` (round 11's equal-share, shrink-to-
+                    // fit mechanic) is dropped here: buttons now size to
+                    // their own natural content width (this file's
+                    // default, non-fitRow button sizing) and NEVER shrink
+                    // (.macro-dose-buttons-c below is flex: 0 0 auto,
+                    // still flex-wrap: nowrap so 3 doses never wrap to a
+                    // second line) — the row's OTHER side
+                    // (.macro-product-name-cell-c) is what shrinks/
+                    // ellipsizes instead when a row runs tight, so the
+                    // buttons the user clicks are never squeezed.
+                    // reserveSubLabelSlot (round 11, still needed): dose 1
+                    // never has an interval, so it still gets an empty
+                    // placeholder line rather than being one line shorter
+                    // than its siblings.
                     reserveSubLabelSlot: product.doses.some((d) => Boolean(d.row.doseInterval)),
                   })
                 )}
@@ -1115,31 +1122,23 @@ function MacroCodesPageContent() {
   function renderTopGroup(block: MacroTopGroupBlock) {
     const renderSection =
       effectiveViewMode === "A" ? renderSectionVersionA : effectiveViewMode === "B" ? renderSectionVersionB : renderSectionVersionC;
-    // ROUND 9: version C's columns size to content (a fixed basis, no
-    // grow/shrink to fill the row) instead of A/B's flex:1-0-0 stretch —
-    // see .macro-groups-c on the wrapping container below for the
-    // matching max-width cap. Inline style wins over the CSS class for
-    // the flex/minWidth shorthand, so this is done here rather than in
-    // the <style> tag.
-    // ROUND 12 (Will's verbatim feedback, 2026-09-13): "I want the dose
-    // 1/2/3 font size to be the same as the other buttons so they look
-    // the same. If we need to increase width of the table we can do
-    // that." lib/macro-dose-button.tsx dropped the round-11 "crowded"
-    // font/padding shrink for a 3-dose fitRow group entirely — the fix
-    // on THIS side of that trade is here: the column basis/min-width
-    // grew from 340/320 to 460/420 so three full-size dose buttons still
-    // fit on one row without needing a smaller font.
-    // Embed compact overrides this: the popup is narrower than 3x460px
-    // plus gaps, so columns instead grow/shrink evenly to fill the
-    // available width (flex: 1 1 0, min-width: 0) — `width: "auto"` also
-    // beats the @media (max-width: 1100px) `.macro-group-column { width:
-    // 100% }` rule below (inline style over an unqualified class rule),
-    // same reasoning as the .macro-groups override above it.
-    const columnStyle = embed
-      ? { ...styles.groupColumn, flex: "1 1 0", minWidth: 0, width: "auto" as const }
-      : effectiveViewMode === "C"
-      ? { ...styles.groupColumn, flex: "0 1 460px", minWidth: 420 }
-      : styles.groupColumn;
+    // ROUND 13 (Will's verbatim feedback via the coordinator, 2026-09-13):
+    // fixed-width flex columns (round 12's 460px basis) don't reliably
+    // fit three across at common widths — 1456px rendered only two
+    // columns, wrapping "Other" onto its own row with a lot of empty
+    // space beside it. .macro-groups-c (below) is now a CSS grid —
+    // `grid-template-columns: repeat(3, minmax(0, 1fr))` — which always
+    // lays out exactly three tracks sharing the row's width, never wraps
+    // to fewer, and never needs a per-column flex-basis/min-width here:
+    // `minWidth: 0` is the only thing a column itself needs, so its
+    // CONTENT (not the column box) is what's free to shrink — see
+    // renderSectionVersionC's .macro-product-name-cell-c/
+    // .macro-dose-buttons-c for which side of a row actually gives up
+    // space when a column gets narrow. This one grid rule also covers
+    // embed (?embed=1 always forces effectiveViewMode "C"): the 1100px
+    // popup gets the same three even tracks, just with a smaller gap
+    // (see the .macro-groups-c wrapper's own style below).
+    const columnStyle = effectiveViewMode === "C" ? { minWidth: 0 } : styles.groupColumn;
     return (
       <div key={block.group} className="macro-group-column" style={columnStyle}>
         <h2 style={styles.groupHeading}>{block.group}</h2>
@@ -1199,18 +1198,26 @@ function MacroCodesPageContent() {
         <div
           className={`macro-groups${effectiveViewMode === "C" ? " macro-groups-c" : ""}`}
           style={
-            // Embed compact: the three columns must sit SIDE BY SIDE at
-            // 980px wide, but the @media (max-width: 1100px) rule further
-            // down (`.macro-groups { flex-direction: column }`) was
-            // stacking them into one tall column at that width instead —
-            // that stacking, not font size, was the main cause of the
-            // scrolling Will saw. Inline styles beat that class rule
-            // (no !important needed), and gap drops from 1.5rem to 10px
-            // per the embed spec.
-            embed
-              ? { ...styles.groups, gap: "10px", flexDirection: "row" as const, flexWrap: "nowrap" as const, maxWidth: "100%" }
-              : effectiveViewMode === "C"
-              ? { ...styles.groups, maxWidth: 1440 } // ROUND 12: 3 * 460px columns + 2 * 1.5rem gaps
+            // ROUND 13 (Will's verbatim feedback via the coordinator,
+            // 2026-09-13): fixed-width flex columns don't reliably fit
+            // three across (1456px was dropping to two, wrapping "Other"
+            // onto its own row with a lot of empty space beside it) — a
+            // CSS grid with a literal 3-track template ALWAYS renders
+            // three columns sharing the row's width, at any width, and
+            // never wraps to fewer. This one grid rule covers embed too
+            // (?embed=1 always forces effectiveViewMode "C" — see this
+            // component's `effectiveViewMode` above): the 1100px popup
+            // gets the same three even tracks, just a smaller gap and no
+            // width cap, same posture as embed's old flex override below
+            // it used to replace.
+            effectiveViewMode === "C"
+              ? {
+                  display: "grid" as const,
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  alignItems: "flex-start" as const,
+                  gap: embed ? "10px" : "1.5rem",
+                  maxWidth: embed ? "100%" : 1440,
+                }
               : // ROUND 12 (Will's verbatim feedback, 2026-09-13: "there is
                 // a bunch of dead space at the bottom of the page"): A and
                 // B never got round 9's width cap — their columns are
@@ -1504,11 +1511,18 @@ function MacroCodesPageContent() {
          * onto two lines and shoving the price line under the buttons.
          * Switched from a fixed 3-column grid to flex so the button
          * group can wrap to a second line UNDER itself instead of
-         * colliding with the name: the name block is flex:0 0 auto (its
-         * own natural/nowrap width, never stretched or squeezed) and the
-         * button group is flex-wrap:wrap with a max-width cap, so a wide
-         * multi-dose group wraps within its own column instead of
-         * spilling into the name's space. */
+         * colliding with the name.
+         * ROUND 13 (Will's verbatim feedback via the coordinator,
+         * 2026-09-13): a grid COLUMN (this file's outer .macro-groups-c)
+         * can be much narrower now than round 9/12 assumed (three tracks
+         * sharing the row, not a fixed 460px basis), so this inner row
+         * flips which side gives up space first — the dose-button group
+         * (.macro-dose-buttons-c) is flex: 0 0 auto (sized to its own
+         * buttons' natural content, never shrunk, never wrapped — those
+         * are what the user clicks) and the name/price side
+         * (.macro-product-name-cell-c) is flex: 1 1 auto with min-width:
+         * 0, so IT is what shrinks and ellipsizes when a column gets
+         * tight, never the buttons. */
         .macro-row-c {
           display: flex;
           align-items: flex-start;
@@ -1517,9 +1531,8 @@ function MacroCodesPageContent() {
           border-bottom: 1px solid #eee;
         }
         .macro-product-name-cell-c {
-          flex: 0 0 auto;
+          flex: 1 1 auto;
           min-width: 0;
-          max-width: 55%;
         }
         .macro-product-name-c {
           font-size: 15px;
@@ -1591,22 +1604,21 @@ function MacroCodesPageContent() {
           display: flex;
           /* ROUND 11 (Will's verbatim feedback: "I want all the buttons
            * to fit on one row, so if there are 3 doses, they all need to
-           * fit"): never wrap to a second line — each button flexes to
-           * share the row instead (renderDoseButton's fitRow option).
+           * fit"): never wrap to a second line.
            * ROUND 12 (Will's verbatim feedback: "I want the dose 1/2/3
            * font size to be the same as the other buttons... increase
            * width of the table"): the per-doseCount font/padding shrink
-           * is gone (lib/macro-dose-button.tsx) — this group gets more of
-           * the row's (now-wider, see renderTopGroup's 460px column)
-           * width instead, so three full-size buttons still fit. */
+           * is gone (lib/macro-dose-button.tsx).
+           * ROUND 13 (Will's verbatim feedback via the coordinator): the
+           * round-11 "flex to share the row equally, shrink if crowded"
+           * mechanic (fitRow) is gone too — this group is now flex: 0 0
+           * auto, sized to exactly what its own buttons need at their
+           * FULL size, and never shrinks; see .macro-row-c's doc comment
+           * above for which side gives up space instead. */
+          flex: 0 0 auto;
           flex-wrap: nowrap;
           gap: 0.3rem;
           justify-content: flex-end;
-          max-width: 74%;
-          /* Pushes the button group (and the settings ⚙ after it) to the
-           * row's right edge, hugging together, instead of the name-cell
-           * -> buttons -> settings gaps splitting evenly (which left an
-           * odd empty gap after a short name). */
           margin-left: auto;
         }
 
