@@ -77,4 +77,33 @@ public static class PreEntryDialogTitles
         return dialogTitleSubstring == PatientOnCycleFill &&
             windowTitle.Contains("Cycle Fill", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// V-T41 (Will, 2026-09-13 night): "still getting stuck on the
+    /// pre-data entry popup windows" — used to classify an UNRECOGNIZED
+    /// top-level Pioneer window (one that didn't match any known title via
+    /// <see cref="MatchesWithAliases"/>) before falling back to a blind
+    /// ESC, per Will's broadened brief: "any dialog/window whose title or
+    /// visible text contains 'Priority'" gets the select-and-confirm
+    /// handling, not just an exact/aliased title match. `text` is expected
+    /// to be the window's title PLUS its visible button/text names
+    /// concatenated (see SendF3AndDismissPreEntryDialogsStep's
+    /// BuildClassificationText) — pure string check, no UIA dependency of
+    /// its own.
+    /// </summary>
+    public static bool ContainsPriority(string text) =>
+        text.Contains(Priority, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// V-T41 companion to <see cref="ContainsPriority"/> — Will's brief:
+    /// "'Scan' and 'Hard Copy' -> the existing dismiss." Deliberately
+    /// checks the two words as SEPARATE substrings (unlike
+    /// <see cref="ScanHardCopy"/>'s own exact "Scan Hard Copy" phrase),
+    /// so e.g. "Scan the Hard Copy Order" or a title/visible-text
+    /// combination that splits the two words across a title and a button
+    /// name still matches.
+    /// </summary>
+    public static bool ContainsScanAndHardCopy(string text) =>
+        text.Contains("Scan", StringComparison.OrdinalIgnoreCase) &&
+        text.Contains("Hard Copy", StringComparison.OrdinalIgnoreCase);
 }
