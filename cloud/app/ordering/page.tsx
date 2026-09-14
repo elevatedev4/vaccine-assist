@@ -184,7 +184,11 @@ const styles = {
   // (V-ordering-header-sublabels, Will 2026-09-13: "Add '(doses)' to BOH
   // and Target on a second row, deemphasized, same for order qty
   // (pkg)") — small, gray, regular weight so it reads as a unit hint
-  // rather than part of the column name.
+  // rather than part of the column name. Reused as-is (V-all-vaccines-
+  // headers, Will 2026-09-13: "Format the headers in the all vaccines
+  // table like they are formatted in the order table... so we get better
+  // spacing") by the "All vaccines" table's <th>s below, so both tables'
+  // headers render identically.
   toOrderThSub: { display: "block", fontSize: "11px", color: "#888", fontWeight: 400 as const },
   // NDC copy button (V-to-order-table-emphasis: "Make NDC a button that
   // they can click to copy it like we've used on macro codes") — same
@@ -1072,23 +1076,55 @@ export default function OrderingPage() {
       )}
 
       <h2 style={styles.sectionHeading}>All vaccines</h2>
+      {/* V-all-vaccines-headers (Will 2026-09-13): headers reuse the
+       * To-order table's exact toOrderTh/toOrderThRight/toOrderThSub
+       * styles — bold main label, small muted unit/qualifier sublabel
+       * below it — so both tables' header rows look identical and
+       * columns tighten instead of staying wide single-line headers.
+       * Data cells below still use the compact table/th/tdRight styles,
+       * unchanged. */}
       <table style={styles.table}>
         <thead>
           <tr>
-            <th style={styles.th}>Vaccine</th>
-            <th style={styles.th}>NDC</th>
-            <th style={styles.th}>Unit size</th>
-            <th style={styles.thRight}>Units/pkg</th>
-            <th style={styles.thRight}>7d</th>
-            <th style={styles.thRight} title="Doses given in the last 7 complete days (from Pioneer's daily report)">
-              Last 7d given
+            <th style={styles.toOrderTh}>Vaccine</th>
+            <th style={styles.toOrderTh}>NDC</th>
+            <th style={styles.toOrderTh}>
+              Unit
+              <span style={styles.toOrderThSub}>(size)</span>
             </th>
-            <th style={styles.thRight}>Rec. target</th>
-            <th style={styles.th}>Target</th>
-            <th style={styles.th}>BOH (doses)</th>
-            <th style={styles.thRight} title="BOH minus target">Surplus</th>
-            <th style={styles.thRight}>Order (doses)</th>
-            <th style={styles.thRight}>Order (pkg)</th>
+            <th style={styles.toOrderThRight}>
+              Units
+              <span style={styles.toOrderThSub}>(per pkg)</span>
+            </th>
+            <th style={styles.toOrderThRight}>
+              7d
+              <span style={styles.toOrderThSub}>(trend)</span>
+            </th>
+            <th style={styles.toOrderThRight} title="Doses given in the last 7 complete days (from Pioneer's daily report)">
+              Last 7d
+              <span style={styles.toOrderThSub}>(given)</span>
+            </th>
+            <th style={styles.toOrderThRight}>
+              Rec. target
+              <span style={styles.toOrderThSub}>(doses)</span>
+            </th>
+            <th style={styles.toOrderTh}>
+              Target
+              <span style={styles.toOrderThSub}>(doses)</span>
+            </th>
+            <th style={styles.toOrderTh}>
+              BOH
+              <span style={styles.toOrderThSub}>(doses)</span>
+            </th>
+            <th style={styles.toOrderThRight} title="BOH minus target">Surplus</th>
+            <th style={styles.toOrderThRight}>
+              Order
+              <span style={styles.toOrderThSub}>(doses)</span>
+            </th>
+            <th style={styles.toOrderThRight}>
+              Order
+              <span style={styles.toOrderThSub}>(pkg)</span>
+            </th>
           </tr>
         </thead>
         <tbody>
