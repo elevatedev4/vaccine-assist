@@ -882,6 +882,16 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 var title = SafeName(window);
                 attempts[handle] = count + 1;
 
+                // NO PHI IN LOGS: same "truncate before ' - '" convention
+                // as DescribeAnyPioneerWindowForLog/PioneerRxAttachment.TryAttach's
+                // own DescribeForLog — a PioneerRx window title can be
+                // "Rx Profile - Lastname, Firstname". `title` itself
+                // (untruncated) is fine to use for classification/matching
+                // and as the returned dismissed-window identifier (same as
+                // before this round), but every LOG line below must use
+                // screenNameOnly instead.
+                var screenNameOnly = title.Split(new[] { " - " }, 2, StringSplitOptions.None)[0];
+
                 var classificationText = BuildClassificationText(window, title);
 
                 if (PreEntryDialogTitles.ContainsPriority(classificationText))
@@ -890,7 +900,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                     var announce = AutoWatchRetry.ShouldLogRetry(priorityAttempt);
                     if (announce)
                     {
-                        log($"[{Name}] Unrecognized top-level window \"{title}\" contains \"Priority\" — treating it as the Priority dialog.");
+                        log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Priority\" — treating it as the Priority dialog.");
                     }
                     HandlePriorityDialog(window, priorityAttempt, announce, log);
                     return PreEntryDialogTitles.Priority;
@@ -898,12 +908,12 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
                 if (PreEntryDialogTitles.ContainsScanAndHardCopy(classificationText))
                 {
-                    log($"[{Name}] Unrecognized top-level window \"{title}\" contains \"Scan\"/\"Hard Copy\" — dismissing.");
+                    log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Scan\"/\"Hard Copy\" — dismissing.");
                     if (TryDismiss(window)) return PreEntryDialogTitles.ScanHardCopy;
                     continue;
                 }
 
-                log($"[{Name}] Unrecognized pre-entry window \"{title}\" (class '{SafeClassNameForLog(window)}') — pressing Escape once.");
+                log($"[{Name}] Unrecognized pre-entry window \"{screenNameOnly}\" (class '{SafeClassNameForLog(window)}') — pressing Escape once.");
                 if (TryDismiss(window)) return title;
             }
         }
@@ -920,7 +930,14 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// PreEntryDialogTitles.ContainsPriority/ContainsScanAndHardCopy to
     /// classify a window whose OWN title doesn't carry the recognizable
     /// word (Will's "title OR visible text" brief). Never throws; falls
-    /// back to just the title on any UIA failure.</summary>
+    /// back to just the title on any UIA failure.
+    ///
+    /// NO PHI: the returned text is for MATCHING ONLY (a substring check
+    /// against "Priority"/"Scan"/"Hard Copy") and must NEVER be logged —
+    /// unlike a window's own title (which at least gets truncated before
+    /// " - " at every log call site, see TryDismissNextStrayPioneerWindow),
+    /// this string can also carry raw button/text-control content from
+    /// inside the window with no truncation at all.</summary>
     private static string BuildClassificationText(AutomationElement window, string title)
     {
         var sb = new StringBuilder(title);
