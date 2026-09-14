@@ -9,9 +9,9 @@ vi.mock("@/lib/supabase/server", () => ({
   getSupabaseServerClient: vi.fn(),
 }));
 
-import { POST, isTrustedDesktopRequest } from "@/app/api/auth/desktop-handoff/route";
+import { POST } from "@/app/api/auth/desktop-handoff/route";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { DESKTOP_HANDOFF_COOKIE_NAME } from "@/lib/desktop-handoff";
+import { DESKTOP_HANDOFF_COOKIE_NAME, isTrustedDesktopRequest } from "@/lib/desktop-handoff";
 
 const VALID_ACCESS_TOKEN = "a".repeat(30);
 const VALID_REFRESH_TOKEN = "r".repeat(20);
