@@ -30,6 +30,13 @@ import {
 } from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { postToHost } from "@/lib/macro-embed";
+import {
+  fetchMacroCodesPayload,
+  getMacroCodesCacheStorage,
+  readMacroCodesCache,
+  writeMacroCodesCache,
+  clearMacroCodesCache,
+} from "@/lib/macro-codes-cache";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 import {
@@ -154,6 +161,45 @@ import {
  * doseButtonShortLabel moved to lib/macro-codes.ts (was local to this
  * file) so both the "One dose" label and the interval piping are
  * unit-tested there rather than only exercised by hand in the browser.
+ *
+ * ROUND 12 — INSTANT LOAD (Will's verbatim brief, 2026-09-13): "Macro
+ * codes take way too long to load. It needs to be instant... You should
+ * preload the info when the app is first loaded so it will start fast,
+ * and then of course make sure that it stays up to date all the time
+ * when data changes." lib/macro-codes-cache.ts holds a localStorage
+ * cache of the last successful /api/vaccines + /api/lots payload, keyed
+ * per signed-in user. Stale-while-revalidate: on mount, a cached payload
+ * (if any) is applied to `vaccines`/`lots` IMMEDIATELY — before any
+ * network call — so this page never shows "Loading…" when a cache
+ * exists; a background refetch (loadAll's `background: true` path) then
+ * follows and silently replaces it if the server data changed.
+ * `revalidating`/`refreshNote` track that background fetch separately
+ * from `loading` (which now only means "nothing to show yet, on screen
+ * or cached") so the page keeps rendering the cached view underneath a
+ * small note rather than blanking back to a spinner.
+ *
+ * Freshness, per the brief ("stays up to date all the time"): a
+ * background revalidation additionally fires on window focus, on
+ * document visibilitychange back to visible, on a ~60s interval while
+ * the tab is visible, and right after a lot/exp save in the modal below
+ * (handleModalSubmit's refetchLots call) — a mutation the user just made
+ * must never wait up to 60s to show up. A failed background refetch
+ * (offline, 5xx) leaves the existing view up and sets `refreshNote`
+ * rather than clearing anything. A 401/expired token is called out
+ * specifically (`unauthorized` on fetchMacroCodesPayload's result): the
+ * brief's own words are "a 401/expired token never renders stale data
+ * silently" — this page never treats that response as fresh data, and
+ * refreshNote reads "Session expired…" instead of the generic "Could not
+ * refresh…" so it's clear the cached view is now UNVERIFIED, not merely
+ * a network hiccup.
+ *
+ * Prefetch: app/top-nav.tsx — rendered on every route, not just this
+ * page — warms the exact same cache (same fetchMacroCodesPayload call,
+ * same per-email key) as soon as a session appears, so a visit to
+ * /macro-codes after using any other tab is already warm. The desktop
+ * app's popup (?embed=1) is the SAME origin as every other route here,
+ * so it shares this same localStorage cache automatically — no separate
+ * embed-specific caching was needed.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -287,8 +333,15 @@ function MacroCodesPageContent() {
 
   const [vaccines, setVaccines] = useState<VaccineRow[]>([]);
   const [lots, setLots] = useState<LotRow[]>([]);
+  // `loading` now means "no data at all yet, on screen or cached" — the
+  // ONLY time this page shows "Loading…" (see the "instant load" doc
+  // comment above). `revalidating`/`refreshNote` cover a background
+  // refetch that happens WHILE something is already on screen (from
+  // cache or an earlier fetch) — see loadAll below.
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [revalidating, setRevalidating] = useState(false);
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copyFailure, setCopyFailure] = useState<{ key: string; code: string } | null>(null);
@@ -356,6 +409,13 @@ function MacroCodesPageContent() {
     setVaccines([]);
     setLots([]);
     setLoadError(null);
+    setRefreshNote(null);
+    setRevalidating(false);
+    // Not clearing the cache here on purpose: it's keyed per user email
+    // (lib/macro-codes-cache.ts), so a different person signing in next
+    // never sees this session's cached payload anyway — clearing would
+    // only cost the NEXT sign-in (even by the same person) its instant
+    // first paint for no correctness benefit.
   }
 
   useEffect(() => {
@@ -375,44 +435,113 @@ function MacroCodesPageContent() {
     };
   }, []);
 
-  const loadAll = useCallback(async (token: string) => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const headers = { Authorization: `Bearer ${token}` };
-      const [vaccinesRes, lotsRes] = await Promise.all([
-        fetch("/api/vaccines?includeInactive=true", { headers }),
-        fetch("/api/lots", { headers }),
-      ]);
-      const [vaccinesData, lotsData] = await Promise.all([vaccinesRes.json(), lotsRes.json()]);
+  const cacheEmail = session?.email ?? null;
 
-      if (!vaccinesRes.ok) {
-        setLoadError(vaccinesData.error ?? "Could not load vaccines.");
-        return;
+  /**
+   * The one place this page fetches /api/vaccines + /api/lots (via
+   * lib/macro-codes-cache.ts's shared fetchMacroCodesPayload, also used
+   * by app/top-nav.tsx's prefetch). `background: true` is every
+   * revalidation that happens while something is ALREADY on screen (a
+   * cache hit on mount, focus/visibility/interval, or a post-mutation
+   * refetch) — it never touches `loading`/`loadError` (which would blank
+   * the page back to a spinner) and instead uses `revalidating`/
+   * `refreshNote`, so the existing view stays up while it runs. A
+   * SUCCESSFUL fetch — background or not — updates the cache so the
+   * next mount starts from this payload.
+   */
+  const loadAll = useCallback(
+    async (token: string, options?: { background?: boolean }) => {
+      const background = options?.background ?? false;
+      if (background) {
+        setRevalidating(true);
+      } else {
+        setLoading(true);
+        setLoadError(null);
       }
-      if (!lotsRes.ok) {
-        setLoadError(lotsData.error ?? "Could not load lots.");
-        return;
+      const result = await fetchMacroCodesPayload(token);
+      if (result.ok) {
+        setVaccines(result.payload.vaccines as VaccineRow[]);
+        setLots(result.payload.lots as LotRow[]);
+        setLoadError(null);
+        setRefreshNote(null);
+        writeMacroCodesCache(getMacroCodesCacheStorage(), cacheEmail, result.payload);
+      } else if (background) {
+        // Brief, verbatim: "a 401/expired token never renders stale data
+        // silently" — the view already on screen (cache or a previous
+        // fetch) is left exactly as-is; this note is what makes clear
+        // it's now UNVERIFIED rather than a quiet, ordinary success.
+        setRefreshNote(
+          result.unauthorized ? "Session expired — sign in again to refresh." : "Could not refresh — showing last known data."
+        );
+      } else {
+        setLoadError(result.message);
       }
+      if (background) setRevalidating(false);
+      else setLoading(false);
+    },
+    [cacheEmail]
+  );
 
-      setVaccines(vaccinesData.vaccines ?? []);
-      setLots(lotsData.lots ?? []);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : "Could not load macro codes.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const refetchLots = useCallback(async (token: string) => {
-    const response = await fetch("/api/lots", { headers: { Authorization: `Bearer ${token}` } });
-    const data = await response.json();
-    if (response.ok) setLots(data.lots ?? []);
-  }, []);
-
+  // Instant load (Will's brief, verbatim: "preload the info when the app
+  // is first loaded so it will start fast"): the moment a session is
+  // available, render whatever is cached for THIS user right away — no
+  // network round trip on the critical path — then always follow up
+  // with a real background fetch to correct/confirm it. A cache MISS
+  // (first-ever visit, cleared storage, private browsing) falls back to
+  // the original foreground load, which is the only case that still
+  // shows "Loading…".
   useEffect(() => {
-    if (session) void loadAll(session.accessToken);
+    if (!session) return;
+    const cached = readMacroCodesCache(getMacroCodesCacheStorage(), session.email);
+    if (cached) {
+      setVaccines(cached.payload.vaccines as VaccineRow[]);
+      setLots(cached.payload.lots as LotRow[]);
+      setLoading(false);
+      void loadAll(session.accessToken, { background: true });
+    } else {
+      void loadAll(session.accessToken);
+    }
   }, [session, loadAll]);
+
+  // Keep it fresh (brief, verbatim: "stays up to date all the time when
+  // data changes"): revalidate in the background on window focus, when
+  // the tab becomes visible again, and on a ~60s heartbeat while it's
+  // visible — all three share the exact same background loadAll path
+  // the mount-hydrate effect above uses.
+  useEffect(() => {
+    if (!session) return;
+    const accessToken = session.accessToken;
+    function revalidate() {
+      if (document.visibilityState !== "visible") return;
+      void loadAll(accessToken, { background: true });
+    }
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", revalidate);
+    const interval = window.setInterval(revalidate, 60_000);
+    return () => {
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", revalidate);
+      window.clearInterval(interval);
+    };
+  }, [session, loadAll]);
+
+  const refetchLots = useCallback(
+    async (token: string) => {
+      const response = await fetch("/api/lots", { headers: { Authorization: `Bearer ${token}` } });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        const nextLots = data.lots ?? [];
+        setLots(nextLots);
+        setRefreshNote(null);
+        // Keeps the cache consistent with what just got saved (brief:
+        // "refetch... after any in-page mutation") — vaccines are
+        // untouched by a lot/exp save, so the current in-memory list is
+        // what belongs alongside the fresh lots.
+        writeMacroCodesCache(getMacroCodesCacheStorage(), cacheEmail, { vaccines, lots: nextLots });
+      }
+    },
+    [cacheEmail, vaccines]
+  );
 
   async function handleSignIn(event: FormEvent) {
     event.preventDefault();
@@ -992,7 +1121,15 @@ function MacroCodesPageContent() {
     // matching max-width cap. Inline style wins over the CSS class for
     // the flex/minWidth shorthand, so this is done here rather than in
     // the <style> tag.
-    // Embed compact overrides this: the popup is narrower than 3x340px
+    // ROUND 12 (Will's verbatim feedback, 2026-09-13): "I want the dose
+    // 1/2/3 font size to be the same as the other buttons so they look
+    // the same. If we need to increase width of the table we can do
+    // that." lib/macro-dose-button.tsx dropped the round-11 "crowded"
+    // font/padding shrink for a 3-dose fitRow group entirely — the fix
+    // on THIS side of that trade is here: the column basis/min-width
+    // grew from 340/320 to 460/420 so three full-size dose buttons still
+    // fit on one row without needing a smaller font.
+    // Embed compact overrides this: the popup is narrower than 3x460px
     // plus gaps, so columns instead grow/shrink evenly to fill the
     // available width (flex: 1 1 0, min-width: 0) — `width: "auto"` also
     // beats the @media (max-width: 1100px) `.macro-group-column { width:
@@ -1001,7 +1138,7 @@ function MacroCodesPageContent() {
     const columnStyle = embed
       ? { ...styles.groupColumn, flex: "1 1 0", minWidth: 0, width: "auto" as const }
       : effectiveViewMode === "C"
-      ? { ...styles.groupColumn, flex: "0 1 340px", minWidth: 320 }
+      ? { ...styles.groupColumn, flex: "0 1 460px", minWidth: 420 }
       : styles.groupColumn;
     return (
       <div key={block.group} className="macro-group-column" style={columnStyle}>
@@ -1051,6 +1188,12 @@ function MacroCodesPageContent() {
 
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
+      {/* ROUND 12: a background revalidation never blanks the page (see
+       * loadAll's doc comment) — this is the only visible sign one is in
+       * flight, or that the last one failed/hit an expired token while
+       * the view above kept showing cached/previous data. */}
+      {!loading && revalidating && <p style={styles.muted}>Refreshing…</p>}
+      {!loading && !revalidating && refreshNote && <p style={styles.error}>{refreshNote}</p>}
 
       {!loading && (
         <div
@@ -1067,8 +1210,29 @@ function MacroCodesPageContent() {
             embed
               ? { ...styles.groups, gap: "10px", flexDirection: "row" as const, flexWrap: "nowrap" as const, maxWidth: "100%" }
               : effectiveViewMode === "C"
-              ? { ...styles.groups, maxWidth: 1200 }
-              : styles.groups
+              ? { ...styles.groups, maxWidth: 1440 } // ROUND 12: 3 * 460px columns + 2 * 1.5rem gaps
+              : // ROUND 12 (Will's verbatim feedback, 2026-09-13: "there is
+                // a bunch of dead space at the bottom of the page"): A and
+                // B never got round 9's width cap — their columns are
+                // `flex: 1 1 0` (styles.groupColumn) with NO max-width, so
+                // on a wide monitor they stretch edge-to-edge, which is
+                // exactly what Will called "dead space" about C back in
+                // round 9 ("make the table a little more compact
+                // width-wise... the dead space going away will make it
+                // easier to use" — see renderSectionVersionC's doc comment)
+                // before that page got a max-width cap. Same fix, applied
+                // here for A/B: capping the row's own width stops it from
+                // sprawling across a wide screen with three sparse,
+                // overstretched columns and a lot of visibly unused canvas
+                // around/below them — no explicit min-height/spacer was
+                // found in either version's markup (verified by rendering
+                // buildMacroRows -> groupMacroRowsBySection ->
+                // groupSectionsByTopGroup's real output through a static
+                // harness — the <main>/.macro-groups/.macro-family-row/
+                // .macro-row-b markup ends exactly at the last row with no
+                // trailing spacer), so the fix is the same width discipline
+                // C already has, not a spacer removal.
+                { ...styles.groups, maxWidth: 1600 }
           }
         >
           {visibleTopGroups.map((block) => renderTopGroup(block))}
@@ -1428,12 +1592,17 @@ function MacroCodesPageContent() {
           /* ROUND 11 (Will's verbatim feedback: "I want all the buttons
            * to fit on one row, so if there are 3 doses, they all need to
            * fit"): never wrap to a second line — each button flexes to
-           * share the row instead (renderDoseButton's fitRow option) and
-           * shrinks its text/padding once doseCountInRow hits 3+. */
+           * share the row instead (renderDoseButton's fitRow option).
+           * ROUND 12 (Will's verbatim feedback: "I want the dose 1/2/3
+           * font size to be the same as the other buttons... increase
+           * width of the table"): the per-doseCount font/padding shrink
+           * is gone (lib/macro-dose-button.tsx) — this group gets more of
+           * the row's (now-wider, see renderTopGroup's 460px column)
+           * width instead, so three full-size buttons still fit. */
           flex-wrap: nowrap;
           gap: 0.3rem;
           justify-content: flex-end;
-          max-width: 68%;
+          max-width: 74%;
           /* Pushes the button group (and the settings ⚙ after it) to the
            * row's right edge, hugging together, instead of the name-cell
            * -> buttons -> settings gaps splitting evenly (which left an

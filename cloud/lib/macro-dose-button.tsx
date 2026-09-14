@@ -168,10 +168,46 @@ export interface RenderMacroDoseButtonOptions {
    * app/macro-codes/page.tsx). Off by default — versions A/B keep their
    * original wrap-if-needed sizing. */
   fitRow?: boolean;
-  /** How many dose buttons share this product's row — 3+ switches to
-   * smaller text/padding so three buttons can still fit at the layout C
-   * / embed column width. Only consulted when `fitRow` is true. */
+  /** How many dose buttons share this product's row. ROUND 12 (Will's
+   * verbatim feedback, 2026-09-13, on top of the round-11 fitRow work
+   * above): "I want the dose 1/2/3 font size to be the same as the other
+   * buttons so they look the same. If we need to increase width of the
+   * table we can do that." A 3+ dose fitRow group used to shrink its
+   * font/padding to squeeze onto one line (the round-11 "crowded" knob)
+   * — that's gone; every dose button now renders at the SAME font size/
+   * padding regardless of doseCountInRow, and the caller widens its
+   * column instead (see app/macro-codes/page.tsx's renderTopGroup — the
+   * layout-C column basis/min-width and .macro-groups-c's max-width both
+   * grew to fit three full-size buttons on one row). This prop is kept
+   * (rather than removed) only because callers already compute and pass
+   * it; it's accepted but no longer changes any style. */
   doseCountInRow?: number;
+}
+
+/** ROUND 12 (Will's verbatim feedback, 2026-09-13, on /macro-codes:
+ * Gardasil 9's Dose 2 sub-label "–2 mo · 9–…" and M-M-R II's Dose 2
+ * "28 d · special g…" were both cut off with an ellipsis). The interval
+ * sub-label now wraps onto up to two short lines instead of clipping to
+ * one — `-webkit-line-clamp: 2` still ellipsizes anything past that, but
+ * a two-clause interval like "1–2 mo · 9–14: 6 mo" or "28 d · special
+ * groups" fits comfortably across two lines at the SAME font size used
+ * everywhere else (no more per-crowding shrink — see doseCountInRow's
+ * doc comment above). Height for this slot is a fixed reservation (not
+ * content-driven) sized for exactly two lines at this font, applied
+ * identically to every dose button in a product's row — including the
+ * ones with no interval of their own (reserveSubLabelSlot's blank
+ * placeholder line) — so a product with one two-line interval and one
+ * empty slot still lines up at the same height, the same guarantee
+ * round 11 made for one line, now extended to two. */
+// Exported (not just module-local) so this pure sizing math is plain-
+// vitest testable on its own, same posture as this file's other exports
+// — see tests/macro-dose-button.test.ts.
+export function subLabelFontSizePx(compact: boolean, large: boolean): number {
+  return compact ? 9 : large ? 11 : 10;
+}
+export const SUB_LABEL_LINE_HEIGHT = 1.15;
+export function subLabelSlotHeightPx(compact: boolean, large: boolean): number {
+  return Math.ceil(subLabelFontSizePx(compact, large) * SUB_LABEL_LINE_HEIGHT * 2);
 }
 
 /**
@@ -220,9 +256,16 @@ export function renderMacroDoseButton(
   // and this dose gets an empty, invisible placeholder line instead of
   // just being one line shorter than its siblings.
   const showSubLabelSlot = Boolean(subLabel) || reserveSubLabelSlot;
-  // ROUND 11: 3+ doses sharing one never-wrapping row need smaller text/
-  // padding to actually fit at the layout C / embed column width.
-  const crowded = fitRow && doseCountInRow >= 3;
+  // ROUND 12: doseCountInRow no longer changes sizing (see its doc
+  // comment) — accepted for API compatibility with existing callers only.
+  void doseCountInRow;
+  const subLabelFontSize = subLabelFontSizePx(compact, large);
+  // Main-label line height at this button's own font size, used only to
+  // size the fixed two-line sub-label reservation below relative to it —
+  // not applied anywhere else (the button's overall height still comes
+  // from `minHeight` + natural content flow, same as before round 12).
+  const mainLineHeight = Math.round((compact ? 11 : large ? 13 : 12) * 1.2);
+  const subLabelSlotHeight = subLabelSlotHeightPx(compact, large);
 
   return (
     <span
@@ -251,14 +294,20 @@ export function renderMacroDoseButton(
           background: isNoShortCode ? "#f2f2f2" : colors.bg,
           color: isNoShortCode ? "#888" : colors.text,
           borderRadius: 5,
-          minHeight: compact ? 28 : showSubLabelSlot ? (large ? 46 : 40) : large ? 38 : 32,
-          padding: crowded ? "0 0.3rem" : compact ? "0 0.5rem" : large ? "0 0.75rem" : "0 0.5rem",
+          // ROUND 12: the sub-label slot now always reserves TWO lines
+          // (subLabelSlotHeight), not one — including in `compact` (embed)
+          // mode, which previously hard-coded 28px regardless of
+          // showSubLabelSlot (a pre-existing gap this fix closes rather
+          // than carries forward, since a two-line reservation inside a
+          // still-28px-tall button would visibly overflow/clip).
+          minHeight: showSubLabelSlot ? mainLineHeight + 1 + subLabelSlotHeight + 8 : compact ? 28 : large ? 38 : 32,
+          padding: compact ? "0 0.5rem" : large ? "0 0.75rem" : "0 0.5rem",
           display: "inline-flex",
           flexDirection: showSubLabelSlot ? "column" : "row",
           alignItems: showSubLabelSlot ? (block ? "flex-start" : "center") : "center",
           justifyContent: showSubLabelSlot ? "center" : block ? "flex-start" : "center",
           gap: showSubLabelSlot ? 1 : undefined,
-          fontSize: crowded ? "10.5px" : compact ? "11px" : large ? "13px" : "12px",
+          fontSize: compact ? "11px" : large ? "13px" : "12px",
           fontWeight: 600,
           whiteSpace: fitRow ? undefined : "nowrap",
           cursor: isNoShortCode ? "default" : "pointer",
@@ -282,18 +331,23 @@ export function renderMacroDoseButton(
           <span
             aria-hidden="true"
             style={{
-              display: "block",
-              maxWidth: crowded ? 60 : compact ? 70 : 88,
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              height: subLabelSlotHeight,
+              lineHeight: `${SUB_LABEL_LINE_HEIGHT}em`,
+              maxWidth: compact ? 96 : large ? 130 : 112,
               overflow: "hidden",
               textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              fontSize: crowded ? "9px" : compact ? "9px" : large ? "11px" : "10px",
+              whiteSpace: "normal",
+              wordBreak: "break-word",
+              fontSize: `${subLabelFontSize}px`,
               fontWeight: 400,
               color: isNoShortCode ? "#999" : "#666",
               visibility: subLabel ? "visible" : "hidden",
             }}
           >
-            {subLabel ?? " "}
+            {subLabel ?? "\u00a0"}
           </span>
         )}
       </button>
