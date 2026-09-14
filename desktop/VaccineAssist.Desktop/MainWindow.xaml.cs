@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using VaccineAssist.Desktop.Hotkeys;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
@@ -54,7 +55,15 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
-    private readonly EntryViewModel _entryViewModel;
+    /// <summary>
+    /// BUG FIX (2026-09-14, MainWindow resilience): null when building the
+    /// Data entry tab's view/view-model throws — see the constructor's
+    /// try/catch around it. Guarded the same way as _trayIconController
+    /// below (every use site null-checked) so a failure here degrades to a
+    /// visible error panel on that one tab instead of failing the whole
+    /// MainWindow construction.
+    /// </summary>
+    private EntryViewModel? _entryViewModel;
     private readonly IAuthService _authService;
     private readonly IVaccineApiService _vaccineApiService;
     private readonly IClipboardService _clipboardService;
@@ -127,15 +136,47 @@ public partial class MainWindow : Window
         IPioneerEntrySequence pioneerEntrySequence,
         string cloudApiBaseUrl)
     {
-        InitializeComponent();
+        // BUG FIX (2026-09-14, MainWindow resilience bug hunt): these
+        // constructor-parameter fields are now assigned BEFORE
+        // InitializeComponent() runs, not after. Previously they were
+        // assigned after, which meant they were still at their default
+        // values (null for the strings/interfaces) for the entire duration
+        // of InitializeComponent() — including whatever that call does
+        // synchronously while parsing MainWindow.xaml, such as the
+        // TabControl selecting its initial tab(s) and raising
+        // SelectionChanged (see MainTabs_OnSelectionChanged ->
+        // EnsureCloudTabLoaded, which reads _cloudApiBaseUrl). A
+        // SelectionChanged firing mid-InitializeComponent would have built
+        // a CloudPageView pointed at a blank/relative URL that's baked in
+        // for that tab's whole lifetime. Assigning first removes that
+        // whole class of "field read before it's set" hazard regardless of
+        // exactly when/whether TabControl fires that event during parsing.
         _authService = authService;
         _vaccineApiService = vaccineApiService;
         _clipboardService = clipboardService;
         _pioneerEntrySequence = pioneerEntrySequence;
         _cloudApiBaseUrl = cloudApiBaseUrl;
 
-        _entryViewModel = new EntryViewModel(ShowDataEntryPopup, _clipboardService);
-        DataEntryTabContent.Content = new EntryView(_entryViewModel);
+        InitializeComponent();
+
+        // BUG FIX (2026-09-14): building the Data entry tab's view-model/
+        // view is now wrapped the same way TrayIconController already is
+        // below — a throw here (e.g. a future change to EntryViewModel's
+        // constructor) previously escaped straight out of MainWindow's own
+        // constructor, which is exactly the kind of throw App.xaml.cs's
+        // TryShowMainWindow catch falls back to LoginWindow for. Now it
+        // degrades to an in-place error panel on just that one tab instead.
+        try
+        {
+            var entryViewModel = new EntryViewModel(ShowDataEntryPopup, _clipboardService);
+            DataEntryTabContent.Content = new EntryView(entryViewModel);
+            _entryViewModel = entryViewModel;
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.DataEntryTab", ex);
+            DataEntryTabContent.Content = BuildErrorPanel("The Data entry tab", ex);
+        }
         // Scheduling/Lots/Active vaccines/Ordering/Physicians are built
         // lazily by EnsureCloudTabLoaded, the first time each tab is
         // actually selected — see MainTabs_OnSelectionChanged.
@@ -162,6 +203,43 @@ public partial class MainWindow : Window
         StateChanged += MainWindow_OnStateChanged;
     }
 
+    /// <summary>
+    /// Fallback content for a child view that failed to construct (see the
+    /// Data entry tab's try/catch above and EnsureCloudTabLoaded's below) —
+    /// same visual language as CloudPageView.xaml's own FailurePanel
+    /// (bold headline + gray detail line) so a broken tab still looks like
+    /// part of this app rather than a raw crash dialog. Never throws itself
+    /// — plain literals and ex.GetType().Name/ex.Message only.
+    /// </summary>
+    private static UIElement BuildErrorPanel(string label, Exception ex)
+    {
+        var panel = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(32),
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{label} couldn't load.",
+            FontWeight = FontWeights.Bold,
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{ex.GetType().Name}: {ex.Message}",
+            Foreground = Brushes.Gray,
+            FontSize = 11,
+            Margin = new Thickness(0, 10, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 500,
+            TextAlignment = TextAlignment.Center,
+        });
+        return panel;
+    }
+
     /// <summary>Raised after a successful sign-out — App.xaml.cs shows a
     /// fresh LoginWindow and closes this one.</summary>
     public event EventHandler? LoggedOut;
@@ -183,7 +261,14 @@ public partial class MainWindow : Window
         _dataEntryHotKey.Pressed += (_, _) => ShowDataEntryPopup();
 
         var registered = _dataEntryHotKey.Register();
-        _entryViewModel.IsHotkeyActive = registered;
+        // Null when the Data entry tab's view-model failed to construct
+        // (see the constructor's try/catch) — there's no status text left
+        // to update in that case, but the hotkey itself still registers
+        // and works fine independent of that tab's UI.
+        if (_entryViewModel is not null)
+        {
+            _entryViewModel.IsHotkeyActive = registered;
+        }
 
         if (!registered)
         {
@@ -311,7 +396,24 @@ public partial class MainWindow : Window
             return;
         }
 
-        content.Content = new CloudPageView(_cloudApiBaseUrl, relativePath);
+        // BUG FIX (2026-09-14): CloudPageView's own constructor is cheap
+        // (InitializeComponent + a Loaded hookup — see its doc comment;
+        // the actual WebView2 init is async and already isolated inside
+        // CloudPageView's own try/catch), so this shouldn't throw in
+        // practice. Wrapped anyway per the "every child view gets a
+        // try/catch + fallback panel" resilience pass — this runs from
+        // MainTabs_OnSelectionChanged, a routed-event handler, so an
+        // uncaught throw here would surface as a DispatcherUnhandledException
+        // instead of a clean per-tab failure.
+        try
+        {
+            content.Content = new CloudPageView(_cloudApiBaseUrl, relativePath);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException($"MainWindow.EnsureCloudTabLoaded({relativePath})", ex);
+            content.Content = BuildErrorPanel($"The {tabItem.Header} tab", ex);
+        }
     }
 
     /// <summary>

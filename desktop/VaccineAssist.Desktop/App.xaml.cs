@@ -387,6 +387,14 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
+            // 2026-09-14 (Will, live bug — "Signed in, but the main window
+            // couldn't be opened" with no way to tell what actually threw):
+            // AppFileLog.LogException now walks the FULL exception chain
+            // (type/message/stack/inner exceptions), and the exception's
+            // type+message are now surfaced right in the LoginWindow's
+            // ErrorMessage (previously only the generic sentence, with the
+            // detail going solely to a MessageBox that may not have been
+            // seen/screenshotted) — so the next report names the real cause.
             AppFileLog.LogException("TryShowMainWindow", ex);
             MessageBox.Show(
                 "Vaccine Assist signed in, but the main window couldn't be opened.\n\n" +
@@ -394,7 +402,8 @@ public partial class App : Application
                 "Vaccine Assist",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
-            loginViewModel.SetErrorMessage("Signed in, but the main window couldn't be opened. Try signing in again.");
+            loginViewModel.SetErrorMessage(
+                $"Signed in, but the main window couldn't be opened: {ex.GetType().Name}: {ex.Message}. Details in the log.");
             return false;
         }
     }
