@@ -2,9 +2,12 @@
  * Pure "does this /lots row need a highlight" decision (V-lots-row-
  * status, Will 2026-09-14 verbatim: "If a lot is missing, highlight the
  * row in yellow. If it's expired, highlight it in red. And add a note
- * at the end of the row that shows that status."). Kept dependency-free
- * of React so it's directly unit-testable, same posture as
- * lib/lots-table.ts and lib/lots-autosave.ts.
+ * at the end of the row that shows that status."; extended same day,
+ * verbatim: "Also needs to show if exp is missing too" — a row with a
+ * lot number but no expiration date gets the same pale-yellow highlight
+ * as a missing lot, with its own "No expiration" note). Kept
+ * dependency-free of React so it's directly unit-testable, same posture
+ * as lib/lots-table.ts and lib/lots-autosave.ts.
  *
  * Deliberately its own module rather than an addition to lib/lots-table.ts
  * — that file's isLotRowDue/resolveLotRowHighlight power a DIFFERENT,
@@ -13,7 +16,9 @@
  * one covers both cases with the exact semantics of this brief.
  */
 
-export type LotRowStatus = "ok" | "missing" | "expired";
+import { isValidCalendarDate } from "@/lib/date-mask";
+
+export type LotRowStatus = "ok" | "missing" | "missing-expiration" | "expired";
 
 export type LotRowStatusInput = {
   /** The row's current (draft) lot number — "" or all-whitespace counts
@@ -29,10 +34,35 @@ export type LotRowStatusInput = {
   today: string;
 };
 
-/** The set/non-empty ISO dates among expiration + beyond-use date,
- * earliest first — "beyond-use date if set and earlier" per the brief. */
+/** Whether `value` (already trimmed) is a real "YYYY-MM-DD" calendar
+ * date — rejects both malformed strings and impossible dates like
+ * "2026-02-30" (see lib/date-mask.ts's isValidCalendarDate). */
+function isValidIsoDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [, yyyy, mm, dd] = match;
+  return isValidCalendarDate(Number(yyyy), Number(mm), Number(dd));
+}
+
+/** The set, VALID ISO dates among expiration + beyond-use date, earliest
+ * first — "beyond-use date if set and earlier" per the brief. An
+ * empty/invalid value in either field is treated as "not set" here, same
+ * as isExpirationMissing below, so a garbled date can never accidentally
+ * make a row 'expired' via string comparison (e.g. "2026-02-30" sorting
+ * before today's date despite not being a real day). */
 function candidateDates({ expiration, beyondUseDate }: Pick<LotRowStatusInput, "expiration" | "beyondUseDate">): string[] {
-  return [expiration, beyondUseDate].filter((d): d is string => !!d && d.length > 0);
+  return [expiration, beyondUseDate].filter((d): d is string => !!d && d.length > 0 && isValidIsoDate(d));
+}
+
+/** Whether `expiration` counts as "no expiration on file" — empty after
+ * trim, or not a real "YYYY-MM-DD" calendar date. In normal operation
+ * DateTextInput's onChange contract only ever hands the page a complete
+ * valid ISO date or "" (see app/lots/page.tsx's runAutosave doc comment),
+ * so the invalid-date branch is a defensive backstop rather than a
+ * reachable UI state today. */
+function isExpirationMissing(expiration: string): boolean {
+  const trimmed = expiration.trim();
+  return trimmed.length === 0 || !isValidIsoDate(trimmed);
 }
 
 /**
@@ -43,8 +73,17 @@ function candidateDates({ expiration, beyondUseDate }: Pick<LotRowStatusInput, "
  *   before `today`. A date equal to today is NOT expired (inclusive
  *   "due today" belongs to a different, needs-reordering concept — this
  *   is a flat "is this a bad lot to be dispensing" check).
- * 'ok' — a lot number is on file and no set date is in the past (or no
- *   date is set at all yet).
+ * 'missing-expiration' — a lot number IS on file, nothing set date is in
+ *   the past (so not 'expired'), but the expiration field itself is
+ *   empty/invalid (see isExpirationMissing) — a beyond-use date alone
+ *   never satisfies this; it's specifically about the Expiration field.
+ * 'ok' — a lot number is on file, no set date is in the past, and an
+ *   expiration date IS on file.
+ *
+ * Precedence within a row (a row is at most one of these):
+ *   expired > missing (no lot) > missing-expiration > ok — a lot with no
+ *   number never additionally reports "no expiration" too (one message,
+ *   "No lot"), and an expired lot is worse than a merely-undated one.
  *
  * Callers must never apply this to an INACTIVE product's row — an
  * inactive product isn't in rotation, so whether its old lot happens to
@@ -56,10 +95,14 @@ export function lotRowStatus({ lotNumber, expiration, beyondUseDate, today }: Lo
   if (lotNumber.trim().length === 0) return "missing";
 
   const dates = candidateDates({ expiration, beyondUseDate });
-  if (dates.length === 0) return "ok";
+  if (dates.length > 0) {
+    const earliest = dates.reduce((a, b) => (b < a ? b : a));
+    if (earliest < today) return "expired";
+  }
 
-  const earliest = dates.reduce((a, b) => (b < a ? b : a));
-  return earliest < today ? "expired" : "ok";
+  if (isExpirationMissing(expiration)) return "missing-expiration";
+
+  return "ok";
 }
 
 /**

@@ -260,3 +260,54 @@ describe("rowStatusLabel with a static row status (missing/expired)", () => {
     });
   });
 });
+
+// --- V-lots-row-status extended (Will 2026-09-14 verbatim: "Also needs
+// to show if exp is missing too"): rowStatusLabel's precedence with the
+// new 'missing-expiration' rowStatus folded in — saving > error >
+// justSaved > expired > missing > missing-expiration > nothing. ---
+describe("rowStatusLabel with a missing-expiration row status", () => {
+  it("shows 'No expiration' when the row status is missing-expiration and nothing transient is happening", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: null, rowStatus: "missing-expiration" })).toEqual(
+      { kind: "missing-expiration", text: "No expiration" }
+    );
+  });
+
+  it("prioritizes Saving… over a missing-expiration row status", () => {
+    expect(rowStatusLabel({ saving: true, justSaved: false, error: null, rowStatus: "missing-expiration" })).toEqual({
+      kind: "saving",
+      text: "Saving…",
+    });
+  });
+
+  it("prioritizes a live error over a missing-expiration row status", () => {
+    expect(
+      rowStatusLabel({ saving: false, justSaved: false, error: "Failed to save lot.", rowStatus: "missing-expiration" })
+    ).toEqual({ kind: "error", text: "Failed to save lot." });
+  });
+
+  it("prioritizes a just-saved flash over a missing-expiration row status", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: true, error: null, rowStatus: "missing-expiration" })).toEqual({
+      kind: "saved",
+      text: "Saved ✓",
+    });
+  });
+
+  it("prioritizes expired over missing-expiration (defensive — lotRowStatus never actually returns both)", () => {
+    expect(
+      rowStatusLabel({
+        saving: false,
+        justSaved: false,
+        error: null,
+        rowStatus: "expired",
+        expiredOnDisplay: "06/30/2025",
+      })
+    ).toEqual({ kind: "expired", text: "Expired 06/30/2025" });
+  });
+
+  it("prioritizes missing (no lot) over missing-expiration (defensive — lotRowStatus never actually returns both)", () => {
+    expect(rowStatusLabel({ saving: false, justSaved: false, error: null, rowStatus: "missing" })).toEqual({
+      kind: "missing",
+      text: "No lot",
+    });
+  });
+});

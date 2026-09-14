@@ -103,7 +103,7 @@ export type RowSaveState = {
 };
 
 export type RowStatus = {
-  kind: "saving" | "saved" | "error" | "expired" | "missing";
+  kind: "saving" | "saved" | "error" | "expired" | "missing" | "missing-expiration";
   text: string;
 };
 
@@ -131,15 +131,18 @@ export type RowStatusExtra = {
  * column instead of inline next to the ⚙ menu, so nothing else in the
  * row ever shifts.
  *
- * Priority is saving > error > justSaved > expired > missing > nothing:
- * a request that's actively in flight always wins (e.g. a new edit
- * started while a previous "Saved ✓" flash was still fading), a live
- * error always wins over a stale flash, a flash wins over the row's
- * static missing/expired status (which will simply reappear once the
- * flash finishes fading), and expired wins over missing since a row
- * always has AT MOST one of those two anyway (lotRowStatus never returns
- * both — see that function's own doc comment). Returns null when the row
- * has nothing to report.
+ * Priority is saving > error > justSaved > expired > missing >
+ * missing-expiration > nothing: a request that's actively in flight
+ * always wins (e.g. a new edit started while a previous "Saved ✓" flash
+ * was still fading), a live error always wins over a stale flash, a
+ * flash wins over the row's static status (which will simply reappear
+ * once the flash finishes fading), expired wins over missing/
+ * missing-expiration, and missing (no lot at all) wins over
+ * missing-expiration (a lot with no number never ALSO reports "no
+ * expiration" — one message) since a row always has AT MOST one of
+ * these three anyway (lotRowStatus never returns more than one — see
+ * that function's own doc comment). Returns null when the row has
+ * nothing to report.
  */
 export function rowStatusLabel(state: RowSaveState & RowStatusExtra): RowStatus | null {
   if (state.saving) return { kind: "saving", text: "Saving…" };
@@ -149,6 +152,7 @@ export function rowStatusLabel(state: RowSaveState & RowStatusExtra): RowStatus 
     return { kind: "expired", text: state.expiredOnDisplay ? `Expired ${state.expiredOnDisplay}` : "Expired" };
   }
   if (state.rowStatus === "missing") return { kind: "missing", text: "No lot" };
+  if (state.rowStatus === "missing-expiration") return { kind: "missing-expiration", text: "No expiration" };
   return null;
 }
 
