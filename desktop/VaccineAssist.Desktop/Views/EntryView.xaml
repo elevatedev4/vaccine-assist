@@ -8,15 +8,32 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="16"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="16"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="24"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Data entry" FontSize="18" FontWeight="Bold"/>
+        <!--
+            Will, 2026-09-13 (verbatim): "You can have a greeting page that
+            says to minimize it and it will go to the tray ... use Ctrl+Keypad 7
+            or Ctrl+Keypad 8 as needed. For now, only show Ctrl+Keypad 8 as
+            the option because 7 isn't working yet and I don't want the
+            staff to get confused." Mentions ONLY Ctrl+Keypad 8 — the
+            existing Ctrl+NumPad7 status text below (for the data-entry
+            popup hotkey, a separate pre-existing feature) is unchanged.
+        -->
+        <Border Grid.Row="0" Background="#EAF3FF" BorderBrush="#B6D7FF" BorderThickness="1"
+                CornerRadius="4" Padding="12,10">
+            <TextBlock TextWrapping="Wrap" FontSize="13"
+                       Text="Minimize this window — it stays in the tray. Press Ctrl+Keypad 8 anywhere to open macro codes."/>
+        </Border>
 
-        <TextBlock Grid.Row="2" TextWrapping="Wrap" FontSize="13">
+        <TextBlock Grid.Row="2" Text="Data entry" FontSize="18" FontWeight="Bold"/>
+
+        <TextBlock Grid.Row="4" TextWrapping="Wrap" FontSize="13">
             <TextBlock.Style>
                 <Style TargetType="TextBlock">
                     <Style.Triggers>
@@ -33,7 +50,7 @@
             </TextBlock.Style>
         </TextBlock>
 
-        <Button Grid.Row="4" Content="Open data entry popup" Command="{Binding OpenPopupCommand}"
+        <Button Grid.Row="6" Content="Open data entry popup" Command="{Binding OpenPopupCommand}"
                 Padding="10,4" HorizontalAlignment="Left"/>
 
         <!--
@@ -44,11 +61,11 @@
             without needing an active data-entry session — the popup has
             its own copy of the same button for mid-entry use.
         -->
-        <TextBlock Grid.Row="6" Text="Debug: Pioneer UIA tree dump" FontSize="13" FontWeight="Bold"/>
-        <Button Grid.Row="7" Content="Dump Pioneer UIA tree" Command="{Binding DumpUiaTreeCommand}"
+        <TextBlock Grid.Row="8" Text="Debug: Pioneer UIA tree dump" FontSize="13" FontWeight="Bold"/>
+        <Button Grid.Row="9" Content="Dump Pioneer UIA tree" Command="{Binding DumpUiaTreeCommand}"
                 Padding="10,4" HorizontalAlignment="Left" Margin="0,6,0,0"/>
 
-        <StackPanel Grid.Row="8" Margin="0,8,0,0">
+        <StackPanel Grid.Row="10" Margin="0,8,0,0">
             <TextBlock Text="{Binding StatusMessage}" Foreground="Green" TextWrapping="Wrap"/>
             <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" TextWrapping="Wrap"/>
         </StackPanel>

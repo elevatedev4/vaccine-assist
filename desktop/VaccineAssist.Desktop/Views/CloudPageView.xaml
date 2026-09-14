@@ -1,0 +1,40 @@
+<UserControl x:Class="VaccineAssist.Desktop.Views.CloudPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf">
+    <!--
+        Will, 2026-09-13 (verbatim): "Make sure the other pages, like
+        scheduling, lots, etc all match the format and layout of the
+        cloud version exactly. All the features that are in the cloud
+        version should be in the desktop version." Hosts one page of the
+        cloud app (vaccine-assist.vercel.app) in a WebView2 control —
+        MainWindow.xaml.cs lazily creates one of these per tab (Scheduling/
+        Lots/Ordering/Active vaccines/Physicians) the first time it's
+        selected, all sharing ONE CoreWebView2Environment/user-data folder
+        with the macro-codes popup (Services/SharedCloudWebView2Environment.cs)
+        so a sign-in on any one of them is shared everywhere.
+
+        Same failure-panel pattern as MacroCodesWindow.xaml (WebView2
+        Runtime missing/init failure never crashes the app), plus a Retry
+        button since this is a long-lived tab rather than a one-shot
+        popup — worth letting staff retry without restarting the app.
+    -->
+    <Grid>
+        <wv2:WebView2 x:Name="WebView"/>
+
+        <StackPanel x:Name="FailurePanel" Visibility="Collapsed"
+                    VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32">
+            <TextBlock Text="Couldn't load this page." FontWeight="Bold" FontSize="14"
+                       TextWrapping="Wrap" HorizontalAlignment="Center"/>
+            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" MaxWidth="500" TextAlignment="Center">
+                This usually means the WebView2 Runtime isn't installed on this computer. Download it from
+                <Hyperlink NavigateUri="https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+                           RequestNavigate="DownloadLink_OnRequestNavigate">go.microsoft.com/fwlink/p/?LinkId=2124703</Hyperlink>
+                (Evergreen WebView2 Runtime) and try again.
+            </TextBlock>
+            <TextBlock x:Name="FailureDetailTextBlock" Margin="0,10,0,0" Foreground="Gray"
+                       TextWrapping="Wrap" MaxWidth="500" TextAlignment="Center" FontSize="11"/>
+            <Button Content="Retry" Click="RetryButton_OnClick" Padding="12,4" Margin="0,12,0,0" HorizontalAlignment="Center"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

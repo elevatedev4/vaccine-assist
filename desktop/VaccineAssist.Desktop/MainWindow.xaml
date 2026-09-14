@@ -11,23 +11,40 @@
                     Margin="0,6,10,6" Click="LogoutButton_OnClick"/>
         </StackPanel>
 
-        <TabControl x:Name="MainTabs">
-            <TabItem Header="Scheduling">
+        <!--
+            Will, 2026-09-13: "Make sure data entry page is the main page
+            that is shown" — DataEntryTabItem below sets IsSelected="True"
+            explicitly (TabControl would otherwise default to the first
+            tab, Scheduling).
+
+            Scheduling/Lots/Active vaccines/Ordering/Physicians each host a
+            CloudPageView (a WebView2 view of the matching cloud-app page —
+            see that control's own doc comment) instead of the old native
+            view, for cloud-parity ("All the features that are in the cloud
+            version should be in the desktop version"). MainWindow.xaml.cs
+            builds each one LAZILY, the first time its tab is actually
+            selected (via MainTabs.SelectionChanged), rather than all five
+            up front — staff who "just run it and minimize it immediately"
+            per the brief should never pay for five WebView2 browser
+            processes they never look at.
+        -->
+        <TabControl x:Name="MainTabs" SelectionChanged="MainTabs_OnSelectionChanged">
+            <TabItem x:Name="SchedulingTabItem" Header="Scheduling">
                 <ContentControl x:Name="SchedulingContent"/>
             </TabItem>
-            <TabItem Header="Data entry">
+            <TabItem x:Name="DataEntryTabItem" Header="Data entry" IsSelected="True">
                 <ContentControl x:Name="DataEntryTabContent"/>
             </TabItem>
-            <TabItem Header="Lots">
+            <TabItem x:Name="LotsTabItem" Header="Lots">
                 <ContentControl x:Name="LotsContent"/>
             </TabItem>
-            <TabItem Header="Active vaccines">
+            <TabItem x:Name="ActiveVaccinesTabItem" Header="Active vaccines">
                 <ContentControl x:Name="ActiveVaccinesContent"/>
             </TabItem>
-            <TabItem Header="Ordering">
+            <TabItem x:Name="OrderingTabItem" Header="Ordering">
                 <ContentControl x:Name="OrderingContent"/>
             </TabItem>
-            <TabItem Header="Physicians">
+            <TabItem x:Name="PhysiciansTabItem" Header="Physicians">
                 <ContentControl x:Name="PhysiciansContent"/>
             </TabItem>
         </TabControl>

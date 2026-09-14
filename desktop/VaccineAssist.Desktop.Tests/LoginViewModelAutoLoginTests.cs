@@ -22,7 +22,8 @@ public class LoginViewModelAutoLoginTests
         FakeAuthService authService,
         AutoLoginConfig? autoLoginConfig,
         out FakeLocalSettingsService localSettingsService,
-        bool allowAutoLogin = true)
+        bool allowAutoLogin = true,
+        FakeSessionStore? sessionStore = null)
     {
         localSettingsService = new FakeLocalSettingsService(new AppSettings());
         return new LoginViewModel(
@@ -30,6 +31,7 @@ public class LoginViewModelAutoLoginTests
             localSettingsService,
             new AppSettings(),
             new FakeAutoLoginConfigService(autoLoginConfig),
+            sessionStore ?? new FakeSessionStore(),
             allowAutoLogin);
     }
 
