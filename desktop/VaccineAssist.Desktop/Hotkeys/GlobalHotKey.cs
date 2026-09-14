@@ -50,6 +50,13 @@ public sealed class GlobalHotKey : IDisposable
     /// VK_NUMPAD7 so the two hotkeys never collide with each other.</summary>
     public const uint VK_8 = 0x38;
 
+    /// <summary>VK_NUMPAD8 — see Win32 virtual-key codes. Replaces VK_8 as
+    /// the macro-codes popup hotkey's virtual key (Will, 2026-09-13:
+    /// "Make the activation key Ctrl+Keypad 8"), so the combination is
+    /// Ctrl+NumPad8 instead of Ctrl+8. Distinct from VK_NUMPAD7 so the two
+    /// hotkeys never collide with each other.</summary>
+    public const uint VK_NUMPAD8 = 0x68;
+
     private readonly Window _window;
     private readonly int _id;
     private readonly uint _vk;

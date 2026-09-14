@@ -33,8 +33,10 @@ export interface DescribedTier {
   /** Always a human string — never null — e.g. "50+", "19–59", "6 mo+",
    * "up to 26", or "any age" when the tier has no age gate at all. */
   ageRangeText: string;
-  /** "any of: X, Y, Z" when the tier gates on conditions, else null. */
-  conditionsText: string | null;
+  /** Condition labels this tier gates on, sorted alphabetically
+   * (case-insensitive) by label, or null when the tier has no
+   * condition gate at all. */
+  conditions: string[] | null;
   reason: string;
 }
 
@@ -72,9 +74,11 @@ function conditionLabel(key: DerivedConditionKey, labelsByKey: Map<ConditionKey,
 function describeConditions(
   keys: DerivedConditionKey[] | undefined,
   labelsByKey: Map<ConditionKey, string>
-): string | null {
+): string[] | null {
   if (!keys || keys.length === 0) return null;
-  return `any of: ${keys.map((key) => conditionLabel(key, labelsByKey)).join(", ")}`;
+  return keys
+    .map((key) => conditionLabel(key, labelsByKey))
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 
 /** Formats a single age bound in years as either a whole-number-of-years
@@ -102,7 +106,7 @@ function describeTier(
 ): DescribedTier {
   return {
     ageRangeText: formatAgeRange(tier.ageMin, tier.ageMax),
-    conditionsText: describeConditions(tier.requiredConditions, labelsByKey),
+    conditions: describeConditions(tier.requiredConditions, labelsByKey),
     reason: tier.reason,
   };
 }
