@@ -27,9 +27,14 @@ namespace VaccineAssist.Desktop.Tray;
 ///
 /// MainWindow owns exactly one instance for its whole lifetime (created
 /// in the constructor, disposed in MainWindow_OnClosed) and subscribes to
-/// OpenRequested/SignOutRequested/ExitRequested to do the actual window/
-/// auth work — this class only knows about the icon and menu, not
-/// anything about signing in/out or WPF windows.
+/// its *Requested events to do the actual window/auth/navigation work —
+/// this class only knows about the icon and menu, not anything about
+/// signing in/out, WPF windows, or the cloud app's routes.
+///
+/// V-T-single-nav Part 3 (Will's brief, 2026-09-14): the menu now also
+/// carries the 8 shared nav items (see TrayMenuBuilder/AppNavigationItems)
+/// plus a checkable "Show Pioneer overlay" row — NavigationRequested/
+/// DataEntryRequested/MacroCodesRequested/ShowOverlayToggled cover those.
 /// </summary>
 public sealed class TrayIconController : IDisposable
 {
@@ -38,26 +43,40 @@ public sealed class TrayIconController : IDisposable
     public event EventHandler? OpenRequested;
     public event EventHandler? SignOutRequested;
     public event EventHandler? ExitRequested;
+    public event EventHandler? DataEntryRequested;
+    public event EventHandler? MacroCodesRequested;
 
-    public TrayIconController()
+    /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a Navigate row is clicked.</summary>
+    public event EventHandler<string>? NavigationRequested;
+
+    /// <summary>Raised with the NEW checked state when "Show Pioneer overlay" is clicked.</summary>
+    public event EventHandler<bool>? ShowOverlayToggled;
+
+    /// <param name="showPioneerOverlayInitiallyChecked">Current value of
+    /// the persisted "Show Pioneer overlay" setting (AppSettings.
+    /// ShowPioneerOverlay) — sets the checkbox row's initial Checked state
+    /// so the tray menu reflects the real setting instead of always
+    /// starting unchecked.</param>
+    public TrayIconController(bool showPioneerOverlayInitiallyChecked)
     {
         var menu = new ContextMenuStrip();
         foreach (var item in TrayMenuBuilder.Build())
         {
-            if (item.Action == TrayMenuAction.MacroCodesHint)
+            if (item.Action == TrayMenuAction.Separator)
             {
-                // Informational only — Will: "only show Ctrl+Keypad 8 ...
-                // I don't want the staff to get confused" — a disabled
-                // label, not a real separator, keeps it visually distinct
-                // from the three real actions without a click doing
-                // anything.
-                menu.Items.Add(new ToolStripMenuItem(item.Text) { Enabled = false });
                 menu.Items.Add(new ToolStripSeparator());
                 continue;
             }
 
             var menuItem = new ToolStripMenuItem(item.Text) { Enabled = item.Enabled };
-            menuItem.Click += (_, _) => RaiseAction(item.Action);
+            if (item.IsCheckable)
+            {
+                menuItem.CheckOnClick = false; // we flip Checked ourselves after the toggle is accepted, not optimistically
+                menuItem.Checked = showPioneerOverlayInitiallyChecked;
+            }
+
+            var descriptor = item; // capture per-iteration copy for the closure below
+            menuItem.Click += (_, _) => RaiseAction(descriptor, menuItem);
             menu.Items.Add(menuItem);
         }
 
@@ -71,9 +90,9 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon.DoubleClick += (_, _) => OpenRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    private void RaiseAction(TrayMenuAction action)
+    private void RaiseAction(TrayMenuItemDescriptor descriptor, ToolStripMenuItem menuItem)
     {
-        switch (action)
+        switch (descriptor.Action)
         {
             case TrayMenuAction.Open:
                 OpenRequested?.Invoke(this, EventArgs.Empty);
@@ -84,8 +103,25 @@ public sealed class TrayIconController : IDisposable
             case TrayMenuAction.Exit:
                 ExitRequested?.Invoke(this, EventArgs.Empty);
                 break;
-            case TrayMenuAction.MacroCodesHint:
-                break; // informational row — never wired to a Click handler
+            case TrayMenuAction.DataEntry:
+                DataEntryRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case TrayMenuAction.MacroCodes:
+                MacroCodesRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case TrayMenuAction.Navigate:
+                if (descriptor.RelativePath is { Length: > 0 } path)
+                {
+                    NavigationRequested?.Invoke(this, path);
+                }
+                break;
+            case TrayMenuAction.ToggleOverlay:
+                var newState = !menuItem.Checked;
+                menuItem.Checked = newState;
+                ShowOverlayToggled?.Invoke(this, newState);
+                break;
+            case TrayMenuAction.Separator:
+                break; // never wired to a Click handler
         }
     }
 
