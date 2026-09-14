@@ -77,6 +77,27 @@ public class PhysiciansViewModelVaccineGroupSupportTests
         // directly, bypassing whatever BuildVaccineOptions would normally
         // offer.
         //
+        // TEST FIX (2026-09-14, follow-up to the CI dispatcher fix below):
+        // CI caught a real gap in this test's OWN setup, not in the
+        // ViewModel — PhysiciansViewModel.VaccineGroupSupported is only
+        // ever updated inside LoadAsync (see that method), so simply
+        // mutating apiService.VaccineGroupSupported never changes what
+        // THIS view model instance thinks. Without a second LoadAsync
+        // call, the guard inside AddRuleAsync (`if (!VaccineGroupSupported)`)
+        // was correctly reading its own still-true cached copy and let the
+        // rule through — CI's "Collection was not empty" failure, not a
+        // production bug: AddRuleAsync's guard behaved exactly as
+        // written. The doc comment on AddRuleAsync's check is explicit
+        // that the scenario it defends is a stale NewRuleVaccineOption
+        // "selected just before a reload flips it" — i.e. a reload DOES
+        // happen on this instance (correctly flipping VaccineGroupSupported
+        // and rebuilding VaccineOptions without the wildcard) but nothing
+        // clears the ComboBox-bound NewRuleVaccineOption, which keeps
+        // pointing at the now-removed wildcard object. The added
+        // viewModel.LoadAsync() below reproduces that: a real reload,
+        // after which the pre-reload staleGroupOption reference is
+        // deliberately re-selected to simulate the dangling binding.
+        //
         // CI FIX (2026-09-14): AddRuleCommand is an AsyncRelayCommand,
         // whose Execute calls RaiseCanExecuteChanged() —
         // CommandManager.InvalidateRequerySuggested() under the hood —
@@ -100,9 +121,18 @@ public class PhysiciansViewModelVaccineGroupSupportTests
 
             var staleGroupOption = viewModel.VaccineOptions.Single(o => o.Group == "COVID vaccines" && o.IsGroupWildcard);
 
-            // Flag flips false (e.g. a concurrent reload elsewhere) without a
-            // fresh LoadAsync happening on THIS view model instance yet.
+            // Flag flips false and THIS view model reloads (e.g. Will hits
+            // Reload right after the migration gets rolled back) — a real
+            // LoadAsync, so VaccineGroupSupported correctly becomes false
+            // and BuildVaccineOptions rebuilds VaccineOptions without the
+            // wildcard option. Nothing clears NewRuleVaccineOption though
+            // (same as WPF's ComboBox not resetting SelectedItem just
+            // because the bound collection changed), so re-selecting the
+            // pre-reload staleGroupOption reference reproduces exactly the
+            // dangling-selection race AddRuleAsync's hard stop defends
+            // against.
             apiService.VaccineGroupSupported = false;
+            await viewModel.LoadAsync();
             viewModel.NewRulePhysician = viewModel.Physicians.Single();
             viewModel.NewRuleVaccineOption = staleGroupOption;
 
