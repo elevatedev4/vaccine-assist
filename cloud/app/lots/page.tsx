@@ -10,7 +10,13 @@ import { buildProductViews, type ProductView } from "@/lib/product-view";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 import { formatNdcDashed } from "@/lib/ndc";
 import { isoToMaskedDate } from "@/lib/date-mask";
-import { createDebouncedRunner, decideDateAutosave, decideLotNumberAutosave, type DebouncedRunner } from "@/lib/lots-autosave";
+import {
+  createDebouncedRunner,
+  decideDateAutosave,
+  decideLotNumberAutosave,
+  rowStatusLabel,
+  type DebouncedRunner,
+} from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
@@ -53,6 +59,18 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  *   - Inactive products stay listed under their group, greyed, sorted to
  *     the bottom of that group's rows (no separate collapsed section
  *     anymore).
+ *   - V-lots-status-column (Will 2026-09-14 verbatim: "when updating, it
+ *     shows 'saving' and messes up the formatting of the whole table...
+ *     make it append to the end of the row"): a row's save status
+ *     (Saving…/Saved ✓/error) used to render inline right after the ⚙
+ *     menu, so its varying width reflowed the whole (auto-layout, 100%
+ *     width) table on every save. Fixed with a dedicated, always-present
+ *     last "status" column (blank header, fixed width, right-aligned,
+ *     nowrap) plus `table-layout: fixed` with an explicit <colgroup> so no
+ *     column's width is ever recomputed from row content. See
+ *     lib/lots-autosave.ts's rowStatusLabel for the pure priority logic
+ *     (saving > error > justSaved) and savedFlashByKey/flashSaved below
+ *     for the ~1.5s fade timing.
  *
  * Saving/deleting a product row's lot still fans out server-side to
  * every dose vaccine_id in the group (POST/PATCH/DELETE /api/lots,
@@ -94,11 +112,32 @@ const styles = {
   error: { color: "#b00020", fontSize: "0.75rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
   note: { color: "#8a5300", fontSize: "0.8rem", fontStyle: "italic" },
-  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "13px", lineHeight: 1.2 },
+  // table-layout: fixed (V-lots-status-column) — column widths come from
+  // the <colgroup> below and never get recomputed from a row's content,
+  // which is what let the status column's Saving…/Saved ✓/error text
+  // reflow the whole table before.
+  table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "13px", lineHeight: 1.2, tableLayout: "fixed" as const },
   th: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
   thRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
   td: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
   tdRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
+  // Dedicated trailing status column (blank header) — always present so
+  // Saving…/Saved ✓/an error never changes any other column's width or
+  // the row's height. Fixed width + nowrap + ellipsis: a long error
+  // message truncates instead of wrapping (full text in the title
+  // tooltip).
+  statusTh: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const, width: "7rem" },
+  statusTd: {
+    textAlign: "right" as const,
+    padding: "2px 6px",
+    borderBottom: "1px solid #eee",
+    whiteSpace: "nowrap" as const,
+    width: "7rem",
+    overflow: "hidden" as const,
+    textOverflow: "ellipsis" as const,
+  },
+  savedText: { color: "#1a7f37", fontSize: "0.8rem", transition: "opacity 300ms ease-out" },
+  statusError: { color: "#b00020", fontSize: "0.75rem" },
   // Darkened heading (matches Ordering — Will, 2026-09-09: "Darken the
   // heading color to make it easier to distinguish").
   groupRow: { background: "#d9dde3", fontWeight: 600 },
@@ -176,6 +215,12 @@ export default function LotsPage() {
   const [savingByKey, setSavingByKey] = useState<Record<string, boolean>>({});
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
 
+  // V-lots-status-column: "visible" right after a successful autosave,
+  // "fading" ~1.2s later (triggers the opacity transition on
+  // styles.savedText), then removed entirely at ~1.5s — see flashSaved
+  // below. Absence of a key means no flash is showing for that row.
+  const [savedFlashByKey, setSavedFlashByKey] = useState<Record<string, "visible" | "fading">>({});
+
   const [activeBusyKey, setActiveBusyKey] = useState<string | null>(null);
   const [activeErrorByKey, setActiveErrorByKey] = useState<Record<string, string>>({});
   const [budBusyKey, setBudBusyKey] = useState<string | null>(null);
@@ -226,6 +271,9 @@ export default function LotsPage() {
   const autosaveSeqRef = useRef<Record<string, number>>({});
   const autosaveInFlightRef = useRef<Record<string, boolean>>({});
 
+  // Per-row "Saved ✓" flash timers (fade-then-remove) — see flashSaved.
+  const savedFlashTimersRef = useRef<Record<string, { fade: ReturnType<typeof setTimeout>; remove: ReturnType<typeof setTimeout> }>>({});
+
   // Review follow-up (reviewer, 2026-09-10): with no cleanup, typing in a
   // Lot #/date field and then navigating away from /lots before the
   // ~600ms debounce elapsed left that row's pending timer armed — it
@@ -235,6 +283,10 @@ export default function LotsPage() {
   useEffect(() => {
     return () => {
       for (const runner of Object.values(autosaveRunnersRef.current)) runner.cancel();
+      for (const timers of Object.values(savedFlashTimersRef.current)) {
+        clearTimeout(timers.fade);
+        clearTimeout(timers.remove);
+      }
     };
   }, []);
 
@@ -307,6 +359,44 @@ export default function LotsPage() {
     autosaveRunnersRef.current = {};
     autosaveSeqRef.current = {};
     autosaveInFlightRef.current = {};
+    for (const timers of Object.values(savedFlashTimersRef.current)) {
+      clearTimeout(timers.fade);
+      clearTimeout(timers.remove);
+    }
+    savedFlashTimersRef.current = {};
+    setSavedFlashByKey({});
+  }
+
+  /** Cancels a row's pending fade/remove timers (a fresh save superseding
+   * a still-fading flash, a Clear lot, or sign-out) without touching
+   * savedFlashByKey itself — callers set that separately. */
+  function clearSavedFlashTimers(key: string) {
+    const timers = savedFlashTimersRef.current[key];
+    if (!timers) return;
+    clearTimeout(timers.fade);
+    clearTimeout(timers.remove);
+    delete savedFlashTimersRef.current[key];
+  }
+
+  /** Shows this row's "Saved ✓" status-column flash: visible immediately,
+   * starts a ~300ms opacity fade at 1.2s, fully removed at 1.5s (Will:
+   * "'Saved' that fades out after ~1.5s"). Re-entrant — a save that lands
+   * while a previous flash is still fading just restarts the window. */
+  function flashSaved(key: string) {
+    clearSavedFlashTimers(key);
+    setSavedFlashByKey((prev) => ({ ...prev, [key]: "visible" }));
+    const fade = setTimeout(() => {
+      setSavedFlashByKey((prev) => ({ ...prev, [key]: "fading" }));
+    }, 1200);
+    const remove = setTimeout(() => {
+      setSavedFlashByKey((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      delete savedFlashTimersRef.current[key];
+    }, 1500);
+    savedFlashTimersRef.current[key] = { fade, remove };
   }
 
   useEffect(() => {
@@ -651,6 +741,7 @@ export default function LotsPage() {
         draftsRef.current = next;
         return next;
       });
+      flashSaved(key);
     } catch (err) {
       if (autosaveSeqRef.current[key] !== seq) return;
       const message = err instanceof Error ? err.message : "Failed to save lot.";
@@ -680,6 +771,13 @@ export default function LotsPage() {
     // the lot this Clear is about to remove.
     autosaveRunnersRef.current[view.productKey]?.cancel();
     autosaveSeqRef.current[view.productKey] = (autosaveSeqRef.current[view.productKey] ?? 0) + 1;
+    clearSavedFlashTimers(view.productKey);
+    setSavedFlashByKey((prev) => {
+      if (!(view.productKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[view.productKey];
+      return next;
+    });
 
     setSavingByKey((prev) => ({ ...prev, [view.productKey]: true }));
     setRowErrors((prev) => ({ ...prev, [view.productKey]: "" }));
@@ -830,6 +928,8 @@ export default function LotsPage() {
     const budError = budErrorByKey[view.productKey];
     const budBusy = budBusyKey === view.productKey;
     const budEnabledForThisProduct = budEnabledKeys.has(view.productKey);
+    const savedFlash = savedFlashByKey[view.productKey];
+    const status = rowStatusLabel({ saving, justSaved: !!savedFlash, error: rowError || null });
 
     // Inactive wins over due (review follow-up: an inactive product's
     // expired lot must never mask the grey inactive style with the red
@@ -932,9 +1032,14 @@ export default function LotsPage() {
               {activeError && <div style={styles.error}>{activeError}</div>}
               {budError && <div style={styles.error}>{budError}</div>}
             </div>
-          </details>{" "}
-          {saving && <span style={styles.muted}>Saving…</span>}
-          {rowError && <div style={styles.error}>{rowError}</div>}
+          </details>
+        </td>
+        <td style={styles.statusTd} title={status?.kind === "error" ? status.text : undefined}>
+          {status?.kind === "saving" && <span style={styles.muted}>Saving…</span>}
+          {status?.kind === "saved" && (
+            <span style={{ ...styles.savedText, opacity: savedFlash === "fading" ? 0 : 1 }}>Saved ✓</span>
+          )}
+          {status?.kind === "error" && <span style={styles.statusError}>{status.text}</span>}
         </td>
       </tr>
     );
@@ -952,6 +1057,19 @@ export default function LotsPage() {
       {loadError && <p style={styles.error}>{loadError}</p>}
 
       <table style={styles.table}>
+        {/* table-layout: fixed columns — see the doc comment above and
+            styles.table/statusTh/statusTd for why: nothing here may ever
+            resize based on a row's content (that was the whole bug). */}
+        <colgroup>
+          <col />
+          <col style={{ width: "8rem" }} />
+          <col style={{ width: "5.5rem" }} />
+          <col style={{ width: "9rem" }} />
+          <col style={{ width: "8.5rem" }} />
+          {beyondUseDateSupported && <col style={{ width: "8.5rem" }} />}
+          <col style={{ width: "3rem" }} />
+          <col style={{ width: "7rem" }} />
+        </colgroup>
         <thead>
           <tr>
             <th style={styles.th}>Product</th>
@@ -961,6 +1079,7 @@ export default function LotsPage() {
             <th style={styles.th}>Expiration</th>
             {beyondUseDateSupported && <th style={styles.th}>Beyond-use date</th>}
             <th style={styles.th}></th>
+            <th style={styles.statusTh}></th>
           </tr>
         </thead>
         <tbody>
@@ -974,6 +1093,7 @@ export default function LotsPage() {
                 <td style={styles.td}>—</td>
                 {beyondUseDateSupported && <td style={styles.td}>—</td>}
                 <td style={styles.td}></td>
+                <td style={styles.statusTd}></td>
               </tr>
               {products.map(renderProductRow)}
             </Fragment>
@@ -991,6 +1111,7 @@ export default function LotsPage() {
                 <td style={styles.td}>—</td>
                 {beyondUseDateSupported && <td style={styles.td}>—</td>}
                 <td style={styles.td}></td>
+                <td style={styles.statusTd}></td>
               </tr>
               {inactiveProducts.map(renderProductRow)}
             </Fragment>

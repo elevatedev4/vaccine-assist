@@ -87,6 +87,46 @@ export type DebouncedRunner = {
  * sees state as of when it actually fires, not as of when it was
  * scheduled" — is directly unit-testable without a DOM/React harness.
  */
+export type RowSaveState = {
+  /** True while an autosave (or Clear lot) request is in flight for this
+   * row. */
+  saving: boolean;
+  /** True for the short window right after a successful save during which
+   * the row should flash "Saved ✓" — the fade-out timing itself is owned
+   * by the caller (see /lots page's savedFlashByKey/flashSaved), this
+   * function only cares whether that window is currently open. */
+  justSaved: boolean;
+  /** The row's current error message, if any ("" / null / undefined all
+   * mean "no error"). */
+  error?: string | null;
+};
+
+export type RowStatus = {
+  kind: "saving" | "saved" | "error";
+  text: string;
+};
+
+/**
+ * Pure "what should this row's dedicated status column show right now"
+ * decision (Will 2026-09-14 verbatim: "when updating, it shows 'saving'
+ * and messes up the formatting of the whole table... make it append to
+ * the end of the row"). The /lots page renders exactly one of these at a
+ * time in a fixed-width trailing column instead of inline next to the ⚙
+ * menu, so nothing else in the row ever shifts.
+ *
+ * Priority is saving > error > justSaved: a request that's actively in
+ * flight always wins (e.g. a new edit started while a previous "Saved ✓"
+ * flash was still fading), a live error always wins over a stale flash,
+ * and only once neither applies does the flash show. Returns null when
+ * the row has nothing to report.
+ */
+export function rowStatusLabel(state: RowSaveState): RowStatus | null {
+  if (state.saving) return { kind: "saving", text: "Saving…" };
+  if (state.error) return { kind: "error", text: state.error };
+  if (state.justSaved) return { kind: "saved", text: "Saved ✓" };
+  return null;
+}
+
 export function createDebouncedRunner(run: () => void, delayMs: number): DebouncedRunner {
   let timer: ReturnType<typeof setTimeout> | null = null;
 
