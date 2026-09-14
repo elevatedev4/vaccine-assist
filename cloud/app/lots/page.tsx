@@ -1,12 +1,12 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type SyntheticEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { todayInChicago } from "@/lib/chicago-date";
 import { pickCurrentActiveLot } from "@/lib/lots-table";
 import { lotRowExpiredOn, lotRowStatus } from "@/lib/lots-row-status";
-import { dedupeLotsByNumber, partitionProductsForLotsPage } from "@/lib/lots-grouping";
+import { dedupeLotsByNumber, formatInactiveSummaryLabel, partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { buildProductViews, type ProductView } from "@/lib/product-view";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 import { formatNdcDashed } from "@/lib/ndc";
@@ -74,16 +74,29 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  *     savedFlashByKey/flashSaved below for the ~1.5s fade timing.
  *   - V-lots-row-status (Will 2026-09-14 verbatim: "If a lot is missing,
  *     highlight the row in yellow. If it's expired, highlight it in red.
- *     And add a note at the end of the row that shows that status."): an
+ *     And add a note at the end of the row that shows that status."; same
+ *     day, verbatim: "Also needs to show if exp is missing too"): an
  *     ACTIVE row's background is pale yellow when it has no lot number
- *     on file, pale red when its earliest set date (expiration, or
- *     beyond-use date if earlier) is in the past — see
+ *     OR no expiration date on file, pale red when its earliest set date
+ *     (expiration, or beyond-use date if earlier) is in the past — see
  *     lib/lots-row-status.ts's lotRowStatus, which replaces this page's
  *     old isLotRowDue/resolveLotRowHighlight highlight entirely (that one
  *     didn't know about a missing lot at all, and used an inclusive
  *     "expires today" boundary this brief deliberately does not).
- *     Inactive still wins over either, same as before — an inactive
- *     product's own missing/expired lot is no longer actionable.
+ *     Inactive still wins over any of these, same as before — an
+ *     inactive product's own missing/expired lot is no longer
+ *     actionable.
+ *   - V-lots-collapse-inactive (Will 2026-09-14 verbatim: "Inactive
+ *     vaccines put into a collapsed menu"): the Inactive section renders
+ *     as a native <details>/<summary> disclosure, collapsed by default,
+ *     with the count appended to its label ("Inactive (12)") and a
+ *     ▸/▾ indicator. Open/closed state persists per-browser in
+ *     localStorage (key vaccine-assist:lots:inactiveOpen). Since a
+ *     <details> can't validly wrap <tr>s inside the active table's own
+ *     <tbody>, the inactive rows live in a SECOND <table> (inside the
+ *     <details>) that repeats the exact same <colgroup> as the first
+ *     table — see renderLotsColgroup below — so its columns stay
+ *     pixel-identical to the table above it.
  *
  * Saving/deleting a product row's lot still fans out server-side to
  * every dose vaccine_id in the group (POST/PATCH/DELETE /api/lots,
@@ -152,15 +165,33 @@ const styles = {
   savedText: { color: "#1a7f37", fontSize: "0.8rem", transition: "opacity 300ms ease-out" },
   statusError: { color: "#b00020", fontSize: "0.75rem" },
   // V-lots-row-status: the trailing status column's idle-state note text
-  // for a row with no lot on file (amber, matching styles.note's existing
-  // amber tone) vs. one whose earliest set date is in the past (red,
-  // matching styles.statusError's existing red).
+  // for a row with no lot on file, or a lot but no expiration date
+  // (both amber, matching styles.note's existing amber tone) vs. one
+  // whose earliest set date is in the past (red, matching
+  // styles.statusError's existing red).
   statusMissing: { color: "#8a5300", fontSize: "0.75rem" },
   statusExpired: { color: "#b00020", fontSize: "0.75rem" },
   // Darkened heading (matches Ordering — Will, 2026-09-09: "Darken the
   // heading color to make it easier to distinguish").
   groupRow: { background: "#d9dde3", fontWeight: 600 },
   inactiveRow: { color: "#999" },
+  // V-lots-collapse-inactive: the collapsed Inactive <details>/<summary>
+  // — styled the same dark/bold tone as styles.groupRow's <tr> so it
+  // reads as the same kind of section heading, just collapsible. Native
+  // <details> has no closed/open modifier we can key off in a plain
+  // style object, so the ▸/▾ indicator is rendered as its own text
+  // (see renderInactiveSummaryLabel) rather than via a ::marker/[open]
+  // CSS selector.
+  inactiveDetails: { marginTop: 0 },
+  inactiveSummary: {
+    cursor: "pointer",
+    listStyle: "none" as const,
+    background: "#d9dde3",
+    fontWeight: 600,
+    padding: "2px 6px",
+    fontSize: "13px",
+    userSelect: "none" as const,
+  },
   // V-T-lots-round4 (Will verbatim: "Decrease the size of the boxes to
   // match their content better. The date ones are far too long.") —
   // sized to content instead of stretching to the full <td>: a date is
@@ -204,6 +235,33 @@ const styles = {
 // — how long a row's fields must sit idle before an autosave fires.
 const AUTOSAVE_DEBOUNCE_MS = 600;
 
+// V-lots-collapse-inactive: persists whether the Inactive section is
+// expanded across reloads, per-browser (not synced server-side — purely
+// a local display preference).
+const INACTIVE_OPEN_STORAGE_KEY = "vaccine-assist:lots:inactiveOpen";
+
+/** Reads the saved Inactive-section open/closed preference — defaults to
+ * false (collapsed) whenever localStorage is unavailable/throws (private
+ * browsing, disabled storage, SSR) or simply has nothing saved yet. */
+function loadInactiveOpenPreference(): boolean {
+  try {
+    return window.localStorage.getItem(INACTIVE_OPEN_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** Persists the Inactive-section open/closed preference — a write
+ * failure (private browsing, storage disabled/full) is silently ignored;
+ * losing the remembered preference isn't worth surfacing an error over. */
+function persistInactiveOpenPreference(open: boolean) {
+  try {
+    window.localStorage.setItem(INACTIVE_OPEN_STORAGE_KEY, open ? "true" : "false");
+  } catch {
+    // ignore — see doc comment above
+  }
+}
+
 export default function LotsPage() {
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -230,6 +288,12 @@ export default function LotsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [beyondUseDateSupported, setBeyondUseDateSupported] = useState(true);
   const [budEnabledKeys, setBudEnabledKeys] = useState<Set<string>>(new Set());
+
+  // V-lots-collapse-inactive: collapsed by default (false) on the very
+  // first render (matches server-rendered markup, avoiding a hydration
+  // mismatch), then hydrated from localStorage once mounted — see the
+  // effect below.
+  const [inactiveOpen, setInactiveOpen] = useState(false);
 
   // V-T-ordering-lots-round4: no more explicit Save button, so more than
   // one row can be mid-autosave at once (e.g. tabbing quickly through
@@ -356,6 +420,21 @@ export default function LotsPage() {
       (el) => el.open
     );
     setAnyMenuOpen(stillOpen);
+  }
+
+  // V-lots-collapse-inactive: hydrate the remembered open/closed
+  // preference once mounted (see inactiveOpen's own doc comment above
+  // for why this isn't just the initial useState value).
+  useEffect(() => {
+    setInactiveOpen(loadInactiveOpenPreference());
+  }, []);
+
+  /** Wired to the Inactive section's <details onToggle> — persists the
+   * new state alongside updating it so a reload remembers it. */
+  function handleInactiveToggle(event: SyntheticEvent<HTMLDetailsElement>) {
+    const open = event.currentTarget.open;
+    setInactiveOpen(open);
+    persistInactiveOpenPreference(open);
   }
 
   // Clears this page's own fetched state on sign-out, whatever triggers
@@ -972,7 +1051,7 @@ export default function LotsPage() {
       ? styles.inactiveRow
       : rowStatus === "expired"
         ? styles.expiredRow
-        : rowStatus === "missing"
+        : rowStatus === "missing" || rowStatus === "missing-expiration"
           ? styles.missingRow
           : undefined;
 
@@ -1084,8 +1163,28 @@ export default function LotsPage() {
           {status?.kind === "error" && <span style={styles.statusError}>{status.text}</span>}
           {status?.kind === "expired" && <span style={styles.statusExpired}>{status.text}</span>}
           {status?.kind === "missing" && <span style={styles.statusMissing}>{status.text}</span>}
+          {status?.kind === "missing-expiration" && <span style={styles.statusMissing}>{status.text}</span>}
         </td>
       </tr>
+    );
+  }
+
+  /** The shared column widths both the active table and the (separate,
+   * V-lots-collapse-inactive) inactive table render — kept in exactly one
+   * place so the two <table>s' columns can never drift out of alignment
+   * with each other. See table-layout: fixed's own doc comment above. */
+  function renderLotsColgroup() {
+    return (
+      <colgroup>
+        <col />
+        <col style={{ width: "8rem" }} />
+        <col style={{ width: "5.5rem" }} />
+        <col style={{ width: "9rem" }} />
+        <col style={{ width: "8.5rem" }} />
+        {beyondUseDateSupported && <col style={{ width: "8.5rem" }} />}
+        <col style={{ width: "3rem" }} />
+        <col style={{ width: "7rem" }} />
+      </colgroup>
     );
   }
 
@@ -1104,16 +1203,7 @@ export default function LotsPage() {
         {/* table-layout: fixed columns — see the doc comment above and
             styles.table/statusTh/statusTd for why: nothing here may ever
             resize based on a row's content (that was the whole bug). */}
-        <colgroup>
-          <col />
-          <col style={{ width: "8rem" }} />
-          <col style={{ width: "5.5rem" }} />
-          <col style={{ width: "9rem" }} />
-          <col style={{ width: "8.5rem" }} />
-          {beyondUseDateSupported && <col style={{ width: "8.5rem" }} />}
-          <col style={{ width: "3rem" }} />
-          <col style={{ width: "7rem" }} />
-        </colgroup>
+        {renderLotsColgroup()}
         <thead>
           <tr>
             <th style={styles.th}>Product</th>
@@ -1142,26 +1232,25 @@ export default function LotsPage() {
               {products.map(renderProductRow)}
             </Fragment>
           ))}
-          {/* V-T-ordering-lots-round4: ONE Inactive section for the whole
-              page, after every active group — not one inactive sub-list
-              per group like the previous round. */}
-          {inactiveProducts.length > 0 && (
-            <Fragment key="inactive">
-              <tr style={styles.groupRow}>
-                <td style={styles.td}>Inactive</td>
-                <td style={styles.td}>—</td>
-                <td style={styles.tdRight}>—</td>
-                <td style={styles.td}>—</td>
-                <td style={styles.td}>—</td>
-                {beyondUseDateSupported && <td style={styles.td}>—</td>}
-                <td style={styles.td}></td>
-                <td style={styles.statusTd}></td>
-              </tr>
-              {inactiveProducts.map(renderProductRow)}
-            </Fragment>
-          )}
         </tbody>
       </table>
+
+      {/* V-lots-collapse-inactive: ONE collapsed Inactive section for the
+          whole page, after every active group — a native <details> can't
+          validly wrap <tr>s inside the table above's own <tbody>, so this
+          is a SECOND <table> (same renderLotsColgroup widths) living
+          inside the <details>, collapsed by default. */}
+      {inactiveProducts.length > 0 && (
+        <details className="lots-inactive-section" style={styles.inactiveDetails} open={inactiveOpen} onToggle={handleInactiveToggle}>
+          <summary style={styles.inactiveSummary}>
+            {inactiveOpen ? "▾" : "▸"} {formatInactiveSummaryLabel(inactiveProducts.length)}
+          </summary>
+          <table style={styles.table}>
+            {renderLotsColgroup()}
+            <tbody>{inactiveProducts.map(renderProductRow)}</tbody>
+          </table>
+        </details>
+      )}
     </main>
   );
 }

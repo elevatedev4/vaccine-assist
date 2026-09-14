@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   dedupeLotsByNumber,
+  formatInactiveSummaryLabel,
   formatNdcDisplay,
   groupVaccinesIntoProducts,
   partitionProductsForLotsPage,
@@ -205,5 +206,22 @@ describe("partitionProductsForLotsPage", () => {
 
   it("returns empty sections and inactive for an empty input", () => {
     expect(partitionProductsForLotsPage([], GROUP_ORDER)).toEqual({ sections: [], inactive: [] });
+  });
+});
+
+// --- V-lots-collapse-inactive (Will 2026-09-14 verbatim: "Inactive
+// vaccines put into a collapsed menu"): the pure label text behind the
+// /lots page's collapsed Inactive <summary> — "Inactive (N)". ---
+describe("formatInactiveSummaryLabel", () => {
+  it("appends the count in parentheses", () => {
+    expect(formatInactiveSummaryLabel(12)).toBe("Inactive (12)");
+  });
+
+  it("still shows a count of zero (callers only render the section when count > 0, but the label itself is total)", () => {
+    expect(formatInactiveSummaryLabel(0)).toBe("Inactive (0)");
+  });
+
+  it("shows a single-digit count without padding", () => {
+    expect(formatInactiveSummaryLabel(1)).toBe("Inactive (1)");
   });
 });

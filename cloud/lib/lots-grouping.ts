@@ -242,3 +242,15 @@ export function partitionProductsForLotsPage<T extends GroupedProductLike>(
 
   return { sections, inactive: [...inactive].sort(byName) };
 }
+
+/**
+ * The /lots page's collapsed Inactive section's <summary> label (V-lots-
+ * collapse-inactive, Will 2026-09-14 verbatim: "Inactive vaccines put
+ * into a collapsed menu") — "Inactive (N)" where N is the count of
+ * inactive products (i.e. `inactive.length` from
+ * partitionProductsForLotsPage). Its own tiny pure function purely so the
+ * exact label text is unit-tested independent of the <details> markup.
+ */
+export function formatInactiveSummaryLabel(inactiveCount: number): string {
+  return `Inactive (${inactiveCount})`;
+}

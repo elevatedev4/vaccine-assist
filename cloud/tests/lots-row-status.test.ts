@@ -49,8 +49,36 @@ describe("lotRowStatus", () => {
     ).toBe("ok");
   });
 
-  it("is 'ok' when a lot number is on file and no date has been entered yet", () => {
-    expect(lotRowStatus({ lotNumber: "ABC123", expiration: "", beyondUseDate: "", today: TODAY })).toBe("ok");
+  it("is 'missing-expiration' when a lot number is on file but no expiration date has been entered yet", () => {
+    expect(lotRowStatus({ lotNumber: "ABC123", expiration: "", beyondUseDate: "", today: TODAY })).toBe(
+      "missing-expiration"
+    );
+  });
+
+  it("is 'missing-expiration' when the expiration field holds something that isn't a real calendar date", () => {
+    expect(lotRowStatus({ lotNumber: "ABC123", expiration: "not-a-date", beyondUseDate: "", today: TODAY })).toBe(
+      "missing-expiration"
+    );
+    expect(lotRowStatus({ lotNumber: "ABC123", expiration: "2026-02-30", beyondUseDate: "", today: TODAY })).toBe(
+      "missing-expiration"
+    );
+  });
+
+  it("is 'missing' (not 'missing-expiration') when BOTH the lot number and expiration are missing — one message", () => {
+    expect(lotRowStatus({ lotNumber: "", expiration: "", beyondUseDate: "", today: TODAY })).toBe("missing");
+    expect(lotRowStatus({ lotNumber: "   ", expiration: "", beyondUseDate: "", today: TODAY })).toBe("missing");
+  });
+
+  it("is 'expired', not 'missing-expiration', when expiration is missing but the beyond-use date alone is in the past", () => {
+    expect(lotRowStatus({ lotNumber: "ABC123", expiration: "", beyondUseDate: "2026-09-01", today: TODAY })).toBe(
+      "expired"
+    );
+  });
+
+  it("is 'ok' when a lot number AND a valid expiration date are both on file, with no beyond-use date entered", () => {
+    expect(lotRowStatus({ lotNumber: "ABC123", expiration: "2026-12-31", beyondUseDate: "", today: TODAY })).toBe(
+      "ok"
+    );
   });
 
   it("treats a null/undefined beyond-use date the same as not set", () => {
@@ -75,6 +103,17 @@ describe("lotRowStatus", () => {
       "missing"
     );
   });
+
+  // Same contract as the test above, for the new 'missing-expiration'
+  // case: app/lots/page.tsx's renderProductRow only calls lotRowStatus at
+  // all when view.active is true (an inactive row hardcodes "ok"
+  // instead), so an inactive product's own missing expiration is never
+  // flagged — that's enforced at the call site, not in this function.
+  it("has no concept of active/inactive for missing-expiration either — same call-site contract", () => {
+    expect(lotRowStatus({ lotNumber: "ABC123", expiration: "", beyondUseDate: "", today: TODAY })).toBe(
+      "missing-expiration"
+    );
+  });
 });
 
 describe("lotRowExpiredOn", () => {
@@ -97,5 +136,9 @@ describe("lotRowExpiredOn", () => {
 
   it("returns null when the row is missing rather than expired", () => {
     expect(lotRowExpiredOn({ lotNumber: "", expiration: "2020-01-01", beyondUseDate: "", today: TODAY })).toBeNull();
+  });
+
+  it("returns null when the row is missing-expiration rather than expired", () => {
+    expect(lotRowExpiredOn({ lotNumber: "ABC123", expiration: "", beyondUseDate: "", today: TODAY })).toBeNull();
   });
 });
