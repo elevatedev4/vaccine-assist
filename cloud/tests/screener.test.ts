@@ -6,8 +6,11 @@ import {
   dropRedundantByTypeResults,
   screenerMacroShortCodes,
   shortCodeMatchesScreenerRule,
+  isScreenerEmpty,
+  INITIAL_SCREENER_STATE,
   SCREENER_RULE_MACRO_INFO,
   STATUS_GROUPS,
+  type ScreenerFormState,
   type ScreenerResult,
   type ScreenerStatus,
 } from "@/lib/screener";
@@ -670,5 +673,52 @@ describe("dropRedundantByTypeResults", () => {
     const unmapped = fake("not-a-real-rule", "not-indicated");
     expect(() => dropRedundantByTypeResults([unmapped])).not.toThrow();
     expect(dropRedundantByTypeResults([unmapped])).toEqual([unmapped]);
+  });
+});
+
+// --- Clear button (V-screener round 14) --------------------------------
+
+describe("isScreenerEmpty / INITIAL_SCREENER_STATE", () => {
+  it("INITIAL_SCREENER_STATE is itself empty", () => {
+    expect(isScreenerEmpty(INITIAL_SCREENER_STATE)).toBe(true);
+  });
+
+  it("is true for blank age, no conditions checked, and default prior-pneumo answer", () => {
+    const state: ScreenerFormState = { ageInput: "", conditions: conditions(), priorPneumo: "none" };
+    expect(isScreenerEmpty(state)).toBe(true);
+  });
+
+  it("is false once age has any text, even whitespace-padded", () => {
+    expect(isScreenerEmpty({ ageInput: "55", conditions: conditions(), priorPneumo: "none" })).toBe(false);
+  });
+
+  it("is true when age is only whitespace (trimmed to empty)", () => {
+    expect(isScreenerEmpty({ ageInput: "   ", conditions: conditions(), priorPneumo: "none" })).toBe(true);
+  });
+
+  it("is false once any top-level condition is checked", () => {
+    expect(isScreenerEmpty({ ageInput: "", conditions: conditions({ asplenia: true }), priorPneumo: "none" })).toBe(
+      false,
+    );
+  });
+
+  it("is false once a nested diabetes sub-item is checked, even though the parent 'diabetes' key stays false", () => {
+    expect(
+      isScreenerEmpty({ ageInput: "", conditions: conditions({ diabetesInsulin: true }), priorPneumo: "none" }),
+    ).toBe(false);
+  });
+
+  it("is false once the prior-pneumococcal dropdown is off its default, even with everything else blank", () => {
+    expect(isScreenerEmpty({ ageInput: "", conditions: conditions(), priorPneumo: "both" })).toBe(false);
+  });
+
+  it("resetting a fully-filled-in state back to INITIAL_SCREENER_STATE is empty again", () => {
+    const filledIn: ScreenerFormState = {
+      ageInput: "72",
+      conditions: conditions({ diabetes: true, diabetesRetinopathy: true, hiv: true }),
+      priorPneumo: "pcv13",
+    };
+    expect(isScreenerEmpty(filledIn)).toBe(false);
+    expect(isScreenerEmpty(INITIAL_SCREENER_STATE)).toBe(true);
   });
 });

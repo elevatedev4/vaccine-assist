@@ -1,18 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import {
   CONDITION_ITEMS,
-  DEFAULT_CONDITIONS,
   DIABETES_SUB_KEYS,
   type ConditionKey,
   type PriorPneumoHistory,
   type ScreenerConditions,
 } from "@/lib/screener-rules";
-import { groupScreenerResults, groupStatusResultsByType, screen, type ScreenerResultGroup } from "@/lib/screener";
+import {
+  groupScreenerResults,
+  groupStatusResultsByType,
+  isScreenerEmpty,
+  INITIAL_SCREENER_STATE,
+  screen,
+  type ScreenerResultGroup,
+} from "@/lib/screener";
 import { macroSectionDisplayName } from "@/lib/macro-codes";
 import type { FormEvent } from "react";
 
@@ -52,6 +58,16 @@ import type { FormEvent } from "react";
  * headings, colors, the prior-pneumococcal dropdown, and the info-page
  * link are all unchanged. app/macro-codes/page.tsx and lib/macro-dose-
  * button.tsx are untouched — that page keeps its buttons.
+ *
+ * ROUND 14 (2026-09-14, Will verbatim: "vaccine screener, add a clear
+ * button next to the age box that clears everything"). The Clear button
+ * existed since round 1 but sat below the prior-pneumococcal dropdown,
+ * full-width — moved onto the age input's own row (flex row, input
+ * keeps its width, button matches its height) per Will's ask, and reset
+ * logic moved into `resetScreener()` built on lib/screener.ts's shared
+ * `INITIAL_SCREENER_STATE`/`isScreenerEmpty` so the button also disables
+ * once the form is already empty and refocuses the age input after
+ * clearing. No other layout/grouping/row-format change in this round.
  */
 
 const styles = {
@@ -86,6 +102,7 @@ const styles = {
   },
   ageRow: { display: "flex", flexDirection: "column" as const, gap: "0.25rem", marginBottom: "0.9rem" },
   label: { fontWeight: 600, fontSize: "0.75rem", color: "#222" },
+  ageInputRow: { display: "flex", flexDirection: "row" as const, alignItems: "center", gap: "0.5rem" },
   ageInput: {
     padding: "0.35rem 0.5rem",
     fontSize: "0.95rem",
@@ -104,13 +121,18 @@ const styles = {
   radioRow: { display: "flex", gap: "1rem", marginTop: "0.3rem" },
   radioLabel: { display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.75rem" },
   clearButton: {
-    marginTop: "1rem",
-    padding: "0.4rem 0.9rem",
+    padding: "0.35rem 0.7rem",
     fontSize: "0.75rem",
     cursor: "pointer",
     border: "1px solid #999",
     borderRadius: 4,
     background: "#fff",
+    color: "#333",
+    whiteSpace: "nowrap" as const,
+  },
+  clearButtonDisabled: {
+    cursor: "default",
+    opacity: 0.5,
   },
   resultsWrap: { display: "flex", flexDirection: "column" as const, gap: "1rem" },
   emptyState: { color: "#666", fontSize: "0.8rem" },
@@ -162,9 +184,10 @@ export default function ScreenerPage() {
   const [signInError, setSignInError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
 
-  const [ageInput, setAgeInput] = useState("");
-  const [conditions, setConditions] = useState<ScreenerConditions>(DEFAULT_CONDITIONS);
-  const [priorPneumo, setPriorPneumo] = useState<PriorPneumoHistory>("none");
+  const [ageInput, setAgeInput] = useState(INITIAL_SCREENER_STATE.ageInput);
+  const [conditions, setConditions] = useState<ScreenerConditions>(INITIAL_SCREENER_STATE.conditions);
+  const [priorPneumo, setPriorPneumo] = useState<PriorPneumoHistory>(INITIAL_SCREENER_STATE.priorPneumo);
+  const ageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -216,15 +239,23 @@ export default function ScreenerPage() {
     });
   }
 
-  function handleClear() {
-    setAgeInput("");
-    setConditions(DEFAULT_CONDITIONS);
-    setPriorPneumo("none");
+  /** Resets every screener input back to its initial (empty) state —
+   * V-screener, Will 2026-09-14 verbatim: "add a clear button next to
+   * the age box that clears everything." Single function so the Clear
+   * button (and any future reset trigger) can't drift out of sync with
+   * whichever useState hooks the form adds later; refocuses the age
+   * input afterward since that's the field the button sits next to. */
+  function resetScreener() {
+    setAgeInput(INITIAL_SCREENER_STATE.ageInput);
+    setConditions(INITIAL_SCREENER_STATE.conditions);
+    setPriorPneumo(INITIAL_SCREENER_STATE.priorPneumo);
+    ageInputRef.current?.focus();
   }
 
   const diabetesSubChecked = DIABETES_SUB_KEYS.some((key) => conditions[key]);
   const ageValue = ageInput.trim() === "" ? null : Number(ageInput);
   const ageValid = ageValue !== null && Number.isFinite(ageValue) && ageValue >= 0 && ageValue <= 120;
+  const screenerEmpty = isScreenerEmpty({ ageInput, conditions, priorPneumo });
 
   const groups = useMemo<ScreenerResultGroup[] | null>(() => {
     if (!ageValid || ageValue === null) return null;
@@ -267,18 +298,29 @@ export default function ScreenerPage() {
             <label style={styles.label} htmlFor="screener-age">
               Age (years)
             </label>
-            <input
-              id="screener-age"
-              type="number"
-              min={0}
-              max={120}
-              step={0.1}
-              autoFocus
-              style={styles.ageInput}
-              value={ageInput}
-              onChange={(event) => setAgeInput(event.target.value)}
-              placeholder="e.g. 55"
-            />
+            <div style={styles.ageInputRow}>
+              <input
+                id="screener-age"
+                ref={ageInputRef}
+                type="number"
+                min={0}
+                max={120}
+                step={0.1}
+                autoFocus
+                style={styles.ageInput}
+                value={ageInput}
+                onChange={(event) => setAgeInput(event.target.value)}
+                placeholder="e.g. 55"
+              />
+              <button
+                type="button"
+                style={screenerEmpty ? { ...styles.clearButton, ...styles.clearButtonDisabled } : styles.clearButton}
+                onClick={resetScreener}
+                disabled={screenerEmpty}
+              >
+                Clear
+              </button>
+            </div>
             {ageValue !== null && ageValid && ageValue < 2 && (
               <span style={styles.ageHint}>≈ {Math.round(ageValue * 12)} months</span>
             )}
@@ -326,10 +368,6 @@ export default function ScreenerPage() {
               <option value="unknown">Unknown</option>
             </select>
           </div>
-
-          <button type="button" style={styles.clearButton} onClick={handleClear}>
-            Clear
-          </button>
         </div>
 
         <div style={styles.resultsWrap}>

@@ -10,6 +10,7 @@
  */
 
 import {
+  DEFAULT_CONDITIONS,
   DIABETES_SUB_KEYS,
   SCREENER_RULES,
   type ConditionKey,
@@ -33,6 +34,39 @@ export interface ScreenerResult {
 /** Re-exported so callers (app/screener/page.tsx) can import the prior-
  * pneumococcal-history type from either lib file. */
 export type { PriorPneumoHistory } from "./screener-rules";
+
+/** The full set of form inputs on app/screener/page.tsx, gathered so the
+ * page's Clear button (V-screener, Will 2026-09-14 verbatim: "add a
+ * clear button next to the age box that clears everything") can reset
+ * every field from one shared shape instead of hand-listing each
+ * setState — and so "is there anything to clear" is a pure, testable
+ * question (`isScreenerEmpty`) rather than logic duplicated in the
+ * button's `disabled` check. */
+export interface ScreenerFormState {
+  ageInput: string;
+  conditions: ScreenerConditions;
+  priorPneumo: PriorPneumoHistory;
+}
+
+/** The form's state on first load — also what the Clear button resets
+ * back to. */
+export const INITIAL_SCREENER_STATE: ScreenerFormState = {
+  ageInput: "",
+  conditions: DEFAULT_CONDITIONS,
+  priorPneumo: "none",
+};
+
+/** True when the form holds no input at all — age blank, every
+ * condition (including the diabetes sub-items) unchecked, and the
+ * prior-pneumococcal answer still at its default. Used to disable the
+ * Clear button when there is nothing to clear. */
+export function isScreenerEmpty(state: ScreenerFormState): boolean {
+  return (
+    state.ageInput.trim() === "" &&
+    state.priorPneumo === "none" &&
+    Object.values(state.conditions).every((checked) => !checked)
+  );
+}
 export type { ScreenerStatus };
 
 type DerivedConditions = Record<DerivedConditionKey, boolean>;
