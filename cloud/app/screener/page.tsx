@@ -12,7 +12,14 @@ import {
   type PriorPneumoHistory,
   type ScreenerConditions,
 } from "@/lib/screener-rules";
-import { groupScreenerResultsByType, screen, type ScreenerResult, type ScreenerTypeGroup } from "@/lib/screener";
+import {
+  groupScreenerResults,
+  groupStatusResultsByType,
+  screen,
+  type ScreenerResultGroup,
+  type ScreenerStatus,
+  type ScreenerTypeRow,
+} from "@/lib/screener";
 import { matchScreenerProducts } from "@/lib/screener-macro";
 import { buildProductViews } from "@/lib/product-view";
 import {
@@ -21,7 +28,6 @@ import {
   doseButtonShortLabel,
   macroSectionDisplayName,
   type MacroLotLike,
-  type MacroProductGroup,
   type MacroRow,
   type MacroRowVaccine,
 } from "@/lib/macro-codes";
@@ -48,37 +54,42 @@ import type { FormEvent } from "react";
  * Eligibility itself is still every rule is code (lib/screener-rules.ts)
  * evaluated client-side by lib/screener.ts's pure `screen()`, so
  * eligibility updates live as the form changes with no network round
- * trip. Deliberately separate from the existing age-only eligibility
- * system (lib/eligibility.ts, app/api/eligibility/*) — see this page's
- * lib files for why.
+ * trip for the RULES themselves. Deliberately separate from the
+ * existing age-only eligibility system (lib/eligibility.ts, app/api/
+ * eligibility/*) — see this page's lib files for why.
  *
- * BY-TYPE REFORMAT (V-screener-by-type, coordinator brief 2026-09-13,
- * quoting Will verbatim: "I also asked for reformatting of this section
- * to be based on the vaccine type instead of product name, with the
- * products listed as our macro code buttons that can copy/paste").
- * Results are now grouped by vaccine TYPE (lib/screener.ts's
- * groupScreenerResultsByType — Pneumococcal/RSV/Shingles/etc., the same
- * MacroSection family vocabulary app/macro-codes/page.tsx uses) instead
- * of by eligibility status. Because rendering real, copy-to-clipboard
- * macro code buttons needs the SAME live vaccines+lots data the Macro
- * codes page uses, this page now ALSO fetches /api/vaccines and
- * /api/lots (previously it needed no network round trip at all — the
- * rule evaluation itself is still 100% client-side/no-I/O) and builds
- * MacroRows the same way app/macro-codes/page.tsx does. lib/screener-
- * macro.ts's matchScreenerProducts bridges a screener rule id to its
- * real MacroProductGroup(s); lib/macro-dose-button.tsx's
- * renderMacroDoseButton (extracted out of app/macro-codes/page.tsx, see
- * that file's own header) renders the exact same button — same colors,
- * same "Copied ✓" feedback, same "One dose"/"Dose 1"/"Dose 2 (2 mo)"
- * labels — so a pharmacist sees one consistent button style across both
- * pages. Only "not-indicated" results are hidden; every other status
- * (routine/risk/consider/caution/info) still shows, tinted with the same
- * statusGroupColor this page already used, now per PRODUCT ROW instead
- * of per status-group heading (a type can freely mix, e.g. RSV showing
- * Abrysvo as a risk-tinted row next to Arexvy as a caution-tinted row).
- * The eligibility/consider logic, the prior-pneumococcal dropdown, and
- * lib/screener-rules.ts's rules themselves are untouched — this is a
- * presentation-layer change only.
+ * ROUND 12 (2026-09-13): round 11 tried grouping the whole results list
+ * by vaccine TYPE first (one card per type, statuses mixed inside). Will
+ * rejected that, verbatim: "The format/layout you had before was good,
+ * showing recommendations by age, then by health condition, etc. I just
+ * wanted you to say 'Flu' and then have the available product options
+ * listed as copyable macro code buttons." This restores the ORIGINAL
+ * per-STATUS structure (groupScreenerResults/STATUS_GROUPS, byte-
+ * identical to before round 11) as the outer grouping. The only change
+ * from the pre-round-11 page: within the three ACTIONABLE status groups
+ * (routine/risk/consider — the ones where there's something to actually
+ * give), a row is now keyed by vaccine TYPE instead of by product name,
+ * and shows that type's real, eligible products as the same copy-to-
+ * clipboard macro dose buttons app/macro-codes/page.tsx uses
+ * (lib/macro-dose-button.tsx's renderMacroDoseButton, extracted from
+ * that page — see its header). lib/screener.ts's groupStatusResultsByType
+ * merges two rules of the same type that landed in the SAME status into
+ * one row (Flucelvax + Fluad both routine at 65+; Comirnaty + mNEXSPIKE
+ * sharing a status since their rule is identical; Prevnar 20 + Capvaxive
+ * whenever they land in the same tier) — each real product gets a small
+ * label before its own dose buttons whenever more than one is being
+ * shown in that row, so it's still clear which button is which product.
+ * The caution/not-indicated/info groups are UNTOUCHED from the original
+ * page — one row per product, plain reason + source link, no buttons —
+ * both because there's no "eligible product to copy" in those groups
+ * (caution explicitly means don't give it; not-indicated/info mean it
+ * doesn't apply or needs more info) and because Will's own examples
+ * (Prevnar 20/Capvaxive, Flucelvax/Fluad, Comirnaty/mNEXSPIKE) are all
+ * routine/risk/consider scenarios. Fetching /api/vaccines + /api/lots
+ * (new — the rule evaluation itself is still 100% client-side/no-I/O) is
+ * needed only to build those real macro code buttons; the eligibility
+ * logic, the prior-pneumococcal dropdown, and lib/screener-rules.ts are
+ * all untouched by this round.
  */
 
 const styles = {
@@ -139,49 +150,34 @@ const styles = {
     borderRadius: 4,
     background: "#fff",
   },
-  resultsWrap: { display: "flex", flexDirection: "column" as const, gap: "0.75rem" },
+  resultsWrap: { display: "flex", flexDirection: "column" as const, gap: "1rem" },
   emptyState: { color: "#666", fontSize: "0.8rem" },
   loadingNote: { color: "#666", fontSize: "0.75rem" },
   errorNote: { color: "#b00020", fontSize: "0.75rem" },
-  // Round 11: one CARD per vaccine TYPE (replaces the old per-status
-  // group) — a colored left border ties it to the same SECTION_COLORS
-  // palette app/macro-codes/page.tsx uses for the same family.
-  typeCard: {
-    border: "1px solid #d5dce3",
-    borderLeft: "4px solid",
-    borderRadius: 8,
-    overflow: "hidden" as const,
-    background: "#fff",
-  },
-  typeHeader: {
+  group: { border: "1px solid #d5dce3", borderRadius: 8, overflow: "hidden" as const },
+  groupHeader: {
     margin: 0,
     padding: "0.4rem 0.75rem",
-    fontSize: "0.85rem",
-    fontWeight: 800,
+    fontSize: "0.78rem",
+    fontWeight: 700,
     background: "#f4f6f8",
     borderBottom: "1px solid #d5dce3",
   },
-  reasonsList: {
-    margin: 0,
-    padding: "0.4rem 0.75rem 0.1rem",
-    listStyle: "none" as const,
+  resultRow: {
     display: "flex",
-    flexDirection: "column" as const,
-    gap: "0.15rem",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: "0.75rem",
+    padding: "0.45rem 0.75rem",
+    borderBottom: "1px solid #eee",
   },
-  reasonItem: { fontSize: "0.72rem", color: "#333", display: "flex", gap: "0.4rem", flexWrap: "wrap" as const },
-  reasonSource: { color: "#1a6ecf", whiteSpace: "nowrap" as const, fontSize: "0.68rem" },
-  productRow: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: "0.35rem",
-    padding: "0.5rem 0.75rem",
-    borderTop: "1px solid #eee",
-  },
-  productBlock: { display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" as const },
-  productName: { fontWeight: 700, fontSize: "0.78rem", flex: "0 0 auto", minWidth: 0 },
-  noMacroNote: { fontSize: "0.7rem", color: "#888", fontWeight: 400 },
-  statusBadge: { fontSize: "0.65rem", fontWeight: 700, color: "#555", textTransform: "uppercase" as const, letterSpacing: "0.03em" },
+  resultMain: { display: "flex", flexDirection: "column" as const, gap: "0.1rem", minWidth: 0, flex: "1 1 auto" },
+  resultName: { fontWeight: 700, fontSize: "0.8rem" },
+  resultReason: { fontSize: "0.72rem", color: "#333" },
+  resultSource: { fontSize: "0.68rem", color: "#1a6ecf", whiteSpace: "nowrap" as const },
+  sourceColumn: { display: "flex", flexDirection: "column" as const, gap: "0.2rem", alignItems: "flex-end" as const },
+  noMacroNote: { fontSize: "0.72rem", color: "#888" },
+  typeProductLabel: { fontSize: "0.68rem", fontWeight: 700, color: "#555", marginBottom: "0.1rem" },
   modalOverlay: {
     position: "fixed" as const,
     inset: 0,
@@ -224,6 +220,10 @@ function statusGroupColor(status: string): string {
   }
 }
 
+/** The three statuses where a row shows real, copy-to-clipboard macro
+ * dose buttons instead of plain text — see this file's header. */
+const BUTTON_STATUSES: ReadonlySet<ScreenerStatus> = new Set(["routine", "risk", "consider"]);
+
 export default function ScreenerPage() {
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -236,10 +236,9 @@ export default function ScreenerPage() {
   const [conditions, setConditions] = useState<ScreenerConditions>(DEFAULT_CONDITIONS);
   const [priorPneumo, setPriorPneumo] = useState<PriorPneumoHistory>("none");
 
-  // Round 11 (by-type reformat): live vaccines+lots data, fetched the
-  // same way app/macro-codes/page.tsx does, so the real per-dose macro
-  // code buttons (lib/macro-dose-button.tsx) can be rendered under each
-  // eligible product — see this file's header comment.
+  // Live vaccines+lots data, fetched the same way app/macro-codes/
+  // page.tsx does, so the real per-dose macro code buttons
+  // (lib/macro-dose-button.tsx) can be rendered under an eligible type.
   const [vaccines, setVaccines] = useState<MacroRowVaccine[]>([]);
   const [lots, setLots] = useState<{ id: string; vaccine_id: string; lot_number: string; expiration: string; status: string }[]>(
     []
@@ -367,16 +366,16 @@ export default function ScreenerPage() {
   const ageValue = ageInput.trim() === "" ? null : Number(ageInput);
   const ageValid = ageValue !== null && Number.isFinite(ageValue) && ageValue >= 0 && ageValue <= 120;
 
-  const typeGroups = useMemo<ScreenerTypeGroup[] | null>(() => {
+  const groups = useMemo<ScreenerResultGroup[] | null>(() => {
     if (!ageValid || ageValue === null) return null;
-    const results: ScreenerResult[] = screen(ageValue, conditions, priorPneumo);
-    return groupScreenerResultsByType(results);
+    const results = screen(ageValue, conditions, priorPneumo);
+    return groupScreenerResults(results);
   }, [ageValid, ageValue, conditions, priorPneumo]);
 
   // Real per-product dose data, built the same way app/macro-codes/
   // page.tsx does (buildProductViews -> buildMacroRows), so
-  // matchScreenerProducts can hand each eligible screener result its
-  // real macro code button(s).
+  // matchScreenerProducts can hand an eligible screener result its real
+  // macro code button(s).
   const rows = useMemo<MacroRow[]>(() => {
     const productViews = buildProductViews(vaccines);
     const activeLotsByVaccineId: Record<string, MacroLotLike[]> = {};
@@ -390,18 +389,14 @@ export default function ScreenerPage() {
     return buildMacroRows(productViews, vaccines, activeLotsByVaccineId);
   }, [vaccines, lots]);
 
-  function productsFor(screenerId: string): MacroProductGroup[] {
+  function productsFor(screenerId: string) {
     return matchScreenerProducts(rows, screenerId);
-  }
-
-  function rowKeyOf(row: MacroRow): string {
-    return macroRowKey(row);
   }
 
   async function handleCopy(row: MacroRow, label: string) {
     if (!row.macro || !row.shortCode) return;
     if (row.complete) {
-      const key = rowKeyOf(row);
+      const key = macroRowKey(row);
       const ok = await copyToClipboard(row.macro);
       if (ok) {
         setCopyFailure(null);
@@ -507,15 +502,90 @@ export default function ScreenerPage() {
     colors: SectionColors,
     options: { visibleLabel?: string; subLabel?: string; doseCountInRow: number; reserveSubLabelSlot: boolean }
   ) {
-    const key = rowKeyOf(dose.row);
+    const key = macroRowKey(dose.row);
     return renderMacroDoseButton(dose, colors, {
       isCopied: copiedKey === key,
       copyFailureCode: copyFailure?.key === key ? copyFailure.code : null,
       onClick: () => void handleCopy(dose.row, dose.label),
       large: true,
-      fitRow: true,
+      // No `fitRow` here (unlike macro-codes' narrow layout-C column) —
+      // the screener's results column has plenty of width, so buttons
+      // size to their own content and the row wraps if it ever needs
+      // to, rather than being squeezed to fit one line. reserveSubLabelSlot
+      // (passed by the caller) still keeps a product's own dose buttons
+      // the same height, per the round-11 fix.
       ...options,
     });
+  }
+
+  /**
+   * A routine/risk/consider row: heading is the vaccine TYPE name
+   * ("Flu", not "Flucelvax"), followed by every real, eligible product
+   * for that type/status as copy-to-clipboard dose buttons. When more
+   * than one real product is being shown in the row (either because two
+   * screener rules of this type landed in the same status — Flucelvax +
+   * Fluad, Comirnaty + mNEXSPIKE, Prevnar 20 + Capvaxive — or because
+   * one rule resolves to more than one real packaging), each product
+   * gets a small label before its own buttons so it's clear which is
+   * which; a single product needs no extra label (the type heading
+   * already says enough, same as Will's "Flu" example). Reason/source
+   * lines are the SAME text+link the original page showed per product,
+   * just deduped when identical (lib/screener.ts's
+   * groupStatusResultsByType).
+   */
+  function renderTypeRow(row: ScreenerTypeRow) {
+    const colors = SECTION_COLORS[row.section];
+    const allMatches = row.results.flatMap((result) =>
+      productsFor(result.id).map((product) => ({ result, product }))
+    );
+    const showProductLabels = allMatches.length > 1;
+
+    return (
+      <div key={row.section} style={styles.resultRow}>
+        <div style={styles.resultMain}>
+          <span style={styles.resultName}>{macroSectionDisplayName(row.section)}</span>
+
+          {allMatches.length === 0 && <span style={styles.noMacroNote}>No macro code on file.</span>}
+
+          {allMatches.length > 0 && (
+            <div className="screener-type-products">
+              {allMatches.map(({ product }) => {
+                const doseCount = product.doses.length;
+                const reserveSubLabelSlot = product.doses.some((d) => Boolean(d.row.doseInterval));
+                return (
+                  <div key={product.productKey} className="screener-type-product">
+                    {showProductLabels && <div style={styles.typeProductLabel}>{product.displayName}</div>}
+                    <div className="screener-dose-buttons">
+                      {product.doses.map((dose) =>
+                        renderDoseButton(dose, colors, {
+                          visibleLabel: doseButtonShortLabel(dose.row, doseCount),
+                          subLabel: dose.row.doseInterval,
+                          doseCountInRow: doseCount,
+                          reserveSubLabelSlot,
+                        })
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {row.reasons.map((r) => (
+            <span key={r.reason} style={styles.resultReason}>
+              {r.reason}
+            </span>
+          ))}
+        </div>
+        <div style={styles.sourceColumn}>
+          {row.reasons.map((r) => (
+            <a key={r.reason} href={r.sourceUrl} target="_blank" rel="noreferrer" style={styles.resultSource}>
+              source
+            </a>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   if (!authChecked) {
@@ -619,67 +689,32 @@ export default function ScreenerPage() {
         </div>
 
         <div style={styles.resultsWrap}>
-          {!typeGroups && <p style={styles.emptyState}>Enter a patient age to see recommendations.</p>}
+          {!groups && <p style={styles.emptyState}>Enter a patient age to see recommendations.</p>}
 
-          {typeGroups && productsLoading && <p style={styles.loadingNote}>Loading macro codes…</p>}
-          {typeGroups && productsError && (
+          {groups && productsLoading && <p style={styles.loadingNote}>Loading macro codes…</p>}
+          {groups && productsError && (
             <p style={styles.errorNote}>{productsError} — product names still show, but without copy buttons.</p>
           )}
 
-          {typeGroups &&
-            typeGroups.map((group) => {
-              const colors = SECTION_COLORS[group.section];
-              return (
-                <div key={group.section} style={{ ...styles.typeCard, borderLeftColor: colors.border }}>
-                  <h2 style={{ ...styles.typeHeader, color: colors.text }}>{macroSectionDisplayName(group.section)}</h2>
-                  <ul style={styles.reasonsList}>
-                    {group.reasons.map((r) => (
-                      <li key={r.reason} style={styles.reasonItem}>
-                        <span>{r.reason}</span>
-                        <a href={r.sourceUrl} target="_blank" rel="noreferrer" style={styles.reasonSource}>
+          {groups &&
+            groups.map((group) => (
+              <div key={group.status} style={styles.group}>
+                <h2 style={{ ...styles.groupHeader, background: statusGroupColor(group.status) }}>{group.label}</h2>
+                {BUTTON_STATUSES.has(group.status)
+                  ? groupStatusResultsByType(group.results).map((row) => renderTypeRow(row))
+                  : group.results.map((result) => (
+                      <div key={result.id} style={styles.resultRow}>
+                        <div style={styles.resultMain}>
+                          <span style={styles.resultName}>{result.name}</span>
+                          <span style={styles.resultReason}>{result.reason}</span>
+                        </div>
+                        <a href={result.sourceUrl} target="_blank" rel="noreferrer" style={styles.resultSource}>
                           source
                         </a>
-                      </li>
-                    ))}
-                  </ul>
-
-                  {group.results.map((result) => {
-                    const matches = productsFor(result.id);
-                    const tint = statusGroupColor(result.status);
-                    return (
-                      <div key={result.id} style={{ ...styles.productRow, background: tint }}>
-                        <span style={styles.statusBadge}>{result.status}</span>
-                        {matches.length === 0 && (
-                          <div style={styles.productBlock}>
-                            <span style={styles.productName}>{result.name}</span>
-                            <span style={styles.noMacroNote}>— no macro code on file</span>
-                          </div>
-                        )}
-                        {matches.map((product) => {
-                          const doseCount = product.doses.length;
-                          const reserveSubLabelSlot = product.doses.some((d) => Boolean(d.row.doseInterval));
-                          return (
-                            <div key={product.productKey} style={styles.productBlock}>
-                              <span style={styles.productName}>{product.displayName}</span>
-                              <div className="screener-dose-buttons">
-                                {product.doses.map((dose) =>
-                                  renderDoseButton(dose, colors, {
-                                    visibleLabel: doseButtonShortLabel(dose.row, doseCount),
-                                    subLabel: dose.row.doseInterval,
-                                    doseCountInRow: doseCount,
-                                    reserveSubLabelSlot,
-                                  })
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
                       </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
+                    ))}
+              </div>
+            ))}
         </div>
       </div>
 
@@ -774,28 +809,30 @@ export default function ScreenerPage() {
         </div>
       )}
 
-      {/* Round 11: dose buttons in a product row always sit on ONE line
-       * (never wrap) — see lib/macro-dose-button.tsx's `fitRow` option,
-       * used identically here and in app/macro-codes/page.tsx's version
-       * C (.macro-dose-buttons-c) so the two pages match. */}
+      {/* Buttons keep their natural content-sized width here (the
+       * results column has plenty of room, unlike app/macro-codes/
+       * page.tsx's narrow layout-C column) and just wrap if a product
+       * ever has enough doses to need it; reserveSubLabelSlot (passed
+       * per product above) still keeps every dose button in one
+       * product's row the same height regardless of which doses carry
+       * a schedule interval — the round-11 fix, unchanged. */}
       <style>{`
+        .screener-type-products {
+          display: flex;
+          flex-direction: column;
+          gap: 0.35rem;
+          margin: 0.15rem 0;
+        }
         .screener-dose-buttons {
           display: flex;
-          flex-wrap: nowrap;
+          flex-wrap: wrap;
           gap: 0.3rem;
-          flex: 1 1 auto;
-          min-width: 0;
         }
         .macro-dose-button:hover, .macro-dose-button:focus-visible {
           filter: brightness(0.96);
           outline: none;
         }
         .macro-dose-button:disabled { cursor: default; }
-        @media (max-width: 640px) {
-          .screener-dose-buttons {
-            flex-wrap: wrap;
-          }
-        }
       `}</style>
     </main>
   );
