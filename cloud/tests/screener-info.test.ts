@@ -63,14 +63,14 @@ describe("describeRules — Widgetvax (every tier kind)", () => {
   it("routine tier: age-min-only formats as '50+', no conditions text", () => {
     expect(v.routine).toHaveLength(1);
     expect(v.routine[0].ageRangeText).toBe("50+");
-    expect(v.routine[0].conditionsText).toBeNull();
+    expect(v.routine[0].conditions).toBeNull();
     expect(v.routine[0].reason).toBe("Routine, age 50+.");
   });
 
-  it("risk (condition-based) tier: full range formats as '12–64', conditions joined", () => {
+  it("risk (condition-based) tier: full range formats as '12–64', conditions sorted alphabetically", () => {
     expect(v.conditionBased).toHaveLength(1);
     expect(v.conditionBased[0].ageRangeText).toBe("12–64");
-    expect(v.conditionBased[0].conditionsText).toBe("any of: HIV, Chronic lung disease");
+    expect(v.conditionBased[0].conditions).toEqual(["Chronic lung disease", "HIV"]);
   });
 
   it("consider tier: age-max-only formats as 'up to 11'", () => {
@@ -81,13 +81,13 @@ describe("describeRules — Widgetvax (every tier kind)", () => {
   it("caution tier: no age gate formats as 'any age', shows its condition", () => {
     expect(v.caution).toHaveLength(1);
     expect(v.caution[0].ageRangeText).toBe("any age");
-    expect(v.caution[0].conditionsText).toBe("any of: Pregnant");
+    expect(v.caution[0].conditions).toEqual(["Pregnant"]);
   });
 
   it("info tier: no age gate, no conditions", () => {
     expect(v.info).toHaveLength(1);
     expect(v.info[0].ageRangeText).toBe("any age");
-    expect(v.info[0].conditionsText).toBeNull();
+    expect(v.info[0].conditions).toBeNull();
     expect(v.info[0].reason).toBe("Also ask about travel history.");
   });
 
@@ -144,5 +144,39 @@ describe("describeRules — age formatting edge cases", () => {
   it("preserves rule order (vaccines returned in the same order as the input rules)", () => {
     const described = describeRules(RULES, CONDITION_ITEMS);
     expect(described.map((v) => v.id)).toEqual(["widgetvax", "sparsevax"]);
+  });
+});
+
+describe("describeRules — condition sorting is case-insensitive", () => {
+  it("sorts mixed-case labels alphabetically, ignoring case", () => {
+    // Case-sensitive ASCII sort would put "Banana Corp" before "apple
+    // disease" (uppercase 'B' sorts before lowercase 'a'); the
+    // case-insensitive sort must put "apple disease" first.
+    const conditionItems: ConditionItem[] = [
+      { key: "condA", label: "Banana Corp" },
+      { key: "condB", label: "apple disease" },
+      { key: "condC", label: "Cherry syndrome" },
+    ] as unknown as ConditionItem[];
+    const rules: ScreenerVaccineRule[] = [
+      {
+        id: "sortvax",
+        name: "Sortvax",
+        sourceUrl: "https://example.com/sortvax",
+        tiers: [
+          {
+            requiredConditions: ["condA", "condB", "condC"],
+            status: "risk",
+            reason: "Any qualifying condition.",
+          },
+        ],
+        fallback: { status: "not-indicated", reason: "Default." },
+      },
+    ] as unknown as ScreenerVaccineRule[];
+    const [described] = describeRules(rules, conditionItems);
+    expect(described.conditionBased[0].conditions).toEqual([
+      "apple disease",
+      "Banana Corp",
+      "Cherry syndrome",
+    ]);
   });
 });

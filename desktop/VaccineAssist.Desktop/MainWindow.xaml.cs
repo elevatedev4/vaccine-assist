@@ -23,7 +23,7 @@ namespace VaccineAssist.Desktop;
 /// stays open for the whole signed-in session — the hotkey should work
 /// no matter which tab is currently showing.
 ///
-/// 2026-09-13: also owns a second, independent global hotkey — Ctrl+8 —
+/// 2026-09-13: also owns a second, independent global hotkey — Ctrl+Keypad 8 —
 /// for the macro-codes popup (Will's brief). Same reasoning for living on
 /// MainWindow as the data-entry hotkey above; the two GlobalHotKey
 /// instances are otherwise unrelated (distinct ids, distinct vk, distinct
@@ -77,7 +77,7 @@ public partial class MainWindow : Window
     /// <summary>Process-unique id for RegisterHotKey — arbitrary but must not collide with another hotkey id this process registers.</summary>
     private const int DataEntryHotKeyId = 1;
 
-    /// <summary>Process-unique id for the Ctrl+8 macro-codes hotkey's RegisterHotKey call — must differ from DataEntryHotKeyId (the only other id this process registers).</summary>
+    /// <summary>Process-unique id for the Ctrl+Keypad 8 macro-codes hotkey's RegisterHotKey call — must differ from DataEntryHotKeyId (the only other id this process registers).</summary>
     private const int MacroCodesHotKeyId = 2;
 
     public MainWindow(
@@ -158,13 +158,13 @@ public partial class MainWindow : Window
                 MessageBoxImage.Warning);
         }
 
-        // 2026-09-13: Ctrl+8 macro-codes popup — a second, independent
+        // 2026-09-13: Ctrl+Keypad 8 macro-codes popup — a second, independent
         // GlobalHotKey instance (distinct id, distinct vk) registered the
         // exact same way as the data-entry hotkey above, right down to the
         // failure handling (a one-time MessageBox; the popup just isn't
         // reachable via the hotkey if this fails — there's no separate
         // button for it the way the Data entry tab has one).
-        _macroCodesHotKey = new GlobalHotKey(this, MacroCodesHotKeyId, GlobalHotKey.VK_8);
+        _macroCodesHotKey = new GlobalHotKey(this, MacroCodesHotKeyId, GlobalHotKey.VK_NUMPAD8);
         _macroCodesHotKey.Pressed += (_, _) => ShowMacroCodesPopup();
 
         var macroCodesRegistered = _macroCodesHotKey.Register();
@@ -172,7 +172,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                "Couldn't register the Ctrl+8 macro-codes hotkey — it may already be in use by another application.",
+                "Couldn't register the Ctrl+Keypad 8 macro-codes hotkey — it may already be in use by another application.",
                 "Vaccine Assist",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -262,7 +262,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Ctrl+8 (Will, 2026-09-13). Same "at most one instance, re-activate
+    /// Ctrl+Keypad 8 (Will, 2026-09-13). Same "at most one instance, re-activate
     /// instead of stacking" rule as ShowDataEntryPopup above — see
     /// _openMacroCodesPopup's doc comment. Captures the current foreground
     /// window (typically PioneerRx, if that's what the pharmacist was

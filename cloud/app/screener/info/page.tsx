@@ -60,6 +60,14 @@ const styles = {
   },
   tierLine: { display: "flex", flexDirection: "column" as const, gap: "0.05rem" },
   tierMain: { fontSize: "0.75rem", color: "#222" },
+  conditionsList: {
+    margin: "0.1rem 0 0.15rem",
+    paddingLeft: "1.1rem",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "0.05rem",
+  },
+  conditionItem: { fontSize: "0.7rem", color: "#222" },
   tierReason: { fontSize: "0.7rem", color: "#666" },
   sources: { marginTop: "0.15rem", display: "flex", flexDirection: "column" as const, gap: "0.1rem" },
   sourceLink: { fontSize: "0.68rem", color: "#1a6ecf" },
@@ -83,10 +91,10 @@ const SECTIONS: { key: keyof Pick<
 // don't change at runtime, so this only needs to be computed once.
 const DESCRIBED_VACCINES = describeRules(SCREENER_RULES, CONDITION_ITEMS);
 
-/** "ages 50–74 — any of: X, Y" / "Any age — any of: X" / "ages 50+". */
-function tierLineText(tier: DescribedTier): string {
-  const agePart = tier.ageRangeText === "any age" ? "Any age" : `ages ${tier.ageRangeText}`;
-  return tier.conditionsText ? `${agePart} — ${tier.conditionsText}` : agePart;
+/** "ages 50–74" / "Any age" / "ages 50+" — the conditions (if any) render
+ * as a separate bulleted list below this line. */
+function tierAgeText(tier: DescribedTier): string {
+  return tier.ageRangeText === "any age" ? "Any age" : `ages ${tier.ageRangeText}`;
 }
 
 function sourceLinkLabel(url: string): string {
@@ -199,7 +207,16 @@ export default function ScreenerInfoPage() {
                   <p style={styles.sectionLabel}>{label}</p>
                   {tiers.map((tier, index) => (
                     <div key={index} style={styles.tierLine}>
-                      <span style={styles.tierMain}>{tierLineText(tier)}</span>
+                      <span style={styles.tierMain}>{tierAgeText(tier)}</span>
+                      {tier.conditions && (
+                        <ul style={styles.conditionsList}>
+                          {tier.conditions.map((condition) => (
+                            <li key={condition} style={styles.conditionItem}>
+                              {condition}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       <span style={styles.tierReason}>{tier.reason}</span>
                     </div>
                   ))}
