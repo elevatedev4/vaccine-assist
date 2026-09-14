@@ -67,3 +67,25 @@ export function isMissingTableError(error: unknown): boolean {
   if (!message.includes("table") && !message.includes("relation")) return false;
   return message.includes("does not exist") || message.includes("could not find");
 }
+
+/**
+ * Same idea again, for an RPC'd SQL FUNCTION that hasn't been created
+ * yet — supabase/migrations/0013_session_management.sql (V-sessions)
+ * adds `public.list_my_sessions`/`public.revoke_my_session`, called via
+ * `supabase.rpc(...)` from app/api/sessions/*. Until that migration has
+ * run:
+ *  - Postgres raises `undefined_function`, SQLSTATE `42883`, for an RPC
+ *    call to an unknown function.
+ *  - PostgREST's schema-cache miss surfaces as code `PGRST202` ("Could
+ *    not find the function ... in the schema cache").
+ * Same message-text fallback posture as the two checks above.
+ */
+export function isMissingFunctionError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "42883" || code === "PGRST202") return true;
+
+  const message = String((error as { message?: unknown }).message ?? "").toLowerCase();
+  if (!message.includes("function")) return false;
+  return message.includes("does not exist") || message.includes("could not find");
+}

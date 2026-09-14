@@ -37,12 +37,13 @@ function collectHrefs(node: unknown, out: string[], depth = 0): void {
 }
 
 describe("OtherSettingsLinks", () => {
-  it("links to /vaccines and /physicians", () => {
+  it("links to /vaccines, /physicians, and /settings/sessions", () => {
     const tree = OtherSettingsLinks();
     const hrefs: string[] = [];
     collectHrefs(tree, hrefs);
     expect(hrefs).toContain("/vaccines");
     expect(hrefs).toContain("/physicians");
+    expect(hrefs).toContain("/settings/sessions");
   });
 });
 
