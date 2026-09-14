@@ -34,4 +34,13 @@ public sealed class AppSettings
     /// settings.json, no rebuild required.
     /// </summary>
     public string PriorityValue { get; set; } = "Vaccine";
+
+    /// <summary>
+    /// V-T-single-nav Part 3/4 (Will's brief, 2026-09-14): whether the
+    /// Pioneer overlay icon (Overlay/PioneerOverlayController.cs) should
+    /// attach to PioneerRx at all — the tray menu's "Show Pioneer overlay"
+    /// checkbox reads/writes this. Defaults to on, per the brief ("default
+    /// on"); persisted here so the choice survives a restart.
+    /// </summary>
+    public bool ShowPioneerOverlay { get; set; } = true;
 }
