@@ -1,0 +1,41 @@
+name: Cloud tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloud/**"
+  pull_request:
+    paths:
+      - "cloud/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        working-directory: cloud
+        run: npm ci
+
+      - name: Run tests
+        working-directory: cloud
+        run: npm run test -- --run
+
+      # cloud/package.json has no "engines" field and there's no .nvmrc to
+      # pin from, so node-version 22 above is asserted per the brief, not
+      # read from the repo - worth confirming with Will if a different
+      # version is intended.
+      #
+      # 3 known pre-existing tsc errors in cloud/ as of 2026-09-13; not
+      # failing CI on them yet (`|| true`) until they're cleaned up.
+      - name: Typecheck (non-blocking)
+        working-directory: cloud
+        run: npx tsc --noEmit || true
