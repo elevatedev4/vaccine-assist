@@ -1,5 +1,6 @@
 using System;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
@@ -120,29 +121,165 @@ public partial class App : Application
     ///   4. If nothing was stored, or the silent attempt failed, show the
     ///      (already-constructed, so any ErrorMessage from the failed
     ///      attempt carries over) LoginViewModel's window now.
+    ///
+    /// BUG FIX (Will, 2026-09-14 — "shows the splash floating mid-screen
+    /// and never moves on; there is no way to close it"): this whole
+    /// method used to have no top-level try/catch, no timeout on step 2's
+    /// await, and called ShowMainWindow() (which can throw — see
+    /// MainWindow's TrayIconController comment) BEFORE splash.Close(), so
+    /// any of the following left the splash on screen forever with the
+    /// exception silently swallowed by the `_ = StartSignInFlowAsync();`
+    /// fire-and-forget call in OnStartup:
+    ///   (a) TrySilentSignInAsync's underlying network call hanging with
+    ///       no timeout;
+    ///   (b) ShowMainWindow() throwing, so splash.Close() was never
+    ///       reached;
+    ///   (c) an exception escaping TrySilentSignInAsync itself.
+    /// Now: the silent attempt is capped at 15s and cancellable from the
+    /// splash's Cancel button/Esc (StartupSignInCoordinator), the whole
+    /// method is wrapped in try/catch, and every exit path is funneled
+    /// through EndStartupWithLoginWindow/EndStartupWithMainWindow so the
+    /// splash is always closed and some window always ends up on screen —
+    /// see those two methods.
     /// </summary>
     private async Task StartSignInFlowAsync()
     {
         var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService, _sessionStore, allowAutoLogin: true);
-
         SplashWindow? splash = null;
-        if (loginViewModel.HasStoredCredential())
+        // Defensive guard against ever ending the startup flow with two
+        // windows shown (or none) — see StartupSignInCoordinator's doc
+        // comment on late/abandoned attempt completions never reaching
+        // here a second time; this is belt-and-suspenders on top of that.
+        var startupResolved = false;
+
+        try
         {
+            var hasStoredCredential = loginViewModel.HasStoredCredential();
+            AppFileLog.Log(hasStoredCredential
+                ? "[Startup] silent sign-in: stored credential found"
+                : "[Startup] silent sign-in: none");
+
+            if (!hasStoredCredential)
+            {
+                EndStartupWithLoginWindow(loginViewModel, null, ref startupResolved);
+                return;
+            }
+
             splash = new SplashWindow();
             MainWindow = splash;
             splash.Show();
 
-            await loginViewModel.TrySilentSignInAsync();
-        }
+            using var cancelSource = new CancellationTokenSource();
+            splash.CancelRequested += (_, _) =>
+            {
+                AppFileLog.Log("[Startup] silent sign-in: cancel requested from splash");
+                try
+                {
+                    cancelSource.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // RunAsync already returned and cancelSource was
+                    // disposed — nothing left to cancel.
+                }
+            };
 
-        if (_authService.IsSignedIn)
+            var coordinator = new StartupSignInCoordinator(
+                attempt: async _ =>
+                {
+                    await loginViewModel.TrySilentSignInAsync();
+                    return _authService.IsSignedIn;
+                },
+                timeLimit: TimeSpan.FromSeconds(15),
+                log: message => AppFileLog.Log($"[Startup] {message}"));
+
+            var result = await coordinator.RunAsync(cancelSource.Token);
+
+            if (result.Outcome == StartupSignInOutcome.SignedIn)
+            {
+                EndStartupWithMainWindow(loginViewModel, splash, ref startupResolved);
+            }
+            else
+            {
+                splash.Close();
+                EndStartupWithLoginWindow(loginViewModel, result.LoginMessage, ref startupResolved);
+            }
+        }
+        catch (Exception ex)
         {
-            ShowMainWindow();
-            splash?.Close();
+            AppFileLog.LogException("StartSignInFlowAsync", ex);
+            try
+            {
+                splash?.Close();
+            }
+            catch (Exception closeEx)
+            {
+                AppFileLog.LogException("StartSignInFlowAsync (splash close)", closeEx);
+            }
+
+            EndStartupWithLoginWindow(loginViewModel, $"Automatic sign-in failed: {ex.Message}", ref startupResolved);
+        }
+    }
+
+    /// <summary>Success path for StartSignInFlowAsync — tries MainWindow
+    /// (via TryShowMainWindow, shared with the two manual-sign-in paths
+    /// below) and only THEN closes the splash, whichever way it goes, so
+    /// ShowMainWindow() throwing (see MainWindow's TrayIconController doc
+    /// comment for one real cause) can never leave the splash as the last
+    /// window standing. Falls back to the manual LoginWindow (with the
+    /// ErrorMessage TryShowMainWindow already set) if MainWindow couldn't
+    /// be shown.</summary>
+    private void EndStartupWithMainWindow(LoginViewModel loginViewModel, SplashWindow splash, ref bool startupResolved)
+    {
+        if (startupResolved)
+        {
             return;
         }
+        startupResolved = true;
 
-        splash?.Close();
+        var shown = TryShowMainWindow(loginViewModel);
+
+        try
+        {
+            splash.Close();
+        }
+        catch (Exception closeEx)
+        {
+            AppFileLog.LogException("StartSignInFlowAsync (splash close)", closeEx);
+        }
+
+        if (shown)
+        {
+            AppFileLog.Log("[Startup] MainWindow shown");
+        }
+        else
+        {
+            // TryShowMainWindow already logged, alerted, and set an
+            // ErrorMessage — no additional reason to pass here.
+            var loginWindowShown = false;
+            EndStartupWithLoginWindow(loginViewModel, null, ref loginWindowShown);
+        }
+    }
+
+    /// <summary>Failure/timeout/cancel/no-stored-credential path for
+    /// StartSignInFlowAsync — always ends with a usable LoginWindow, never
+    /// with just the splash. <paramref name="errorMessage"/> is set as the
+    /// window's ErrorMessage when non-null (null means "nothing was
+    /// stored, show the plain manual form").</summary>
+    private void EndStartupWithLoginWindow(LoginViewModel loginViewModel, string? errorMessage, ref bool startupResolved)
+    {
+        if (startupResolved)
+        {
+            return;
+        }
+        startupResolved = true;
+
+        if (errorMessage is not null)
+        {
+            loginViewModel.SetErrorMessage(errorMessage);
+        }
+
+        AppFileLog.Log("[Startup] LoginWindow shown");
         ShowLoginWindowWithViewModel(loginViewModel);
     }
 
@@ -164,9 +301,13 @@ public partial class App : Application
 
         loginViewModel.SignedIn += (_, _) =>
         {
-            signedIn = true;
-            ShowMainWindow();
-            loginWindow.Close();
+            if (TryShowMainWindow(loginViewModel))
+            {
+                signedIn = true;
+                loginWindow.Close();
+            }
+            // else: stay on this LoginWindow — TryShowMainWindow already
+            // logged, alerted, and set an ErrorMessage explaining why.
         };
 
         loginWindow.Closed += (_, _) =>
@@ -201,9 +342,13 @@ public partial class App : Application
 
         loginViewModel.SignedIn += (_, _) =>
         {
-            signedIn = true;
-            ShowMainWindow();
-            loginWindow.Close();
+            if (TryShowMainWindow(loginViewModel))
+            {
+                signedIn = true;
+                loginWindow.Close();
+            }
+            // else: stay on this LoginWindow — TryShowMainWindow already
+            // logged, alerted, and set an ErrorMessage explaining why.
         };
 
         loginWindow.Closed += (_, _) =>
@@ -218,6 +363,40 @@ public partial class App : Application
         loginWindow.Show();
 
         _ = loginViewModel.TryAutoSignInAsync();
+    }
+
+    /// <summary>
+    /// Wraps ShowMainWindow() for the two manual-sign-in paths above
+    /// (ShowLoginWindowWithViewModel/ShowLoginWindow's SignedIn handlers) —
+    /// StartSignInFlowAsync's own silent-sign-in path has its own copy of
+    /// this same try/catch in EndStartupWithMainWindow, since it needs to
+    /// close the splash either way rather than alert+set an ErrorMessage
+    /// on an already-visible LoginWindow. Both exist for the same reason:
+    /// ShowMainWindow() constructs MainWindow synchronously (tray icon,
+    /// hotkeys, etc. — see MainWindow's TrayIconController field comment
+    /// for one real way that can throw), and a caller that doesn't catch
+    /// it ends up with no window and a swallowed exception the moment this
+    /// runs inside a fire-and-forget async continuation.
+    /// </summary>
+    private bool TryShowMainWindow(LoginViewModel loginViewModel)
+    {
+        try
+        {
+            ShowMainWindow();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("TryShowMainWindow", ex);
+            MessageBox.Show(
+                "Vaccine Assist signed in, but the main window couldn't be opened.\n\n" +
+                $"{ex.GetType().Name}: {ex.Message}",
+                "Vaccine Assist",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            loginViewModel.SetErrorMessage("Signed in, but the main window couldn't be opened. Try signing in again.");
+            return false;
+        }
     }
 
     /// <summary>
