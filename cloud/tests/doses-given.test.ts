@@ -246,6 +246,11 @@ describe("orderProductsByGroup", () => {
 // V-doses-given (Will 2026-09-13, verbatim: "We're closed on sat/sun, so
 // if there is no data on those days, then no need to show them.")
 // 2026-09-05 is a Saturday, 2026-09-06 a Sunday, 2026-09-07 a Monday.
+//
+// V-doses-given-round6 (Will: "Make the doses-given be listed in reverse
+// daily order... so we can see most recent days first at the top") —
+// visibleDayRows now also reverses to newest-first, so every expectation
+// below with more than one row is in descending date order.
 describe("visibleDayRows", () => {
   it("hides a Saturday row with 0 doses", () => {
     const rows = [{ date: "2026-09-05", total: 0 }];
@@ -267,7 +272,7 @@ describe("visibleDayRows", () => {
     expect(visibleDayRows(rows)).toEqual([{ date: "2026-09-07", total: 0 }]);
   });
 
-  it("filters a mixed week, keeping only weekdays and non-zero weekend days", () => {
+  it("filters a mixed week, keeping only weekdays and non-zero weekend days, newest first", () => {
     const rows = [
       { date: "2026-09-04", total: 3 }, // Friday, has doses
       { date: "2026-09-05", total: 0 }, // Saturday, closed, no doses
@@ -275,9 +280,9 @@ describe("visibleDayRows", () => {
       { date: "2026-09-07", total: 0 }, // Monday, open, no doses
     ];
     expect(visibleDayRows(rows)).toEqual([
-      { date: "2026-09-04", total: 3 },
-      { date: "2026-09-06", total: 1 },
       { date: "2026-09-07", total: 0 },
+      { date: "2026-09-06", total: 1 },
+      { date: "2026-09-04", total: 3 },
     ]);
   });
 

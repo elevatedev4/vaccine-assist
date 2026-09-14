@@ -230,13 +230,27 @@ const styles = {
   tdRightSurplusNegative: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", color: "#b00020" },
   // Order-quantity cells (Order (doses) / Order (pkg)) for any row with
   // something to order — light green fill + bold so a nonzero order can't
-  // be scrolled past unnoticed.
+  // be scrolled past unnoticed. Used ONLY where the row itself has no
+  // other highlight (the inactive-vaccines table below) — see
+  // tdRightOrderDueBold for the active table, where the whole row is
+  // already highlighted (V-ordering-row-highlight-fix, round6).
   tdRightOrderDue: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", background: "#e6f4ea", fontWeight: 700 },
+  // Same emphasis as tdRightOrderDue (bold, so a nonzero order still
+  // can't be scrolled past) but with NO background of its own
+  // (V-ordering-row-highlight-fix, Will round6, verbatim: "Make the whole
+  // row yellow, don't leave the last part green.") — the cell's own green
+  // fill used to sit on top of the row's yellow trOrderDue background
+  // (a td's own background always paints over its parent tr's, regardless
+  // of style order), so the last column stayed green while the rest of
+  // the row went yellow. Used for the Order (doses)/Order (pkg) cells in
+  // the "All vaccines" table, whose <tr> already carries trOrderDue.
+  tdRightOrderDueBold: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", fontWeight: 700 },
   // Whole-row highlight for any "All vaccines" product row with a
   // nonzero computed order (V-ordering-header-sublabels, Will
   // 2026-09-13: "highlight the entire row... to indicate action is
-  // needed") — pale yellow so it doesn't compete with the order cell's
-  // own green emphasis (tdRightOrderDue), which stays on top of this.
+  // needed") — pale yellow, applied uniformly across the whole row; no
+  // cell in this table overrides it with its own background (see
+  // tdRightOrderDueBold above).
   trOrderDue: { background: "#fff8d6" },
   // Darkened (Will, 2026-09-09: "Darken the heading color to make it
   // easier to distinguish") from the original #f4f6f8, still light
@@ -306,9 +320,20 @@ function surplusCell(row: RecommendationRow): { style: CSSProperties; text: stri
 
 /** Order-quantity cell style: highlighted green+bold whenever this row has
  * something to order (V-ordering-surplus, Will: "so they don't get
- * missed"), else the plain right-aligned cell. */
+ * missed"), else the plain right-aligned cell. Used for the inactive-
+ * vaccines table, whose rows carry no row-level highlight of their own. */
 function orderCellStyle(row: RecommendationRow): CSSProperties {
   return row.order > 0 ? styles.tdRightOrderDue : styles.tdRight;
+}
+
+/** Same as orderCellStyle, but bold-only (no background) whenever this
+ * row has something to order — for the "All vaccines" table, where the
+ * whole <tr> already carries the yellow trOrderDue highlight and a
+ * separately-colored cell would break that uniform highlight
+ * (V-ordering-row-highlight-fix, Will round6: "Make the whole row
+ * yellow, don't leave the last part green."). */
+function orderCellStyleInHighlightedRow(row: RecommendationRow): CSSProperties {
+  return row.order > 0 ? styles.tdRightOrderDueBold : styles.tdRight;
 }
 
 /** A single "target on-hand" cell — a row's own NDC-scoped override
@@ -1114,8 +1139,8 @@ export default function OrderingPage() {
                       </td>
                       <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
                       <td style={surplus.style}>{surplus.text}</td>
-                      <td style={orderCellStyle(row)}>{row.order}</td>
-                      <td style={orderCellStyle(row)}>{row.orderPackages ?? "—"}</td>
+                      <td style={orderCellStyleInHighlightedRow(row)}>{row.order}</td>
+                      <td style={orderCellStyleInHighlightedRow(row)}>{row.orderPackages ?? "—"}</td>
                     </tr>
                   );
                 })}
