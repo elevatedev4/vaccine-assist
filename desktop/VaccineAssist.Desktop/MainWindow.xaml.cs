@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using VaccineAssist.Desktop.Hotkeys;
+using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Tray;
@@ -59,7 +60,23 @@ public partial class MainWindow : Window
     private readonly IClipboardService _clipboardService;
     private readonly IPioneerEntrySequence _pioneerEntrySequence;
     private readonly string _cloudApiBaseUrl;
-    private readonly TrayIconController _trayIconController;
+
+    /// <summary>
+    /// BUG FIX (Will, 2026-09-14): null when TrayIconController's
+    /// constructor (WinForms NotifyIcon + ContextMenuStrip) throws — e.g. a
+    /// locked-down workstation where the shell notification area isn't
+    /// available. Previously that exception was unguarded and would blow
+    /// up MainWindow's own constructor, which (called from App.xaml.cs's
+    /// StartSignInFlowAsync) meant the "Signing in…" splash's Close() line
+    /// right after was never reached — the splash was left on screen
+    /// forever with no window to replace it. Every use site below is
+    /// null-guarded, and the minimize/close-to-tray behavior is skipped
+    /// entirely when this is null (see MainWindow_OnStateChanged/
+    /// MainWindow_OnClosing) — there'd be no tray icon to restore the
+    /// window from, so hiding it would strand the user instead of merely
+    /// losing a convenience feature.
+    /// </summary>
+    private readonly TrayIconController? _trayIconController;
     private GlobalHotKey? _dataEntryHotKey;
     private GlobalHotKey? _macroCodesHotKey;
 
@@ -123,10 +140,21 @@ public partial class MainWindow : Window
         // lazily by EnsureCloudTabLoaded, the first time each tab is
         // actually selected — see MainTabs_OnSelectionChanged.
 
-        _trayIconController = new TrayIconController();
-        _trayIconController.OpenRequested += (_, _) => RestoreFromTray();
-        _trayIconController.SignOutRequested += async (_, _) => await SignOutAndRaiseLoggedOutAsync();
-        _trayIconController.ExitRequested += (_, _) => ExitApplication();
+        try
+        {
+            var trayIconController = new TrayIconController();
+            trayIconController.OpenRequested += (_, _) => RestoreFromTray();
+            trayIconController.SignOutRequested += async (_, _) => await SignOutAndRaiseLoggedOutAsync();
+            trayIconController.ExitRequested += (_, _) => ExitApplication();
+            _trayIconController = trayIconController;
+        }
+        catch (Exception ex)
+        {
+            // See _trayIconController's doc comment — MainWindow must still
+            // open (with no tray icon/minimize-to-tray) rather than fail.
+            AppFileLog.LogException("MainWindow.TrayIconController", ex);
+            _trayIconController = null;
+        }
 
         SourceInitialized += MainWindow_OnSourceInitialized;
         Closed += MainWindow_OnClosed;
@@ -202,7 +230,10 @@ public partial class MainWindow : Window
     /// </summary>
     private void MainWindow_OnStateChanged(object? sender, EventArgs e)
     {
-        if (WindowState == WindowState.Minimized)
+        // No tray icon to restore from if TrayIconController failed to
+        // construct (see its field doc comment) — a normal minimize is
+        // safer than hiding to a tray the user can never bring back.
+        if (WindowState == WindowState.Minimized && _trayIconController is not null)
         {
             HideToTray();
         }
@@ -220,7 +251,12 @@ public partial class MainWindow : Window
     /// </summary>
     private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
     {
-        if (_allowRealClose)
+        // Same "no tray icon to restore from" reasoning as
+        // MainWindow_OnStateChanged above — without a tray, redirecting a
+        // real close to Hide() would strand the user with no visible
+        // window and no way to bring it back, so let the close (and the
+        // resulting Shutdown in MainWindow_OnClosed) proceed instead.
+        if (_allowRealClose || _trayIconController is null)
         {
             return;
         }
@@ -310,7 +346,7 @@ public partial class MainWindow : Window
         _macroCodesHotKey?.Dispose();
         _macroCodesHotKey = null;
 
-        _trayIconController.Dispose();
+        _trayIconController?.Dispose();
 
         // Covers both exit paths: MainWindow closing directly (chrome/
         // Alt+F4, or the tray's Exit — both only reach here now via

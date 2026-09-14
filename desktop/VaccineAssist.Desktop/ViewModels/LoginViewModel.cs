@@ -95,6 +95,17 @@ public sealed class LoginViewModel : ObservableObject
     /// (App.xaml.cs) subscribes to this to swap the Login window for the shell.</summary>
     public event EventHandler? SignedIn;
 
+    /// <summary>
+    /// Lets App.xaml.cs surface a reason on the LoginWindow it's about to
+    /// show after a failed/timed-out/cancelled silent sign-in attempt at
+    /// startup (see StartSignInFlowAsync/StartupSignInCoordinator) — the
+    /// same ErrorMessage the manual form already binds to
+    /// (Views/LoginWindow.xaml), just set from the outside instead of by
+    /// SignInAsync itself. ErrorMessage's setter stays private otherwise;
+    /// this is the one sanctioned external write.
+    /// </summary>
+    public void SetErrorMessage(string? message) => ErrorMessage = message;
+
     private async Task SignInAsync(string email, string password)
     {
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
@@ -209,6 +220,13 @@ public sealed class LoginViewModel : ObservableObject
         }
 
         await SignInAsync(config!.Email, config.Password);
+
+        // Never log the email/password themselves (config.Email/Password) —
+        // only the outcome and, on failure, the (already-generic)
+        // ErrorMessage SignInAsync left behind.
+        AppFileLog.Log(_authService.IsSignedIn
+            ? "[Startup] autologin: ok"
+            : $"[Startup] autologin: failed ({ErrorMessage ?? "unknown reason"})");
     }
 
     /// <summary>
@@ -285,11 +303,13 @@ public sealed class LoginViewModel : ObservableObject
         catch (Exception ex)
         {
             AppFileLog.LogException("LoginViewModel.TryRestoreSessionAsync (session load)", ex);
+            AppFileLog.Log($"[Startup] session restore: failed (could not read stored session: {ex.GetType().Name})");
             return false;
         }
 
         if (persisted is null || !SessionExpiry.IsValid(persisted.IssuedAtUtc, DateTime.UtcNow))
         {
+            AppFileLog.Log("[Startup] session restore: failed (no valid stored session)");
             return false;
         }
 
@@ -299,6 +319,7 @@ public sealed class LoginViewModel : ObservableObject
             var result = await _authService.TryRestoreSessionAsync(persisted.AccessToken, persisted.RefreshToken);
             if (!result.Success)
             {
+                AppFileLog.Log($"[Startup] session restore: failed ({result.ErrorMessage ?? "rejected"})");
                 return false;
             }
 
@@ -318,12 +339,14 @@ public sealed class LoginViewModel : ObservableObject
                 AppFileLog.LogException("LoginViewModel.TryRestoreSessionAsync (session save)", ex);
             }
 
+            AppFileLog.Log("[Startup] session restore: ok");
             SignedIn?.Invoke(this, EventArgs.Empty);
             return true;
         }
         catch (Exception ex)
         {
             AppFileLog.LogException("LoginViewModel.TryRestoreSessionAsync", ex);
+            AppFileLog.Log($"[Startup] session restore: failed ({ex.GetType().Name})");
             return false;
         }
         finally

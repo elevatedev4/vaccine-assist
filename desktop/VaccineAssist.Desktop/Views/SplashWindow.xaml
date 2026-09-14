@@ -2,13 +2,15 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Vaccine Assist"
-        Width="260" Height="110"
+        Width="280" Height="150"
         WindowStyle="None"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         Topmost="True"
         WindowStartupLocation="CenterScreen"
-        Background="#FFFFFF">
+        Background="#FFFFFF"
+        MouseLeftButtonDown="Window_OnMouseLeftButtonDown"
+        KeyDown="Window_OnKeyDown">
     <!--
         Will, 2026-09-13 (verbatim): "The login screen is still showing
         momentarily and then disappearing without me needing to do
@@ -20,11 +22,24 @@
         nothing to flash even if the silent sign-in takes a moment. Closed
         the instant that attempt finishes, whether it succeeds (straight
         into MainWindow) or fails (falls back to the real LoginWindow).
+
+        BUG FIX (Will, 2026-09-14): the silent attempt could previously
+        hang forever with nothing on screen but this splash and no way to
+        get past it. It's now draggable (WindowStyle="None" has no title
+        bar to drag by otherwise) and has a Cancel button/Esc key that
+        aborts the wait and goes to the manual LoginWindow — see
+        CancelRequested and App.xaml.cs's StartSignInFlowAsync/
+        StartupSignInCoordinator, which also caps the wait at 15s even if
+        the user never touches Cancel.
     -->
     <Border BorderBrush="#D9D9D9" BorderThickness="1">
-        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="16">
             <TextBlock Text="Vaccine Assist" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
-            <TextBlock Text="Signing in…" FontSize="12" Foreground="Gray" Margin="0,8,0,0" HorizontalAlignment="Center"/>
+            <TextBlock x:Name="StatusTextBlock" Text="Signing in…" FontSize="12" Foreground="Gray"
+                       Margin="0,8,0,0" HorizontalAlignment="Center" TextAlignment="Center"
+                       TextWrapping="Wrap" Width="230"/>
+            <Button x:Name="CancelButton" Content="Cancel" Width="90" Height="24"
+                    Margin="0,14,0,0" Click="CancelButton_OnClick"/>
         </StackPanel>
     </Border>
 </Window>
