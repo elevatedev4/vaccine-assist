@@ -20,6 +20,7 @@ export const NAV_TABS: readonly NavTab[] = [
   { label: "Lots", href: "/lots" },
   { label: "Macro codes", href: "/macro-codes" },
   { label: "Entry values", href: "/entry-values" },
+  { label: "Install", href: "/install" },
   { label: "Settings", href: "/settings" },
 ];
 
