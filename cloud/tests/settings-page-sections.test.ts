@@ -48,19 +48,10 @@ describe("OtherSettingsLinks", () => {
 });
 
 describe("InstallDesktopAppSection", () => {
-  it("includes the exact clone and update-and-run PowerShell commands, with no hardcoded username", () => {
+  it("links out to the /install tab instead of inlining the old install steps", () => {
     const tree = InstallDesktopAppSection();
-    const textParts: string[] = [];
-    collectText(tree, textParts);
-    const text = textParts.join(" ");
-
-    expect(text).toContain(
-      "git clone https://github.com/elevatedev4/vaccine-assist $env:USERPROFILE\\claude\\vaccine-assist"
-    );
-    expect(text).toContain(
-      "powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\\claude\\vaccine-assist\\desktop\\update-and-run.ps1"
-    );
-    // Never a hardcoded username in the path — must use $env:USERPROFILE.
-    expect(text).not.toMatch(/C:\\Users\\[A-Za-z]/);
+    const hrefs: string[] = [];
+    collectHrefs(tree, hrefs);
+    expect(hrefs).toContain("/install");
   });
 });
