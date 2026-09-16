@@ -38,6 +38,11 @@ export type EntryValueRow = {
    * lib/macro-catalog.ts. */
   sheetOrder: number;
   doseNumber: number;
+  /** The product's NDC — same derivation Ordering/Lots use
+   * (lib/product-view.ts's deriveProductViewFields: the DB `ndc` when
+   * present, else the researched catalog packageNdc, else null), so the
+   * value shown here always matches those tabs. */
+  ndc: string | null;
   /** Total number of ACTIVE dose rows in this product's series — 1 for
    * a single-dose product, e.g. 2 for Shingrix. Feeds
    * lib/entry-defaults.ts's defaultDirections. Computed via
@@ -104,6 +109,7 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
         catalogType: catalogEntry.type,
         sheetOrder: catalogEntry.sheetOrder,
         doseNumber: doseNumberOf(vaccine.dose),
+        ndc: product.ndc,
         doseCount,
         shortCode: vaccine.short_code,
         quantity: vaccine.quantity,

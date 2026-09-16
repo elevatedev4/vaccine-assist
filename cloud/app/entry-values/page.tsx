@@ -5,6 +5,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { buildEntryValueRows, doseColumnLabel, type EntryValueRow, type EntryValueVaccine } from "@/lib/entry-values";
 import { planFillDefaults, type FillDefaultsPatch } from "@/lib/entry-defaults";
+import { formatNdcDashed } from "@/lib/ndc";
 import { createDebouncedRunner, type DebouncedRunner } from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
@@ -414,6 +415,7 @@ export default function EntryValuesPage() {
       <tr key={row.id}>
         <td style={{ ...styles.td, ...styles.type, ...groupBorder }}>{row.catalogType}</td>
         <td style={{ ...styles.td, ...groupBorder }}>{row.displayName}</td>
+        <td style={{ ...styles.td, ...groupBorder }}>{formatNdcDashed(row.ndc)}</td>
         <td style={{ ...styles.td, ...groupBorder }}>{doseColumnLabel(row.doseNumber)}</td>
         <td style={{ ...styles.td, ...groupBorder, background: quantityBlank ? BLANK_QUANTITY_HIGHLIGHT : undefined }}>
           <input
@@ -482,6 +484,7 @@ export default function EntryValuesPage() {
               <tr>
                 <th style={styles.th}>Type</th>
                 <th style={styles.th}>Product</th>
+                <th style={styles.th}>NDC</th>
                 <th style={styles.th}>Dose</th>
                 <th style={styles.th}>Quantity</th>
                 <th style={styles.th}>Directions</th>
