@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import { DESKTOP_HANDOFF_COOKIE_NAME, isTrustedDesktopRequest } from "@/lib/desktop-handoff";
+import {
+  DESKTOP_HANDOFF_COOKIE_NAME,
+  isTrustedDesktopRequest,
+  getRequestIp,
+  revokeOlderDesktopSessionsForSameDevice,
+} from "@/lib/desktop-handoff";
 
 /**
  * Desktop -> embedded-WebView2 session handoff (Will's brief: "Require
@@ -123,6 +128,17 @@ export async function POST(request: Request) {
     if (sessionError || !sessionData.session || sessionData.session.user.id !== userData.user.id) {
       return NextResponse.json({ error: "Invalid or mismatched session." }, { status: 401 });
     }
+
+    // Duplicate-session cleanup (Will, 2026-09-16) — see
+    // revokeOlderDesktopSessionsForSameDevice's own doc comment. Never
+    // throws and never blocks/fails this handoff: a successful sign-in
+    // must always complete even if this best-effort tidy-up can't run.
+    await revokeOlderDesktopSessionsForSameDevice({
+      supabase,
+      userId: userData.user.id,
+      newSessionAccessToken: access_token,
+      requestIp: getRequestIp(request),
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },
