@@ -100,17 +100,16 @@
                      expiration gate) for date entry, and avoids ambiguous
                      free-text date parsing in a DataGrid cell.
 
-                     REVIEWER FIX (Minor): Expiration binds to
-                     LotRowViewModel.Expiration, a non-nullable DateTime
-                     (a lot's expiration is required — unlike Beyond-use
-                     date below, which stays nullable on purpose). WPF's
-                     default binding conversion can't push a cleared
-                     (null) SelectedDate into a non-nullable DateTime
-                     property, and by default fails that SILENTLY — no
-                     revert, no autosave, no visible feedback. The
-                     SelectedDateChanged handler below is this DatePicker's
-                     own explicit guard against exactly that: see
-                     LotsView.xaml.cs. -->
+                     Expiration binds to LotRowViewModel.Expiration
+                     (DateTime? — nullable since 2026-09-16, matching
+                     lot.expiration's now-nullable DB column). The
+                     SelectedDateChanged handler below still blocks a USER
+                     from clearing an EXISTING date via this grid (the
+                     "expiration required for editing" business rule is
+                     unchanged) while correctly leaving a row that simply
+                     loaded with no expiration at all showing blank — see
+                     LotsView.xaml.cs's own doc comment for the full
+                     history/reasoning. -->
                 <DataGridTemplateColumn Header="Expiration" Width="*">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>

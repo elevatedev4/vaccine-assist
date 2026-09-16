@@ -15,8 +15,16 @@ public sealed class Lot
     [JsonPropertyName("lot_number")]
     public string LotNumber { get; set; } = "";
 
+    /// <summary>
+    /// Nullable (Will/lots-coder, 2026-09-16: supabase/migrations/0014_lot_expiration_nullable.sql
+    /// drops the NOT NULL constraint — not yet applied). IsExpired/
+    /// ExpirationMacroFormat below treat null as "missing" (never expired,
+    /// never a value to type into a macro), matching BeyondUseDate's
+    /// existing nullable-date pattern in this same class rather than
+    /// throwing or guessing a date.
+    /// </summary>
     [JsonPropertyName("expiration")]
-    public DateOnly Expiration { get; set; }
+    public DateOnly? Expiration { get; set; }
 
     /// <summary>"active" or "depleted" — kept as the raw DB string (a
     /// Postgres enum) rather than a C# enum, to avoid a JSON naming-policy
@@ -40,7 +48,10 @@ public sealed class Lot
 
     public bool IsActive => string.Equals(Status, "active", StringComparison.OrdinalIgnoreCase);
 
-    public bool IsExpired => Expiration < DateOnly.FromDateTime(DateTime.Today);
+    /// <summary>A lot with no recorded expiration is treated as "missing,"
+    /// never as expired — same posture IsPastBeyondUseDate below already
+    /// takes for a null BeyondUseDate.</summary>
+    public bool IsExpired => Expiration is DateOnly exp && exp < DateOnly.FromDateTime(DateTime.Today);
 
     /// <summary>
     /// True when BeyondUseDate is set and is today or earlier. Will's brief
@@ -51,6 +62,11 @@ public sealed class Lot
     /// </summary>
     public bool IsPastBeyondUseDate => BeyondUseDate is DateOnly bud && bud <= DateOnly.FromDateTime(DateTime.Today);
 
-    /// <summary>MMDDYYYY, matching the old macro's clipboard payload format exactly.</summary>
-    public string ExpirationMacroFormat => Expiration.ToString("MMddyyyy");
+    /// <summary>MMDDYYYY, matching the old macro's clipboard payload format
+    /// exactly. "" when Expiration is null — the same sentinel
+    /// VaccineEntryPayload already uses for "meaningless, don't type this"
+    /// (see its SkipLotAndExpiration doc comment); InputLotAndExpirationStep
+    /// fails that case with a named reason rather than typing "" into
+    /// PioneerRx.</summary>
+    public string ExpirationMacroFormat => Expiration?.ToString("MMddyyyy") ?? "";
 }

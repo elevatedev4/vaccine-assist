@@ -55,7 +55,7 @@ public sealed class LotRowViewModel : ObservableObject
 {
     private bool _suppressPersist;
     private string _lotNumber;
-    private DateTime _expiration;
+    private DateTime? _expiration;
     private DateTime? _beyondUseDate;
     private string? _note;
     private string? _saveError;
@@ -72,12 +72,12 @@ public sealed class LotRowViewModel : ObservableObject
     /// to what THAT specific save actually sent, even if arrives late and
     /// the row's live fields have since moved on. Pruned as tokens
     /// resolve (success or failure) so this never grows unbounded.</summary>
-    private readonly Dictionary<int, (string LotNumber, DateTime Expiration, DateTime? BeyondUseDate, string? Note)> _pendingSnapshotsByToken = new();
+    private readonly Dictionary<int, (string LotNumber, DateTime? Expiration, DateTime? BeyondUseDate, string? Note)> _pendingSnapshotsByToken = new();
 
     /// <summary>The last field snapshot known to have been saved
     /// successfully (or the lot's original loaded values, before any
     /// edit) — what a failed save reverts back to.</summary>
-    private (string LotNumber, DateTime Expiration, DateTime? BeyondUseDate, string? Note) _committed;
+    private (string LotNumber, DateTime? Expiration, DateTime? BeyondUseDate, string? Note) _committed;
 
     public LotRowViewModel(Lot lot, string vaccineName, string? vaccineNdc, bool isVaccineActive = true)
     {
@@ -89,7 +89,7 @@ public sealed class LotRowViewModel : ObservableObject
         IsVaccineActive = isVaccineActive;
 
         _lotNumber = lot.LotNumber;
-        _expiration = lot.Expiration.ToDateTime(TimeOnly.MinValue);
+        _expiration = lot.Expiration?.ToDateTime(TimeOnly.MinValue);
         _beyondUseDate = lot.BeyondUseDate?.ToDateTime(TimeOnly.MinValue);
         _note = lot.Note;
         _committed = (_lotNumber, _expiration, _beyondUseDate, _note);
@@ -126,8 +126,19 @@ public sealed class LotRowViewModel : ObservableObject
     /// LotsView.xaml. Raises IsExpired's change notification too, so the
     /// row-highlight DataTrigger (Views/LotsView.xaml's RowStyle) updates
     /// live the moment the date is edited, per the brief's "clears
-    /// automatically once the date is edited to a future date."</summary>
-    public DateTime Expiration
+    /// automatically once the date is edited to a future date."
+    ///
+    /// Nullable (Will/lots-coder, 2026-09-16): a lot can load with no
+    /// expiration recorded at all (nullable in the DB —
+    /// supabase/migrations/0014, not yet applied) and must display as a
+    /// blank DatePicker rather than a fake date. LotsView.xaml.cs's
+    /// ExpirationDatePicker_OnSelectedDateChanged still blocks a user from
+    /// CLEARING an existing date via this grid (unchanged business rule);
+    /// it only distinguishes that case from a row that simply loaded this
+    /// way. LotsViewModel.OnRowEditCommitted separately guards the actual
+    /// PATCH, since IVaccineApiService.UpdateLotAsync's own expiration
+    /// parameter is still required non-null.</summary>
+    public DateTime? Expiration
     {
         get => _expiration;
         set
@@ -166,7 +177,10 @@ public sealed class LotRowViewModel : ObservableObject
         }
     }
 
-    public bool IsExpired => _expiration.Date < DateTime.Today;
+    /// <summary>A row with no expiration set at all is treated as
+    /// "missing," never as expired — mirrors Models.Lot.IsExpired and
+    /// this same class's IsPastBeyondUseDate.</summary>
+    public bool IsExpired => _expiration is DateTime exp && exp.Date < DateTime.Today;
 
     public bool IsPastBeyondUseDate => _beyondUseDate is DateTime bud && bud.Date <= DateTime.Today;
 
@@ -198,7 +212,7 @@ public sealed class LotRowViewModel : ObservableObject
     /// edit — captured at call time (right when EditCommitted fires), not
     /// read again later, so a save's request body reflects exactly what
     /// the user had entered at the moment it committed.</summary>
-    public (string LotNumber, DateTime Expiration, DateTime? BeyondUseDate, string? Note) CurrentSnapshot() =>
+    public (string LotNumber, DateTime? Expiration, DateTime? BeyondUseDate, string? Note) CurrentSnapshot() =>
         (_lotNumber, _expiration, _beyondUseDate, _note);
 
     /// <summary>

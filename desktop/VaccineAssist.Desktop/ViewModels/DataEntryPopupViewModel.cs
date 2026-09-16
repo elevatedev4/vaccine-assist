@@ -865,7 +865,12 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         async Task<Lot?> EarliestActiveLotForAsync(Guid vaccineId)
         {
             var lots = await _apiService.GetLotsAsync(vaccineId, status: "active");
-            return lots.Where(filter).OrderBy(l => l.Expiration).FirstOrDefault();
+            // Null expiration (no recorded expiration — nullable in the DB,
+            // supabase/migrations/0014) sorts LAST: prefer a lot with a
+            // known, soon expiration over one whose expiration is simply
+            // unrecorded, rather than the default nullable-DateOnly
+            // ordering (null first) accidentally picking it "earliest."
+            return lots.Where(filter).OrderBy(l => l.Expiration.HasValue ? 0 : 1).ThenBy(l => l.Expiration).FirstOrDefault();
         }
 
         var direct = await EarliestActiveLotForAsync(vaccine.Id);

@@ -40,7 +40,7 @@ public class LotRowViewModelTests
         Assert.Equal("mNEXSPIKE", row.VaccineName);
         Assert.Equal("00000-0000-01", row.VaccineNdc);
         Assert.Equal("ABC123", row.LotNumber);
-        Assert.Equal(lot.Expiration.ToDateTime(TimeOnly.MinValue), row.Expiration);
+        Assert.Equal(lot.Expiration?.ToDateTime(TimeOnly.MinValue), row.Expiration);
         Assert.Null(row.BeyondUseDate);
         Assert.Equal("shipment 1", row.Note);
         Assert.Equal("active", row.Status);
