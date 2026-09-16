@@ -86,7 +86,12 @@ public class LoginViewModelAutoLoginTests
         await viewModel.TryAutoSignInAsync();
 
         Assert.False(signedInRaised);
-        Assert.Equal("Sign-in failed: invalid credentials.", viewModel.ErrorMessage);
+        // V-sessions-signin (Will, 2026-09-16): the raw AuthResult.ErrorMessage
+        // is no longer shown verbatim — SignInErrorMapper maps it to plain
+        // English before it reaches ErrorMessage (see SignInErrorMapperTests.cs
+        // for the mapper's own coverage). The raw text still reaches the log
+        // file (AppFileLog, not asserted here).
+        Assert.Equal(SignInErrorMapper.InvalidCredentialsMessage, viewModel.ErrorMessage);
         // Never left stuck busy - the manual Sign in button must be usable
         // as the fallback, not permanently disabled by a failed auto-login.
         Assert.False(viewModel.IsBusy);
