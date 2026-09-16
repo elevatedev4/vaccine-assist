@@ -77,11 +77,32 @@ public partial class CloudPageView : UserControl
         NavigateToPath("/");
     }
 
+    /// <summary>Caps SharedCloudWebView2Environment.GetAsync + EnsureCoreWebView2Async
+    /// combined — see EnsureInitializedAsync's own doc comment for why this
+    /// exists at all.</summary>
+    private static readonly TimeSpan InitTimeout = TimeSpan.FromSeconds(12);
+
     /// <summary>
     /// Idempotent — safe to call more than once (only the first call does
     /// anything). Never throws: a WebView2 init failure is caught and
     /// shown as this control's own in-place failure panel, same as
     /// before.
+    ///
+    /// TIMEOUT FIX (Will, 2026-09-16 — "I just tried to sign in and it's
+    /// just not doing anything"): neither SharedCloudWebView2Environment.
+    /// GetAsync() nor EnsureCoreWebView2Async() had a timeout at all before
+    /// this. Vercel's logs for the failed sign-in showed ZERO hits on
+    /// /api/auth/desktop-handoff — not a rejected/errored handoff, no
+    /// handoff request reached the server at all — which only fits this
+    /// step hanging before PerformDesktopHandoffAsync's own NavigateWithWebResourceRequest
+    /// ever ran. A hang here used to be silent and permanent: nothing else
+    /// in the call chain (PrepareMainCloudPageViewAsync/
+    /// PerformDesktopHandoffAsync) had a way to notice, so the Login/splash
+    /// window just sat there forever. Now capped at InitTimeout, after
+    /// which this behaves exactly like any other init failure (the
+    /// existing failure panel + Retry button) instead of hanging — see
+    /// LoginViewModel.SetBusy's doc comment for the other half of this fix
+    /// (why the button/spinner ALSO looked idle during this hang).
     /// </summary>
     public async Task EnsureInitializedAsync()
     {
@@ -96,14 +117,53 @@ public partial class CloudPageView : UserControl
             WebView.Visibility = Visibility.Visible;
             FailurePanel.Visibility = Visibility.Collapsed;
 
-            var environment = await SharedCloudWebView2Environment.GetAsync();
-            await WebView.EnsureCoreWebView2Async(environment);
+            var initTask = InitializeWebView2Async();
+            var timeoutTask = Task.Delay(InitTimeout);
+            var completed = await Task.WhenAny(initTask, timeoutTask);
+            if (completed == timeoutTask)
+            {
+                AppFileLog.Log($"[CloudPageView] WebView2 init timed out after {InitTimeout.TotalSeconds:0}s");
+                ObserveLateInitCompletion(initTask);
+                ShowInitFailure(new TimeoutException("The embedded browser took too long to start."));
+                return;
+            }
+
+            await initTask; // propagate a real init exception into the catch below
         }
         catch (Exception ex)
         {
             AppFileLog.LogException("CloudPageView.WebView2Init", ex);
             ShowInitFailure(ex);
         }
+    }
+
+    private async Task InitializeWebView2Async()
+    {
+        var environment = await SharedCloudWebView2Environment.GetAsync();
+        await WebView.EnsureCoreWebView2Async(environment);
+    }
+
+    /// <summary>Same reasoning as StartupSignInCoordinator.ObserveLateCompletion
+    /// and LoginViewModel.ObserveLateCompletion — an abandoned init isn't
+    /// cancelled (WebView2's own APIs here take no CancellationToken),
+    /// just no longer waited on; this only keeps its eventual
+    /// completion/fault from becoming an UnobservedTaskException.</summary>
+    private static void ObserveLateInitCompletion(Task task)
+    {
+        _ = task.ContinueWith(
+            t =>
+            {
+                if (t.IsFaulted)
+                {
+                    var ex = t.Exception?.GetBaseException();
+                    AppFileLog.Log($"[CloudPageView] late WebView2 init completion after timeout: faulted ({ex?.GetType().Name}: {ex?.Message})");
+                }
+                else if (t.IsCompletedSuccessfully)
+                {
+                    AppFileLog.Log("[CloudPageView] late WebView2 init completion after timeout: succeeded");
+                }
+            },
+            TaskScheduler.Default);
     }
 
     /// <summary>Navigates the already-initialized WebView2 to a cloud route
