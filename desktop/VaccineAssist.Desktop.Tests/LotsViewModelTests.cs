@@ -92,6 +92,56 @@ public class LotsViewModelTests
     }
 
     [Fact]
+    public async Task LotsWithNoRecordedExpirationSortLast()
+    {
+        // Will/lots-coder, 2026-09-16: lot.expiration is becoming nullable
+        // in the DB. The default nullable-DateOnly comparer treats null as
+        // the SMALLEST value (sorts first) — the opposite of what's
+        // wanted here, since a "missing expiration" lot is lower priority
+        // to act on than one that's genuinely expiring soon.
+        var apiService = new FakeVaccineApiService();
+        var vaccine = MakeVaccine("MMR-II");
+        apiService.AllVaccines.Add(vaccine);
+        var soon = new Lot { Id = Guid.NewGuid(), VaccineId = vaccine.Id, LotNumber = "SOON", Expiration = DateOnly.FromDateTime(DateTime.Today.AddDays(10)), Status = "active" };
+        var missing = new Lot { Id = Guid.NewGuid(), VaccineId = vaccine.Id, LotNumber = "MISSING", Expiration = null, Status = "active" };
+        var later = new Lot { Id = Guid.NewGuid(), VaccineId = vaccine.Id, LotNumber = "LATER", Expiration = DateOnly.FromDateTime(DateTime.Today.AddYears(2)), Status = "active" };
+        apiService.LotsByVaccineId[vaccine.Id] = new() { missing, later, soon };
+        var viewModel = new LotsViewModel(apiService);
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(new[] { "SOON", "LATER", "MISSING" }, viewModel.Lots.Select(r => r.LotNumber));
+    }
+
+    [Fact]
+    public async Task EditingAFieldOnALotWithNoExpirationSurfacesAClearErrorInsteadOfCrashing()
+    {
+        // The PATCH (UpdateLotAsync) still requires a real expiration —
+        // that endpoint's own nullable-expiration support is a separate,
+        // parallel change (the lots coder's cloud/app/api/lots/** work).
+        // Editing some OTHER field on a lot that loaded with none must
+        // surface a plain, actionable message rather than throwing
+        // DateOnly.FromDateTime(null) or silently inventing a date.
+        var apiService = new FakeVaccineApiService();
+        var vaccine = MakeVaccine("MMR-II");
+        apiService.AllVaccines.Add(vaccine);
+        apiService.LotsByVaccineId[vaccine.Id] = new()
+        {
+            new Lot { Id = Guid.NewGuid(), VaccineId = vaccine.Id, LotNumber = "L1", Expiration = null, Status = "active" },
+        };
+        var viewModel = new LotsViewModel(apiService);
+        await viewModel.LoadAsync();
+        var row = viewModel.Lots.Single();
+        Assert.Null(row.Expiration);
+
+        row.Note = "shipment arrived";
+        await Task.Delay(20); // OnRowEditCommitted is fire-and-forget (async void)
+
+        Assert.Equal("Set an expiration date before saving other changes to this lot.", row.SaveError);
+        Assert.Empty(apiService.UpdatedLots);
+    }
+
+    [Fact]
     public async Task EditingARowAutosavesViaUpdateLotAsync()
     {
         var apiService = new FakeVaccineApiService();

@@ -119,7 +119,12 @@ public sealed class LotsViewModel : ObservableObject
             Lots.Clear();
             ActiveLots.Clear();
             InactiveLots.Clear();
-            foreach (var lot in lotsTask.Result.OrderBy(l => l.Expiration))
+            // Nulls (no recorded expiration — lot.expiration is nullable in
+            // the DB, supabase/migrations/0014) sort LAST, not first: the
+            // default nullable-DateOnly comparer treats null as the
+            // smallest value, which would put "missing" lots at the very
+            // top of the list ahead of genuinely soon-to-expire ones.
+            foreach (var lot in lotsTask.Result.OrderBy(l => l.Expiration.HasValue ? 0 : 1).ThenBy(l => l.Expiration))
             {
                 vaccinesById.TryGetValue(lot.VaccineId, out var vaccine);
                 // An orphan lot with no matching vaccine row at all
@@ -191,13 +196,29 @@ public sealed class LotsViewModel : ObservableObject
     private async void OnRowEditCommitted(LotRowViewModel row, int token)
     {
         var snapshot = row.CurrentSnapshot();
+
+        // A lot that loaded with no expiration at all (nullable in the DB —
+        // supabase/migrations/0014, not yet applied) can't be autosaved
+        // through this PATCH yet: IVaccineApiService.UpdateLotAsync's
+        // expiration parameter is still required non-null (the cloud PATCH
+        // route hasn't been updated to accept a null expiration — that's
+        // the lots coder's parallel change, not this one). Surfacing this
+        // plainly avoids both a DateOnly.FromDateTime(null) crash and
+        // silently inventing/saving a fake date the pharmacist never
+        // entered.
+        if (snapshot.Expiration is not DateTime expirationValue)
+        {
+            row.ApplySaveFailure(token, "Set an expiration date before saving other changes to this lot.");
+            return;
+        }
+
         try
         {
             var beyondUseDate = snapshot.BeyondUseDate is DateTime bud ? DateOnly.FromDateTime(bud) : (DateOnly?)null;
             await _apiService.UpdateLotAsync(
                 row.Id,
                 snapshot.LotNumber.Trim(),
-                DateOnly.FromDateTime(snapshot.Expiration),
+                DateOnly.FromDateTime(expirationValue),
                 beyondUseDate,
                 snapshot.Note);
             row.ApplySaveSuccess(token);
