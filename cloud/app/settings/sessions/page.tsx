@@ -27,6 +27,13 @@ type ApiSession = {
   createdAt: string;
   lastActiveAt: string;
   isCurrent: boolean;
+  /** V-sessions dedup (Will, 2026-09-16): a row here is really ONE
+   * DEVICE, which may fold together several real Supabase sessions (the
+   * desktop app signs in fresh on every launch — see
+   * lib/session-grouping.ts). sessionCount/sessionIds let the Revoke
+   * button act on the whole group with one click. */
+  sessionCount: number;
+  sessionIds: string[];
 };
 
 type SessionsResponse = { pending: true } | { sessions: ApiSession[] };
@@ -135,11 +142,12 @@ export default function SessionsPage() {
 
   async function handleRevoke(target: ApiSession) {
     if (!session) return;
+    const groupLabel = target.sessionCount > 1 ? `${target.device} (${target.sessionCount} sessions)` : target.device;
     if (
       !window.confirm(
         target.isCurrent
           ? "This is your current session — revoking it will sign you out here too. Continue?"
-          : `Revoke this session (${target.device})?`
+          : `Revoke ${groupLabel}?`
       )
     ) {
       return;
@@ -148,14 +156,20 @@ export default function SessionsPage() {
     setActionError(null);
     setRevokingId(target.id);
     try {
-      const response = await fetch(`/api/sessions/${target.id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${session.accessToken}` },
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setActionError(data.error ?? "Failed to revoke session.");
-        return;
+      // A "device" row can fold together several real sessions (see
+      // ApiSession's sessionIds doc comment) — revoke every one of them
+      // so the group's Revoke button actually clears the whole device,
+      // not just the most-recently-active session in it.
+      for (const sessionId of target.sessionIds) {
+        const response = await fetch(`/api/sessions/${sessionId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${session.accessToken}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setActionError(data.error ?? "Failed to revoke session.");
+          return;
+        }
       }
       if (target.isCurrent) {
         const supabase = getSupabaseBrowserClient();
@@ -253,6 +267,15 @@ export default function SessionsPage() {
         <a href="/settings">&larr; Back to Settings</a>
       </p>
 
+      {/* Will, 2026-09-16 (verbatim): "Move the sign out everywhere
+          button to the top." Same handler/confirm behavior as before —
+          only its position moved, above the sessions list. */}
+      <section style={styles.section}>
+        <button type="button" style={styles.dangerButton} onClick={() => void handleSignOutEverywhere()} disabled={signingOutEverywhere}>
+          {signingOutEverywhere ? "Signing out everywhere…" : "Sign out everywhere"}
+        </button>
+      </section>
+
       <section style={styles.section}>
         {loadError && <p style={styles.error}>{loadError}</p>}
         {actionError && <p style={styles.error}>{actionError}</p>}
@@ -278,6 +301,7 @@ export default function SessionsPage() {
                 <tr key={s.id}>
                   <td style={styles.td}>
                     {s.device}
+                    {s.sessionCount > 1 && <span style={styles.muted}> &nbsp;({s.sessionCount} sessions)</span>}
                     {s.isCurrent && <span style={styles.badge}>This device</span>}
                   </td>
                   <td style={styles.td}>{formatDateTime(s.createdAt)}</td>
@@ -292,12 +316,6 @@ export default function SessionsPage() {
             </tbody>
           </table>
         )}
-      </section>
-
-      <section style={styles.section}>
-        <button type="button" style={styles.dangerButton} onClick={() => void handleSignOutEverywhere()} disabled={signingOutEverywhere}>
-          {signingOutEverywhere ? "Signing out everywhere…" : "Sign out everywhere"}
-        </button>
       </section>
     </main>
   );
