@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildEntryValueRows, doseColumnLabel, doseNumberOf, type EntryValueVaccine } from "@/lib/entry-values";
 import { defaultDirections } from "@/lib/entry-defaults";
+import { formatNdcDashed } from "@/lib/ndc";
 
 function vaccine(overrides: Partial<EntryValueVaccine>): EntryValueVaccine {
   return {
@@ -101,6 +102,18 @@ describe("buildEntryValueRows", () => {
   it("carries the row's own short_code through as shortCode", () => {
     const rows = buildEntryValueRows([vaccine({ id: "c1", name: "Comirnaty", short_code: "comirnaty12" })]);
     expect(rows[0].shortCode).toBe("comirnaty12");
+  });
+
+  it("carries the product's NDC through, formatting dashed for the /entry-values table (same formatNdcDashed as Ordering/Lots)", () => {
+    const rows = buildEntryValueRows([vaccine({ id: "c1", name: "Comirnaty", ndc: "00069246510" })]);
+    expect(rows[0].ndc).toBe("00069246510");
+    expect(formatNdcDashed(rows[0].ndc)).toBe("00069-2465-10");
+  });
+
+  it("leaves ndc null (renders blank via formatNdcDashed) when the vaccine has none and no catalog fallback matches", () => {
+    const rows = buildEntryValueRows([vaccine({ id: "u1", name: "Unknown Vax", short_code: null, ndc: null })]);
+    expect(rows[0].ndc).toBeNull();
+    expect(formatNdcDashed(rows[0].ndc)).toBe("");
   });
 
   it("falls back to catalog type 'Other' (sorted last) for an unrecognized/missing short_code", () => {
