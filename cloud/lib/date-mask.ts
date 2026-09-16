@@ -119,6 +119,18 @@ export function isValidCalendarDate(year: number, month: number, day: number): b
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
+/** True when `value` is a real "YYYY-MM-DD" calendar date string — the
+ * shape a Postgres `date` column round-trips through PostgREST as.
+ * Shared by app/api/lots/route.ts and app/api/lots/[id]/route.ts's
+ * server-side expiration/beyond_use_date validation (V-lots-clear-save)
+ * so both stay in sync rather than duplicating the regex+range check. */
+export function isValidIsoDateString(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [, yyyy, mm, dd] = match;
+  return isValidCalendarDate(Number(yyyy), Number(mm), Number(dd));
+}
+
 /** "MMDDYYYY" (exactly 8 digits) -> "YYYY-MM-DD" ISO, or null when the
  * digit count is short or the digits don't form a real calendar date
  * (e.g. "02302026" — Feb 30). */

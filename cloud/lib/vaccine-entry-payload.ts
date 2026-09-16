@@ -17,28 +17,38 @@
 export type LotLike = {
   vaccine_id: string;
   lot_number: string;
-  expiration: string; // "YYYY-MM-DD", Postgres `date` column via PostgREST
+  // "YYYY-MM-DD", Postgres `date` column via PostgREST — nullable since
+  // V-lots-clear-save (supabase/migrations/0014_...): a lot can have a
+  // number on file with no expiration entered/cleared yet.
+  expiration: string | null;
   status: string;
 };
 
 /** Lexicographic comparison is correct for "YYYY-MM-DD" strings — same
  * shape lib/chicago-date.ts's todayInChicago() returns, so callers can
- * pass that directly as `today`. */
-export function isLotExpired(expiration: string, today: string): boolean {
-  return expiration < today;
+ * pass that directly as `today`. A null expiration is never "expired" —
+ * there's no date to have passed — but see pickActiveUnexpiredLot below,
+ * which still excludes a null-expiration lot from FEFO selection for a
+ * different reason (nothing to write into the live entry). */
+export function isLotExpired(expiration: string | null, today: string): boolean {
+  return expiration !== null && expiration < today;
 }
 
 /**
- * FEFO (earliest expiration first) among ACTIVE, UNEXPIRED lots only —
- * mirrors DataEntryPopupViewModel.BuildPayloadAsync's
+ * FEFO (earliest expiration first) among ACTIVE, UNEXPIRED, DATED lots
+ * only — mirrors DataEntryPopupViewModel.BuildPayloadAsync's
  * `activeLots.Where(l => !l.IsExpired).OrderBy(l => l.Expiration).FirstOrDefault()`.
- * Returns null when no such lot exists (the expiration gate: caller must
- * either add a lot or explicitly choose to skip lot/expiration).
+ * A null-expiration lot is excluded here (not merely sorted last): this
+ * function feeds a LIVE entry payload (formatExpirationMacro below
+ * requires a real date to write into PioneerRx), so a lot missing its
+ * expiration can never be silently auto-selected — same posture as
+ * "caller must add a lot or explicitly skip lot/expiration" for a
+ * missing lot entirely. Returns null when no such lot exists.
  */
-export function pickActiveUnexpiredLot<T extends LotLike>(lots: readonly T[], today: string): T | null {
-  const candidates = lots
-    .filter((lot) => lot.status === "active" && !isLotExpired(lot.expiration, today))
-    .sort((a, b) => (a.expiration < b.expiration ? -1 : a.expiration > b.expiration ? 1 : 0));
+export function pickActiveUnexpiredLot<T extends LotLike>(lots: readonly T[], today: string): (T & { expiration: string }) | null {
+  const candidates = (lots.filter(
+    (lot) => lot.status === "active" && lot.expiration !== null && !isLotExpired(lot.expiration, today)
+  ) as (T & { expiration: string })[]).sort((a, b) => (a.expiration < b.expiration ? -1 : a.expiration > b.expiration ? 1 : 0));
   return candidates[0] ?? null;
 }
 

@@ -6,21 +6,40 @@
  * dependency-free of React/Supabase so it's directly unit-testable.
  */
 
-export type LotStatusLike = { status: string; expiration: string };
+// V-lots-clear-save follow-up (2026-09-16): expiration is nullable —
+// clearing ONLY a lot's expiration (leaving its lot_number on file) is a
+// real, persisted state now (supabase/migrations/0014_..., "missing
+// expiration" needs its own flag per V-lots-row-status, 2026-09-14: "Also
+// needs to show if exp is missing too"), unlike clearing lot_number
+// (which has no such state — see app/lots/page.tsx's clearCurrentLot).
+export type LotStatusLike = { status: string; expiration: string | null };
+
+/** Ascending by expiration, nulls LAST — an unknown expiration is
+ * deliberately treated as "expires latest" (least urgent/least
+ * preferred), never as sorting ahead of a lot with a real date, so it
+ * can never silently jump the FEFO queue. Shared by every "current"/
+ * "earliest expiring" lot lookup over lot data (this file's
+ * pickCurrentActiveLot below). */
+function compareExpirationAscNullsLast(a: string | null, b: string | null): number {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 /**
  * The "current" active lot for a vaccine, among ALL of that vaccine's
  * lots — the one the /lots table's row edits and highlight logic apply
- * to. Earliest-expiration-first (FEFO) among status='active' lots, same
- * tie-break as lib/vaccine-entry-payload.ts's pickActiveUnexpiredLot —
- * but deliberately NOT filtered to unexpired-only like that function is:
- * this page's whole job is to show and let staff fix an expired/BUD-met
- * lot, so an expired active lot must still be the one returned here, not
+ * to. Earliest-expiration-first (FEFO, nulls last — see
+ * compareExpirationAscNullsLast) among status='active' lots — but
+ * deliberately NOT filtered to unexpired/dated-only: this page's whole
+ * job is to show and let staff fix an expired, BUD-met, or missing-
+ * expiration lot, so that lot must still be the one returned here, not
  * silently skipped.
  */
 export function pickCurrentActiveLot<T extends LotStatusLike>(lots: readonly T[]): T | null {
   const active = lots.filter((lot) => lot.status === "active");
-  const sorted = [...active].sort((a, b) => (a.expiration < b.expiration ? -1 : a.expiration > b.expiration ? 1 : 0));
+  const sorted = [...active].sort((a, b) => compareExpirationAscNullsLast(a.expiration, b.expiration));
   return sorted[0] ?? null;
 }
 

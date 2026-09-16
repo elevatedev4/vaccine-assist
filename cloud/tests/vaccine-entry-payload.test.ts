@@ -18,6 +18,12 @@ describe("isLotExpired", () => {
     expect(isLotExpired("2026-09-05", "2026-09-05")).toBe(false);
     expect(isLotExpired("2026-12-01", "2026-09-05")).toBe(false);
   });
+
+  // V-lots-clear-save follow-up (Will 2026-09-16): expiration is nullable
+  // now (supabase/migrations/0014_...) — there's no date to have passed.
+  it("is false (never expired) when expiration is null", () => {
+    expect(isLotExpired(null, "2026-09-05")).toBe(false);
+  });
 });
 
 describe("pickActiveUnexpiredLot", () => {
@@ -45,6 +51,23 @@ describe("pickActiveUnexpiredLot", () => {
 
   it("returns null for an empty list", () => {
     expect(pickActiveUnexpiredLot([], today)).toBeNull();
+  });
+
+  // V-lots-clear-save follow-up (Will 2026-09-16): expiration is nullable
+  // now — a null-expiration lot is excluded here (not just sorted last)
+  // since this feeds a LIVE entry payload that needs a real date to
+  // write into PioneerRx (formatExpirationMacro has nothing to format).
+  it("excludes an active lot with a null expiration, even with no other candidate", () => {
+    const lots: LotLike[] = [{ vaccine_id: "v1", lot_number: "NOEXP", expiration: null, status: "active" }];
+    expect(pickActiveUnexpiredLot(lots, today)).toBeNull();
+  });
+
+  it("picks the dated lot over a null-expiration one", () => {
+    const lots: LotLike[] = [
+      { vaccine_id: "v1", lot_number: "NOEXP", expiration: null, status: "active" },
+      { vaccine_id: "v1", lot_number: "DATED", expiration: "2027-01-01", status: "active" },
+    ];
+    expect(pickActiveUnexpiredLot(lots, today)?.lot_number).toBe("DATED");
   });
 
   it("picks the first-listed lot on an exact expiration tie (stable sort)", () => {

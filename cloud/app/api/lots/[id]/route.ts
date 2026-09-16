@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
-import { isValidCalendarDate } from "@/lib/date-mask";
+import { isValidIsoDateString } from "@/lib/date-mask";
 
 /**
  * PATCH /api/lots/[id] — edits an existing lot's editable fields. New for
@@ -22,18 +22,23 @@ import { isValidCalendarDate } from "@/lib/date-mask";
  * column doesn't exist yet (supabase/migrations/0009_...), the update
  * retries without it and flags `beyondUseDateSupported: false`.
  *
- * V-lots-clear-save (Will 2026-09-16): lot_number and expiration are both
- * NOT NULL columns (supabase/migrations/0001_init.sql) — there is no
- * empty/null value that can ever be persisted for either, so clearing a
- * lot's number or expiration is only representable by removing the lot
- * row entirely (DELETE below, or the fan-out DELETE at
- * app/api/lots/route.ts). Both keep rejecting an empty/blank value with
- * 400, and expiration's non-empty value is now also validated as a real
- * calendar date (previously any truthy string passed through un-
- * validated). beyond_use_date IS nullable, so an explicit "" is now
- * treated the same as an explicit null (clears the column) rather than
- * being written verbatim and failing at the database as an invalid date;
- * a non-empty value is still validated as a real calendar date.
+ * V-lots-clear-save (Will 2026-09-16): lot_number is a NOT NULL column
+ * (supabase/migrations/0001_init.sql) — there is no empty/null value
+ * that can ever be persisted for it, so clearing a lot's number is only
+ * representable by removing the lot row entirely (DELETE below, or the
+ * fan-out DELETE at app/api/lots/route.ts); an empty/blank lot_number
+ * keeps rejecting with 400.
+ *
+ * V-lots-clear-save follow-up (same day): expiration is DIFFERENT — Will
+ * separately wants "a lot with a number but no expiration" to be a real,
+ * persisted state (it gets its own "missing expiration" highlight,
+ * V-lots-row-status 2026-09-14), so expiration.DROP NOT NULL
+ * (supabase/migrations/0014_lots_nullable_expiration.sql, not yet
+ * applied) makes an explicit "" or null a genuine UPDATE to NULL here,
+ * same treatment as beyond_use_date below. A non-empty expiration is
+ * still validated as a real calendar date (previously any truthy string
+ * passed straight through un-validated) — malformed non-empty dates
+ * still 400 for every field.
  *
  * DELETE /api/lots/[id] — V-T21 item 5 (Will, 2026-09-08): the data-entry
  * popup's "Update current lots to this lot" checkbox saves a fresh lot
@@ -41,12 +46,6 @@ import { isValidCalendarDate } from "@/lib/date-mask";
  * DataEntryPopupViewModel.ApplyUpdateCurrentLotAsync) — needs a per-lot
  * delete route neither screen required before.
  */
-function isValidIsoDateString(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return false;
-  const [, yyyy, mm, dd] = match;
-  return isValidCalendarDate(Number(yyyy), Number(mm), Number(dd));
-}
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAuthenticatedUser(request);
   if ("error" in auth) return auth.error;
@@ -71,16 +70,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       update.lot_number = lot_number;
     }
     if (expiration !== undefined) {
-      // expiration is likewise NOT NULL — same reasoning as lot_number
-      // above. A non-empty value must also be a real calendar date now
-      // (previously any truthy string passed straight through).
-      if (typeof expiration !== "string" || !expiration) {
-        return NextResponse.json({ error: "expiration must be a date string." }, { status: 400 });
+      if (expiration !== null && typeof expiration !== "string") {
+        return NextResponse.json({ error: "expiration must be a date string or null." }, { status: 400 });
       }
-      if (!isValidIsoDateString(expiration)) {
-        return NextResponse.json({ error: "expiration must be a valid calendar date." }, { status: 400 });
+      // expiration IS nullable (supabase/migrations/0014_..., pending
+      // Will's apply) — an explicit "" clears it exactly like an
+      // explicit null: a lot with a lot_number but no expiration is a
+      // real, persisted "missing expiration" state now, not an error.
+      const normalizedExpiration = expiration === "" ? null : expiration;
+      if (normalizedExpiration !== null && !isValidIsoDateString(normalizedExpiration)) {
+        return NextResponse.json({ error: "expiration must be a valid calendar date or null." }, { status: 400 });
       }
-      update.expiration = expiration;
+      update.expiration = normalizedExpiration;
     }
     if (beyond_use_date !== undefined) {
       if (beyond_use_date !== null && typeof beyond_use_date !== "string") {

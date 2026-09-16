@@ -344,20 +344,43 @@ describe("PATCH /api/lots/[id]", () => {
     expect(response.status).toBe(400);
   });
 
-  it("rejects an empty expiration (no NULL column to save it as — must DELETE the lot instead)", async () => {
-    const response = await patchRequest("l1", { expiration: "" });
-    expect(response.status).toBe(400);
-    expect(getSupabaseServerClient).not.toHaveBeenCalled();
-  });
-
   it("rejects a null lot_number", async () => {
     const response = await patchRequest("l1", { lot_number: null });
     expect(response.status).toBe(400);
   });
 
-  it("rejects a null expiration", async () => {
+  // V-lots-clear-save follow-up (Will 2026-09-16, same day): unlike
+  // lot_number, expiration IS nullable now (supabase/migrations/
+  // 0014_lots_nullable_expiration.sql, pending Will's apply) — a lot with
+  // a number but no expiration is a real, persisted "missing expiration"
+  // state (see lib/lots-row-status.ts), so an explicit "" or null clears
+  // it via a normal UPDATE rather than being rejected.
+  it("clears expiration when it's an explicit empty string", async () => {
+    const single = vi.fn(async () => ({ data: { id: "l1", expiration: null }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await patchRequest("l1", { expiration: "" });
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ expiration: null });
+  });
+
+  it("clears expiration when it's an explicit null", async () => {
+    const single = vi.fn(async () => ({ data: { id: "l1", expiration: null }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
     const response = await patchRequest("l1", { expiration: null });
-    expect(response.status).toBe(400);
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ expiration: null });
   });
 
   it("rejects a malformed (non-calendar) expiration date", async () => {
@@ -611,10 +634,10 @@ describe("PATCH /api/lots — fan-out UPSERT edit (vaccineIds + matchLotNumber)"
     expect(updateInCalls).toEqual([["l1", "l2"]]);
   });
 
-  // V-lots-clear-save (Will 2026-09-16): beyond_use_date IS nullable
-  // (unlike lot_number/expiration), so an explicit "" clearing it must
-  // be normalized to null before it ever reaches Supabase — an empty
-  // string written verbatim into a `date` column fails at the database.
+  // V-lots-clear-save (Will 2026-09-16): beyond_use_date IS nullable, so
+  // an explicit "" clearing it must be normalized to null before it ever
+  // reaches Supabase — an empty string written verbatim into a `date`
+  // column fails at the database.
   it("normalizes an explicit empty-string beyond_use_date to null before saving", async () => {
     const select = vi.fn(() => ({
       in: vi.fn(async () => ({
@@ -643,6 +666,64 @@ describe("PATCH /api/lots — fan-out UPSERT edit (vaccineIds + matchLotNumber)"
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ beyond_use_date: null })
     );
+  });
+
+  // V-lots-clear-save follow-up (Will 2026-09-16, same day): expiration
+  // is ALSO nullable now (supabase/migrations/0014_..., pending Will's
+  // apply) — clearing ONLY the expiration (lot_number left as-is) is a
+  // real, persisted "missing expiration" state, so an explicit "" or
+  // null must reach Supabase as null, same treatment as beyond_use_date.
+  it("normalizes an explicit empty-string expiration to null before saving", async () => {
+    const select = vi.fn(() => ({
+      in: vi.fn(async () => ({ data: [{ id: "l1", vaccine_id: "v1", lot_number: "ABC" }], error: null })),
+    }));
+    const update = vi.fn(() => ({
+      in: vi.fn(() => ({ select: vi.fn(async () => ({ data: [{ id: "l1", expiration: null }], error: null })) })),
+    }));
+    const lotTable = { select, update };
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from: mockFromWithVaccines(lotTable) } as never);
+
+    const response = await fanOutPatchRequest({
+      vaccineIds: ["v1"],
+      matchLotNumber: "ABC",
+      lot_number: "ABC",
+      expiration: "",
+    });
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ expiration: null }));
+  });
+
+  it("normalizes an explicit null expiration to null before saving", async () => {
+    const select = vi.fn(() => ({
+      in: vi.fn(async () => ({ data: [{ id: "l1", vaccine_id: "v1", lot_number: "ABC" }], error: null })),
+    }));
+    const update = vi.fn(() => ({
+      in: vi.fn(() => ({ select: vi.fn(async () => ({ data: [{ id: "l1", expiration: null }], error: null })) })),
+    }));
+    const lotTable = { select, update };
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from: mockFromWithVaccines(lotTable) } as never);
+
+    const response = await fanOutPatchRequest({
+      vaccineIds: ["v1"],
+      matchLotNumber: "ABC",
+      lot_number: "ABC",
+      expiration: null,
+    });
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ expiration: null }));
+  });
+
+  it("rejects a malformed (non-calendar) non-empty expiration", async () => {
+    const response = await fanOutPatchRequest({
+      vaccineIds: ["v1"],
+      matchLotNumber: "ABC",
+      lot_number: "ABC",
+      expiration: "2027-02-30",
+    });
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
   });
 
   // Will's follow-up: "make the collection-level PATCH an upsert ... so

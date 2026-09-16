@@ -24,8 +24,13 @@ export type LotRowStatusInput = {
   /** The row's current (draft) lot number — "" or all-whitespace counts
    * as no lot on file. */
   lotNumber: string;
-  /** "YYYY-MM-DD", or "" when not set. */
-  expiration: string;
+  /** "YYYY-MM-DD", "", or null when not set. Nullable since
+   * V-lots-clear-save follow-up (supabase/migrations/0014_...) — the
+   * /lots page's own draft state still always normalizes a loaded lot's
+   * expiration to "" (never passes null through here itself), but this
+   * accepts null directly too so any other/future caller reading a raw
+   * lot row doesn't have to remember that conversion first. */
+  expiration: string | null;
   /** "YYYY-MM-DD", "", null, or undefined when not set/not applicable. */
   beyondUseDate?: string | null;
   /** "YYYY-MM-DD" — the pharmacy's local calendar day (pass
@@ -54,13 +59,16 @@ function candidateDates({ expiration, beyondUseDate }: Pick<LotRowStatusInput, "
   return [expiration, beyondUseDate].filter((d): d is string => !!d && d.length > 0 && isValidIsoDate(d));
 }
 
-/** Whether `expiration` counts as "no expiration on file" — empty after
- * trim, or not a real "YYYY-MM-DD" calendar date. In normal operation
- * DateTextInput's onChange contract only ever hands the page a complete
- * valid ISO date or "" (see app/lots/page.tsx's runAutosave doc comment),
- * so the invalid-date branch is a defensive backstop rather than a
- * reachable UI state today. */
-function isExpirationMissing(expiration: string): boolean {
+/** Whether `expiration` counts as "no expiration on file" — null, empty
+ * after trim, or not a real "YYYY-MM-DD" calendar date. In normal
+ * operation DateTextInput's onChange contract only ever hands the page a
+ * complete valid ISO date or "" (see app/lots/page.tsx's runAutosave doc
+ * comment) — null is the shape a raw lot row reads as directly
+ * (V-lots-clear-save follow-up, supabase/migrations/0014_...) — so the
+ * invalid-date branch is a defensive backstop rather than a reachable UI
+ * state today. */
+function isExpirationMissing(expiration: string | null): boolean {
+  if (expiration === null) return true;
   const trimmed = expiration.trim();
   return trimmed.length === 0 || !isValidIsoDate(trimmed);
 }

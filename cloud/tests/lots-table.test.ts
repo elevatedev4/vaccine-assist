@@ -100,4 +100,20 @@ describe("pickCurrentActiveLot", () => {
     const lots = [{ id: "expired", status: "active", expiration: "2020-01-01" }];
     expect(pickCurrentActiveLot(lots)?.id).toBe("expired");
   });
+
+  // V-lots-clear-save follow-up (Will 2026-09-16): expiration is nullable
+  // now (supabase/migrations/0014_...) — a null-expiration lot must never
+  // silently jump the FEFO queue ahead of one with a real date.
+  it("sorts a null-expiration active lot LAST, behind lots with a real expiration", () => {
+    const lots = [
+      { id: "no-exp", status: "active", expiration: null },
+      { id: "dated", status: "active", expiration: "2026-12-01" },
+    ];
+    expect(pickCurrentActiveLot(lots)?.id).toBe("dated");
+  });
+
+  it("still returns the null-expiration lot when it's the only active one", () => {
+    const lots = [{ id: "no-exp", status: "active", expiration: null }];
+    expect(pickCurrentActiveLot(lots)?.id).toBe("no-exp");
+  });
 });

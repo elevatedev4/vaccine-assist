@@ -111,7 +111,12 @@ type LotRow = {
   id: string;
   vaccine_id: string;
   lot_number: string;
-  expiration: string;
+  // Nullable since V-lots-clear-save follow-up (supabase/migrations/
+  // 0014_...): clearing ONLY the expiration is now a persisted UPDATE,
+  // not a delete — draftsFromProducts below already collapses this to
+  // "" via `current?.expiration ?? ""`, so downstream draft/highlight
+  // logic never sees the null itself.
+  expiration: string | null;
   status: string;
   note: string | null;
   beyond_use_date?: string | null;
@@ -747,15 +752,25 @@ export default function LotsPage() {
    * Blanking Lot # or Expiration (Will 2026-09-16 verbatim: "if I remove
    * something (lot or exp), it needs to be saved when I remove it ...
    * right now it's flagging that it's missing, but if I refresh with the
-   * lot/exp blank, it's reloading the old lot") is handled BEFORE the
-   * save branch below: lib/lots-autosave.ts's decide* functions report
-   * "clear" for an explicit removal of a previously-saved value, and
-   * since lot_number/expiration are NOT NULL columns there's no empty
-   * string to PATCH — clearing reuses the same fan-out DELETE the ⚙
-   * menu's "Clear lot" button always has (see clearCurrentLot below).
-   * Clearing beyond_use_date is different: that column IS nullable, so a
-   * "clear" there still goes through the normal save branch, which
-   * already sends `beyond_use_date: draft.beyondUseDate || null`.
+   * lot/exp blank, it's reloading the old lot") is handled specially:
+   * lib/lots-autosave.ts's decide* functions report "clear" for an
+   * explicit removal of a previously-saved value, but the two fields
+   * DON'T behave the same way, per Will's same-day follow-up:
+   *   - Lot # cleared: lot_number is a NOT NULL column
+   *     (supabase/migrations/0001_init.sql) AND a lot with no number
+   *     isn't a meaningful persisted state (lotRowStatus always reports
+   *     'missing' regardless of any date field) — this reuses the same
+   *     fan-out DELETE the ⚙ menu's "Clear lot" button always has (see
+   *     clearCurrentLot below), removing the row entirely.
+   *   - Expiration cleared (lot # left as-is): expiration IS nullable
+   *     (supabase/migrations/0014_lots_nullable_expiration.sql, pending
+   *     Will's apply) — Will wants "has a lot number, no expiration" to
+   *     be its own real, persisted 'missing-expiration' state (see
+   *     lib/lots-row-status.ts), so this goes through the NORMAL save
+   *     branch below like any other field change, sending an explicit
+   *     `expiration: null` (via `draft.expiration || null`, the same
+   *     pattern beyond_use_date already used) rather than deleting
+   *     anything.
    */
   async function runAutosave(view: ProductView) {
     if (!session) return;
@@ -782,7 +797,7 @@ export default function LotsPage() {
       ? decideDateAutosave(rawText.beyondUseDate, isoToMaskedDate(saved.beyondUseDate))
       : "unchanged";
 
-    if ((lotDecision === "clear" || expirationDecision === "clear") && saved.matchLotNumber) {
+    if (lotDecision === "clear" && saved.matchLotNumber) {
       autosaveInFlightRef.current[key] = true;
       try {
         await clearCurrentLot(view, saved.matchLotNumber);
@@ -792,9 +807,21 @@ export default function LotsPage() {
       return;
     }
 
+    // A cleared expiration on an EXISTING lot is its own eligible change
+    // (see this function's doc comment) — the row keeps its lot_number,
+    // expiration goes to null via the normal save branch below. A
+    // brand-new lot (no saved.matchLotNumber yet) still requires a real
+    // expiration: POST /api/lots has no "create with no expiration" path
+    // today, so hasRequiredFields only relaxes the expiration
+    // requirement once there's an existing lot to update.
+    const expirationCleared = expirationDecision === "clear" && !!saved.matchLotNumber;
     const hasEligibleChange =
-      lotDecision === "save" || expirationDecision === "save" || beyondUseDecision === "save" || beyondUseDecision === "clear";
-    const hasRequiredFields = draft.lotNumber.trim().length > 0 && draft.expiration !== "";
+      lotDecision === "save" ||
+      expirationDecision === "save" ||
+      expirationCleared ||
+      beyondUseDecision === "save" ||
+      beyondUseDecision === "clear";
+    const hasRequiredFields = draft.lotNumber.trim().length > 0 && (draft.expiration !== "" || expirationCleared);
     if (!hasEligibleChange || !hasRequiredFields) return;
 
     const seq = (autosaveSeqRef.current[key] ?? 0) + 1;
@@ -814,12 +841,18 @@ export default function LotsPage() {
                 vaccineIds: view.vaccineIds,
                 matchLotNumber: saved.matchLotNumber,
                 lot_number: lotNumber,
-                expiration: draft.expiration,
+                // "" (cleared) -> null — expiration is nullable
+                // (V-lots-clear-save follow-up); an update never omits
+                // it (see hasRequiredFields above), so this is always
+                // either a real ISO date or an explicit clear.
+                expiration: draft.expiration || null,
                 beyond_use_date: draft.beyondUseDate || null,
               }
             : {
                 vaccine_ids: view.vaccineIds,
                 lot_number: lotNumber,
+                // Always non-blank here — hasRequiredFields still
+                // requires a real expiration to CREATE a brand-new lot.
                 expiration: draft.expiration,
                 beyond_use_date: draft.beyondUseDate || null,
               }

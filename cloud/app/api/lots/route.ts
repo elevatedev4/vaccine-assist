@@ -3,6 +3,7 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
 import { groupVaccinesIntoProducts } from "@/lib/lots-grouping";
+import { isValidIsoDateString } from "@/lib/date-mask";
 
 /**
  * REST endpoint for the desktop app's Lots screen (inventory +
@@ -250,10 +251,17 @@ export async function POST(request: Request) {
  * didn't: any failure returns 500 with the real counts attached.
  *
  * Body: { vaccineIds: string[], matchLotNumber: string, lot_number:
- * string, expiration: string, beyond_use_date?, note?, status? } —
- * lot_number and expiration are REQUIRED here (unlike PATCH
- * /api/lots/[id]'s partial-update shape) because either might need to
- * become a brand-new row. `vaccineIds` is also validated server-side
+ * string, expiration: string | null, beyond_use_date?, note?, status? }
+ * — `vaccineIds`/`matchLotNumber`/`lot_number` are REQUIRED (unlike
+ * PATCH /api/lots/[id]'s partial-update shape) because either the
+ * update or insert branch might need lot_number to become/stay a
+ * brand-new row. `expiration` must be PRESENT (an explicit value, not
+ * omitted) for the same reason, but — V-lots-clear-save follow-up
+ * (Will 2026-09-16): expiration is nullable
+ * (supabase/migrations/0014_lots_nullable_expiration.sql, pending
+ * apply) — that value may itself be an explicit null/"" (clears it,
+ * whether updating an existing lot or inserting a fresh drifted one
+ * with no expiration yet). `vaccineIds` is also validated server-side
  * (validateOneProductGroup above) to all exist and resolve to one
  * product before anything is written.
  */
@@ -263,8 +271,8 @@ export async function PATCH(request: Request) {
 
   try {
     const body = await request.json();
-    const { vaccineIds, matchLotNumber, lot_number, expiration, note, status } = body ?? {};
-    let { beyond_use_date } = body ?? {};
+    const { vaccineIds, matchLotNumber, lot_number, note, status } = body ?? {};
+    let { expiration, beyond_use_date } = body ?? {};
 
     if (!Array.isArray(vaccineIds) || vaccineIds.length === 0 || vaccineIds.some((id: unknown) => typeof id !== "string" || !id)) {
       return NextResponse.json({ error: "vaccineIds must be a non-empty array of vaccine ids." }, { status: 400 });
@@ -275,14 +283,22 @@ export async function PATCH(request: Request) {
     if (typeof lot_number !== "string" || !lot_number.trim()) {
       return NextResponse.json({ error: "lot_number must be a non-empty string." }, { status: 400 });
     }
-    if (typeof expiration !== "string" || !expiration) {
-      return NextResponse.json({ error: "expiration must be a date string." }, { status: 400 });
+    if (expiration !== null && typeof expiration !== "string") {
+      return NextResponse.json({ error: "expiration must be a date string or null." }, { status: 400 });
+    }
+    // expiration IS nullable (supabase/migrations/0014_..., pending
+    // Will's apply) — V-lots-clear-save follow-up: a lot with a
+    // lot_number but no expiration is a real, persisted "missing
+    // expiration" state, so an explicit "" clears it the same as null.
+    if (expiration === "") expiration = null;
+    if (expiration !== null && !isValidIsoDateString(expiration)) {
+      return NextResponse.json({ error: "expiration must be a valid calendar date or null." }, { status: 400 });
     }
     if (beyond_use_date !== undefined && beyond_use_date !== null && typeof beyond_use_date !== "string") {
       return NextResponse.json({ error: "beyond_use_date must be a date string or null." }, { status: 400 });
     }
-    // beyond_use_date is nullable (unlike lot_number/expiration above) —
-    // V-lots-clear-save: an explicit "" clears it the same as null.
+    // beyond_use_date is nullable too — an explicit "" clears it the
+    // same as null.
     if (beyond_use_date === "") beyond_use_date = null;
     if (note !== undefined && note !== null && typeof note !== "string") {
       return NextResponse.json({ error: "note must be a string or null." }, { status: 400 });
