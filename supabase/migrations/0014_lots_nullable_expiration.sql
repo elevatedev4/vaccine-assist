@@ -1,0 +1,27 @@
+-- Vaccine Assist — allow lot.expiration to be NULL (V-lots-clear-save,
+-- Will 2026-09-16 verbatim: "if I remove something (lot or exp), it
+-- needs to be saved when I remove it"). A follow-up correction the same
+-- day: Will separately wants a lot with a number but no expiration to be
+-- a real, persisted state ("missing expiration" gets its own highlight,
+-- V-lots-row-status, 2026-09-14 verbatim: "Also needs to show if exp is
+-- missing too") — so clearing ONLY the expiration must UPDATE the lot to
+-- expiration = NULL rather than deleting it, unlike clearing lot_number
+-- (which has no such state and stays a DELETE — see
+-- app/lots/page.tsx's clearCurrentLot / runAutosave).
+--
+-- lot_number stays NOT NULL: a lot with no number isn't a meaningful row
+-- (there is no "missing lot number" persisted state, only "no lot on
+-- file at all" — lib/lots-row-status.ts's lotRowStatus already treats an
+-- empty lot_number as 'missing' regardless of any date field).
+--
+-- MIGRATION FILE ONLY — not run against any database as part of this
+-- change (per standing convention: the coder writes the migration, the
+-- manager/Will applies it from his own terminal). Application code
+-- already tolerates a null expiration ahead of this running (see the
+-- V-lots-clear-save PATCH/PATCH-fan-out changes and the null-safe
+-- expiration reads swept across lib/lots-row-status.ts,
+-- lib/lots-table.ts, lib/ordering-*.ts, and the screener/eligibility
+-- routes), so applying this migration is additive/safe whenever Will
+-- gets to it.
+
+alter table lot alter column expiration drop not null;

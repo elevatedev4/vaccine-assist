@@ -13,7 +13,7 @@ import type { LotRowStatus } from "@/lib/lots-row-status";
  * existing POST/PATCH /api/lots calls) when one of these returns "save".
  */
 
-export type DateAutosaveDecision = "save" | "incomplete" | "invalid" | "unchanged";
+export type DateAutosaveDecision = "save" | "clear" | "incomplete" | "invalid" | "unchanged";
 
 /**
  * Whether a date field (Expiration / Beyond-use date) should autosave.
@@ -24,8 +24,15 @@ export type DateAutosaveDecision = "save" | "incomplete" | "invalid" | "unchange
  *
  *   - "unchanged": text === previousSavedText — nothing to do, even if a
  *     debounce timer happens to fire again.
- *   - "incomplete": fewer than 8 digits typed so far — the user is still
- *     typing; never sent, never flagged invalid.
+ *   - "clear": the field is now fully empty (0 digits) but PREVIOUSLY had
+ *     a saved value — an explicit removal, distinct from "incomplete"
+ *     below. Will 2026-09-16 verbatim: "if I remove something (lot or
+ *     exp), it needs to be saved when I remove it" — the page (see
+ *     runAutosave) must persist this, not silently drop it.
+ *   - "incomplete": 1-7 digits typed so far (and previousSavedText wasn't
+ *     already ""), or the field was already blank and still is — the
+ *     user is either still typing a fresh date or there was never
+ *     anything to clear; never sent, never flagged invalid.
  *   - "invalid": exactly 8 digits typed but they don't form a real
  *     calendar date (e.g. "02/30/2026") — never sent. DateTextInput
  *     already shows its own subtle red-border style for this case.
@@ -35,22 +42,34 @@ export type DateAutosaveDecision = "save" | "incomplete" | "invalid" | "unchange
 export function decideDateAutosave(text: string, previousSavedText: string): DateAutosaveDecision {
   if (text === previousSavedText) return "unchanged";
   const digits = onlyDigits(text);
+  if (digits.length === 0) return "clear";
   if (digits.length < 8) return "incomplete";
   return digitsToIso(digits) ? "save" : "invalid";
 }
 
-export type LotNumberAutosaveDecision = "save" | "empty" | "unchanged";
+export type LotNumberAutosaveDecision = "save" | "clear" | "unchanged";
 
 /**
  * Whether the Lot # field should autosave — "Lot # saves when non-empty
  * change settles" (Will's brief): non-empty (trimmed) AND different from
- * what was last saved. Clearing the field to empty is never itself an
- * autosave trigger (deleting a lot on file is the separate, explicit
- * "Clear lot" action in the ⚙ menu).
+ * what was last saved.
+ *
+ * "clear" (renamed from the old "empty", Will 2026-09-16 verbatim: "if I
+ * remove something (lot or exp), it needs to be saved when I remove
+ * it") — the field is now blank/whitespace-only but PREVIOUSLY held a
+ * saved value. runAutosave persists this the same way the ⚙ menu's
+ * explicit "Clear lot" button always has (a fan-out DELETE of the row's
+ * current lot) rather than an UPDATE: lot_number is a NOT NULL column
+ * (supabase/migrations/0001_init.sql), so there is no "save empty
+ * string" to send — removing the current lot on file is the only
+ * schema-valid way to represent it. When previousSavedText was ALSO
+ * blank (nothing on file to clear), text === previousSavedText already
+ * returns "unchanged" above, so "clear" only ever fires for a genuine,
+ * previously-persisted removal.
  */
 export function decideLotNumberAutosave(text: string, previousSavedText: string): LotNumberAutosaveDecision {
   if (text === previousSavedText) return "unchanged";
-  return text.trim().length > 0 ? "save" : "empty";
+  return text.trim().length > 0 ? "save" : "clear";
 }
 
 export type DebouncedRunner = {

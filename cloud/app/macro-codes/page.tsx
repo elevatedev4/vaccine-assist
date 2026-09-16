@@ -203,7 +203,10 @@ import {
  */
 
 type VaccineRow = MacroRowVaccine;
-type LotRow = { id: string; vaccine_id: string; lot_number: string; expiration: string; status: string };
+// expiration is nullable since V-lots-clear-save follow-up
+// (supabase/migrations/0014_...) — buildMacroRows/buildMacroCode
+// already tolerate this via `currentLot?.expiration ?? null`.
+type LotRow = { id: string; vaccine_id: string; lot_number: string; expiration: string | null; status: string };
 
 /** Round 8: switcher button labels, verbatim per Will's brief ("Make
  * the two different versions and add buttons at the top for me to

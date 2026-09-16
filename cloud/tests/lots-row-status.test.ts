@@ -114,6 +114,26 @@ describe("lotRowStatus", () => {
       "missing-expiration"
     );
   });
+
+  // V-lots-clear-save follow-up (Will 2026-09-16): expiration is nullable
+  // now (supabase/migrations/0014_...) — a lot row read directly from the
+  // API (rather than through the /lots page's own "" normalization) can
+  // hand this a literal null, and it must flag the same as "".
+  it("is 'missing-expiration' when expiration is null (a lot number is on file)", () => {
+    expect(lotRowStatus({ lotNumber: "ABC123", expiration: null, beyondUseDate: "", today: TODAY })).toBe(
+      "missing-expiration"
+    );
+  });
+
+  it("is 'missing' (not 'missing-expiration') when both lot number and expiration are null/empty", () => {
+    expect(lotRowStatus({ lotNumber: "", expiration: null, beyondUseDate: "", today: TODAY })).toBe("missing");
+  });
+
+  it("a null expiration doesn't block 'expired' from a past beyond-use date (null is simply excluded as a candidate date)", () => {
+    expect(
+      lotRowStatus({ lotNumber: "ABC123", expiration: null, beyondUseDate: "2020-01-01", today: TODAY })
+    ).toBe("expired");
+  });
 });
 
 describe("lotRowExpiredOn", () => {

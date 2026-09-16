@@ -10,7 +10,20 @@ describe("decideDateAutosave", () => {
   it("never saves a partial date still being typed", () => {
     expect(decideDateAutosave("09/16", "")).toBe("incomplete");
     expect(decideDateAutosave("09", "")).toBe("incomplete");
-    expect(decideDateAutosave("", "09/16/2026")).toBe("incomplete");
+  });
+
+  // V-lots-clear-save (Will 2026-09-16 verbatim: "if I remove something
+  // (lot or exp), it needs to be saved when I remove it ... right now
+  // it's flagging that it's missing, but if I refresh with the lot/exp
+  // blank, it's reloading the old lot"): fully emptying a field that
+  // PREVIOUSLY held a saved value is a distinct, actionable "clear" —
+  // not lumped in with "incomplete" (still typing) anymore.
+  it("reports 'clear' when a previously-saved date is fully emptied", () => {
+    expect(decideDateAutosave("", "09/16/2026")).toBe("clear");
+  });
+
+  it("reports 'incomplete', not 'clear', while partway through retyping over a previously-saved date", () => {
+    expect(decideDateAutosave("09", "09/16/2026")).toBe("incomplete");
   });
 
   it("never saves an 8-digit date that isn't a real calendar date", () => {
@@ -30,9 +43,14 @@ describe("decideLotNumberAutosave", () => {
     expect(decideLotNumberAutosave("ABC123", "XYZ789")).toBe("save");
   });
 
-  it("never saves when the field is cleared to empty", () => {
-    expect(decideLotNumberAutosave("", "ABC123")).toBe("empty");
-    expect(decideLotNumberAutosave("   ", "ABC123")).toBe("empty");
+  // V-lots-clear-save (Will 2026-09-16): renamed from "empty" — clearing
+  // a previously-saved lot number back to blank IS now something
+  // runAutosave persists (as a fan-out DELETE of the row's current lot,
+  // since lot_number is a NOT NULL column — see runAutosave's own doc
+  // comment in app/lots/page.tsx), not a no-op.
+  it("reports 'clear' when a previously-saved lot number is emptied", () => {
+    expect(decideLotNumberAutosave("", "ABC123")).toBe("clear");
+    expect(decideLotNumberAutosave("   ", "ABC123")).toBe("clear");
   });
 
   it("is unchanged when the text matches what was last saved", () => {
