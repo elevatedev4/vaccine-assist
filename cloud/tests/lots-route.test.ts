@@ -327,6 +327,97 @@ describe("PATCH /api/lots/[id]", () => {
     const body = await response.json();
     expect(body.beyondUseDateSupported).toBe(false);
   });
+
+  // V-lots-clear-save (Will 2026-09-16 verbatim: "if I remove something
+  // (lot or exp), it needs to be saved when I remove it"): lot_number and
+  // expiration are NOT NULL columns (supabase/migrations/0001_init.sql),
+  // so an empty/null value for either can never be persisted — clearing
+  // one means removing the lot itself (DELETE), not this route.
+  it("rejects an empty lot_number (no NULL column to save it as — must DELETE the lot instead)", async () => {
+    const response = await patchRequest("l1", { lot_number: "" });
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a whitespace-only lot_number", async () => {
+    const response = await patchRequest("l1", { lot_number: "   " });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects an empty expiration (no NULL column to save it as — must DELETE the lot instead)", async () => {
+    const response = await patchRequest("l1", { expiration: "" });
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a null lot_number", async () => {
+    const response = await patchRequest("l1", { lot_number: null });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a null expiration", async () => {
+    const response = await patchRequest("l1", { expiration: null });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a malformed (non-calendar) expiration date", async () => {
+    const response = await patchRequest("l1", { expiration: "2027-02-30" });
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  // beyond_use_date IS nullable — this is the one field an explicit ""
+  // or null genuinely clears.
+  it("clears beyond_use_date when it's an explicit empty string", async () => {
+    const single = vi.fn(async () => ({ data: { id: "l1", beyond_use_date: null }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await patchRequest("l1", { beyond_use_date: "" });
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ beyond_use_date: null });
+  });
+
+  it("clears beyond_use_date when it's an explicit null", async () => {
+    const single = vi.fn(async () => ({ data: { id: "l1", beyond_use_date: null }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await patchRequest("l1", { beyond_use_date: null });
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ beyond_use_date: null });
+  });
+
+  it("rejects a malformed (non-calendar) non-empty beyond_use_date", async () => {
+    const response = await patchRequest("l1", { beyond_use_date: "2027-13-40" });
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  // "PATCH without the key leaves it unchanged" — a field omitted from
+  // the body must never appear in the Supabase update payload, only the
+  // field(s) actually sent.
+  it("leaves lot_number and expiration out of the update payload when only note is sent", async () => {
+    const single = vi.fn(async () => ({ data: { id: "l1", note: "restocked" }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await patchRequest("l1", { note: "restocked" });
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ note: "restocked" });
+  });
 });
 
 // V-T21 item 5: the data-entry popup's "Update current lots to this lot"
@@ -518,6 +609,40 @@ describe("PATCH /api/lots — fan-out UPSERT edit (vaccineIds + matchLotNumber)"
     expect(body.inserted).toBe(0);
     expect(update).toHaveBeenCalledTimes(1); // one batched update, not one per vaccineId
     expect(updateInCalls).toEqual([["l1", "l2"]]);
+  });
+
+  // V-lots-clear-save (Will 2026-09-16): beyond_use_date IS nullable
+  // (unlike lot_number/expiration), so an explicit "" clearing it must
+  // be normalized to null before it ever reaches Supabase — an empty
+  // string written verbatim into a `date` column fails at the database.
+  it("normalizes an explicit empty-string beyond_use_date to null before saving", async () => {
+    const select = vi.fn(() => ({
+      in: vi.fn(async () => ({
+        data: [
+          { id: "l1", vaccine_id: "v1", lot_number: "ABC" },
+          { id: "l2", vaccine_id: "v2", lot_number: "ABC" },
+        ],
+        error: null,
+      })),
+    }));
+    const update = vi.fn(() => ({
+      in: vi.fn(() => ({ select: vi.fn(async () => ({ data: [{ id: "l1" }, { id: "l2" }], error: null })) })),
+    }));
+    const lotTable = { select, update };
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from: mockFromWithVaccines(lotTable) } as never);
+
+    const response = await fanOutPatchRequest({
+      vaccineIds: ["v1", "v2"],
+      matchLotNumber: "ABC",
+      lot_number: "ABC",
+      expiration: "2027-06-01",
+      beyond_use_date: "",
+    });
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ beyond_use_date: null })
+    );
   });
 
   // Will's follow-up: "make the collection-level PATCH an upsert ... so

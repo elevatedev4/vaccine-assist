@@ -137,10 +137,16 @@ export async function POST(request: Request) {
     const supabase = getSupabaseServerClient();
     const body = await request.json();
 
-    const { vaccine_id, vaccine_ids, lot_number, expiration, status, note, beyond_use_date } = body ?? {};
+    const { vaccine_id, vaccine_ids, lot_number, expiration, status, note } = body ?? {};
+    let { beyond_use_date } = body ?? {};
     if (beyond_use_date !== undefined && beyond_use_date !== null && typeof beyond_use_date !== "string") {
       return NextResponse.json({ error: "beyond_use_date must be a date string or null." }, { status: 400 });
     }
+    // beyond_use_date is nullable (unlike lot_number/expiration below) —
+    // V-lots-clear-save (Will 2026-09-16): an explicit "" clears it the
+    // same as an explicit null, rather than being written verbatim and
+    // failing at the database as an invalid date.
+    if (beyond_use_date === "") beyond_use_date = null;
 
     // V-T28 fan-out create: a product row's "add a lot" writes the SAME
     // new lot onto every dose vaccine_id of the product at once.
@@ -257,7 +263,8 @@ export async function PATCH(request: Request) {
 
   try {
     const body = await request.json();
-    const { vaccineIds, matchLotNumber, lot_number, expiration, beyond_use_date, note, status } = body ?? {};
+    const { vaccineIds, matchLotNumber, lot_number, expiration, note, status } = body ?? {};
+    let { beyond_use_date } = body ?? {};
 
     if (!Array.isArray(vaccineIds) || vaccineIds.length === 0 || vaccineIds.some((id: unknown) => typeof id !== "string" || !id)) {
       return NextResponse.json({ error: "vaccineIds must be a non-empty array of vaccine ids." }, { status: 400 });
@@ -274,6 +281,9 @@ export async function PATCH(request: Request) {
     if (beyond_use_date !== undefined && beyond_use_date !== null && typeof beyond_use_date !== "string") {
       return NextResponse.json({ error: "beyond_use_date must be a date string or null." }, { status: 400 });
     }
+    // beyond_use_date is nullable (unlike lot_number/expiration above) —
+    // V-lots-clear-save: an explicit "" clears it the same as null.
+    if (beyond_use_date === "") beyond_use_date = null;
     if (note !== undefined && note !== null && typeof note !== "string") {
       return NextResponse.json({ error: "note must be a string or null." }, { status: 400 });
     }

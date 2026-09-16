@@ -743,6 +743,19 @@ export default function LotsPage() {
    * response (e.g. the row's lot was cleared while this request was in
    * flight) a no-op instead of clobbering newer state: "ignore stale
    * responses, latest write wins."
+   *
+   * Blanking Lot # or Expiration (Will 2026-09-16 verbatim: "if I remove
+   * something (lot or exp), it needs to be saved when I remove it ...
+   * right now it's flagging that it's missing, but if I refresh with the
+   * lot/exp blank, it's reloading the old lot") is handled BEFORE the
+   * save branch below: lib/lots-autosave.ts's decide* functions report
+   * "clear" for an explicit removal of a previously-saved value, and
+   * since lot_number/expiration are NOT NULL columns there's no empty
+   * string to PATCH — clearing reuses the same fan-out DELETE the ⚙
+   * menu's "Clear lot" button always has (see clearCurrentLot below).
+   * Clearing beyond_use_date is different: that column IS nullable, so a
+   * "clear" there still goes through the normal save branch, which
+   * already sends `beyond_use_date: draft.beyondUseDate || null`.
    */
   async function runAutosave(view: ProductView) {
     if (!session) return;
@@ -769,7 +782,18 @@ export default function LotsPage() {
       ? decideDateAutosave(rawText.beyondUseDate, isoToMaskedDate(saved.beyondUseDate))
       : "unchanged";
 
-    const hasEligibleChange = lotDecision === "save" || expirationDecision === "save" || beyondUseDecision === "save";
+    if ((lotDecision === "clear" || expirationDecision === "clear") && saved.matchLotNumber) {
+      autosaveInFlightRef.current[key] = true;
+      try {
+        await clearCurrentLot(view, saved.matchLotNumber);
+      } finally {
+        autosaveInFlightRef.current[key] = false;
+      }
+      return;
+    }
+
+    const hasEligibleChange =
+      lotDecision === "save" || expirationDecision === "save" || beyondUseDecision === "save" || beyondUseDecision === "clear";
     const hasRequiredFields = draft.lotNumber.trim().length > 0 && draft.expiration !== "";
     if (!hasEligibleChange || !hasRequiredFields) return;
 
@@ -858,71 +882,86 @@ export default function LotsPage() {
   }
 
   /** Clears a product row's current lot across every dose vaccine_id at
-   * once (DELETE /api/lots, vaccineIds + lot_number) — the ⚙ menu's
-   * "Clear lot" action (renamed from "Delete lot", V-T-ordering-lots-
-   * round4 — label only, behavior unchanged). Only ever called when
-   * draft.matchLotNumber is set (button is disabled otherwise) — nothing
-   * to clear for a product with no lot yet. */
-  async function handleDeleteRow(view: ProductView) {
+   * once (DELETE /api/lots, vaccineIds + lot_number) — shared by the ⚙
+   * menu's explicit "Clear lot" button (handleDeleteRow, below) AND
+   * runAutosave's implicit clear when the user blanks Lot #/Expiration
+   * and leaves the field (see runAutosave's own doc comment for why
+   * blanking either field must DELETE rather than UPDATE: lot_number and
+   * expiration are both NOT NULL columns, so there's no "empty" value to
+   * persist — removing the row entirely is the only schema-valid way to
+   * represent it, and is also exactly the 'missing' status a lot that was
+   * never entered shows). On failure, leaves the caller's already-blank
+   * draft as-is and surfaces the existing error toast (ErrorToast/
+   * pushError) instead of reverting anything — never silently discards
+   * what the user typed. */
+  async function clearCurrentLot(view: ProductView, matchLotNumber: string) {
     if (!session) return;
-    const draft = drafts[view.productKey];
-    if (!draft?.matchLotNumber) return;
+    const key = view.productKey;
 
     // Cancel any pending autosave for this row and bump its sequence
     // number so an autosave response already in flight can't re-create
-    // the lot this Clear is about to remove.
-    autosaveRunnersRef.current[view.productKey]?.cancel();
-    autosaveSeqRef.current[view.productKey] = (autosaveSeqRef.current[view.productKey] ?? 0) + 1;
-    clearSavedFlashTimers(view.productKey);
+    // the lot this clear is about to remove.
+    autosaveRunnersRef.current[key]?.cancel();
+    autosaveSeqRef.current[key] = (autosaveSeqRef.current[key] ?? 0) + 1;
+    clearSavedFlashTimers(key);
     setSavedFlashByKey((prev) => {
-      if (!(view.productKey in prev)) return prev;
+      if (!(key in prev)) return prev;
       const next = { ...prev };
-      delete next[view.productKey];
+      delete next[key];
       return next;
     });
 
-    setSavingByKey((prev) => ({ ...prev, [view.productKey]: true }));
-    setRowErrors((prev) => ({ ...prev, [view.productKey]: "" }));
+    setSavingByKey((prev) => ({ ...prev, [key]: true }));
+    setRowErrors((prev) => ({ ...prev, [key]: "" }));
     try {
       const response = await fetch("/api/lots", {
         method: "DELETE",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-        body: JSON.stringify({ vaccineIds: view.vaccineIds, lot_number: draft.matchLotNumber }),
+        body: JSON.stringify({ vaccineIds: view.vaccineIds, lot_number: matchLotNumber }),
       });
       const data = await response.json();
       if (!response.ok) {
         const message = data.error ?? "Failed to clear lot.";
-        setRowErrors((prev) => ({ ...prev, [view.productKey]: message }));
+        setRowErrors((prev) => ({ ...prev, [key]: message }));
         pushError(`Couldn't clear lot for ${view.displayName} — ${message}`);
         return;
       }
 
       const groupVaccineIds = new Set(view.vaccineIds);
-      const deletedLotNumber = draft.matchLotNumber;
-      setLots((prev) => prev.filter((l) => !(groupVaccineIds.has(l.vaccine_id) && l.lot_number === deletedLotNumber)));
+      setLots((prev) => prev.filter((l) => !(groupVaccineIds.has(l.vaccine_id) && l.lot_number === matchLotNumber)));
       const cleared: RowDraft = { matchLotNumber: null, lotNumber: "", expiration: "", beyondUseDate: "" };
       setDrafts((prev) => {
-        const next = { ...prev, [view.productKey]: cleared };
+        const next = { ...prev, [key]: cleared };
         draftsRef.current = next;
         return next;
       });
       setLastSaved((prev) => {
-        const next = { ...prev, [view.productKey]: cleared };
+        const next = { ...prev, [key]: cleared };
         lastSavedRef.current = next;
         return next;
       });
       setRawDateText((prev) => {
-        const next = { ...prev, [view.productKey]: { expiration: "", beyondUseDate: "" } };
+        const next = { ...prev, [key]: { expiration: "", beyondUseDate: "" } };
         rawDateTextRef.current = next;
         return next;
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to clear lot.";
-      setRowErrors((prev) => ({ ...prev, [view.productKey]: message }));
+      setRowErrors((prev) => ({ ...prev, [key]: message }));
       pushError(`Couldn't clear lot for ${view.displayName} — ${message}`);
     } finally {
-      setSavingByKey((prev) => ({ ...prev, [view.productKey]: false }));
+      setSavingByKey((prev) => ({ ...prev, [key]: false }));
     }
+  }
+
+  /** The ⚙ menu's "Clear lot" action (renamed from "Delete lot",
+   * V-T-ordering-lots-round4 — label only, behavior unchanged). Only ever
+   * called when draft.matchLotNumber is set (button is disabled
+   * otherwise) — nothing to clear for a product with no lot yet. */
+  async function handleDeleteRow(view: ProductView) {
+    const draft = drafts[view.productKey];
+    if (!draft?.matchLotNumber) return;
+    await clearCurrentLot(view, draft.matchLotNumber);
   }
 
   /** PATCH /api/vaccines/{id} {active} on EVERY dose vaccine_id in the
