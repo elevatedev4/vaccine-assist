@@ -116,6 +116,47 @@ public class LoginViewModelSignInBusyStateTests
     }
 
     [Fact]
+    public async Task IsBusyStaysTrueUntilARealSignedInSubscriberFinishesItsOwnAsyncWork()
+    {
+        // Reviewer finding (request-changes round), verbatim repro: a
+        // SignedIn subscriber shaped like App.xaml.cs's real handler
+        // (`async (_, _) => { SetBusy(true); await ...; }`) runs
+        // synchronously up to its own first await, then control returns to
+        // SignInAsync — which used to fall straight into its OWN
+        // `finally { IsBusy = false; }` and stomp the handler's true back
+        // to false seconds into a still-in-flight cloud handoff. IsBusy
+        // must stay true for as long as the subscriber is still working,
+        // not just for the raw auth call.
+        var authService = new FakeAuthService(AuthResult.Ok());
+        var viewModel = CreateViewModel(authService);
+        var handlerGate = new TaskCompletionSource();
+        var handlerCompleted = new TaskCompletionSource();
+
+        viewModel.SignedIn += async (_, _) =>
+        {
+            viewModel.SetBusy(true);
+            await handlerGate.Task;
+            viewModel.SetBusy(false);
+            handlerCompleted.SetResult();
+        };
+
+        // SignInAsync's own Task completes here (nothing it awaits itself
+        // is left pending — the fake auth call resolves immediately) —
+        // the whole point of this test is that its `finally` must NOT
+        // have reset IsBusy, since the subscriber is still suspended on
+        // handlerGate.Task and now owns the busy state (handedOff).
+        await viewModel.TryAutoSignInAsync();
+        Assert.True(viewModel.IsBusy);
+        Assert.False(viewModel.SignInCommand.CanExecute(null));
+
+        handlerGate.SetResult();
+        await handlerCompleted.Task;
+
+        Assert.False(viewModel.IsBusy);
+        Assert.True(viewModel.SignInCommand.CanExecute(null));
+    }
+
+    [Fact]
     public void SetBusyLetsAnExternalCallerHoldTheSpinnerStateOpen()
     {
         // App.xaml.cs's SignedIn handlers use this to keep the spinner

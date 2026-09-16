@@ -156,11 +156,37 @@ public sealed class LoginViewModel : ObservableObject
 
         IsBusy = true;
         ErrorMessage = null;
+        // REVIEWER FIX (blocker #1, request-changes round): SignedIn's
+        // subscriber (App.xaml.cs) calls SetBusy(true) synchronously before
+        // its own first await, but Invoke() returns control HERE the
+        // instant that handler suspends — this method's own `finally`
+        // used to run right after and stomp IsBusy back to false seconds
+        // into the ~12-25s cloud handoff (the exact "spinner disappears,
+        // button re-enabled" bug this whole change exists to fix, and a
+        // real double-sign-in risk since the button would look clickable
+        // again). handedOff means "a SignedIn subscriber now owns the busy
+        // state" — set true right before Invoke() (never after — Invoke
+        // may already have returned by the time a line after it runs) so
+        // `finally` leaves IsBusy alone; App.xaml.cs's own handlers are
+        // responsible for SetBusy(false) once THEY are actually done
+        // (success or failure) via their own try/finally.
+        var handedOff = false;
         try
         {
+            // REVIEWER FIX (blocker #2): no ConfigureAwait(false) anywhere
+            // in this method. SignedIn's subscribers construct/touch WPF
+            // DispatcherObjects (CloudPageView, MainWindow, WebView.Visibility,
+            // Window.Show/Close) and MUST resume on the UI thread — this
+            // view model has no reason of its own to hop off the calling
+            // (UI) SynchronizationContext, and continuing on a ThreadPool
+            // thread here would carry SignedIn?.Invoke's synchronous
+            // portion off the UI thread too, throwing
+            // InvalidOperationException the moment a handler touches one
+            // of those objects. Invisible under xUnit (no Dispatcher there
+            // to violate) — exactly how this shipped unnoticed.
             var signInTask = _authService.SignInAsync(email.Trim(), password);
             var timeoutTask = Task.Delay(_signInTimeout);
-            var completed = await Task.WhenAny(signInTask, timeoutTask).ConfigureAwait(false);
+            var completed = await Task.WhenAny(signInTask, timeoutTask);
             if (completed == timeoutTask)
             {
                 AppFileLog.Log($"[SignIn] timed out after {_signInTimeout.TotalSeconds:0}s waiting for the sign-in service");
@@ -169,7 +195,7 @@ public sealed class LoginViewModel : ObservableObject
                 return;
             }
 
-            var result = await signInTask.ConfigureAwait(false);
+            var result = await signInTask;
             if (!result.Success)
             {
                 // Technical detail (raw Supabase/HTTP error text) goes to
@@ -226,24 +252,40 @@ public sealed class LoginViewModel : ObservableObject
                 AppFileLog.LogException("LoginViewModel.SignInAsync (session save)", ex);
             }
 
+            // Set BEFORE Invoke — see handedOff's own comment above for why
+            // it can't be set after (Invoke may already have returned to
+            // the caller by the time a following statement would run).
+            handedOff = SignedIn is not null;
             SignedIn?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex)
         {
             // Backstop for anything else unexpected in this method (e.g.
-            // a SignedIn subscriber throwing) — surfaced the same way
-            // every other screen's failed action is (inline ErrorMessage,
-            // never a crash), matching LotsViewModel/VaccinesViewModel/
-            // SchedulingViewModel/DataEntryPopupViewModel's pattern. Routed
-            // through SignInErrorMapper like every other failure path here —
+            // a SignedIn subscriber throwing SYNCHRONOUSLY, before its own
+            // first await — a subscriber that throws only after suspending
+            // is a separate, unobserved-task concern this can't catch
+            // either way) — surfaced the same way every other screen's
+            // failed action is (inline ErrorMessage, never a crash),
+            // matching LotsViewModel/VaccinesViewModel/SchedulingViewModel/
+            // DataEntryPopupViewModel's pattern. Routed through
+            // SignInErrorMapper like every other failure path here —
             // ex.Message can be raw/technical (an HttpRequestException's
-            // message, a Gotrue exception's message, etc.).
+            // message, a Gotrue exception's message, etc.). A synchronous
+            // throw from the handler means it never reached its own busy
+            // state, so this must still reclaim IsBusy itself.
+            handedOff = false;
             ErrorMessage = SignInErrorMapper.Map(ex.Message);
             AppFileLog.LogException("LoginViewModel.SignInAsync", ex);
         }
         finally
         {
-            IsBusy = false;
+            // On the success path, ownership of IsBusy has been handed to
+            // the SignedIn subscriber (see handedOff's doc comment) — only
+            // failure/timeout/no-subscriber paths reclaim it here.
+            if (!handedOff)
+            {
+                IsBusy = false;
+            }
         }
     }
 

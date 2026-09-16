@@ -329,34 +329,43 @@ public partial class App : Application
         loginViewModel.SignedIn += async (_, _) =>
         {
             // ROOT CAUSE FIX (Will, 2026-09-16 — "I just tried to sign in
-            // and it's just not doing anything"): LoginViewModel.SignInAsync's
-            // own `finally { IsBusy = false; }` already ran by the time
-            // this async handler gets past its first await (see
-            // LoginViewModel.SetBusy's doc comment) — without this,
-            // IsBusy/the button's spinner would drop the instant the raw
-            // Supabase call finished, well before the cloud handoff below
-            // (up to ~12s WebView2 init + up to 10s handoff) actually
-            // completes. SetBusy(true) here keeps the spinner alive for
-            // that whole gap; SetBusy(false) only fires on the failure
-            // branch below (success closes this window instead).
+            // and it's just not doing anything"): LoginViewModel.SignInAsync
+            // hands busy-state ownership to THIS handler right before
+            // invoking it (see LoginViewModel's handedOff field) — without
+            // that (reviewer's request-changes round), IsBusy/the button's
+            // spinner would drop the instant the raw Supabase call
+            // finished, well before the cloud handoff below (up to ~12s
+            // WebView2 init + up to 10s handoff) actually completes.
+            // SetBusy(true) here keeps the spinner alive for that whole
+            // gap; the try/finally guarantees SetBusy(false) runs on every
+            // exit — the failure branch below, AND an unexpected exception
+            // from PrepareMainCloudPageViewAsync/TryShowMainWindow (neither
+            // is documented to throw, but this must not leave the button
+            // permanently disabled if one ever does) — success instead
+            // closes this window, so there's nothing left to un-busy.
             loginViewModel.SetBusy(true);
-
-            // Part 1 (Will's brief): manual sign-in also gets the
-            // WebView2 + cloud session handoff BEFORE MainWindow is shown
-            // — see PrepareMainCloudPageViewAsync's own doc comment. This
-            // LoginWindow is still up (showing "Signing in…"/busy state
-            // via LoginViewModel.IsBusy) while that runs.
-            var cloudPageView = await PrepareMainCloudPageViewAsync();
-            if (TryShowMainWindow(loginViewModel, cloudPageView))
+            try
             {
-                signedIn = true;
-                loginWindow.Close();
-            }
-            else
-            {
+                // Part 1 (Will's brief): manual sign-in also gets the
+                // WebView2 + cloud session handoff BEFORE MainWindow is
+                // shown — see PrepareMainCloudPageViewAsync's own doc
+                // comment. This LoginWindow is still up (showing "Signing
+                // in…"/busy state via LoginViewModel.IsBusy) while that runs.
+                var cloudPageView = await PrepareMainCloudPageViewAsync();
+                if (TryShowMainWindow(loginViewModel, cloudPageView))
+                {
+                    signedIn = true;
+                    loginWindow.Close();
+                }
                 // else: stay on this LoginWindow — TryShowMainWindow already
                 // logged, alerted, and set an ErrorMessage explaining why.
-                loginViewModel.SetBusy(false);
+            }
+            finally
+            {
+                if (!signedIn)
+                {
+                    loginViewModel.SetBusy(false);
+                }
             }
         };
 
@@ -392,24 +401,31 @@ public partial class App : Application
 
         loginViewModel.SignedIn += async (_, _) =>
         {
-            // Keep the spinner/busy state alive across the handoff — see
-            // ShowLoginWindowWithViewModel's SignedIn handler (same fix,
-            // same reasoning) and LoginViewModel.SetBusy's doc comment.
+            // Keep the spinner/busy state alive across the handoff, and
+            // guarantee SetBusy(false) on every exit (including an
+            // unexpected exception) — see ShowLoginWindowWithViewModel's
+            // SignedIn handler (same fix, same reasoning) and
+            // LoginViewModel.SetBusy's doc comment.
             loginViewModel.SetBusy(true);
-
-            // Part 1 — same handoff-before-MainWindow sequencing as
-            // ShowLoginWindowWithViewModel's SignedIn handler above.
-            var cloudPageView = await PrepareMainCloudPageViewAsync();
-            if (TryShowMainWindow(loginViewModel, cloudPageView))
+            try
             {
-                signedIn = true;
-                loginWindow.Close();
-            }
-            else
-            {
+                // Part 1 — same handoff-before-MainWindow sequencing as
+                // ShowLoginWindowWithViewModel's SignedIn handler above.
+                var cloudPageView = await PrepareMainCloudPageViewAsync();
+                if (TryShowMainWindow(loginViewModel, cloudPageView))
+                {
+                    signedIn = true;
+                    loginWindow.Close();
+                }
                 // else: stay on this LoginWindow — TryShowMainWindow already
                 // logged, alerted, and set an ErrorMessage explaining why.
-                loginViewModel.SetBusy(false);
+            }
+            finally
+            {
+                if (!signedIn)
+                {
+                    loginViewModel.SetBusy(false);
+                }
             }
         };
 
