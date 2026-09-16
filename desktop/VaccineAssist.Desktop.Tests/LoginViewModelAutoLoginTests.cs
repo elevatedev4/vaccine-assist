@@ -60,7 +60,20 @@ public class LoginViewModelAutoLoginTests
         var viewModel = CreateViewModel(authService, config, out var localSettingsService, allowAutoLogin: true);
 
         var signedInRaised = false;
-        viewModel.SignedIn += (_, _) => signedInRaised = true;
+        // V-sessions-signin busy-handoff contract (Will/reviewer, 2026-09-16):
+        // once ANY SignedIn subscriber exists, SignInAsync hands busy-state
+        // ownership to it (handedOff) rather than resetting IsBusy itself —
+        // App.xaml.cs's real handlers call SetBusy(false) once THEY are
+        // done (see its own try/finally); this fake handler mirrors that
+        // so IsBusy still ends up false by the time this method returns.
+        // See LoginViewModelSignInBusyStateTests.cs for the dedicated
+        // coverage of the handoff itself (busy stays true while a
+        // subscriber is still working).
+        viewModel.SignedIn += (_, _) =>
+        {
+            signedInRaised = true;
+            viewModel.SetBusy(false);
+        };
 
         await viewModel.TryAutoSignInAsync();
 
@@ -150,7 +163,16 @@ public class LoginViewModelAutoLoginTests
         localSettingsService.ThrowOnSave = new System.IO.IOException("The process cannot access the file because it is being used by another process.");
 
         var signedInRaised = false;
-        viewModel.SignedIn += (_, _) => signedInRaised = true;
+        // See SignsInAutomaticallyAndRaisesSignedInOnSuccess's comment on
+        // the busy-handoff contract — this fake handler mirrors
+        // App.xaml.cs's real SetBusy(false) so this test's own
+        // Assert.False(IsBusy) reflects a subscriber that actually
+        // finished, not a weakened contract.
+        viewModel.SignedIn += (_, _) =>
+        {
+            signedInRaised = true;
+            viewModel.SetBusy(false);
+        };
 
         await viewModel.TryAutoSignInAsync();
 

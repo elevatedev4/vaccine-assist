@@ -37,6 +37,23 @@ public class LoginViewModelSignInBusyStateTests
     }
 
     [Fact]
+    public async Task IsBusyIsClearedOnSuccessWhenThereIsNoSignedInSubscriberAtAll()
+    {
+        // handedOff = SignedIn is not null, evaluated right before Invoke()
+        // — with zero subscribers this must stay false, so SignInAsync's
+        // own `finally` reclaims IsBusy itself rather than leaving it
+        // stuck true forever waiting for a subscriber that will never call
+        // SetBusy(false).
+        var authService = new FakeAuthService(AuthResult.Ok());
+        var viewModel = CreateViewModel(authService);
+
+        await viewModel.TryAutoSignInAsync();
+
+        Assert.False(viewModel.IsBusy);
+        Assert.True(viewModel.SignInCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task IsBusyIsTrueWhileTheSignInCallIsInFlightAndFalseOnceItCompletes()
     {
         var authService = new FakeAuthService(AuthResult.Ok());
