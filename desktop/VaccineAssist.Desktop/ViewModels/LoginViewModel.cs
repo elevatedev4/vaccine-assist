@@ -16,12 +16,27 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// </summary>
 public sealed class LoginViewModel : ObservableObject
 {
+    /// <summary>
+    /// A sign-in attempt (the Supabase network call itself) is capped at
+    /// this by default — Will, 2026-09-16 (verbatim): "Add an overall
+    /// timeout ... that surfaces 'Couldn't reach the sign-in service.'"
+    /// Root-cause note: this alone does not explain "sign in does
+    /// nothing" (see SetBusy's doc comment for the actual busy-flag/
+    /// handoff bug) — it's the belt-and-suspenders fix for the auth call
+    /// itself hanging, so the button can never spin forever no matter
+    /// what's wrong on the wire. Overridable per instance (constructor's
+    /// signInTimeout parameter) purely for test speed — same pattern as
+    /// StartupSignInCoordinator's timeLimit parameter/DefaultTimeLimit.
+    /// </summary>
+    public static readonly TimeSpan DefaultSignInTimeout = TimeSpan.FromSeconds(20);
+
     private readonly IAuthService _authService;
     private readonly ILocalSettingsService _localSettingsService;
     private readonly IAutoLoginConfigService _autoLoginConfigService;
     private readonly ISessionStore _sessionStore;
     private readonly AppSettings _settings;
     private readonly bool _allowAutoLogin;
+    private readonly TimeSpan _signInTimeout;
 
     private string _email;
     private bool _isBusy;
@@ -53,7 +68,8 @@ public sealed class LoginViewModel : ObservableObject
         AppSettings settings,
         IAutoLoginConfigService autoLoginConfigService,
         ISessionStore sessionStore,
-        bool allowAutoLogin)
+        bool allowAutoLogin,
+        TimeSpan? signInTimeout = null)
     {
         _authService = authService;
         _localSettingsService = localSettingsService;
@@ -61,6 +77,7 @@ public sealed class LoginViewModel : ObservableObject
         _sessionStore = sessionStore;
         _settings = settings;
         _allowAutoLogin = allowAutoLogin;
+        _signInTimeout = signInTimeout ?? DefaultSignInTimeout;
         _email = settings.LastSignedInEmail ?? "";
 
         SignInCommand = new AsyncRelayCommand(() => SignInAsync(Email.Trim(), PendingPassword ?? ""), () => !IsBusy);
@@ -106,6 +123,29 @@ public sealed class LoginViewModel : ObservableObject
     /// </summary>
     public void SetErrorMessage(string? message) => ErrorMessage = message;
 
+    /// <summary>
+    /// Lets App.xaml.cs keep the busy/spinner state alive across the
+    /// post-sign-in cloud handoff + MainWindow creation (the SignedIn
+    /// event's async handlers in ShowLoginWindowWithViewModel/
+    /// ShowLoginWindow). ROOT CAUSE (Will, 2026-09-16: "I just tried to
+    /// sign in and it's just not doing anything ... there must be an
+    /// error since it's not moving"): SignedIn?.Invoke(...) below starts
+    /// those async lambdas synchronously, but only up to their first
+    /// await — control then returns here, straight into this method's own
+    /// `finally { IsBusy = false; }`. IsBusy was flipping back to false
+    /// (spinner gone, button re-enabled) the instant the Supabase call
+    /// itself finished, even though the SUBSCRIBER was still doing real
+    /// work (WebView2 init + PerformDesktopHandoffAsync, up to ~25s worst
+    /// case) before the window actually changes — that gap, nothing
+    /// visibly happening while work is still in flight, is exactly what
+    /// looked like "doing nothing." App.xaml.cs's SignedIn handlers now
+    /// call SetBusy(true) first thing and SetBusy(false) only if that
+    /// work fails (success closes the login window instead, so there's
+    /// nothing left to un-busy). Same sanctioned-external-write pattern as
+    /// SetErrorMessage; IsBusy's setter otherwise stays private.
+    /// </summary>
+    public void SetBusy(bool busy) => IsBusy = busy;
+
     private async Task SignInAsync(string email, string password)
     {
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
@@ -116,12 +156,55 @@ public sealed class LoginViewModel : ObservableObject
 
         IsBusy = true;
         ErrorMessage = null;
+        // REVIEWER FIX (blocker #1, request-changes round): SignedIn's
+        // subscriber (App.xaml.cs) calls SetBusy(true) synchronously before
+        // its own first await, but Invoke() returns control HERE the
+        // instant that handler suspends — this method's own `finally`
+        // used to run right after and stomp IsBusy back to false seconds
+        // into the ~12-25s cloud handoff (the exact "spinner disappears,
+        // button re-enabled" bug this whole change exists to fix, and a
+        // real double-sign-in risk since the button would look clickable
+        // again). handedOff means "a SignedIn subscriber now owns the busy
+        // state" — set true right before Invoke() (never after — Invoke
+        // may already have returned by the time a line after it runs) so
+        // `finally` leaves IsBusy alone; App.xaml.cs's own handlers are
+        // responsible for SetBusy(false) once THEY are actually done
+        // (success or failure) via their own try/finally.
+        var handedOff = false;
         try
         {
-            var result = await _authService.SignInAsync(email.Trim(), password);
+            // REVIEWER FIX (blocker #2): no ConfigureAwait(false) anywhere
+            // in this method. SignedIn's subscribers construct/touch WPF
+            // DispatcherObjects (CloudPageView, MainWindow, WebView.Visibility,
+            // Window.Show/Close) and MUST resume on the UI thread — this
+            // view model has no reason of its own to hop off the calling
+            // (UI) SynchronizationContext, and continuing on a ThreadPool
+            // thread here would carry SignedIn?.Invoke's synchronous
+            // portion off the UI thread too, throwing
+            // InvalidOperationException the moment a handler touches one
+            // of those objects. Invisible under xUnit (no Dispatcher there
+            // to violate) — exactly how this shipped unnoticed.
+            var signInTask = _authService.SignInAsync(email.Trim(), password);
+            var timeoutTask = Task.Delay(_signInTimeout);
+            var completed = await Task.WhenAny(signInTask, timeoutTask);
+            if (completed == timeoutTask)
+            {
+                AppFileLog.Log($"[SignIn] timed out after {_signInTimeout.TotalSeconds:0}s waiting for the sign-in service");
+                ObserveLateCompletion(signInTask);
+                ErrorMessage = SignInErrorMapper.NetworkOrTimeoutMessage;
+                return;
+            }
+
+            var result = await signInTask;
             if (!result.Success)
             {
-                ErrorMessage = result.ErrorMessage ?? "Sign-in failed.";
+                // Technical detail (raw Supabase/HTTP error text) goes to
+                // the log file only — SignInErrorMapper.Map below is what
+                // the user actually sees (Will, 2026-09-16: "it's
+                // returning errors in an ugly format, needs to be user
+                // friendly").
+                AppFileLog.Log($"[SignIn] failed: {result.ErrorMessage}");
+                ErrorMessage = SignInErrorMapper.Map(result.ErrorMessage);
                 return;
             }
 
@@ -169,22 +252,70 @@ public sealed class LoginViewModel : ObservableObject
                 AppFileLog.LogException("LoginViewModel.SignInAsync (session save)", ex);
             }
 
+            // Set BEFORE Invoke — see handedOff's own comment above for why
+            // it can't be set after (Invoke may already have returned to
+            // the caller by the time a following statement would run).
+            handedOff = SignedIn is not null;
             SignedIn?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex)
         {
             // Backstop for anything else unexpected in this method (e.g.
-            // a SignedIn subscriber throwing) — surfaced the same way
-            // every other screen's failed action is (inline ErrorMessage,
-            // never a crash), matching LotsViewModel/VaccinesViewModel/
-            // SchedulingViewModel/DataEntryPopupViewModel's pattern.
-            ErrorMessage = $"Sign-in failed unexpectedly: {ex.Message}";
+            // a SignedIn subscriber throwing SYNCHRONOUSLY, before its own
+            // first await — a subscriber that throws only after suspending
+            // is a separate, unobserved-task concern this can't catch
+            // either way) — surfaced the same way every other screen's
+            // failed action is (inline ErrorMessage, never a crash),
+            // matching LotsViewModel/VaccinesViewModel/SchedulingViewModel/
+            // DataEntryPopupViewModel's pattern. Routed through
+            // SignInErrorMapper like every other failure path here —
+            // ex.Message can be raw/technical (an HttpRequestException's
+            // message, a Gotrue exception's message, etc.). A synchronous
+            // throw from the handler means it never reached its own busy
+            // state, so this must still reclaim IsBusy itself.
+            handedOff = false;
+            ErrorMessage = SignInErrorMapper.Map(ex.Message);
             AppFileLog.LogException("LoginViewModel.SignInAsync", ex);
         }
         finally
         {
-            IsBusy = false;
+            // On the success path, ownership of IsBusy has been handed to
+            // the SignedIn subscriber (see handedOff's doc comment) — only
+            // failure/timeout/no-subscriber paths reclaim it here.
+            if (!handedOff)
+            {
+                IsBusy = false;
+            }
         }
+    }
+
+    /// <summary>
+    /// A sign-in attempt abandoned by SignInAsync's own SignInTimeout race
+    /// keeps running in the background (IAuthService takes no
+    /// CancellationToken, so there's nothing to actually cancel — same
+    /// posture as StartupSignInCoordinator.ObserveLateCompletion, which
+    /// this mirrors). This only makes sure its eventual completion or
+    /// fault is logged and never becomes an UnobservedTaskException; it
+    /// deliberately never touches ErrorMessage/IsBusy/SignedIn again — by
+    /// the time this fires, the UI has already shown the timeout message
+    /// and moved on.
+    /// </summary>
+    private static void ObserveLateCompletion(Task<AuthResult> task)
+    {
+        _ = task.ContinueWith(
+            t =>
+            {
+                if (t.IsFaulted)
+                {
+                    var ex = t.Exception?.GetBaseException();
+                    AppFileLog.Log($"[SignIn] late completion after timeout: faulted ({ex?.GetType().Name}: {ex?.Message})");
+                }
+                else if (t.IsCompletedSuccessfully)
+                {
+                    AppFileLog.Log($"[SignIn] late completion after timeout: success={t.Result.Success}");
+                }
+            },
+            TaskScheduler.Default);
     }
 
     /// <summary>

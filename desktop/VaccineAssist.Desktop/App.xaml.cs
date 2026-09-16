@@ -280,11 +280,34 @@ public partial class App : Application
 
         if (errorMessage is not null)
         {
-            loginViewModel.SetErrorMessage(errorMessage);
+            loginViewModel.SetErrorMessage(MapStartupErrorMessage(errorMessage));
         }
 
         AppFileLog.Log("[Startup] LoginWindow shown");
         ShowLoginWindowWithViewModel(loginViewModel);
+    }
+
+    /// <summary>
+    /// StartupSignInCoordinator's own LoginMessage is mostly already plain
+    /// English ("Automatic sign-in timed out — sign in manually", "Sign-in
+    /// cancelled — sign in manually") and is left exactly as-is — it also
+    /// backs that class's own tests (StartupSignInCoordinatorTests.cs),
+    /// which intentionally assert the RAW reason for diagnostic purposes
+    /// and must keep passing unchanged. Only its two exception-carrying
+    /// branches (RunAsync's own catches, both shaped
+    /// "Automatic sign-in failed: &lt;ex.Message&gt;") — and this method's
+    /// caller's own equivalently-shaped outer-catch message — can put raw/
+    /// technical text on screen (Will, 2026-09-16: "it's returning errors
+    /// in an ugly format, needs to be user friendly"); this maps just the
+    /// embedded reason through SignInErrorMapper, the same funnel
+    /// LoginViewModel.SignInAsync uses for the manual sign-in form.
+    /// </summary>
+    private static string MapStartupErrorMessage(string errorMessage)
+    {
+        const string prefix = "Automatic sign-in failed: ";
+        return errorMessage.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? SignInErrorMapper.Map(errorMessage[prefix.Length..])
+            : errorMessage;
     }
 
     /// <summary>
@@ -305,19 +328,45 @@ public partial class App : Application
 
         loginViewModel.SignedIn += async (_, _) =>
         {
-            // Part 1 (Will's brief): manual sign-in also gets the
-            // WebView2 + cloud session handoff BEFORE MainWindow is shown
-            // — see PrepareMainCloudPageViewAsync's own doc comment. This
-            // LoginWindow is still up (showing "Signing in…"/busy state
-            // via LoginViewModel.IsBusy) while that runs.
-            var cloudPageView = await PrepareMainCloudPageViewAsync();
-            if (TryShowMainWindow(loginViewModel, cloudPageView))
+            // ROOT CAUSE FIX (Will, 2026-09-16 — "I just tried to sign in
+            // and it's just not doing anything"): LoginViewModel.SignInAsync
+            // hands busy-state ownership to THIS handler right before
+            // invoking it (see LoginViewModel's handedOff field) — without
+            // that (reviewer's request-changes round), IsBusy/the button's
+            // spinner would drop the instant the raw Supabase call
+            // finished, well before the cloud handoff below (up to ~12s
+            // WebView2 init + up to 10s handoff) actually completes.
+            // SetBusy(true) here keeps the spinner alive for that whole
+            // gap; the try/finally guarantees SetBusy(false) runs on every
+            // exit — the failure branch below, AND an unexpected exception
+            // from PrepareMainCloudPageViewAsync/TryShowMainWindow (neither
+            // is documented to throw, but this must not leave the button
+            // permanently disabled if one ever does) — success instead
+            // closes this window, so there's nothing left to un-busy.
+            loginViewModel.SetBusy(true);
+            try
             {
-                signedIn = true;
-                loginWindow.Close();
+                // Part 1 (Will's brief): manual sign-in also gets the
+                // WebView2 + cloud session handoff BEFORE MainWindow is
+                // shown — see PrepareMainCloudPageViewAsync's own doc
+                // comment. This LoginWindow is still up (showing "Signing
+                // in…"/busy state via LoginViewModel.IsBusy) while that runs.
+                var cloudPageView = await PrepareMainCloudPageViewAsync();
+                if (TryShowMainWindow(loginViewModel, cloudPageView))
+                {
+                    signedIn = true;
+                    loginWindow.Close();
+                }
+                // else: stay on this LoginWindow — TryShowMainWindow already
+                // logged, alerted, and set an ErrorMessage explaining why.
             }
-            // else: stay on this LoginWindow — TryShowMainWindow already
-            // logged, alerted, and set an ErrorMessage explaining why.
+            finally
+            {
+                if (!signedIn)
+                {
+                    loginViewModel.SetBusy(false);
+                }
+            }
         };
 
         loginWindow.Closed += (_, _) =>
@@ -352,16 +401,32 @@ public partial class App : Application
 
         loginViewModel.SignedIn += async (_, _) =>
         {
-            // Part 1 — same handoff-before-MainWindow sequencing as
-            // ShowLoginWindowWithViewModel's SignedIn handler above.
-            var cloudPageView = await PrepareMainCloudPageViewAsync();
-            if (TryShowMainWindow(loginViewModel, cloudPageView))
+            // Keep the spinner/busy state alive across the handoff, and
+            // guarantee SetBusy(false) on every exit (including an
+            // unexpected exception) — see ShowLoginWindowWithViewModel's
+            // SignedIn handler (same fix, same reasoning) and
+            // LoginViewModel.SetBusy's doc comment.
+            loginViewModel.SetBusy(true);
+            try
             {
-                signedIn = true;
-                loginWindow.Close();
+                // Part 1 — same handoff-before-MainWindow sequencing as
+                // ShowLoginWindowWithViewModel's SignedIn handler above.
+                var cloudPageView = await PrepareMainCloudPageViewAsync();
+                if (TryShowMainWindow(loginViewModel, cloudPageView))
+                {
+                    signedIn = true;
+                    loginWindow.Close();
+                }
+                // else: stay on this LoginWindow — TryShowMainWindow already
+                // logged, alerted, and set an ErrorMessage explaining why.
             }
-            // else: stay on this LoginWindow — TryShowMainWindow already
-            // logged, alerted, and set an ErrorMessage explaining why.
+            finally
+            {
+                if (!signedIn)
+                {
+                    loginViewModel.SetBusy(false);
+                }
+            }
         };
 
         loginWindow.Closed += (_, _) =>
