@@ -40,11 +40,28 @@ internal sealed class FakeAuthService : IAuthService
     public string? LastRestoreAccessToken { get; private set; }
     public string? LastRestoreRefreshToken { get; private set; }
 
+    /// <summary>When set, the NEXT SignInAsync call returns THIS task
+    /// instead of completing immediately — lets a test hold a sign-in
+    /// "in flight" to assert busy-state/spinner behavior, or to outlast a
+    /// LoginViewModel signInTimeout override to exercise the timeout path
+    /// (LoginViewModelSignInBusyStateTests.cs). Consumed (reset to null)
+    /// the moment it's used, matching FakeVaccineApiService.DelayNextGetLotsCall's
+    /// one-shot pattern.</summary>
+    public TaskCompletionSource<AuthResult>? PendingSignIn { get; set; }
+
     public Task<AuthResult> SignInAsync(string email, string password)
     {
         SignInCallCount++;
         LastEmail = email;
         LastPassword = password;
+
+        var pending = PendingSignIn;
+        if (pending is not null)
+        {
+            PendingSignIn = null;
+            return AwaitPendingSignInAsync(pending.Task);
+        }
+
         if (_result.Success)
         {
             IsSignedIn = true;
@@ -52,6 +69,18 @@ internal sealed class FakeAuthService : IAuthService
             RefreshToken = "fake-refresh-token";
         }
         return Task.FromResult(_result);
+    }
+
+    private async Task<AuthResult> AwaitPendingSignInAsync(Task<AuthResult> pendingTask)
+    {
+        var result = await pendingTask;
+        if (result.Success)
+        {
+            IsSignedIn = true;
+            AccessToken = "fake-token";
+            RefreshToken = "fake-refresh-token";
+        }
+        return result;
     }
 
     public Task<AuthResult> TryRestoreSessionAsync(string accessToken, string refreshToken)
