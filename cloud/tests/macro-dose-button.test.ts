@@ -1,5 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { subLabelFontSizePx, subLabelSlotHeightPx, SUB_LABEL_LINE_HEIGHT } from "@/lib/macro-dose-button";
+import { renderMacroDoseButton, SECTION_COLORS, subLabelFontSizePx, subLabelSlotHeightPx, SUB_LABEL_LINE_HEIGHT } from "@/lib/macro-dose-button";
+import type { MacroDoseButton, MacroRow } from "@/lib/macro-codes";
+
+function makeRow(overrides: Partial<MacroRow> = {}): MacroRow {
+  return {
+    productKey: "ndc:test",
+    displayName: "Test Vaccine",
+    ndc: null,
+    packageSize: null,
+    cashPriceCents: null,
+    doseNumber: 1,
+    shortCode: "testcode",
+    lotNumber: null,
+    expirationIso: null,
+    macro: null,
+    complete: false,
+    catalogType: "Other",
+    sheetOrder: 0,
+    section: "Other",
+    age: "",
+    ageBase: "",
+    ageMinMonths: 0,
+    doseCount: 1,
+    vaccineIds: ["v1"],
+    ...overrides,
+  };
+}
+
+function makeDose(overrides: Partial<MacroRow> = {}, label = "Dose 1"): MacroDoseButton {
+  return { row: makeRow(overrides), label };
+}
+
+/** Walks a React element tree (as returned directly by a hook-free
+ * function component/render helper — no jsdom/testing-library, same
+ * posture as tests/data-entry-page.test.ts) and collects every string
+ * child in document order. */
+function collectText(node: unknown, out: string[], depth = 0): void {
+  if (!node || depth > 20) return;
+  if (typeof node === "string") {
+    out.push(node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const child of node) collectText(child, out, depth + 1);
+    return;
+  }
+  if (typeof node !== "object") return;
+  const el = node as { props?: { children?: unknown } };
+  if (el.props && "children" in el.props) collectText(el.props.children, out, depth + 1);
+}
 
 describe("subLabelFontSizePx", () => {
   it("is the same for every doseCountInRow — round 12 dropped the per-crowding font shrink", () => {
@@ -51,5 +100,54 @@ describe("subLabelSlotHeightPx", () => {
     // renderMacroDoseButton) — this just documents why two lines is
     // enough for both real-world cases the brief called out.
     expect(subLabelSlotHeightPx(false, true)).toBeGreaterThan(subLabelFontSizePx(false, true));
+  });
+});
+
+describe("renderMacroDoseButton topLabel (V-T48: name row 1, dose row 2, schedule row 3)", () => {
+  const colors = SECTION_COLORS.Other;
+  const baseParams = { isCopied: false, copyFailureCode: null, onClick: () => {} };
+
+  it("puts the vaccine name (topLabel) before the dose label, before the schedule sub-label", () => {
+    const dose = makeDose({ doseInterval: "2 mo" }, "Shingrix (Dose 2) (50+, 19+ IC)");
+    const el = renderMacroDoseButton(dose, colors, {
+      ...baseParams,
+      large: true,
+      topLabel: "Shingrix",
+      visibleLabel: "Dose 2",
+      subLabel: "2 mo",
+    });
+    const text: string[] = [];
+    collectText(el, text);
+    const nameIndex = text.indexOf("Shingrix");
+    const doseIndex = text.indexOf("Dose 2");
+    const scheduleIndex = text.indexOf("2 mo");
+    expect(nameIndex).toBeGreaterThanOrEqual(0);
+    expect(doseIndex).toBeGreaterThan(nameIndex);
+    expect(scheduleIndex).toBeGreaterThan(doseIndex);
+  });
+
+  it("omits the name row entirely when no topLabel is passed — other callers are unaffected", () => {
+    const dose = makeDose({}, "One dose");
+    const el = renderMacroDoseButton(dose, colors, { ...baseParams, large: true, visibleLabel: "One dose" });
+    const text: string[] = [];
+    collectText(el, text);
+    expect(text).not.toContain("Shingrix");
+    expect(text.join(" ")).toContain("One dose");
+  });
+
+  it("hides the name row while showing the 'Copied ✓' flag, same as the sub-label", () => {
+    const dose = makeDose({ doseInterval: "2 mo" }, "Shingrix (Dose 2) (50+, 19+ IC)");
+    const el = renderMacroDoseButton(dose, colors, {
+      ...baseParams,
+      isCopied: true,
+      large: true,
+      topLabel: "Shingrix",
+      visibleLabel: "Dose 2",
+      subLabel: "2 mo",
+    });
+    const text: string[] = [];
+    collectText(el, text);
+    expect(text).not.toContain("Shingrix");
+    expect(text.join(" ")).toContain("Copied");
   });
 });

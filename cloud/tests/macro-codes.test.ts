@@ -2,21 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   buildMacroCode,
   buildMacroRows,
-  DEFAULT_MACRO_VIEW_MODE,
   doseButtonShortLabel,
   expToMacroDate,
   filterMacroTopGroups,
+  getMacroViewMode,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
+  MACRO_VIEW_MODE,
   macroProductNameWithAge,
   macroSectionDisplayName,
-  MACRO_VIEW_MODE_STORAGE_KEY,
-  readMacroViewMode,
-  writeMacroViewMode,
   type MacroLotLike,
   type MacroRow,
   type MacroRowVaccine,
-  type MacroViewModeStorage,
 } from "@/lib/macro-codes";
 import type { ProductView } from "@/lib/product-view";
 
@@ -724,64 +721,16 @@ describe("filterMacroTopGroups", () => {
   });
 });
 
-describe("readMacroViewMode / writeMacroViewMode", () => {
-  function fakeStorage(initial: Record<string, string> = {}): MacroViewModeStorage & { data: Record<string, string> } {
-    const data = { ...initial };
-    return {
-      data,
-      getItem: (key: string) => (key in data ? data[key] : null),
-      setItem: (key: string, value: string) => {
-        data[key] = value;
-      },
-    };
-  }
-
-  it("defaults to 'A' when storage is null/undefined", () => {
-    expect(readMacroViewMode(null)).toBe(DEFAULT_MACRO_VIEW_MODE);
-    expect(readMacroViewMode(undefined)).toBe(DEFAULT_MACRO_VIEW_MODE);
+describe("getMacroViewMode / MACRO_VIEW_MODE (V-T48: C is the only layout)", () => {
+  it("MACRO_VIEW_MODE is 'C'", () => {
+    expect(MACRO_VIEW_MODE).toBe("C");
   });
 
-  it("defaults to 'A' when nothing is stored yet", () => {
-    expect(readMacroViewMode(fakeStorage())).toBe("A");
-  });
-
-  it("defaults to 'A' for an invalid stored value", () => {
-    expect(readMacroViewMode(fakeStorage({ [MACRO_VIEW_MODE_STORAGE_KEY]: "not-a-mode" }))).toBe("A");
-  });
-
-  it("returns a validly stored mode", () => {
-    expect(readMacroViewMode(fakeStorage({ [MACRO_VIEW_MODE_STORAGE_KEY]: "B" }))).toBe("B");
-    expect(readMacroViewMode(fakeStorage({ [MACRO_VIEW_MODE_STORAGE_KEY]: "C" }))).toBe("C");
-  });
-
-  it("never throws when storage.getItem throws (e.g. a blocked store)", () => {
-    const throwingStorage: MacroViewModeStorage = {
-      getItem: () => {
-        throw new Error("storage blocked");
-      },
-      setItem: () => {
-        throw new Error("storage blocked");
-      },
-    };
-    expect(() => readMacroViewMode(throwingStorage)).not.toThrow();
-    expect(readMacroViewMode(throwingStorage)).toBe(DEFAULT_MACRO_VIEW_MODE);
-  });
-
-  it("writeMacroViewMode persists a value readMacroViewMode then reads back", () => {
-    const storage = fakeStorage();
-    writeMacroViewMode(storage, "B");
-    expect(readMacroViewMode(storage)).toBe("B");
-  });
-
-  it("writeMacroViewMode never throws when storage.setItem throws, and is a no-op for null/undefined storage", () => {
-    const throwingStorage: MacroViewModeStorage = {
-      getItem: () => null,
-      setItem: () => {
-        throw new Error("storage blocked");
-      },
-    };
-    expect(() => writeMacroViewMode(throwingStorage, "C")).not.toThrow();
-    expect(() => writeMacroViewMode(null, "C")).not.toThrow();
-    expect(() => writeMacroViewMode(undefined, "C")).not.toThrow();
+  it("getMacroViewMode always returns 'C' — no switcher, nothing persisted, nothing else to select", () => {
+    expect(getMacroViewMode()).toBe("C");
+    // Pure and argument-free: calling it repeatedly can never return
+    // anything else (there's no removed A/B value a stale caller could
+    // still coax out of it).
+    expect(getMacroViewMode()).toBe(getMacroViewMode());
   });
 });

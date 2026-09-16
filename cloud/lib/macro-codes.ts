@@ -153,6 +153,14 @@ export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
  * muted line on the dose button (page.tsx's renderDoseButton `subLabel`
  * option); this file only computes the value, same "pure data, page
  * renders it" split as ageBase/note above.
+ *
+ * ROUND 14 (V-T48, Will's verbatim brief, 2026-09-16): "Make C the
+ * default view. Delete the other views." Versions A/B and the round-8
+ * switcher's persisted localStorage choice are gone — see
+ * getMacroViewMode/MACRO_VIEW_MODE below (replacing readMacroViewMode/
+ * writeMacroViewMode/MacroViewMode's old "A"|"B"|"C" union/
+ * MACRO_VIEW_MODES/MACRO_VIEW_MODE_STORAGE_KEY/DEFAULT_MACRO_VIEW_MODE/
+ * MacroViewModeStorage).
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -689,62 +697,22 @@ export function filterMacroTopGroups(topGroups: readonly MacroTopGroupBlock[], q
   return filteredGroups;
 }
 
-/** Round-8 view-mode switcher's persisted choice — "A" (family/type
- * heading + stacked buttons), "B" (type/product/dose columns), or "C"
- * (research-based scan grid). See page.tsx's switcher UI. */
-export type MacroViewMode = "A" | "B" | "C";
-
-/** Switcher button order, also MacroViewMode's full value set. */
-export const MACRO_VIEW_MODES: readonly MacroViewMode[] = ["A", "B", "C"];
-
-/** localStorage key the switcher's choice is persisted under. */
-export const MACRO_VIEW_MODE_STORAGE_KEY = "macro-codes-view-mode";
-
-/** The default view mode: version A, matching Will's brief ("Selection
- * persisted in localStorage... default 'A'"). */
-export const DEFAULT_MACRO_VIEW_MODE: MacroViewMode = "A";
-
-function isMacroViewMode(value: unknown): value is MacroViewMode {
-  return value === "A" || value === "B" || value === "C";
-}
-
-/** Minimal Storage-shaped interface (matches window.localStorage's own
- * shape) so readMacroViewMode/writeMacroViewMode are unit-testable with
- * a plain in-memory fake — this project's Vitest config runs tests
- * under Node, with no DOM/localStorage global, and the page itself must
- * tolerate a real browser whose storage is unavailable (private
- * browsing, disabled site data) just as much as a test double that
- * throws. */
-export type MacroViewModeStorage = Pick<Storage, "getItem" | "setItem">;
-
 /**
- * Reads the switcher's persisted choice from `storage` (the page passes
- * window.localStorage, wrapped — see below). Returns
- * DEFAULT_MACRO_VIEW_MODE for a missing/invalid value, a null/undefined
- * `storage` (storage never obtained), or a `storage.getItem` that
- * throws — this NEVER throws itself, per Will's brief ("wrap read/write
- * in try/catch — must not throw if storage is unavailable").
+ * ROUND 14 (V-T48, Will's verbatim brief, 2026-09-16): "Make C the
+ * default view. Delete the other views." Replaces the round-8 A/B/C
+ * switcher's persisted localStorage choice (formerly MacroViewMode/
+ * MACRO_VIEW_MODES/MACRO_VIEW_MODE_STORAGE_KEY/DEFAULT_MACRO_VIEW_MODE/
+ * MacroViewModeStorage/readMacroViewMode/writeMacroViewMode, all deleted
+ * here) — versions A and B no longer exist for a stored preference to
+ * select, so nothing persists a view choice anymore. `getMacroViewMode`
+ * is a trivial pure function (same "pure logic here, page renders it"
+ * split as the rest of this file) so a test can assert the only-layout
+ * decision without touching React/DOM/localStorage.
  */
-export function readMacroViewMode(storage: MacroViewModeStorage | null | undefined): MacroViewMode {
-  if (!storage) return DEFAULT_MACRO_VIEW_MODE;
-  try {
-    const stored = storage.getItem(MACRO_VIEW_MODE_STORAGE_KEY);
-    return isMacroViewMode(stored) ? stored : DEFAULT_MACRO_VIEW_MODE;
-  } catch {
-    return DEFAULT_MACRO_VIEW_MODE;
-  }
-}
+export type MacroViewMode = "C";
 
-/**
- * Persists the switcher's choice to `storage`. A null/undefined
- * `storage`, or a `storage.setItem` that throws, is silently ignored —
- * the choice just won't persist this session; this NEVER throws.
- */
-export function writeMacroViewMode(storage: MacroViewModeStorage | null | undefined, mode: MacroViewMode): void {
-  if (!storage) return;
-  try {
-    storage.setItem(MACRO_VIEW_MODE_STORAGE_KEY, mode);
-  } catch {
-    // storage unavailable/blocked — the choice just won't persist this session
-  }
+export const MACRO_VIEW_MODE: MacroViewMode = "C";
+
+export function getMacroViewMode(): MacroViewMode {
+  return MACRO_VIEW_MODE;
 }

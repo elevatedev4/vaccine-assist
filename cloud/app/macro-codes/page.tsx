@@ -8,15 +8,11 @@ import { buildProductViews } from "@/lib/product-view";
 import {
   buildMacroCode,
   buildMacroRows,
-  DEFAULT_MACRO_VIEW_MODE,
   doseButtonShortLabel,
   filterMacroTopGroups,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
-  macroProductNameWithAge,
   macroSectionDisplayName,
-  readMacroViewMode,
-  writeMacroViewMode,
   type MacroDoseButton,
   type MacroLotLike,
   type MacroProductGroup,
@@ -25,8 +21,6 @@ import {
   type MacroSection,
   type MacroSectionGroup,
   type MacroTopGroupBlock,
-  type MacroViewMode,
-  type MacroViewModeStorage,
 } from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { postToHost } from "@/lib/macro-embed";
@@ -200,6 +194,30 @@ import {
  * app's popup (?embed=1) is the SAME origin as every other route here,
  * so it shares this same localStorage cache automatically — no separate
  * embed-specific caching was needed.
+ *
+ * ROUND 14 (V-T48, Will's verbatim brief): "Make C the default view.
+ * Delete the other views. Add the vaccine name to the buttons as well.
+ * The vaccine name is row 1, Dose is row 2, then row 3 is the
+ * scheduling dates for some of the vaccines." Version C (the round-9+
+ * "scan grid") is now the page's ONLY layout: renderSectionVersionA/B,
+ * the round-8 switcher UI, VIEW_MODE_OPTIONS, and the version-B-only
+ * macroProductNameWithAge call are all deleted — not hidden behind a
+ * flag. So a stale localStorage choice can never select a removed
+ * layout, the round-8 persisted preference (lib/macro-codes.ts's
+ * readMacroViewMode/writeMacroViewMode/MacroViewMode/
+ * MacroViewModeStorage) is deleted too, replaced by
+ * lib/macro-codes.ts's MACRO_VIEW_MODE constant — a pure "C" literal a
+ * test can assert without touching React/DOM. `effectiveViewMode` is
+ * gone along with it: embed mode no longer needs to "force" layout C
+ * since C is the only layout there is. C's own rendering/CSS is
+ * otherwise byte-for-byte unchanged from round 13 except for the name
+ * row: renderDoseButton/renderMacroDoseButton (lib/macro-dose-button.tsx)
+ * grow an optional `topLabel` (the product's displayName) rendered as a
+ * new first line above the existing dose-label line, with the existing
+ * schedule-interval sub-label line staying third when a dose has one —
+ * sizes/colors/order/grouping/hotkeys/instant-copy are all untouched;
+ * only the button's minHeight grows the minimum needed to fit the name
+ * line.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -208,25 +226,11 @@ type VaccineRow = MacroRowVaccine;
 // already tolerate this via `currentLot?.expiration ?? null`.
 type LotRow = { id: string; vaccine_id: string; lot_number: string; expiration: string | null; status: string };
 
-/** Round 8: switcher button labels, verbatim per Will's brief ("Make
- * the two different versions and add buttons at the top for me to
- * switch between them"). */
-const VIEW_MODE_OPTIONS: readonly { mode: MacroViewMode; label: string }[] = [
-  { mode: "A", label: "A · Type | buttons" },
-  { mode: "B", label: "B · Type | product | dose" },
-  { mode: "C", label: "C · Scan grid" },
-];
-
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "0.75rem 1rem", maxWidth: "100%" },
   heading: { margin: "0 0 0.4rem", fontSize: "1.15rem" },
   error: { color: "#b00020", fontSize: "0.8rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
-  // Round 6: three top-level groups ("COVID/Flu" | "Common" | "Other"),
-  // one per column — see .macro-groups / .macro-group-column in the
-  // <style> tag below for the layout/responsive rules.
-  groups: { display: "flex", gap: "1.5rem", alignItems: "flex-start" },
-  groupColumn: { flex: "1 1 0", minWidth: 0 },
   groupHeading: {
     fontSize: "1rem",
     fontWeight: 800,
@@ -280,12 +284,8 @@ const styles = {
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" },
   checkboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
   button: { padding: "0.3rem 0.6rem", fontSize: "13px" },
-  // Round 8: the A/B/C layout switcher + version C's live-filter box —
-  // both sit above .macro-groups, so they use the same plain-object
-  // convention as everything else here (hover/active states for the
-  // switcher buttons are in the <style> tag below, same posture as the
-  // dose buttons).
-  viewSwitcher: { display: "flex", gap: "0.4rem", flexWrap: "wrap" as const, margin: "0 0 0.6rem" },
+  // Version C's live-filter box, sitting above .macro-groups — same
+  // plain-object convention as everything else here.
   filterBox: { margin: "0 0 0.6rem", maxWidth: 320 },
   filterInput: {
     width: "100%",
@@ -374,39 +374,12 @@ function MacroCodesPageContent() {
   };
   const [modal, setModal] = useState<ModalState | null>(null);
 
-  // Round 8: A/B/C layout switcher + version C's live-filter query.
-  // viewMode starts at the default and is corrected from localStorage in
-  // an effect (below) rather than a useState lazy initializer, so the
-  // very first render — which also runs during SSR, where there's no
-  // `window` — never touches storage and always matches between server
-  // and client (no hydration mismatch); the stored choice, if any, then
-  // takes over a frame later.
-  const [viewMode, setViewModeState] = useState<MacroViewMode>(DEFAULT_MACRO_VIEW_MODE);
+  // Round 14: version C's live-filter query — the ONLY layout state this
+  // page has left (see this file's ROUND 14 doc comment above). No
+  // switcher, no localStorage read/write, no `embed`-forces-C special
+  // case: `embed` still exists for the popup's compact styling, but
+  // doesn't need to "force" a layout anymore since there's only one.
   const [filterQuery, setFilterQuery] = useState("");
-
-  // Embed mode always renders as layout C (Will's brief: "layout C
-  // forced") without touching `viewMode` itself, so the read/write-to-
-  // localStorage effects below keep running exactly as they do outside
-  // embed mode — the user's stored non-embed preference is preserved,
-  // just ignored for what THIS render shows.
-  const effectiveViewMode: MacroViewMode = embed ? "C" : viewMode;
-
-  function getViewModeStorage(): MacroViewModeStorage | null {
-    try {
-      return window.localStorage;
-    } catch {
-      return null;
-    }
-  }
-
-  useEffect(() => {
-    setViewModeState(readMacroViewMode(getViewModeStorage()));
-  }, []);
-
-  function setViewMode(mode: MacroViewMode) {
-    setViewModeState(mode);
-    writeMacroViewMode(getViewModeStorage(), mode);
-  }
 
   function resetAfterSignOut() {
     setVaccines([]);
@@ -583,13 +556,9 @@ function MacroCodesPageContent() {
   const sections = useMemo(() => groupMacroRowsBySection(rows), [rows]);
   const topGroups = useMemo(() => groupSectionsByTopGroup(sections), [sections]);
 
-  // Version C's live filter only narrows what's shown in version C —
-  // switching to A/B always shows the full catalog regardless of a
-  // query typed while on C.
-  const visibleTopGroups = useMemo(
-    () => (effectiveViewMode === "C" ? filterMacroTopGroups(topGroups, filterQuery) : topGroups),
-    [effectiveViewMode, topGroups, filterQuery]
-  );
+  // Version C's live filter — the page's only layout now, so this
+  // always applies.
+  const visibleTopGroups = useMemo(() => filterMacroTopGroups(topGroups, filterQuery), [topGroups, filterQuery]);
 
   const rowKey = macroRowKey;
 
@@ -827,6 +796,10 @@ function MacroCodesPageContent() {
    *   text) can't blow up the button; the FULL text still reaches the
    *   button's `title` (see the title computation below) so nothing is
    *   lost, just not all visible at once.
+   * - `topLabel` (ROUND 14, V-T48): an optional new FIRST line, above
+   *   `visibleLabel` — renderSectionVersionC passes the product's
+   *   displayName here so every button shows name (row 1) / dose
+   *   (row 2) / schedule (row 3, when present).
    * The click handler, disabled state, "Copied ✓" swap, missing-lot/exp
    * red dot, and copy-failure fallback are untouched from round 7.
    */
@@ -834,6 +807,7 @@ function MacroCodesPageContent() {
     dose: MacroDoseButton,
     colors: SectionColors,
     options?: {
+      topLabel?: string;
       visibleLabel?: string;
       subLabel?: string;
       block?: boolean;
@@ -886,78 +860,9 @@ function MacroCodesPageContent() {
     );
   }
 
-  /**
-   * Version A (Will's verbatim brief): "have the heading be in 1
-   * column, then the buttons next to it stacked vertically." One row
-   * PER SECTION/FAMILY (not per product) — a fixed-width family-name
-   * cell (macroSectionDisplayName) next to a vertical stack of every
-   * dose button belonging to that family, one button per line, full
-   * label text unchanged ("Shingrix (Dose 1) (50+, 19+ IC)" etc., same
-   * as round 7 — see doseButtonLabel in lib/macro-codes.ts). The ⚙ menu
-   * still fires once per PRODUCT (same renderSettingsMenu as every other
-   * version), placed once at the end of that product's own dose lines
-   * rather than once per family — a family with two products still gets
-   * two separate ⚙s, just both inside the one family row.
-   */
-  function renderSectionVersionA(section: MacroSectionGroup) {
-    const colors = SECTION_COLORS[section.section];
-    return (
-      <div key={section.section} className="macro-family-row">
-        <div className="macro-family-cell" style={{ color: colors.text, borderLeftColor: colors.border }}>
-          {macroSectionDisplayName(section.section)}
-        </div>
-        <div className="macro-dose-stack">
-          {section.products.map((product) => (
-            <div key={product.productKey} className="macro-row macro-product-block">
-              <div className="macro-dose-lines">{product.doses.map((dose) => renderDoseButton(dose, colors, { block: true }))}</div>
-              <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  /**
-   * Version B (Will's verbatim brief): "another column after type (ex:
-   * tdap), then product (ex Boostrix (with age range)) > Dose 1
-   * button." One row PER PRODUCT, three columns: family name
-   * (macroSectionDisplayName, repeated per row — same posture as the
-   * original Excel sheet's own Type column, which repeated per row
-   * too), product name + age as PLAIN TEXT (macroProductNameWithAge —
-   * not a button, not clickable), then the dose buttons themselves
-   * (doseButtonShortLabel: "Dose 1"/"Dose 2", or "One dose" for a
-   * single-dose product), each carrying its ROUND 10 schedule-interval
-   * subLabel when the row has one. The ⚙ menu is unchanged, once per
-   * product.
-   */
-  function renderSectionVersionB(section: MacroSectionGroup) {
-    const colors = SECTION_COLORS[section.section];
-    return (
-      <section key={section.section} className="macro-section macro-section-b">
-        {section.products.map((product) => {
-          const doseCount = product.doses.length;
-          return (
-            <div key={product.productKey} className="macro-row macro-row-b">
-              <div className="macro-family-cell-b" style={{ color: colors.text }}>
-                {macroSectionDisplayName(section.section)}
-              </div>
-              <div className="macro-product-name-cell">{macroProductNameWithAge(product)}</div>
-              <div className="macro-dose-buttons-b">
-                {product.doses.map((dose) =>
-                  renderDoseButton(dose, colors, {
-                    visibleLabel: doseButtonShortLabel(dose.row, doseCount),
-                    subLabel: dose.row.doseInterval,
-                  })
-                )}
-              </div>
-              <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
-            </div>
-          );
-        })}
-      </section>
-    );
-  }
+  // Round 14: versions A and B (renderSectionVersionA/B) are deleted —
+  // see this file's ROUND 14 doc comment. Version C (below) is the only
+  // layout left.
 
   /**
    * Version C — "Scan grid," a from-scratch layout aimed squarely at
@@ -1087,6 +992,11 @@ function MacroCodesPageContent() {
               <div className="macro-dose-buttons-c">
                 {product.doses.map((dose) =>
                   renderDoseButton(dose, colors, {
+                    // ROUND 14 (V-T48): the vaccine name as the button's
+                    // own first row, above the existing dose row (2) and
+                    // schedule row (3, where present) — see this file's
+                    // ROUND 14 doc comment.
+                    topLabel: product.displayName,
                     visibleLabel: doseButtonShortLabel(dose.row, doseCount),
                     subLabel: dose.row.doseInterval,
                     large: true,
@@ -1123,8 +1033,6 @@ function MacroCodesPageContent() {
   }
 
   function renderTopGroup(block: MacroTopGroupBlock) {
-    const renderSection =
-      effectiveViewMode === "A" ? renderSectionVersionA : effectiveViewMode === "B" ? renderSectionVersionB : renderSectionVersionC;
     // ROUND 13 (Will's verbatim feedback via the coordinator, 2026-09-13):
     // fixed-width flex columns (round 12's 460px basis) don't reliably
     // fit three across at common widths — 1456px rendered only two
@@ -1138,14 +1046,15 @@ function MacroCodesPageContent() {
     // renderSectionVersionC's .macro-product-name-cell-c/
     // .macro-dose-buttons-c for which side of a row actually gives up
     // space when a column gets narrow. This one grid rule also covers
-    // embed (?embed=1 always forces effectiveViewMode "C"): the 1100px
-    // popup gets the same three even tracks, just with a smaller gap
-    // (see the .macro-groups-c wrapper's own style below).
-    const columnStyle = effectiveViewMode === "C" ? { minWidth: 0 } : styles.groupColumn;
+    // embed (round 14: C is the only layout, embed included, so this is
+    // unconditional): the 1100px popup gets the same three even tracks,
+    // just with a smaller gap (see the .macro-groups-c wrapper's own
+    // style below).
+    const columnStyle = { minWidth: 0 };
     return (
       <div key={block.group} className="macro-group-column" style={columnStyle}>
         <h2 style={styles.groupHeading}>{block.group}</h2>
-        {block.sections.map((section) => renderSection(section))}
+        {block.sections.map((section) => renderSectionVersionC(section))}
       </div>
     );
   }
@@ -1154,39 +1063,21 @@ function MacroCodesPageContent() {
     <main style={embed ? { ...styles.main, padding: "8px" } : styles.main}>
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
 
-      {!embed && (
-        <div className="macro-view-switcher" style={styles.viewSwitcher} role="group" aria-label="Layout version">
-          {VIEW_MODE_OPTIONS.map(({ mode, label }) => (
-            <button
-              key={mode}
-              type="button"
-              className={`macro-view-switcher-button${viewMode === mode ? " active" : ""}`}
-              onClick={() => setViewMode(mode)}
-              aria-pressed={viewMode === mode}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {effectiveViewMode === "C" && (
-        // Embed compact (2026-09-13, Ctrl+8 popup target 980x760, see the
-        // <style> tag's EMBED COMPACT block below for the full height
-        // budget): only the margin shrinks here — width/position/autoFocus
-        // are untouched so the box stays visible and focused at top.
-        <div style={embed ? { ...styles.filterBox, margin: "0 0 6px" } : styles.filterBox}>
-          <input
-            type="text"
-            value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
-            placeholder="Filter by name or code…"
-            aria-label="Filter vaccines"
-            style={styles.filterInput}
-            autoFocus={embed}
-          />
-        </div>
-      )}
+      {/* Embed compact (2026-09-13, Ctrl+8 popup target 980x760, see the
+       * <style> tag's EMBED COMPACT block below for the full height
+       * budget): only the margin shrinks here — width/position/autoFocus
+       * are untouched so the box stays visible and focused at top. */}
+      <div style={embed ? { ...styles.filterBox, margin: "0 0 6px" } : styles.filterBox}>
+        <input
+          type="text"
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter by name or code…"
+          aria-label="Filter vaccines"
+          style={styles.filterInput}
+          autoFocus={embed}
+        />
+      </div>
 
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
@@ -1199,7 +1090,7 @@ function MacroCodesPageContent() {
 
       {!loading && (
         <div
-          className={`macro-groups${effectiveViewMode === "C" ? " macro-groups-c" : ""}`}
+          className="macro-groups macro-groups-c"
           style={
             // ROUND 13 (Will's verbatim feedback via the coordinator,
             // 2026-09-13): fixed-width flex columns don't reliably fit
@@ -1208,41 +1099,16 @@ function MacroCodesPageContent() {
             // CSS grid with a literal 3-track template ALWAYS renders
             // three columns sharing the row's width, at any width, and
             // never wraps to fewer. This one grid rule covers embed too
-            // (?embed=1 always forces effectiveViewMode "C" — see this
-            // component's `effectiveViewMode` above): the 1100px popup
-            // gets the same three even tracks, just a smaller gap and no
-            // width cap, same posture as embed's old flex override below
-            // it used to replace.
-            effectiveViewMode === "C"
-              ? {
-                  display: "grid" as const,
-                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                  alignItems: "flex-start" as const,
-                  gap: embed ? "10px" : "1.5rem",
-                  maxWidth: embed ? "100%" : 1440,
-                }
-              : // ROUND 12 (Will's verbatim feedback, 2026-09-13: "there is
-                // a bunch of dead space at the bottom of the page"): A and
-                // B never got round 9's width cap — their columns are
-                // `flex: 1 1 0` (styles.groupColumn) with NO max-width, so
-                // on a wide monitor they stretch edge-to-edge, which is
-                // exactly what Will called "dead space" about C back in
-                // round 9 ("make the table a little more compact
-                // width-wise... the dead space going away will make it
-                // easier to use" — see renderSectionVersionC's doc comment)
-                // before that page got a max-width cap. Same fix, applied
-                // here for A/B: capping the row's own width stops it from
-                // sprawling across a wide screen with three sparse,
-                // overstretched columns and a lot of visibly unused canvas
-                // around/below them — no explicit min-height/spacer was
-                // found in either version's markup (verified by rendering
-                // buildMacroRows -> groupMacroRowsBySection ->
-                // groupSectionsByTopGroup's real output through a static
-                // harness — the <main>/.macro-groups/.macro-family-row/
-                // .macro-row-b markup ends exactly at the last row with no
-                // trailing spacer), so the fix is the same width discipline
-                // C already has, not a spacer removal.
-                { ...styles.groups, maxWidth: 1600 }
+            // (round 14: C is the only layout, embed included): the
+            // 1100px popup gets the same three even tracks, just a
+            // smaller gap and no width cap.
+            {
+              display: "grid" as const,
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              alignItems: "flex-start" as const,
+              gap: embed ? "10px" : "1.5rem",
+              maxWidth: embed ? "100%" : 1440,
+            }
           }
         >
           {visibleTopGroups.map((block) => renderTopGroup(block))}
@@ -1411,84 +1277,6 @@ function MacroCodesPageContent() {
           .macro-settings-menu { opacity: 1; }
         }
 
-        /* View switcher */
-        .macro-view-switcher-button {
-          padding: 0.3rem 0.7rem;
-          font-size: 12px;
-          font-weight: 600;
-          border: 1px solid #999;
-          border-radius: 5px;
-          background: #fff;
-          color: #333;
-          cursor: pointer;
-        }
-        .macro-view-switcher-button:hover { background: #f2f2f2; }
-        .macro-view-switcher-button.active {
-          background: #333;
-          border-color: #333;
-          color: #fff;
-        }
-
-        /* Version A: one row per family — fixed-width name cell next to
-         * a vertical stack of every dose button in that family. */
-        .macro-family-row {
-          display: flex;
-          align-items: flex-start;
-          gap: 0.6rem;
-          padding: 0.35rem 0;
-          border-bottom: 1px solid #eee;
-        }
-        .macro-family-cell {
-          flex: 0 0 92px;
-          min-width: 0;
-          font-size: 0.8rem;
-          font-weight: 700;
-          padding: 3px 0 3px 8px;
-          border-left: 3px solid;
-        }
-        .macro-dose-stack {
-          flex: 1;
-          min-width: 0;
-          display: flex;
-          flex-direction: column;
-          gap: 3px;
-        }
-        .macro-product-block {
-          display: flex;
-          align-items: center;
-          gap: 0.3rem;
-        }
-        .macro-dose-lines {
-          flex: 1;
-          min-width: 0;
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-
-        /* Version B: family | product-name-plain-text | dose buttons | ⚙ */
-        .macro-row-b {
-          display: grid;
-          grid-template-columns: 92px 1fr auto auto;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 3px 0;
-          border-bottom: 1px solid #eee;
-        }
-        .macro-family-cell-b {
-          font-size: 0.78rem;
-          font-weight: 700;
-        }
-        .macro-product-name-cell {
-          font-size: 0.85rem;
-          min-width: 0;
-        }
-        .macro-dose-buttons-b {
-          display: flex;
-          gap: 0.25rem;
-          flex-wrap: wrap;
-        }
-
         /* Version C: high-contrast family band + a two-column grid
          * (name | right-aligned buttons) shared by every row so columns
          * stay aligned straight down the page. Round 9: columns stop
@@ -1643,10 +1431,6 @@ function MacroCodesPageContent() {
              * honor — let a genuinely long dose group wrap instead of
              * squeezing to unreadable sizes. */
             flex-wrap: wrap;
-          }
-          .macro-row-b {
-            grid-template-columns: 1fr;
-            justify-items: start;
           }
         }
       `}</style>

@@ -134,6 +134,14 @@ export function missingNote(row: MacroRow): string | null {
 }
 
 export interface RenderMacroDoseButtonOptions {
+  /** ROUND 14 (V-T48, Will's verbatim brief, 2026-09-16): "Add the
+   * vaccine name to the buttons as well. The vaccine name is row 1,
+   * Dose is row 2, then row 3 is the scheduling dates for some of the
+   * vaccines." An optional new FIRST line, shown above `visibleLabel`/
+   * `label` — /macro-codes' renderSectionVersionC (this module's only
+   * current caller) passes the product's displayName here; omitted
+   * entirely (no layout change at all) when a caller doesn't pass it. */
+  topLabel?: string;
   /** Shown instead of the full `dose.label` (e.g. version B/C's short
    * "Dose 1"/"One dose" — lib/macro-codes.ts's doseButtonShortLabel)
    * while the click/copy/tooltip still use the full descriptive label. */
@@ -243,6 +251,7 @@ export function renderMacroDoseButton(
     fitRow = false,
     reserveSubLabelSlot = false,
     doseCountInRow = 1,
+    topLabel,
   } = params;
   const visibleText = isCopied ? COPIED_FLAG : params.visibleLabel ?? label;
   const note = missingNote(row);
@@ -256,6 +265,10 @@ export function renderMacroDoseButton(
   // and this dose gets an empty, invisible placeholder line instead of
   // just being one line shorter than its siblings.
   const showSubLabelSlot = Boolean(subLabel) || reserveSubLabelSlot;
+  // ROUND 14: `topLabel` (the vaccine name, row 1) is hidden while
+  // showing "Copied ✓" too — same posture as subLabel above, and for the
+  // same reason (the flag already says everything needed for that 1.5s).
+  const showTopLabel = Boolean(topLabel) && !isCopied;
   // ROUND 12: doseCountInRow no longer changes sizing (see its doc
   // comment) — accepted for API compatibility with existing callers only.
   void doseCountInRow;
@@ -266,6 +279,11 @@ export function renderMacroDoseButton(
   // from `minHeight` + natural content flow, same as before round 12).
   const mainLineHeight = Math.round((compact ? 11 : large ? 13 : 12) * 1.2);
   const subLabelSlotHeight = subLabelSlotHeightPx(compact, large);
+  // ROUND 14 (V-T48): one extra single line, reserved only when a
+  // `topLabel` is actually shown — the button's minHeight below grows by
+  // exactly this much and nothing else, per Will's brief ("grow it the
+  // minimum needed and keep the grid the same otherwise").
+  const topLabelLineHeight = Math.ceil(subLabelFontSize * SUB_LABEL_LINE_HEIGHT);
 
   return (
     <span
@@ -300,13 +318,19 @@ export function renderMacroDoseButton(
           // showSubLabelSlot (a pre-existing gap this fix closes rather
           // than carries forward, since a two-line reservation inside a
           // still-28px-tall button would visibly overflow/clip).
-          minHeight: showSubLabelSlot ? mainLineHeight + 1 + subLabelSlotHeight + 8 : compact ? 28 : large ? 38 : 32,
+          // ROUND 14: `topLabel`'s single reserved line (topLabelLineHeight
+          // + a 1px gap, matching the gap already used between the other
+          // stacked lines) is added on top of whichever base height above
+          // already applied — the only height change this round makes.
+          minHeight:
+            (showSubLabelSlot ? mainLineHeight + 1 + subLabelSlotHeight + 8 : compact ? 28 : large ? 38 : 32) +
+            (showTopLabel ? topLabelLineHeight + 1 : 0),
           padding: compact ? "0 0.5rem" : large ? "0 0.75rem" : "0 0.5rem",
           display: "inline-flex",
-          flexDirection: showSubLabelSlot ? "column" : "row",
-          alignItems: showSubLabelSlot ? (block ? "flex-start" : "center") : "center",
-          justifyContent: showSubLabelSlot ? "center" : block ? "flex-start" : "center",
-          gap: showSubLabelSlot ? 1 : undefined,
+          flexDirection: showSubLabelSlot || showTopLabel ? "column" : "row",
+          alignItems: showSubLabelSlot || showTopLabel ? (block ? "flex-start" : "center") : "center",
+          justifyContent: showSubLabelSlot || showTopLabel ? "center" : block ? "flex-start" : "center",
+          gap: showSubLabelSlot || showTopLabel ? 1 : undefined,
           fontSize: compact ? "11px" : large ? "13px" : "12px",
           fontWeight: 600,
           whiteSpace: fitRow ? undefined : "nowrap",
@@ -318,6 +342,22 @@ export function renderMacroDoseButton(
           overflow: fitRow ? "hidden" : undefined,
         }}
       >
+        {showTopLabel && (
+          <span
+            style={{
+              display: "block",
+              width: "100%",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: `${subLabelFontSize}px`,
+              fontWeight: 700,
+              lineHeight: `${topLabelLineHeight}px`,
+            }}
+          >
+            {topLabel}
+          </span>
+        )}
         <span
           style={
             fitRow
