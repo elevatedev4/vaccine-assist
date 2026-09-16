@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   computeEffectiveName,
+  deriveShortCode,
+  excludePackageVariantAltMatches,
+  getNewProductSpec,
+  isPackageVariantName,
   loadEnvFile,
   nameMatchesAlias,
   parseExpirationToIso,
@@ -97,6 +101,84 @@ describe("nameMatchesAlias", () => {
 
   it("matches every dose-variant row sharing a product name (single-requirement alias)", () => {
     expect(nameMatchesAlias("Engerix 20 (age 20+)", ["Engerix"])).toBe(true);
+  });
+});
+
+describe("isPackageVariantName", () => {
+  it("detects a trailing '(N ct)' package-size qualifier", () => {
+    expect(isPackageVariantName("Abrysvo (1 ct)")).toBe(true);
+    expect(isPackageVariantName("Prevnar 20 (10 ct)")).toBe(true);
+  });
+
+  it("is case-insensitive and tolerates spacing", () => {
+    expect(isPackageVariantName("Abrysvo (1 CT)")).toBe(true);
+    expect(isPackageVariantName("Abrysvo (1ct)")).toBe(true);
+  });
+
+  it("does not match a plain name or an unrelated parenthetical", () => {
+    expect(isPackageVariantName("Abrysvo")).toBe(false);
+    expect(isPackageVariantName("Comirnaty 2026-27 12+")).toBe(false);
+    expect(isPackageVariantName("Vaqta (adult)")).toBe(false);
+  });
+});
+
+describe("excludePackageVariantAltMatches", () => {
+  it("drops a '(N ct)' alt row when a plain-name row also matched (Abrysvo case)", () => {
+    const matches = [
+      { id: "plain", effectiveName: "Abrysvo" },
+      { id: "variant", effectiveName: "Abrysvo (1 ct)" },
+    ];
+    expect(excludePackageVariantAltMatches(matches)).toEqual([{ id: "plain", effectiveName: "Abrysvo" }]);
+  });
+
+  it("keeps the '(N ct)' row when it is the ONLY match (no plain row on file)", () => {
+    const matches = [{ id: "variant", effectiveName: "Abrysvo (1 ct)" }];
+    expect(excludePackageVariantAltMatches(matches)).toEqual(matches);
+  });
+
+  it("leaves same-name dose-variant matches untouched", () => {
+    const matches = [
+      { id: "d1", effectiveName: "Engerix 20 (age 20+)" },
+      { id: "d2", effectiveName: "Engerix 20 (age 20+)" },
+      { id: "d3", effectiveName: "Engerix 20 (age 20+)" },
+    ];
+    expect(excludePackageVariantAltMatches(matches)).toEqual(matches);
+  });
+
+  it("passes through an empty list", () => {
+    expect(excludePackageVariantAltMatches([])).toEqual([]);
+  });
+});
+
+describe("deriveShortCode", () => {
+  it("lowercases and collapses non-alphanumeric runs into single dashes", () => {
+    expect(deriveShortCode("Abrysvo (1 ct)")).toBe("abrysvo-1-ct");
+  });
+
+  it("trims leading/trailing dashes", () => {
+    expect(deriveShortCode("mFLUSIVA 2026-27")).toBe("mflusiva-2026-27");
+  });
+
+  it("matches the POST /api/vaccines derivation for the new-product names", () => {
+    expect(deriveShortCode("Spikevax 2026-27 (6 mo-11 yr)")).toBe("spikevax-2026-27-6-mo-11-yr");
+  });
+});
+
+describe("getNewProductSpec", () => {
+  it("resolves mFLUSIVA to the 2026-27 flu product spec", () => {
+    expect(getNewProductSpec("mFLUSIVA")).toEqual({ name: "mFLUSIVA 2026-27", group: "Flu", dose: "1" });
+  });
+
+  it("resolves 'Moderna 3-11' to the Spikevax fallback spec", () => {
+    expect(getNewProductSpec("Moderna 3-11")).toEqual({
+      name: "Spikevax 2026-27 (6 mo-11 yr)",
+      group: "COVID",
+      dose: "1",
+    });
+  });
+
+  it("returns null for a brand with no NEW_PRODUCTS entry", () => {
+    expect(getNewProductSpec("Boostrix")).toBeNull();
   });
 });
 

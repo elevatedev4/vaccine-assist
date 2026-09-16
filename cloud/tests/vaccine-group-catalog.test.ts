@@ -27,6 +27,12 @@ describe("getVaccineGroup", () => {
     expect(getVaccineGroup("FluMist (age 2-49)")).toBe("Flu");
   });
 
+  it("matches mFLUSIVA (Moderna's mRNA flu vaccine) as Flu, case-insensitively", () => {
+    expect(getVaccineGroup("mFLUSIVA 2026-27")).toBe("Flu");
+    expect(getVaccineGroup("mflusiva 2026-27")).toBe("Flu");
+    expect(getVaccineGroup("Flusiva")).toBe("Flu");
+  });
+
   it("falls back to Other for an unmapped name", () => {
     expect(getVaccineGroup("Some New Vaccine")).toBe(OTHER_GROUP);
   });

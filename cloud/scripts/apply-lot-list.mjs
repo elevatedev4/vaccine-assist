@@ -16,13 +16,43 @@
 // --apply yourself — I run it after Will approves in the terminal").
 //
 // Usage:
-//   node scripts/apply-lot-list.mjs --file /path/to/lot-list.tsv           # dry run (default)
-//   node scripts/apply-lot-list.mjs --file /path/to/lot-list.tsv --apply   # writes for real
+//   node scripts/apply-lot-list.mjs --file /path/to/lot-list.tsv                    # dry run (default)
+//   node scripts/apply-lot-list.mjs --file /path/to/lot-list.tsv --create-missing   # dry run, also
+//                                                                                     shows brand-new
+//                                                                                     products it would
+//                                                                                     create (see
+//                                                                                     NEW_PRODUCTS below)
+//   node scripts/apply-lot-list.mjs --file /path/to/lot-list.tsv --apply             # writes for real
+//   node scripts/apply-lot-list.mjs --file /path/to/lot-list.tsv --apply --create-missing
 //
 // Input: a tab-separated file with a header row `Brand\tLOT\tEXP` — see
 // ALIASES below for the exact brand-label vocabulary this script expects
 // (Will's own labels, which differ from `vaccine.name` — e.g. "Moderna
 // 12+ NEXSPIKE" is the mNEXSPIKE product, "MMR" is MMR-II, etc.).
+//
+// --create-missing (2026-09-16 lot list, items 1-3): off by default. A
+// brand with NO matching alias/live row is normally just reported as
+// UNMAPPED. If that brand also has an entry in the NEW_PRODUCTS table
+// below AND a lot listed on the TSV, the dry-run report's "New products"
+// section ALWAYS shows what creating it would look like (name, display
+// group, dose, derived short_code) regardless of this flag — the flag
+// only controls whether those rows are folded into the real Plan (and,
+// with --apply too, actually written): a fresh `vaccine` row is inserted
+// (dose/short_code/active=true/ndc=null, short_code derived the same way
+// POST /api/vaccines does — see deriveShortCode below), then the listed
+// lot is attached to it in the same run. A brand with no lot listed is
+// never auto-created even if it's in NEW_PRODUCTS — report only, same as
+// any other listed-brand-without-a-lot.
+//
+// NOTE ON "group": the `vaccine` table has NO group/category column (see
+// supabase/migrations/0001_init.sql and cloud/lib/vaccine-group-catalog.ts's
+// own comment) — grouping is a display-only name-prefix lookup in that
+// catalog file. The `group` value in NEW_PRODUCTS below is therefore
+// informational only (shown in the report so Will can see what group the
+// product SHOULD land in), never written to the database. A brand-new
+// product name that doesn't already match one of vaccine-group-catalog.ts's
+// namePrefixes will display under "Other" until that separate file (out
+// of this script's scope) is updated with a matching prefix.
 //
 // RULES (Will's brief, verbatim, item 3):
 //   - "Add Comirnaty 2026-27 and mNexspike 2026-27 and remove the 2025-26
@@ -51,6 +81,16 @@
 //     deactivated and has its lots deleted too (same "remove any that
 //     are not listed here" instruction, applied to whole products this
 //     list never mentions).
+//
+// ALT PACKAGE-SIZE ROWS (2026-09-16, item 4): some products have a
+// second, deliberately-inactive vaccine row for an alternate package
+// size, named with a trailing "(N ct)" — e.g. "Abrysvo" (active) and
+// "Abrysvo (1 ct)" (inactive on purpose). A brand's alias must not match
+// a "(N ct)" row when its plain-name counterpart ALSO matches, or the
+// plan would insert the listed lot into the wrong row and reactivate it.
+// See isPackageVariantName/excludePackageVariantAltMatches below. This
+// does NOT affect the multi-dose rows described next — those share the
+// exact same name (no "(N ct)" suffix) across different `dose` values.
 //
 // MULTI-DOSE PRODUCTS (judgment call, flagged in the report): several
 // brands (Engerix 20, Gardasil, MMR, Priorix, Shingrix, Vaqta adult) have
@@ -97,7 +137,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // — that's the dry-run doing its job, not a bug in this table.
 // ---------------------------------------------------------------------
 const ALIASES = [
-  { brand: "Moderna 3-11 Spikevax 25-26", requires: ["Spikevax"] },
+  // Will's TSV brand label is exactly "Moderna 3-11" (confirmed on the
+  // 2026-09-16 list) -> the Spikevax product, whichever live row's
+  // (post-rename) name contains "Spikevax". If the live DB has no
+  // Spikevax row at all, this comes back unmapped and falls through to
+  // NEW_PRODUCTS below (2026-09-16, item 1).
+  { brand: "Moderna 3-11", requires: ["Spikevax"] },
   { brand: "Moderna 12+ NEXSPIKE", requires: ["NEXSPIKE"] },
   // Pfizer/Comirnaty age tiers: TWO alias entries per brand (a brand may
   // have more than one — a vaccine row matches if EITHER's `requires`
@@ -170,6 +215,66 @@ export function computeEffectiveName(name) {
 export function nameMatchesAlias(name, requires) {
   const lower = name.toLowerCase();
   return requires.every((s) => lower.includes(s.toLowerCase()));
+}
+
+/** True if `name` carries an alternate-package-size qualifier like
+ * "(1 ct)" or "(10 ct)" — see cloud/lib/lots-display-name.ts's own doc
+ * comment for the same "Abrysvo" / "Abrysvo (1 ct)" pair. Pure/unit-
+ * testable. */
+export function isPackageVariantName(name) {
+  return /\(\s*\d+\s*ct\s*\)/i.test(name);
+}
+
+/** Given every live vaccine row a brand's alias matched, drops any
+ * "(N ct)" alt-package-size row IF at least one plain-name row also
+ * matched (2026-09-16, item 4 — e.g. a brand matching both "Abrysvo" and
+ * the deliberately-inactive "Abrysvo (1 ct)" should only touch
+ * "Abrysvo"). If EVERY match is a "(N ct)" row (no plain-name match at
+ * all), nothing is excluded — that alt row is the only thing on file for
+ * this brand and dropping it would wrongly unmap the brand entirely.
+ * Pure/unit-testable. */
+export function excludePackageVariantAltMatches(matchedVaccines) {
+  const plain = matchedVaccines.filter((v) => !isPackageVariantName(v.effectiveName ?? v.name));
+  return plain.length > 0 ? plain : matchedVaccines;
+}
+
+/**
+ * Derives a `short_code` from a vaccine name — COPIED from
+ * cloud/app/api/vaccines/route.ts's deriveShortCode (not imported: that
+ * file pulls in "next/server", which needs the Next.js runtime and
+ * can't load from a plain node script) so a brand-new product created by
+ * --create-missing gets the exact same short_code a human creating it
+ * via POST /api/vaccines would get. KEEP IN SYNC with that copy if it
+ * ever changes. Lowercases the name, collapses every run of
+ * non-alphanumeric characters into a single "-", trims leading/trailing
+ * "-". Pure/unit-testable. */
+export function deriveShortCode(name) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Brand-new products (2026-09-16, items 1-2) that have NO existing
+ * vaccine row and, for "Moderna 3-11", may or may not — see the ALIASES
+ * comment above. Keyed by Will's exact TSV brand label. Only consulted
+ * for a brand that comes back with ZERO live-row matches; a brand that
+ * already matches a live row is never touched by this table, even if it
+ * also has an entry here. `group` is informational only (see this file's
+ * header comment on --create-missing) — never written to the database.
+ */
+const NEW_PRODUCTS = {
+  "mFLUSIVA": { name: "mFLUSIVA 2026-27", group: "Flu", dose: "1" },
+  "Moderna 3-11": { name: "Spikevax 2026-27 (6 mo-11 yr)", group: "COVID", dose: "1" },
+};
+
+/** Pure lookup into NEW_PRODUCTS by exact brand label, or null. Kept as
+ * a function (rather than exporting the table directly) so tests don't
+ * couple to the table's literal shape/keys beyond what they assert.
+ * Pure/unit-testable. */
+export function getNewProductSpec(brand) {
+  return NEW_PRODUCTS[brand] ?? null;
 }
 
 /** Parses Will's TSV (header `Brand\tLOT\tEXP`, tab-separated, blank
@@ -255,11 +360,12 @@ export function loadEnvFile(filePath, target = process.env) {
 }
 
 function parseArgs(argv) {
-  const args = { file: null, apply: false };
+  const args = { file: null, apply: false, createMissing: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--apply") args.apply = true;
     else if (arg === "--dry-run") args.apply = false;
+    else if (arg === "--create-missing") args.createMissing = true;
     else if (arg === "--file") args.file = argv[++i];
     else if (arg.startsWith("--file=")) args.file = arg.slice("--file=".length);
   }
@@ -337,30 +443,109 @@ async function main() {
   const unmappedBrands = [];
   /** @type {Array<{ brand: string, lot: string|null, exp: string|null, vaccine: any }>} */
   const brandVaccinePairs = [];
+  // Always populated (regardless of --create-missing) — see this file's
+  // header comment on --create-missing.
+  const newProductCandidates = [];
+  // Declared here (rather than at "Build the plan" below) so the
+  // --create-missing resolution step right after this loop can push
+  // CREATE-vaccine plan rows into the same array as everything else.
+  const plan = [];
 
   for (const listRow of listRows) {
     // A brand may have more than one ALIASES entry (alternate naming
     // patterns — see the Pfizer/Comirnaty entries' own comment above); a
     // vaccine row counts as a match if it satisfies ANY of them.
     const aliasesForBrand = ALIASES.filter((a) => a.brand === listRow.brand);
-    if (aliasesForBrand.length === 0) {
-      unmappedBrands.push(`${listRow.brand} (no alias entry in this script at all — add one)`);
+    const rawMatches = aliasesForBrand.length
+      ? rows.filter((v) => aliasesForBrand.some((alias) => nameMatchesAlias(v.effectiveName, alias.requires)))
+      : [];
+    const matches = excludePackageVariantAltMatches(rawMatches);
+
+    if (matches.length > 0) {
+      for (const vaccine of matches) {
+        matchedVaccineIds.add(vaccine.id);
+        brandVaccinePairs.push({ brand: listRow.brand, lot: listRow.lot, exp: listRow.exp, vaccine });
+      }
       continue;
     }
-    const matches = rows.filter((v) => aliasesForBrand.some((alias) => nameMatchesAlias(v.effectiveName, alias.requires)));
-    if (matches.length === 0) {
-      unmappedBrands.push(listRow.brand);
+
+    // No live row matched (or no alias entry at all) — a genuinely new
+    // product (2026-09-16, items 1-3) with a lot listed is a
+    // --create-missing candidate; everything else is plain UNMAPPED.
+    const newProductSpec = getNewProductSpec(listRow.brand);
+    if (newProductSpec && listRow.lot) {
+      newProductCandidates.push({ brand: listRow.brand, lot: listRow.lot, exp: listRow.exp, spec: newProductSpec });
       continue;
     }
-    for (const vaccine of matches) {
-      matchedVaccineIds.add(vaccine.id);
-      brandVaccinePairs.push({ brand: listRow.brand, lot: listRow.lot, exp: listRow.exp, vaccine });
+
+    unmappedBrands.push(
+      aliasesForBrand.length === 0
+        ? `${listRow.brand} (no alias entry in this script at all — add one)`
+        : listRow.brand
+    );
+  }
+
+  // --- Resolve new-product candidates: report always, plan only with --create-missing ---
+  const newProductReport = [];
+  for (const { brand, lot, exp, spec } of newProductCandidates) {
+    const shortCode = deriveShortCode(spec.name);
+    const nameCollision = rows.find((v) => v.name.trim().toLowerCase() === spec.name.trim().toLowerCase());
+    const shortCodeCollision = rows.find((v) => v.short_code === shortCode);
+    const expirationIso = parseExpirationToIso(exp);
+
+    if (nameCollision || shortCodeCollision) {
+      newProductReport.push({
+        brand,
+        name: spec.name,
+        group: spec.group,
+        dose: spec.dose,
+        shortCode,
+        lotNumber: lot,
+        expiration: expirationIso,
+        status: `SKIPPED — ${nameCollision ? "name" : "short_code"} already exists live (id ${
+          (nameCollision ?? shortCodeCollision).id
+        })`,
+      });
+      continue;
+    }
+
+    newProductReport.push({
+      brand,
+      name: spec.name,
+      group: spec.group,
+      dose: spec.dose,
+      shortCode,
+      lotNumber: lot,
+      expiration: expirationIso,
+      status: args.createMissing ? "in plan (--create-missing)" : "NOT created — pass --create-missing",
+    });
+
+    if (args.createMissing) {
+      plan.push({
+        brand,
+        name: spec.name,
+        rename: "",
+        action: "CREATE vaccine + insert lot",
+        lotNumber: lot,
+        expirationBefore: "(new vaccine)",
+        expirationAfter: expirationIso,
+        deletedLots: "",
+        activeBefore: true, // insert already sets active:true — nothing further to flip
+        activeAfter: true,
+        vaccineId: null,
+        rawVaccineName: "(new)",
+        effectiveName: spec.name,
+        matchingLotId: null,
+        deleteLotIds: [],
+        newLot: null,
+        updateLot: null,
+        createSpec: { name: spec.name, dose: spec.dose, shortCode },
+        newLotPending: { lot_number: lot, expiration: expirationIso, status: "active" },
+      });
     }
   }
 
-  // --- Build the plan ---
-  const plan = [];
-
+  // --- Build the rest of the plan (brand/lot changes against existing rows) ---
   for (const { brand, lot, exp, vaccine } of brandVaccinePairs) {
     const rename = vaccine.name !== vaccine.effectiveName;
     const existingLots = lotsByVaccineId.get(vaccine.id) ?? [];
@@ -492,6 +677,25 @@ async function main() {
     ]);
   }
 
+  console.log(
+    `\n=== New products (${newProductReport.length}) — brands with no live vaccine row at all, would be created from NEW_PRODUCTS ===`
+  );
+  console.log("(shown regardless of --create-missing; \"group\" is informational only, not a DB column — see header comment)");
+  if (newProductReport.length === 0) {
+    console.log("(none)");
+  } else {
+    printTable(newProductReport, [
+      { key: "brand", header: "Brand" },
+      { key: "name", header: "Name" },
+      { key: "group", header: "Group (display only)" },
+      { key: "dose", header: "Dose" },
+      { key: "shortCode", header: "short_code" },
+      { key: "lotNumber", header: "Lot #" },
+      { key: "expiration", header: "Exp" },
+      { key: "status", header: "Status" },
+    ]);
+  }
+
   console.log(`\n=== UNMAPPED brands (${unmappedBrands.length}) — no matching vaccine row, nothing touched ===`);
   if (unmappedBrands.length === 0) {
     console.log("(none)");
@@ -520,8 +724,30 @@ async function main() {
   // --- Apply for real ---
   console.log("\nApplying changes...");
   for (const change of plan) {
+    // --create-missing plan rows have no vaccineId yet — create the
+    // vaccine row first and use ITS id for everything below (rename
+    // never applies to a brand-new row, so change.rename is always ""
+    // here; deleteLotIds/updateLot are always empty for the same
+    // reason).
+    let vaccineId = change.vaccineId;
+    if (change.createSpec) {
+      const { data, error } = await supabase
+        .from("vaccine")
+        .insert({
+          name: change.createSpec.name,
+          dose: change.createSpec.dose,
+          short_code: change.createSpec.shortCode,
+          active: true,
+          ndc: null,
+        })
+        .select()
+        .single();
+      if (error) throw new Error(`Creating new vaccine ${change.createSpec.name}: ${error.message}`);
+      vaccineId = data.id;
+    }
+
     if (change.rename) {
-      const { error } = await supabase.from("vaccine").update({ name: change.effectiveName }).eq("id", change.vaccineId);
+      const { error } = await supabase.from("vaccine").update({ name: change.effectiveName }).eq("id", vaccineId);
       if (error) throw new Error(`Renaming ${change.rawVaccineName}: ${error.message}`);
     }
 
@@ -538,9 +764,13 @@ async function main() {
       const { error } = await supabase.from("lot").insert(change.newLot);
       if (error) throw new Error(`Inserting lot for ${change.name}: ${error.message}`);
     }
+    if (change.newLotPending) {
+      const { error } = await supabase.from("lot").insert({ ...change.newLotPending, vaccine_id: vaccineId });
+      if (error) throw new Error(`Inserting lot for new vaccine ${change.name}: ${error.message}`);
+    }
 
     if (change.activeAfter !== change.activeBefore) {
-      const { error } = await supabase.from("vaccine").update({ active: change.activeAfter }).eq("id", change.vaccineId);
+      const { error } = await supabase.from("vaccine").update({ active: change.activeAfter }).eq("id", vaccineId);
       if (error) throw new Error(`Setting active=${change.activeAfter} for ${change.name}: ${error.message}`);
     }
   }

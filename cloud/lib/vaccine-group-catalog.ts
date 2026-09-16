@@ -18,7 +18,7 @@ export const OTHER_GROUP = "Other";
 
 const MAPPINGS: ReadonlyArray<{ group: string; namePrefixes: readonly string[] }> = [
   { group: "COVID", namePrefixes: ["Comirnaty", "Spikevax", "mNEXSPIKE", "Novavax"] },
-  { group: "Flu", namePrefixes: ["Afluria", "Fluad", "Flucelvax", "FluMist", "Fluzone", "Flublok"] },
+  { group: "Flu", namePrefixes: ["Afluria", "Fluad", "Flucelvax", "FluMist", "Fluzone", "Flublok", "mFLUSIVA", "Flusiva"] },
   { group: "Pneumonia", namePrefixes: ["Prevnar", "Capvaxive", "Pneumovax", "Vaxneuvance"] },
   { group: "Tetanus/whooping cough", namePrefixes: ["Boostrix", "Adacel", "Tdap"] },
   { group: "Shingles", namePrefixes: ["Shingrix"] },
