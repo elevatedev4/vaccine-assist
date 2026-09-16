@@ -1,6 +1,7 @@
 <Window x:Class="VaccineAssist.Desktop.Views.LoginWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:common="clr-namespace:VaccineAssist.Desktop.Common"
         Title="Vaccine Assist — Sign in"
         Width="380" MinWidth="380"
         SizeToContent="Height"
@@ -18,7 +19,24 @@
         keeping the window from ever going narrower than before) so the
         window always fits its content instead of a hardcoded guess.
         Behavior (bindings, click handler, hint text) is unchanged.
+
+        BUSY/SPINNER FIX (Will, 2026-09-16, verbatim): "It needs to lock
+        the signin button with a spinner in it to show it's trying" — the
+        email/password fields are now disabled (InverseBooleanConverter)
+        and the button's content swaps from "Sign in" to an indeterminate
+        ProgressBar (BooleanToVisibilityConverter/InverseBooleanToVisibilityConverter)
+        while LoginViewModel.IsBusy is true. IsBusy now stays true for the
+        WHOLE sign-in + cloud-handoff flow (see LoginViewModel.SetBusy's
+        doc comment), not just the raw auth call, so the spinner is an
+        honest signal the whole time — this is half of the "sign in does
+        nothing" fix; see App.xaml.cs and CloudPageView.EnsureInitializedAsync
+        for the other half (the actual hang this was masking).
     -->
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <common:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
+        <common:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
+    </Window.Resources>
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -42,14 +60,25 @@
 
         <TextBlock Grid.Row="2" Text="Shared pharmacy email"/>
         <TextBox Grid.Row="4" x:Name="EmailTextBox" Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}"
+                  IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
                   MinHeight="28" Padding="6,4" VerticalContentAlignment="Center"/>
 
         <TextBlock Grid.Row="6" Text="Password"/>
         <PasswordBox Grid.Row="8" x:Name="PasswordInput"
+                      IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
                       MinHeight="28" Padding="6,4" VerticalContentAlignment="Center"/>
 
-        <Button Grid.Row="10" x:Name="SignInButton" Content="Sign in" Height="32"
-                Click="SignInButton_OnClick"/>
+        <Button Grid.Row="10" x:Name="SignInButton" Height="32"
+                IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBooleanConverter}}"
+                Click="SignInButton_OnClick">
+            <Grid>
+                <TextBlock Text="Sign in" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Visibility="{Binding IsBusy, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
+                <ProgressBar IsIndeterminate="True" Width="70" Height="6"
+                             HorizontalAlignment="Center" VerticalAlignment="Center"
+                             Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+            </Grid>
+        </Button>
 
         <TextBlock Grid.Row="12" Text="{Binding ErrorMessage}" Foreground="Red" TextWrapping="Wrap"/>
 
