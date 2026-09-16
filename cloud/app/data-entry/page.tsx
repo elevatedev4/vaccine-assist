@@ -9,7 +9,7 @@ import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 /**
  * V-cloud-tabs (Will, 2026-09-05, second message): "no web data-entry
  * capability — just instructions: launch the Vaccine Assist desktop app
- * and press Ctrl+Keypad2 from the patient's Rx Profile." This REPLACES
+ * and press Ctrl+Keypad7 from the patient's Rx Profile." This REPLACES
  * the previous guided web flow entirely (age -> group -> product ->
  * dose -> clipboard payload) — that flow is gone, not hidden behind a
  * flag, per Will's explicit "no web data-entry capability" instruction.

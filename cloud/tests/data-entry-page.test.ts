@@ -38,7 +38,7 @@ describe("DataEntryInstructions", () => {
     }
   });
 
-  it("mentions launching the desktop app and the Ctrl+Keypad2 shortcut", () => {
+  it("mentions launching the desktop app and the Ctrl+Keypad7 shortcut", () => {
     function collectText(node: unknown, out: string[], depth = 0): void {
       if (!node || depth > 15) return;
       if (typeof node === "string") {
@@ -62,6 +62,6 @@ describe("DataEntryInstructions", () => {
     expect(text).toMatch(/desktop app/i);
     expect(text).toMatch(/Rx Profile/i);
     expect(text.toLowerCase()).toContain("ctrl");
-    expect(text.toLowerCase()).toContain("keypad 2");
+    expect(text.toLowerCase()).toContain("keypad 7");
   });
 });

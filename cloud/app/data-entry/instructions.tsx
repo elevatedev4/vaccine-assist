@@ -44,7 +44,7 @@ export function DataEntryInstructions() {
             yet).
           </li>
           <li>
-            Press <kbd style={styles.kbd}>Ctrl</kbd> + <kbd style={styles.kbd}>Keypad 2</kbd> from the Rx Profile
+            Press <kbd style={styles.kbd}>Ctrl</kbd> + <kbd style={styles.kbd}>Keypad 7</kbd> from the Rx Profile
             screen — this opens the guided vaccine entry popup.
           </li>
         </ol>
