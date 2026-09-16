@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser, extractBearerToken } from "@/lib/auth";
 import { getSessionIdFromToken } from "@/lib/jwt";
-import { labelDeviceFromUserAgent } from "@/lib/session-device-label";
+import { groupSessionsByDevice } from "@/lib/session-grouping";
 import { isMissingFunctionError } from "@/lib/schema-degradation";
 
 /**
@@ -19,6 +19,13 @@ import { isMissingFunctionError } from "@/lib/schema-degradation";
  * `isCurrent` is matched against the `session_id` claim on the caller's
  * own access token (decoded, not re-verified — the token was already
  * verified by requireAuthenticatedUser's supabase.auth.getUser call).
+ *
+ * Rows are grouped by device before being sent to the client (Will,
+ * 2026-09-16: "is there a way to not show duplicate sessions if it's the
+ * same computer?") — see lib/session-grouping.ts for the heuristic and
+ * its known limits. One group can fold together several real
+ * auth.sessions rows; the client's single Revoke button for a group
+ * revokes every id in it (sessionIds), one DELETE call per id.
  */
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -45,15 +52,10 @@ export async function GET(request: Request) {
       updated_at: string;
       refreshed_at: string | null;
       user_agent: string | null;
+      ip: string | null;
     }>;
 
-    const sessions = rows.map((row) => ({
-      id: row.id,
-      device: labelDeviceFromUserAgent(row.user_agent),
-      createdAt: row.created_at,
-      lastActiveAt: row.refreshed_at ?? row.updated_at,
-      isCurrent: currentSessionId !== null && row.id === currentSessionId,
-    }));
+    const sessions = groupSessionsByDevice(rows, currentSessionId);
 
     return NextResponse.json({ sessions });
   } catch (err) {

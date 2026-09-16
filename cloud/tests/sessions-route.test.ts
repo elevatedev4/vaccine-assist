@@ -36,6 +36,9 @@ describe("GET /api/sessions", () => {
   });
 
   it("lists sessions with a friendly device label and isCurrent matched by session_id claim", async () => {
+    // Distinct user_agent AND distinct ip on these two rows — they must
+    // land in separate device groups (see tests/session-grouping.test.ts
+    // for the grouping behavior itself).
     const rows = [
       {
         id: "sess-current",
@@ -44,6 +47,7 @@ describe("GET /api/sessions", () => {
         refreshed_at: "2026-09-12T00:00:00.000Z",
         user_agent:
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        ip: "203.0.113.5",
       },
       {
         id: "sess-desktop",
@@ -51,6 +55,7 @@ describe("GET /api/sessions", () => {
         updated_at: "2026-08-20T00:00:00.000Z",
         refreshed_at: null,
         user_agent: null,
+        ip: "203.0.113.9",
       },
     ];
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseRpc(rows) as never);
@@ -66,6 +71,8 @@ describe("GET /api/sessions", () => {
           createdAt: "2026-09-01T00:00:00.000Z",
           lastActiveAt: "2026-09-12T00:00:00.000Z",
           isCurrent: true,
+          sessionCount: 1,
+          sessionIds: ["sess-current"],
         },
         {
           id: "sess-desktop",
@@ -73,8 +80,45 @@ describe("GET /api/sessions", () => {
           createdAt: "2026-08-01T00:00:00.000Z",
           lastActiveAt: "2026-08-20T00:00:00.000Z",
           isCurrent: false,
+          sessionCount: 1,
+          sessionIds: ["sess-desktop"],
         },
       ],
+    });
+  });
+
+  it("groups sessions from the same device (same user_agent + ip) into one row", async () => {
+    const rows = [
+      {
+        id: "sess-launch-2",
+        created_at: "2026-09-05T00:00:00.000Z",
+        updated_at: "2026-09-05T00:00:00.000Z",
+        refreshed_at: "2026-09-05T00:00:00.000Z",
+        user_agent: null,
+        ip: "203.0.113.9",
+      },
+      {
+        id: "sess-launch-1",
+        created_at: "2026-08-01T00:00:00.000Z",
+        updated_at: "2026-08-01T00:00:00.000Z",
+        refreshed_at: null,
+        user_agent: null,
+        ip: "203.0.113.9",
+      },
+    ];
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabaseRpc(rows) as never);
+
+    const response = await GET(authedRequest(tokenWithSessionId("sess-launch-2")));
+    const body = await response.json();
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0]).toEqual({
+      id: "sess-launch-2",
+      device: "Windows desktop app",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      lastActiveAt: "2026-09-05T00:00:00.000Z",
+      isCurrent: true,
+      sessionCount: 2,
+      sessionIds: ["sess-launch-2", "sess-launch-1"],
     });
   });
 
