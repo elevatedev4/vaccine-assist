@@ -266,8 +266,21 @@ public partial class CloudPageView : UserControl
                     WebView.Visibility = Visibility.Visible;
                     FailurePanel.Visibility = Visibility.Collapsed;
                     InitStatusTextBlock.Visibility = Visibility.Collapsed;
-                    NavigateToPath("/");
-                    InitializedLate?.Invoke(this, EventArgs.Empty);
+
+                    // REVIEW FIX (2026-09-16, non-blocking): if App.xaml.cs
+                    // is subscribed, its handler is about to run
+                    // PerformDesktopHandoffAsync, which navigates ("/",
+                    // signed in) as part of the handoff itself — navigating
+                    // here too would just be a visible double-navigation
+                    // flash. No subscriber (e.g. MacroCodesWindow never
+                    // subscribes to this at all) means nobody else will
+                    // navigate, so fall back to a plain "/" load.
+                    var lateSubscriber = InitializedLate;
+                    if (lateSubscriber is null)
+                    {
+                        NavigateToPath("/");
+                    }
+                    lateSubscriber?.Invoke(this, EventArgs.Empty);
                 });
             },
             TaskScheduler.Default);
@@ -286,9 +299,15 @@ public partial class CloudPageView : UserControl
         WebView.CoreWebView2.Navigate(BuildUrl(relativePath));
     }
 
+    /// <summary>REVIEW FIX (2026-09-16, blocker): also collapses
+    /// InitStatusTextBlock — without this, a failure/timeout that lands
+    /// here after the 3s hint was already shown left "Starting the
+    /// embedded browser…" rendered on top of FailurePanel (both live in
+    /// the same Grid).</summary>
     private void ShowInitFailure(Exception ex)
     {
         WebView.Visibility = Visibility.Collapsed;
+        InitStatusTextBlock.Visibility = Visibility.Collapsed;
         FailurePanel.Visibility = Visibility.Visible;
         FailureDetailTextBlock.Text = $"{ex.GetType().Name}: {ex.Message}";
     }
