@@ -43,7 +43,40 @@ namespace VaccineAssist.Desktop.Views;
 public partial class CloudPageView : UserControl
 {
     private readonly string _cloudApiBaseUrl;
+
+    /// <summary>True once an init attempt has run and resolved — on
+    /// success, on a real exception, OR on a timeout (NOT the same as "the
+    /// WebView2 is actually ready"; see <see cref="IsCoreWebView2Ready"/>
+    /// for that). Guards against automatic callers (Loaded,
+    /// PerformDesktopHandoffAsync, ClearBrowsingDataAsync) re-waiting on an
+    /// already-resolved attempt. Only RetryButton_OnClick clears it.</summary>
     private bool _initialized;
+
+    /// <summary>The actual (possibly still in-flight) init call. Kept
+    /// across a timeout so Retry — and the timeout's own late-completion
+    /// observer — both watch the SAME attempt instead of a second one ever
+    /// calling EnsureCoreWebView2Async concurrently on this control (WebView2
+    /// does not support that). Only replaced once the previous attempt
+    /// actually faulted outright (not just timed out).</summary>
+    private Task? _initTask;
+
+    /// <summary>Guards against attaching more than one late-completion
+    /// continuation to the same <see cref="_initTask"/> (e.g. if Retry
+    /// itself also times out while reusing it) — harmless either way, just
+    /// avoids duplicate log lines.</summary>
+    private bool _lateCompletionObserved;
+
+    /// <summary>
+    /// Fires once, on the UI thread, if a WebView2 init that had already
+    /// been reported as a timeout later completes successfully on its own
+    /// (see ObserveLateInitCompletion) — by the time this fires, the
+    /// failure panel is already hidden and the WebView is already showing
+    /// "/". App.xaml.cs's PrepareMainCloudPageViewAsync subscribes to this
+    /// so a slow-but-eventually-successful start can still redo the
+    /// desktop sign-in handoff instead of leaving the embedded page on its
+    /// own separate login form.
+    /// </summary>
+    public event EventHandler? InitializedLate;
 
     public CloudPageView(string cloudApiBaseUrl)
     {
@@ -51,6 +84,14 @@ public partial class CloudPageView : UserControl
         _cloudApiBaseUrl = cloudApiBaseUrl ?? "";
         Loaded += CloudPageView_OnLoaded;
     }
+
+    /// <summary>True only once WebView.EnsureCoreWebView2Async has actually
+    /// succeeded — unlike <see cref="_initialized"/>, this is false the
+    /// whole time a timed-out attempt is still (silently) running in the
+    /// background. App.xaml.cs uses this right after EnsureInitializedAsync
+    /// to decide whether to attempt the desktop sign-in handoff now, or
+    /// wait for <see cref="InitializedLate"/> instead.</summary>
+    public bool IsCoreWebView2Ready => WebView.CoreWebView2 is not null;
 
     private string BuildUrl(string relativePath)
         => $"{_cloudApiBaseUrl.TrimEnd('/')}{relativePath}";
@@ -77,16 +118,14 @@ public partial class CloudPageView : UserControl
         NavigateToPath("/");
     }
 
-    /// <summary>Caps SharedCloudWebView2Environment.GetAsync + EnsureCoreWebView2Async
-    /// combined — see EnsureInitializedAsync's own doc comment for why this
-    /// exists at all.</summary>
-    private static readonly TimeSpan InitTimeout = TimeSpan.FromSeconds(12);
-
     /// <summary>
-    /// Idempotent — safe to call more than once (only the first call does
-    /// anything). Never throws: a WebView2 init failure is caught and
-    /// shown as this control's own in-place failure panel, same as
-    /// before.
+    /// Idempotent — safe to call more than once; automatic callers
+    /// (Loaded, PerformDesktopHandoffAsync, ClearBrowsingDataAsync)
+    /// short-circuit once an attempt has resolved (see
+    /// <see cref="_initialized"/>'s doc comment) — only RetryButton_OnClick
+    /// clears that flag to force another wait. Never throws: a WebView2
+    /// init failure is caught and shown as this control's own in-place
+    /// failure panel, same as before.
     ///
     /// TIMEOUT FIX (Will, 2026-09-16 — "I just tried to sign in and it's
     /// just not doing anything"): neither SharedCloudWebView2Environment.
@@ -98,11 +137,25 @@ public partial class CloudPageView : UserControl
     /// ever ran. A hang here used to be silent and permanent: nothing else
     /// in the call chain (PrepareMainCloudPageViewAsync/
     /// PerformDesktopHandoffAsync) had a way to notice, so the Login/splash
-    /// window just sat there forever. Now capped at InitTimeout, after
-    /// which this behaves exactly like any other init failure (the
+    /// window just sat there forever. Capped at InitWaitPolicy.Timeout,
+    /// after which this behaves exactly like any other init failure (the
     /// existing failure panel + Retry button) instead of hanging — see
     /// LoginViewModel.SetBusy's doc comment for the other half of this fix
     /// (why the button/spinner ALSO looked idle during this hang).
+    ///
+    /// TIMEOUT RAISED (Will, 2026-09-16 — same-day follow-up: a slow but
+    /// otherwise healthy WebView2 Evergreen start on Will's own PC took
+    /// longer than the original 12s cap, especially right after a rebuild
+    /// with a cold %LocalAppData%\VaccineAssist\webview2 user-data folder,
+    /// so a slow-but-successful start was being shown as a hard failure).
+    /// The cap moves to InitWaitPolicy.Timeout (45s); past
+    /// InitWaitPolicy.HintDelay (3s) an in-place "Starting the embedded
+    /// browser…" status shows so the wait doesn't look like a frozen page.
+    /// If the timeout still fires, the abandoned attempt is NOT cancelled
+    /// (WebView2 has no CancellationToken here) — ObserveLateInitCompletion
+    /// keeps watching it, and <see cref="InitializedLate"/> fires if it
+    /// eventually succeeds anyway (see that method and App.xaml.cs's
+    /// PrepareMainCloudPageViewAsync).
     /// </summary>
     public async Task EnsureInitializedAsync()
     {
@@ -112,23 +165,48 @@ public partial class CloudPageView : UserControl
         }
         _initialized = true;
 
+        // Reuse a still-in-flight attempt (Retry after a timeout, or a
+        // second caller racing the first) instead of ever calling
+        // EnsureCoreWebView2Async a second time on this control — WebView2
+        // does not support that. A previous attempt that faulted outright
+        // (a real exception, not a timeout) gets a genuinely fresh attempt.
+        var initTask = _initTask;
+        if (initTask is null || initTask.IsFaulted)
+        {
+            initTask = _initTask = InitializeWebView2Async();
+            _lateCompletionObserved = false;
+        }
+
         try
         {
             WebView.Visibility = Visibility.Visible;
             FailurePanel.Visibility = Visibility.Collapsed;
+            InitStatusTextBlock.Visibility = Visibility.Collapsed;
 
-            var initTask = InitializeWebView2Async();
-            var timeoutTask = Task.Delay(InitTimeout);
-            var completed = await Task.WhenAny(initTask, timeoutTask);
+            var hintDelayTask = Task.Delay(InitWaitPolicy.HintDelay);
+            var timeoutTask = Task.Delay(InitWaitPolicy.Timeout);
+
+            var completed = await Task.WhenAny(initTask, hintDelayTask, timeoutTask);
+            if (completed == hintDelayTask)
+            {
+                InitStatusTextBlock.Visibility = Visibility.Visible;
+                completed = await Task.WhenAny(initTask, timeoutTask);
+            }
+
             if (completed == timeoutTask)
             {
-                AppFileLog.Log($"[CloudPageView] WebView2 init timed out after {InitTimeout.TotalSeconds:0}s");
-                ObserveLateInitCompletion(initTask);
+                AppFileLog.Log($"[CloudPageView] WebView2 init timed out after {InitWaitPolicy.Timeout.TotalSeconds:0}s");
+                if (!_lateCompletionObserved)
+                {
+                    _lateCompletionObserved = true;
+                    ObserveLateInitCompletion(initTask);
+                }
                 ShowInitFailure(new TimeoutException("The embedded browser took too long to start."));
                 return;
             }
 
             await initTask; // propagate a real init exception into the catch below
+            InitStatusTextBlock.Visibility = Visibility.Collapsed;
         }
         catch (Exception ex)
         {
@@ -140,15 +218,24 @@ public partial class CloudPageView : UserControl
     private async Task InitializeWebView2Async()
     {
         var environment = await SharedCloudWebView2Environment.GetAsync();
+
+        var stopwatch = Stopwatch.StartNew();
         await WebView.EnsureCoreWebView2Async(environment);
+        stopwatch.Stop();
+        AppFileLog.Log($"[CloudPageView] EnsureCoreWebView2Async completed in {stopwatch.ElapsedMilliseconds}ms");
     }
 
     /// <summary>Same reasoning as StartupSignInCoordinator.ObserveLateCompletion
     /// and LoginViewModel.ObserveLateCompletion — an abandoned init isn't
     /// cancelled (WebView2's own APIs here take no CancellationToken),
-    /// just no longer waited on; this only keeps its eventual
-    /// completion/fault from becoming an UnobservedTaskException.</summary>
-    private static void ObserveLateInitCompletion(Task task)
+    /// just no longer waited on. Beyond logging the eventual completion
+    /// (keeping it from becoming an UnobservedTaskException), a LATE
+    /// SUCCESS now also recovers the UI on the dispatcher thread — hides
+    /// the failure panel, re-shows the WebView, navigates back to "/", and
+    /// raises <see cref="InitializedLate"/> — instead of leaving staff
+    /// stuck on the failure panel forever for what turned out to be just a
+    /// slow start.</summary>
+    private void ObserveLateInitCompletion(Task task)
     {
         _ = task.ContinueWith(
             t =>
@@ -157,11 +244,31 @@ public partial class CloudPageView : UserControl
                 {
                     var ex = t.Exception?.GetBaseException();
                     AppFileLog.Log($"[CloudPageView] late WebView2 init completion after timeout: faulted ({ex?.GetType().Name}: {ex?.Message})");
+                    return;
                 }
-                else if (t.IsCompletedSuccessfully)
+
+                if (!t.IsCompletedSuccessfully)
                 {
-                    AppFileLog.Log("[CloudPageView] late WebView2 init completion after timeout: succeeded");
+                    return;
                 }
+
+                AppFileLog.Log("[CloudPageView] late WebView2 init completion after timeout: succeeded");
+                Dispatcher.Invoke(() =>
+                {
+                    if (FailurePanel.Visibility != Visibility.Visible)
+                    {
+                        // Already recovered some other way (e.g. an
+                        // explicit Retry reused this same task and its own
+                        // await already resolved it) — nothing left to do.
+                        return;
+                    }
+
+                    WebView.Visibility = Visibility.Visible;
+                    FailurePanel.Visibility = Visibility.Collapsed;
+                    InitStatusTextBlock.Visibility = Visibility.Collapsed;
+                    NavigateToPath("/");
+                    InitializedLate?.Invoke(this, EventArgs.Empty);
+                });
             },
             TaskScheduler.Default);
     }
@@ -186,7 +293,12 @@ public partial class CloudPageView : UserControl
         FailureDetailTextBlock.Text = $"{ex.GetType().Name}: {ex.Message}";
     }
 
-    /// <summary>Lets staff retry without restarting the whole app.</summary>
+    /// <summary>Lets staff retry without restarting the whole app.
+    /// RETRY-WHILE-IN-FLIGHT FIX (Will, 2026-09-16): if the prior attempt
+    /// only timed out (rather than faulting outright), EnsureInitializedAsync
+    /// reuses that same still-running _initTask instead of starting a
+    /// second, concurrent EnsureCoreWebView2Async call on this control —
+    /// only the timeout/hint window actually restarts.</summary>
     private async void RetryButton_OnClick(object sender, RoutedEventArgs e)
     {
         _initialized = false; // let EnsureInitializedAsync actually re-run

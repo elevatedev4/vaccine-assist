@@ -20,6 +20,18 @@
     <Grid>
         <wv2:WebView2 x:Name="WebView"/>
 
+        <!--
+            TIMEOUT FIX (Will, 2026-09-16): shown after ~3s if WebView2
+            still hasn't started (see Services/InitWaitPolicy.cs) so a
+            slow-but-eventually-successful start doesn't just look like a
+            blank/frozen page for up to 45s. Hidden again once
+            initialization resolves (success OR failure/timeout, at which
+            point FailurePanel takes over).
+        -->
+        <TextBlock x:Name="InitStatusTextBlock" Text="Starting the embedded browser…"
+                   Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Center"
+                   FontSize="13" Foreground="Gray"/>
+
         <StackPanel x:Name="FailurePanel" Visibility="Collapsed"
                     VerticalAlignment="Center" HorizontalAlignment="Center" Margin="32">
             <TextBlock Text="Couldn't load this page." FontWeight="Bold" FontSize="14"
