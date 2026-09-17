@@ -146,6 +146,26 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 ///      candidate) is showing — see HasBlockingPioneerWindow. That keeps
 ///      the loop in its dismiss-and-recheck cycle instead of handing
 ///      control to the next step with a modal still up.
+///
+/// AUTO-SUGGEST DROPDOWN TIMEOUT FIX (V-T41, Will's run tonight, 2026-09-13
+/// 18:53): app.log showed this step time out (0x80131505) after repeatedly
+/// finding a Pioneer-owned top-level window with an empty title and window
+/// class 'Auto-Suggest Dropdown' (Pioneer's own autocomplete popup for an
+/// Add New Rx form field), treating it as an unrecognized pre-entry dialog,
+/// and ESCing it every ~7s — which likely cancelled the underlying
+/// field/form each time, so the popup (or the loop) kept coming back until
+/// the budget ran out. DialogClassifier.IsTransientWindow (pure, tested in
+/// DialogClassifierTests.cs) now recognizes transient popup window classes
+/// (autocomplete dropdowns, tooltips, and similarly-shaped untitled
+/// non-dialog-frame windows) BEFORE any ESC/classification decision is
+/// made — TryDismissNextStrayPioneerWindow skips them entirely (never ESCs,
+/// logs "ignoring transient window class X" once per handle) and
+/// HasBlockingPioneerWindow also ignores them so a still-open autocomplete
+/// popup can never block readiness once it's no longer being ESC'd. Real
+/// pre-entry dialogs (Priority, Scan Hard Copy, Patient on Cycle Fill) are
+/// unaffected — they always carry a title and never match a transient
+/// window class.
+///
 /// Also: TryDismissNextStrayPioneerWindow (an UNRECOGNIZED top-level
 /// window — matched no known dialog title) now classifies it by title
 /// AND visible button/text content before ESCing blind — "contains
@@ -276,6 +296,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         context.Log($"[{Name}] Sent F3 (took {f3Stopwatch.ElapsedMilliseconds}ms).");
 
         var strayAttempts = new Dictionary<IntPtr, int>();
+        var loggedTransientHandles = new HashSet<IntPtr>();
         var priorityAttempt = 0;
         AutomationElement? addNewRxWindow = null;
 
@@ -308,7 +329,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
 
         string? TryDismissNext() =>
-            TryDismissNextPendingDialogOrStrayWindow(attachedWindow, baselineHandles, previousHandle, mainProcessId, strayAttempts, ref priorityAttempt, context.Log);
+            TryDismissNextPendingDialogOrStrayWindow(attachedWindow, baselineHandles, previousHandle, mainProcessId, strayAttempts, loggedTransientHandles, ref priorityAttempt, context.Log);
 
         var loopStopwatch = Stopwatch.StartNew();
         CombinedPreEntryLoopResult loopResult;
@@ -551,7 +572,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// </summary>
     private string? TryDismissNextPendingDialogOrStrayWindow(
         AutomationElement attachedWindow, IReadOnlySet<IntPtr> baselineHandles, IntPtr mainHandle, int mainProcessId,
-        Dictionary<IntPtr, int> strayAttempts, ref int priorityAttempt, Action<string> log)
+        Dictionary<IntPtr, int> strayAttempts, HashSet<IntPtr> loggedTransientHandles, ref int priorityAttempt, Action<string> log)
     {
         if (TryHandlePriorityIfShowing(attachedWindow, mainHandle, mainProcessId, ref priorityAttempt, log))
         {
@@ -563,7 +584,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             if (title == PreEntryDialogTitles.Priority) continue; // handled above — select+confirm, not ESC
             if (TryDismissIfShowing(attachedWindow, title, mainHandle, mainProcessId)) return title;
         }
-        return TryDismissNextStrayPioneerWindow(baselineHandles, mainHandle, mainProcessId, strayAttempts, ref priorityAttempt, log);
+        return TryDismissNextStrayPioneerWindow(baselineHandles, mainHandle, mainProcessId, strayAttempts, loggedTransientHandles, ref priorityAttempt, log);
     }
 
     /// <summary>
@@ -929,7 +950,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// TryDismissIfShowing's title match).</summary>
     private string? TryDismissNextStrayPioneerWindow(
         IReadOnlySet<IntPtr> baselineHandles, IntPtr mainHandle, int mainProcessId, Dictionary<IntPtr, int> attempts,
-        ref int priorityAttempt, Action<string> log)
+        HashSet<IntPtr> loggedTransientHandles, ref int priorityAttempt, Action<string> log)
     {
         const int maxAttemptsPerWindow = 3;
         try
@@ -939,6 +960,24 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 var handle = info.Handle;
                 if (handle == IntPtr.Zero) continue;
                 if (baselineHandles.Contains(handle)) continue;
+
+                // V-T41 (see class doc comment's "Auto-Suggest Dropdown"
+                // timeout fix): a transient popup (autocomplete dropdown,
+                // tooltip, etc.) is NEVER a pre-entry dialog — it must not
+                // be ESC'd (that likely also cancels the field/form
+                // underneath, which is exactly how the 18:53 run's repeat-
+                // every-7s loop happened) or counted against
+                // maxAttemptsPerWindow. Logged once per handle so it's
+                // visible in app.log without spamming every ~250ms tick.
+                if (DialogClassifier.IsTransientWindow(info))
+                {
+                    if (loggedTransientHandles.Add(handle))
+                    {
+                        log($"[{Name}] Ignoring transient window class '{info.ClassName}'.");
+                    }
+                    continue;
+                }
+
                 attempts.TryGetValue(handle, out var count);
                 if (count >= maxAttemptsPerWindow) continue;
 
@@ -1069,6 +1108,13 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 var handle = info.Handle;
                 if (handle == IntPtr.Zero || handle == foundHandle) continue;
                 if (baselineHandles.Contains(handle)) continue;
+                // V-T41: a transient popup (Auto-Suggest Dropdown, tooltip,
+                // etc.) never blocks readiness — see class doc comment and
+                // DialogClassifier.IsTransientWindow. Without this, a
+                // still-open autocomplete popup over an otherwise-ready Add
+                // New Rx screen would make this loop refuse "ready" forever
+                // once TryDismissNextStrayPioneerWindow stopped ESCing it.
+                if (DialogClassifier.IsTransientWindow(info)) continue;
 
                 bool isEnabled;
                 try { isEnabled = window.Properties.IsEnabled.ValueOrDefault; }

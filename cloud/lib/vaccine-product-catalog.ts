@@ -340,6 +340,23 @@ const CATALOG: ProductCatalogEntry[] = [
     source: "CDC flu price list",
   },
   {
+    // mFLUSIVA (V-T45 prep, Will 2026-09-16, via the coordinator) —
+    // Moderna's mRNA flu vaccine (see lib/macro-catalog.ts's "Flu mRNA
+    // (50+)" type and lib/vaccine-group-catalog.ts's Flu namePrefix
+    // entry). On-file vaccine.name is literally "mFLUSIVA 2026-27" (not
+    // an unversioned base name like Fluad/Boostrix above), so match.name
+    // is the exact on-file string. 10-dose multi-dose vial (0.5 mL/dose
+    // per lib/entry-defaults.ts's mflusiva quantity default — 5 mL vial
+    // / 0.5 mL per dose = 10 doses, same MDV math as the Afluria
+    // MDV/Flucelvax MDV entries above).
+    match: { ndc: "80777050020", name: "mFLUSIVA 2026-27" },
+    productName: "mFLUSIVA (2026-27, MDV)",
+    ageRange: "50+",
+    dosesPerPackage: 10, // 5 mL MDV = 10 doses
+    packageNdc: "80777-0500-20",
+    source: "Will's brief (V-T45 prep, 2026-09-16) — NDC/doses-per-package as given, not independently verified against a manufacturer PI.",
+  },
+  {
     match: { name: "Priorix" },
     productName: "Priorix",
     ageRange: "12 mo+",
