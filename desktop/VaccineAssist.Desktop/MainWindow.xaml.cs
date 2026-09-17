@@ -128,13 +128,17 @@ public partial class MainWindow : Window
     private const int MacroCodesHotKeyId = 2;
 
     /// <param name="cloudPageView">
-    /// Already constructed AND initialized by App.xaml.cs's
-    /// PrepareMainCloudPageViewAsync — Part 1 of Will's brief ("Require
-    /// sign in when the app loads before anything is shown") needs the
-    /// WebView2 created and, for a fresh sign-in, handed off to the cloud
-    /// session BEFORE this window (or even the "Signing in…" splash's
-    /// replacement) is shown, so MainWindow itself never creates its own
-    /// CloudPageView — it just hosts the one it's handed.
+    /// A freshly-constructed, NOT-yet-initialized CloudPageView (see its
+    /// autoInitializeOnLoad: false constructor argument) — App.xaml.cs's
+    /// ShowMainWindowAndInitializeAsync hosts it here and calls Show() on
+    /// THIS window BEFORE running WebView2 init/the cloud sign-in handoff,
+    /// not after (ORDERING FIX, Will's app.log, 2026-09-16: a WPF WebView2
+    /// control can't create its CoreWebView2Controller until it has a
+    /// parent HWND, i.e. until the window hosting it has actually been
+    /// shown — see that method's own doc comment for the full diagnosis).
+    /// MainWindow itself never creates its own CloudPageView — it just
+    /// hosts the one it's handed, blank at first, then showing "/" once
+    /// App.xaml.cs's init+handoff finishes.
     /// </param>
     public MainWindow(
         IAuthService authService,

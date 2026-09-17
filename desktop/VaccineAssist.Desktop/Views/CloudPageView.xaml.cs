@@ -28,17 +28,29 @@ namespace VaccineAssist.Desktop.Views;
 /// LIFECYCLE CHANGE (V-T-desktop-handoff, Part 1): this control used to
 /// take a target relativePath at construction time and always navigate to
 /// it the first time it loaded into a visual tree (see git history for
-/// the old five-tabs-lazy-load version). It's now built and initialized
-/// EARLIER than that — App.xaml.cs's PrepareMainCloudPageViewAsync
-/// constructs this BEFORE MainWindow even exists (while the "Signing
-/// in…" splash, or the LoginWindow, is still up), calls
-/// EnsureInitializedAsync() explicitly, and — if a just-completed sign-in
-/// produced tokens — PerformDesktopHandoffAsync() before MainWindow is
-/// shown at all, so the embedded page lands on "/" already signed in
-/// instead of showing its own separate cloud login form. This instance is
-/// then handed into MainWindow's constructor to host as-is; Loaded (which
-/// still fires once it's added to MainWindow's visual tree) is a no-op at
-/// that point since _initialized is already true.
+/// the old five-tabs-lazy-load version). App.xaml.cs's
+/// ShowMainWindowAndInitializeAsync now drives its whole init+handoff
+/// lifecycle explicitly instead: it constructs this control with
+/// autoInitializeOnLoad: false (so Loaded is a no-op — see that field's
+/// doc comment), hands it straight into MainWindow's constructor, Shows()
+/// MainWindow, and ONLY THEN calls EnsureInitializedAsync() and — if a
+/// just-completed sign-in produced tokens — PerformDesktopHandoffAsync(),
+/// so the embedded page lands on "/" already signed in instead of showing
+/// its own separate cloud login form.
+///
+/// ORDERING FIX (Will's app.log, 2026-09-16): this control's WebView2
+/// can't create its CoreWebView2Controller until it has a parent HWND,
+/// which only exists once the hosting window (MainWindow) has actually
+/// been Show()n — so the init call above must come AFTER MainWindow.Show(),
+/// never before. The old order (this control initialized before MainWindow
+/// even existed) meant EnsureCoreWebView2Async could never finish before
+/// EnsureInitializedAsync's own timeout — see App.xaml.cs's
+/// ShowMainWindowAndInitializeAsync for the full diagnosis. MainWindow
+/// itself is kept out of view (ShowActivated: false, behind whichever
+/// "Signing in…" window is already up) for the brief window between Show()
+/// and the handoff finishing, so there's no visible blank/unauthenticated
+/// flash even though this control is now added to a visual tree well
+/// before it's actually ready.
 /// </summary>
 public partial class CloudPageView : UserControl
 {
@@ -71,17 +83,36 @@ public partial class CloudPageView : UserControl
     /// been reported as a timeout later completes successfully on its own
     /// (see ObserveLateInitCompletion) — by the time this fires, the
     /// failure panel is already hidden and the WebView is already showing
-    /// "/". App.xaml.cs's PrepareMainCloudPageViewAsync subscribes to this
-    /// so a slow-but-eventually-successful start can still redo the
+    /// "/". App.xaml.cs's InitializeAndHandoffCloudPageViewAsync subscribes
+    /// to this so a slow-but-eventually-successful start can still redo the
     /// desktop sign-in handoff instead of leaving the embedded page on its
     /// own separate login form.
     /// </summary>
     public event EventHandler? InitializedLate;
 
-    public CloudPageView(string cloudApiBaseUrl)
+    /// <summary>False for the single MainWindow-hosted instance
+    /// App.xaml.cs's ShowMainWindowAndInitializeAsync constructs — that
+    /// flow drives EnsureInitializedAsync/NavigateToPath itself, in a
+    /// specific order (init, then a token handoff, BEFORE any "/"
+    /// navigation happens) so the embedded page never flashes its own
+    /// unauthenticated login form before the handoff lands. Leaving
+    /// Loaded's default auto-init+navigate-to-"/" behavior on here would
+    /// race that: Loaded fires as soon as this control enters MainWindow's
+    /// visual tree, i.e. as soon as MainWindow.Show() is called — which is
+    /// exactly when App.xaml.cs's own explicit EnsureInitializedAsync call
+    /// is ABOUT to run, not after it — and EnsureInitializedAsync's
+    /// _initialized guard means only the FIRST caller's await actually
+    /// waits for the init to finish; a second, redundant call just returns
+    /// immediately. True (the default) for any other caller that simply
+    /// drops a CloudPageView into a visual tree and expects it to load "/"
+    /// on its own with no external orchestration.</summary>
+    private readonly bool _autoInitializeOnLoad;
+
+    public CloudPageView(string cloudApiBaseUrl, bool autoInitializeOnLoad = true)
     {
         InitializeComponent();
         _cloudApiBaseUrl = cloudApiBaseUrl ?? "";
+        _autoInitializeOnLoad = autoInitializeOnLoad;
         Loaded += CloudPageView_OnLoaded;
     }
 
@@ -100,16 +131,17 @@ public partial class CloudPageView : UserControl
     /// Loaded can fire more than once for a UserControl (e.g. if it's ever
     /// removed and re-added to the visual tree) — _initialized guards
     /// against re-running EnsureCoreWebView2Async/Navigate on a control
-    /// that already has a live WebView2. Also covers the normal case now
-    /// (see class doc comment): when App.xaml.cs already called
-    /// EnsureInitializedAsync/PerformDesktopHandoffAsync before this
-    /// control was ever added to MainWindow's visual tree, this is a
-    /// straight no-op — the page is already showing whatever the handoff
-    /// (or its "/" fallback) already navigated it to.
+    /// that already has a live WebView2. Also a straight no-op whenever
+    /// _autoInitializeOnLoad is false (see that field's doc comment) — the
+    /// normal case now for MainWindow's single instance, since
+    /// App.xaml.cs's ShowMainWindowAndInitializeAsync is fully responsible
+    /// for calling EnsureInitializedAsync/PerformDesktopHandoffAsync/
+    /// NavigateToPath itself, in that specific order, AFTER this control
+    /// has already loaded into MainWindow's visual tree.
     /// </summary>
     private async void CloudPageView_OnLoaded(object sender, RoutedEventArgs e)
     {
-        if (_initialized)
+        if (_initialized || !_autoInitializeOnLoad)
         {
             return;
         }
@@ -135,7 +167,7 @@ public partial class CloudPageView : UserControl
     /// handoff request reached the server at all — which only fits this
     /// step hanging before PerformDesktopHandoffAsync's own NavigateWithWebResourceRequest
     /// ever ran. A hang here used to be silent and permanent: nothing else
-    /// in the call chain (PrepareMainCloudPageViewAsync/
+    /// in the call chain (App.xaml.cs's init+handoff orchestration/
     /// PerformDesktopHandoffAsync) had a way to notice, so the Login/splash
     /// window just sat there forever. Capped at InitWaitPolicy.Timeout,
     /// after which this behaves exactly like any other init failure (the
@@ -155,7 +187,7 @@ public partial class CloudPageView : UserControl
     /// (WebView2 has no CancellationToken here) — ObserveLateInitCompletion
     /// keeps watching it, and <see cref="InitializedLate"/> fires if it
     /// eventually succeeds anyway (see that method and App.xaml.cs's
-    /// PrepareMainCloudPageViewAsync).
+    /// InitializeAndHandoffCloudPageViewAsync).
     /// </summary>
     public async Task EnsureInitializedAsync()
     {
@@ -362,6 +394,17 @@ public partial class CloudPageView : UserControl
     /// [Startup] line and moves on; the embedded page simply falls back to
     /// showing its own cloud sign-in form, exactly as if this had never
     /// been attempted. Never logs the token values themselves.
+    ///
+    /// DIAGNOSTIC FIX (Will's brief, 2026-09-16 — late-recovery handoff
+    /// visibility): every false return now also logs its own concrete
+    /// reason ([CloudPageView] PerformDesktopHandoffAsync: ...) — not
+    /// ready/skipped, timed out, or a completed-but-unsuccessful navigation
+    /// (WebErrorStatus, plus HttpStatusCode when the installed WebView2
+    /// Runtime exposes it) — so the caller's generic "[Startup] ... failed
+    /// or timed out" line (used both for the normal and the InitializedLate
+    /// late-recovery path) always has a preceding line naming the actual
+    /// cause. An outright exception still goes through AppFileLog.LogException
+    /// below, which already captures the full type/message/stack chain.
     /// </summary>
     public async Task<bool> PerformDesktopHandoffAsync(string accessToken, string refreshToken, TimeSpan timeout)
     {
@@ -369,6 +412,7 @@ public partial class CloudPageView : UserControl
         var coreWebView2 = WebView.CoreWebView2;
         if (coreWebView2 is null)
         {
+            AppFileLog.Log("[CloudPageView] PerformDesktopHandoffAsync: skipped (CoreWebView2 not ready)");
             return false;
         }
 
@@ -391,8 +435,13 @@ public partial class CloudPageView : UserControl
                 postDataStream,
                 "Content-Type: application/json\r\nX-Vaccine-Assist-Desktop: 1\r\n");
 
+            CoreWebView2NavigationCompletedEventArgs? completedArgs = null;
             var completionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            navigationCompletedHandler = (_, e) => completionSource.TrySetResult(e.IsSuccess);
+            navigationCompletedHandler = (_, e) =>
+            {
+                completedArgs = e;
+                completionSource.TrySetResult(e.IsSuccess);
+            };
             coreWebView2.NavigationCompleted += navigationCompletedHandler;
 
             try
@@ -403,10 +452,34 @@ public partial class CloudPageView : UserControl
                 var completed = await Task.WhenAny(completionSource.Task, timeoutTask);
                 if (completed != completionSource.Task)
                 {
+                    AppFileLog.Log($"[CloudPageView] PerformDesktopHandoffAsync: timed out after {timeout.TotalSeconds:0}s waiting for the desktop-handoff navigation to complete");
                     return false; // timed out
                 }
 
-                return await completionSource.Task;
+                var success = await completionSource.Task;
+                if (!success)
+                {
+                    // HttpStatusCode was added to CoreWebView2NavigationCompletedEventArgs
+                    // in a later WebView2 Runtime API set than this SDK's
+                    // minimum — reading it against an older installed
+                    // Evergreen Runtime can throw. Never worth losing the
+                    // WebErrorStatus detail (or failing this already-false
+                    // result) over that.
+                    int? httpStatusCode = null;
+                    try
+                    {
+                        httpStatusCode = completedArgs?.HttpStatusCode;
+                    }
+                    catch (Exception)
+                    {
+                        // Older Runtime — WebErrorStatus alone is still logged below.
+                    }
+
+                    var webErrorStatusName = completedArgs?.WebErrorStatus.ToString() ?? "unknown";
+                    AppFileLog.Log($"[CloudPageView] PerformDesktopHandoffAsync: navigation did not succeed ({DesktopHandoffFailureDescription.Describe(webErrorStatusName, httpStatusCode)})");
+                }
+
+                return success;
             }
             finally
             {

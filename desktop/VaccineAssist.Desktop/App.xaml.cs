@@ -138,9 +138,9 @@ public partial class App : Application
     /// Now: the silent attempt is capped at 15s and cancellable from the
     /// splash's Cancel button/Esc (StartupSignInCoordinator), the whole
     /// method is wrapped in try/catch, and every exit path is funneled
-    /// through EndStartupWithLoginWindow/EndStartupWithMainWindow so the
-    /// splash is always closed and some window always ends up on screen —
-    /// see those two methods.
+    /// through EndStartupWithLoginWindow/ShowMainWindowThenCloseSplashAsync
+    /// so the splash is always closed and some window always ends up on
+    /// screen — see those two methods.
     /// </summary>
     private async Task StartSignInFlowAsync()
     {
@@ -197,11 +197,18 @@ public partial class App : Application
 
             if (result.Outcome == StartupSignInOutcome.SignedIn)
             {
-                // Part 1 (Will's brief): the WebView2 + cloud session
-                // handoff happens here, WHILE the splash is still up —
-                // see PrepareMainCloudPageViewAsync's own doc comment.
-                var cloudPageView = await PrepareMainCloudPageViewAsync();
-                EndStartupWithMainWindow(loginViewModel, splash, cloudPageView, ref startupResolved);
+                // ORDERING FIX (Will's app.log, 2026-09-16 — see
+                // ShowMainWindowAndInitializeAsync's own doc comment for
+                // the full diagnosis): startupResolved is claimed here,
+                // BEFORE the await, matching every other branch's
+                // resolve-then-act shape — ref parameters can't cross an
+                // await, so the actual "show MainWindow, then close the
+                // splash" work is a plain async call instead of routing
+                // through EndStartupWithMainWindow(ref ...) the way it used
+                // to when PrepareMainCloudPageViewAsync ran to completion
+                // BEFORE this point.
+                startupResolved = true;
+                await ShowMainWindowThenCloseSplashAsync(loginViewModel, splash);
             }
             else
             {
@@ -226,22 +233,20 @@ public partial class App : Application
     }
 
     /// <summary>Success path for StartSignInFlowAsync — tries MainWindow
-    /// (via TryShowMainWindow, shared with the two manual-sign-in paths
-    /// below) and only THEN closes the splash, whichever way it goes, so
-    /// ShowMainWindow() throwing (see MainWindow's TrayIconController doc
-    /// comment for one real cause) can never leave the splash as the last
-    /// window standing. Falls back to the manual LoginWindow (with the
-    /// ErrorMessage TryShowMainWindow already set) if MainWindow couldn't
-    /// be shown.</summary>
-    private void EndStartupWithMainWindow(LoginViewModel loginViewModel, SplashWindow splash, CloudPageView cloudPageView, ref bool startupResolved)
+    /// (via ShowMainWindowAndInitializeAsync, shared with the two
+    /// manual-sign-in paths below) and only THEN closes the splash,
+    /// whichever way it goes, so a MainWindow construction failure (see
+    /// MainWindow's TrayIconController doc comment for one real cause) can
+    /// never leave the splash as the last window standing. Falls back to
+    /// the manual LoginWindow (with the ErrorMessage already set) if
+    /// MainWindow couldn't be shown. A plain async method rather than the
+    /// old EndStartupWithMainWindow(ref bool) — ref/out parameters aren't
+    /// allowed on async methods, and this is only ever called once
+    /// (immediately after the caller itself claims startupResolved), so
+    /// the ref guard wasn't actually needed here.</summary>
+    private async Task ShowMainWindowThenCloseSplashAsync(LoginViewModel loginViewModel, SplashWindow splash)
     {
-        if (startupResolved)
-        {
-            return;
-        }
-        startupResolved = true;
-
-        var shown = TryShowMainWindow(loginViewModel, cloudPageView);
+        var shown = await ShowMainWindowAndInitializeAsync(loginViewModel, splash);
 
         try
         {
@@ -258,8 +263,8 @@ public partial class App : Application
         }
         else
         {
-            // TryShowMainWindow already logged, alerted, and set an
-            // ErrorMessage — no additional reason to pass here.
+            // ShowMainWindowAndInitializeAsync already logged, alerted, and
+            // set an ErrorMessage — no additional reason to pass here.
             var loginWindowShown = false;
             EndStartupWithLoginWindow(loginViewModel, null, ref loginWindowShown);
         }
@@ -339,26 +344,27 @@ public partial class App : Application
             // SetBusy(true) here keeps the spinner alive for that whole
             // gap; the try/finally guarantees SetBusy(false) runs on every
             // exit — the failure branch below, AND an unexpected exception
-            // from PrepareMainCloudPageViewAsync/TryShowMainWindow (neither
-            // is documented to throw, but this must not leave the button
-            // permanently disabled if one ever does) — success instead
-            // closes this window, so there's nothing left to un-busy.
+            // from ShowMainWindowAndInitializeAsync (not documented to
+            // throw, but this must not leave the button permanently
+            // disabled if it ever does) — success instead closes this
+            // window, so there's nothing left to un-busy.
             loginViewModel.SetBusy(true);
             try
             {
                 // Part 1 (Will's brief): manual sign-in also gets the
                 // WebView2 + cloud session handoff BEFORE MainWindow is
-                // shown — see PrepareMainCloudPageViewAsync's own doc
+                // usable — see ShowMainWindowAndInitializeAsync's own doc
                 // comment. This LoginWindow is still up (showing "Signing
-                // in…"/busy state via LoginViewModel.IsBusy) while that runs.
-                var cloudPageView = await PrepareMainCloudPageViewAsync();
-                if (TryShowMainWindow(loginViewModel, cloudPageView))
+                // in…"/busy state via LoginViewModel.IsBusy, and kept on
+                // top of the not-yet-ready MainWindow — see that method)
+                // while that runs.
+                if (await ShowMainWindowAndInitializeAsync(loginViewModel, loginWindow))
                 {
                     signedIn = true;
                     loginWindow.Close();
                 }
-                // else: stay on this LoginWindow — TryShowMainWindow already
-                // logged, alerted, and set an ErrorMessage explaining why.
+                // else: stay on this LoginWindow — ShowMainWindowAndInitializeAsync
+                // already logged, alerted, and set an ErrorMessage explaining why.
             }
             finally
             {
@@ -383,7 +389,7 @@ public partial class App : Application
 
     /// <summary>
     /// Shows a fresh LoginWindow with a brand-new LoginViewModel — used
-    /// ONLY by ShowMainWindow's Sign-out handler below.
+    /// ONLY by BuildMainWindow's Sign-out handler.
     /// <paramref name="attemptAutoLogin"/> is passed straight through to
     /// LoginViewModel's allowAutoLogin constructor parameter; it is
     /// always false here. Without that, a workstation with autologin.json
@@ -411,14 +417,13 @@ public partial class App : Application
             {
                 // Part 1 — same handoff-before-MainWindow sequencing as
                 // ShowLoginWindowWithViewModel's SignedIn handler above.
-                var cloudPageView = await PrepareMainCloudPageViewAsync();
-                if (TryShowMainWindow(loginViewModel, cloudPageView))
+                if (await ShowMainWindowAndInitializeAsync(loginViewModel, loginWindow))
                 {
                     signedIn = true;
                     loginWindow.Close();
                 }
-                // else: stay on this LoginWindow — TryShowMainWindow already
-                // logged, alerted, and set an ErrorMessage explaining why.
+                // else: stay on this LoginWindow — ShowMainWindowAndInitializeAsync
+                // already logged, alerted, and set an ErrorMessage explaining why.
             }
             finally
             {
@@ -444,41 +449,134 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Part 1 (Will's brief): builds and initializes the SINGLE main
-    /// CloudPageView WebView2 surface used as MainWindow's whole content
-    /// area (see MainWindow.xaml's own doc comment for the one-tab-row
-    /// change), and — if the just-completed sign-in produced tokens —
-    /// POSTs them to the cloud's desktop-handoff endpoint
-    /// (cloud/app/api/auth/desktop-handoff/route.ts) so the WebView2 lands
-    /// on "/" already signed in instead of showing its own separate
-    /// cloud login form. Called from every path that's about to show
-    /// MainWindow — the silent startup path and both manual-sign-in
-    /// paths — so the handoff always happens BEFORE MainWindow itself is
-    /// shown, while the caller's own "signing in" UI (splash or
-    /// LoginWindow) is still up.
+    /// Part 1 (Will's brief), ORDERING FIX (Will's app.log, 2026-09-16):
+    /// builds MainWindow (hosting a fresh, not-yet-initialized CloudPageView
+    /// — see MainWindow.xaml's own doc comment for the one-tab-row change)
+    /// and Shows() it BEFORE running WebView2 init/the cloud sign-in
+    /// handoff, instead of after.
+    ///
+    /// DIAGNOSIS: app.log showed the WebView2 environment created in 5ms,
+    /// but EnsureCoreWebView2Async only completing ~200ms AFTER "MainWindow
+    /// shown" — 45 SECONDS after it actually started (the full
+    /// InitWaitPolicy.Timeout cap). A WPF WebView2 control can't create its
+    /// CoreWebView2Controller until it has a parent HWND, i.e. until the
+    /// window hosting it has actually been Show()n. The OLD "sign-in-before-
+    /// show" order (commit a7973b5) called EnsureInitializedAsync on a
+    /// CloudPageView that belonged to no window yet — no HWND ever existed
+    /// for the wait to succeed against, so it was *guaranteed* to run out
+    /// the clock every time, not just occasionally; the earlier 12s-cap
+    /// version and the original "hangs forever" bug were the same root
+    /// cause.
+    ///
+    /// FIX: build+Show() MainWindow first (CloudPageView.autoInitializeOnLoad
+    /// is false for this instance — see that constructor param's doc
+    /// comment — so nothing auto-navigates to "/" the instant it loads),
+    /// set ShowActivated = false so it neither steals focus nor comes in
+    /// front of whichever "signing in" window (<paramref
+    /// name="windowToKeepOnTop"/> — the splash, or a LoginWindow) is
+    /// already on screen, THEN await WebView2 init + the token handoff via
+    /// InitializeAndHandoffCloudPageViewAsync. Only once that's done does
+    /// the caller close/replace windowToKeepOnTop, revealing MainWindow
+    /// already on "/" (signed in, on handoff success) — never a flash of
+    /// the cloud's own unauthenticated login form.
+    ///
+    /// Returns false (never throws) if MainWindow itself couldn't be
+    /// constructed/shown (e.g. TrayIconController — see MainWindow's field
+    /// comment for one real cause) — alerts + sets loginViewModel's
+    /// ErrorMessage in that case so the caller's still-visible "signing in"
+    /// window can explain why. A WebView2 init or handoff failure AFTER
+    /// that point is never fatal to MainWindow itself — see
+    /// InitializeAndHandoffCloudPageViewAsync's own doc comment — so this
+    /// still returns true.
+    /// </summary>
+    private async Task<bool> ShowMainWindowAndInitializeAsync(LoginViewModel loginViewModel, Window windowToKeepOnTop)
+    {
+        var cloudPageView = new CloudPageView(_settings.CloudApiBaseUrl, autoInitializeOnLoad: false);
+
+        MainWindow mainWindowInstance;
+        try
+        {
+            mainWindowInstance = BuildMainWindow(cloudPageView);
+            MainWindow = mainWindowInstance;
+            mainWindowInstance.ShowActivated = false;
+            mainWindowInstance.Show();
+
+            // Belt-and-suspenders on top of ShowActivated = false above:
+            // reclaim focus/foreground for whichever "signing in" window is
+            // already up, in case Show() still nudged the (blank, not-yet-
+            // ready) MainWindow in front of it on some Windows version/
+            // window-manager configuration.
+            windowToKeepOnTop.Activate();
+        }
+        catch (Exception ex)
+        {
+            // 2026-09-14 (Will, live bug — "Signed in, but the main window
+            // couldn't be opened" with no way to tell what actually threw):
+            // AppFileLog.LogException now walks the FULL exception chain
+            // (type/message/stack/inner exceptions), and the exception's
+            // type+message are now surfaced right in the LoginWindow's
+            // ErrorMessage (previously only the generic sentence, with the
+            // detail going solely to a MessageBox that may not have been
+            // seen/screenshotted) — so the next report names the real cause.
+            AppFileLog.LogException("ShowMainWindowAndInitializeAsync", ex);
+            MessageBox.Show(
+                "Vaccine Assist signed in, but the main window couldn't be opened.\n\n" +
+                $"{ex.GetType().Name}: {ex.Message}",
+                "Vaccine Assist",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            loginViewModel.SetErrorMessage(
+                $"Signed in, but the main window couldn't be opened: {ex.GetType().Name}: {ex.Message}. Details in the log.");
+            return false;
+        }
+
+        await InitializeAndHandoffCloudPageViewAsync(cloudPageView);
+
+        // The window is fully ready now — make sure IT (not
+        // windowToKeepOnTop, which the caller is about to close/hide) ends
+        // up with focus once that happens, rather than relying on Windows
+        // to pick a new foreground window on its own.
+        mainWindowInstance.Activate();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Runs WebView2 init and — if the just-completed sign-in produced
+    /// tokens — the cloud sign-in handoff (POSTs to
+    /// cloud/app/api/auth/desktop-handoff/route.ts) on a CloudPageView that
+    /// ShowMainWindowAndInitializeAsync has ALREADY added to MainWindow's
+    /// visual tree and Show()n — see that method's own doc comment for why
+    /// this order (not the reverse) is what actually lets
+    /// EnsureCoreWebView2Async succeed instead of always timing out.
     ///
     /// Never throws — a WebView2 init failure here just means MainWindow's
     /// CloudPageView will show ITS OWN "couldn't load" panel once actually
-    /// displayed (see CloudPageView.EnsureInitializedAsync's existing
+    /// visible (see CloudPageView.EnsureInitializedAsync's existing
     /// try/catch), and a handoff timeout/failure just means the page shows
     /// its own cloud login form — both explicitly acceptable per the
     /// brief ("on timeout/failure log a [Startup] line and continue — the
-    /// page will just show its own login").
+    /// page will just show its own login"). CloudPageView.PerformDesktopHandoffAsync
+    /// itself now logs the concrete reason a handoff failed (WebErrorStatus/
+    /// HTTP status, or a timed-out/exception detail) — see that method's
+    /// doc comment — so the generic "[Startup] ... failed or timed out"
+    /// lines below are always backed by a preceding [CloudPageView] line
+    /// naming the actual cause.
     ///
-    /// LATE-RECOVERY FIX (Will, 2026-09-16): EnsureInitializedAsync now
-    /// waits up to 45s (was 12s) before giving up — see
-    /// Services/InitWaitPolicy.cs — but this method's own wait is left
-    /// exactly as-is; it just takes longer on a slow start. If the wait
-    /// STILL times out, IsCoreWebView2Ready is false here and the handoff
-    /// is skipped for now (never double-waits by calling
+    /// LATE-RECOVERY: EnsureInitializedAsync waits up to InitWaitPolicy.Timeout
+    /// (45s) before giving up — now effectively a defensive cap rather than
+    /// the guaranteed-to-fire timeout it was before the Show()-before-init
+    /// ordering fix, since the HWND this needs already exists by the time
+    /// this runs. If the wait still times out (e.g. a genuinely broken/very
+    /// slow WebView2 Evergreen Runtime), IsCoreWebView2Ready is false here
+    /// and the handoff is skipped for now (never double-waits by calling
     /// PerformDesktopHandoffAsync against a not-yet-ready control) — but
-    /// CloudPageView.InitializedLate is subscribed so that if the
-    /// abandoned attempt succeeds on its own moments later, the handoff
-    /// still runs then, with whatever tokens are current at that point.
+    /// CloudPageView.InitializedLate is subscribed so that if the abandoned
+    /// attempt succeeds on its own moments later, the handoff still runs
+    /// then, with whatever tokens are current at that point.
     /// </summary>
-    private async Task<CloudPageView> PrepareMainCloudPageViewAsync()
+    private async Task InitializeAndHandoffCloudPageViewAsync(CloudPageView cloudPageView)
     {
-        var cloudPageView = new CloudPageView(_settings.CloudApiBaseUrl);
         try
         {
             await cloudPageView.EnsureInitializedAsync();
@@ -497,12 +595,12 @@ public partial class App : Application
                                 lateAccessToken, lateRefreshToken, TimeSpan.FromSeconds(10));
                             AppFileLog.Log(lateHandoffOk
                                 ? "[Startup] late cloud session handoff (post-timeout recovery): ok"
-                                : "[Startup] late cloud session handoff (post-timeout recovery): failed or timed out — the embedded page will show its own sign-in form");
+                                : "[Startup] late cloud session handoff (post-timeout recovery): failed or timed out — see the preceding [CloudPageView] line for the concrete reason");
                         }
                     }
                     catch (Exception ex)
                     {
-                        AppFileLog.LogException("PrepareMainCloudPageViewAsync.InitializedLate", ex);
+                        AppFileLog.LogException("InitializeAndHandoffCloudPageViewAsync.InitializedLate", ex);
                     }
                 };
             }
@@ -512,7 +610,7 @@ public partial class App : Application
                 var handoffOk = await cloudPageView.PerformDesktopHandoffAsync(accessToken, refreshToken, TimeSpan.FromSeconds(10));
                 AppFileLog.Log(handoffOk
                     ? "[Startup] cloud session handoff: ok"
-                    : "[Startup] cloud session handoff: failed or timed out — the embedded page will show its own sign-in form");
+                    : "[Startup] cloud session handoff: failed or timed out — see the preceding [CloudPageView] line for the concrete reason");
             }
             else
             {
@@ -525,68 +623,25 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            AppFileLog.LogException("PrepareMainCloudPageViewAsync", ex);
-        }
-
-        return cloudPageView;
-    }
-
-    /// <summary>
-    /// Wraps ShowMainWindow() for the two manual-sign-in paths above
-    /// (ShowLoginWindowWithViewModel/ShowLoginWindow's SignedIn handlers) —
-    /// StartSignInFlowAsync's own silent-sign-in path has its own copy of
-    /// this same try/catch in EndStartupWithMainWindow, since it needs to
-    /// close the splash either way rather than alert+set an ErrorMessage
-    /// on an already-visible LoginWindow. Both exist for the same reason:
-    /// ShowMainWindow() constructs MainWindow synchronously (tray icon,
-    /// hotkeys, etc. — see MainWindow's TrayIconController field comment
-    /// for one real way that can throw), and a caller that doesn't catch
-    /// it ends up with no window and a swallowed exception the moment this
-    /// runs inside a fire-and-forget async continuation.
-    /// </summary>
-    private bool TryShowMainWindow(LoginViewModel loginViewModel, CloudPageView cloudPageView)
-    {
-        try
-        {
-            ShowMainWindow(cloudPageView);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            // 2026-09-14 (Will, live bug — "Signed in, but the main window
-            // couldn't be opened" with no way to tell what actually threw):
-            // AppFileLog.LogException now walks the FULL exception chain
-            // (type/message/stack/inner exceptions), and the exception's
-            // type+message are now surfaced right in the LoginWindow's
-            // ErrorMessage (previously only the generic sentence, with the
-            // detail going solely to a MessageBox that may not have been
-            // seen/screenshotted) — so the next report names the real cause.
-            AppFileLog.LogException("TryShowMainWindow", ex);
-            MessageBox.Show(
-                "Vaccine Assist signed in, but the main window couldn't be opened.\n\n" +
-                $"{ex.GetType().Name}: {ex.Message}",
-                "Vaccine Assist",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            loginViewModel.SetErrorMessage(
-                $"Signed in, but the main window couldn't be opened: {ex.GetType().Name}: {ex.Message}. Details in the log.");
-            return false;
+            AppFileLog.LogException("InitializeAndHandoffCloudPageViewAsync", ex);
         }
     }
 
     /// <summary>
-    /// Shows the post-login shell. Same local-flag pattern as
-    /// ShowLoginWindow: closing MainWindow via Sign out (which
+    /// Constructs (but does not Show()) the post-login shell — split out
+    /// of what used to be a single ShowMainWindow(cloudPageView) method so
+    /// ShowMainWindowAndInitializeAsync can Show() the window BEFORE
+    /// WebView2 init runs (see that method's doc comment) while still
+    /// wiring the same LoggedOut/Closed handlers here. Same local-flag
+    /// pattern as ShowLoginWindow: closing MainWindow via Sign out (which
     /// immediately opens a new LoginWindow) must not also shut the app
     /// down; closing it via the window chrome/Alt+F4 must.
     /// </summary>
-    private void ShowMainWindow(CloudPageView cloudPageView)
+    private MainWindow BuildMainWindow(CloudPageView cloudPageView)
     {
         // V-T-single-nav (Will's brief, 2026-09-14): MainWindow now hosts
-        // exactly ONE CloudPageView (already constructed/initialized —
-        // and, for a fresh sign-in, already hand-off'd — by
-        // PrepareMainCloudPageViewAsync above) instead of five, one per
-        // former tab. See MainWindow.xaml.cs's own doc comment.
+        // exactly ONE CloudPageView instead of five, one per former tab.
+        // See MainWindow.xaml.cs's own doc comment.
         var mainWindow = new MainWindow(
             _authService, _vaccineApiService, _clipboardService,
             _pioneerEntrySequence, cloudPageView, _localSettingsService, _settings);
@@ -617,8 +672,7 @@ public partial class App : Application
             }
         };
 
-        MainWindow = mainWindow;
-        mainWindow.Show();
+        return mainWindow;
     }
 
     /// <summary>
