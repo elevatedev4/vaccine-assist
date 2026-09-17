@@ -227,10 +227,26 @@ type VaccineRow = MacroRowVaccine;
 type LotRow = { id: string; vaccine_id: string; lot_number: string; expiration: string | null; status: string };
 
 const styles = {
-  main: { fontFamily: "system-ui, sans-serif", padding: "0.75rem 1rem", maxWidth: "100%" },
+  // `position: relative` so refreshIndicator (below) can anchor to this
+  // box instead of the document — see V-T48.
+  main: { fontFamily: "system-ui, sans-serif", padding: "0.75rem 1rem", maxWidth: "100%", position: "relative" as const },
   heading: { margin: "0 0 0.4rem", fontSize: "1.15rem" },
   error: { color: "#b00020", fontSize: "0.8rem" },
   muted: { color: "#555", fontSize: "0.875rem" },
+  // V-T48 (Will, 2026-09-16): "Refreshing…" used to render as a <p> in
+  // normal flow, so it popped in above the grid on page open and popped
+  // back out a moment later, shoving the whole grid down and then back
+  // up. Absolutely positioning it (anchored to styles.main above) takes
+  // it out of flow entirely — mounting/unmounting it can never move
+  // anything else on the page.
+  refreshIndicator: {
+    position: "absolute" as const,
+    top: "0.6rem",
+    right: "1rem",
+    color: "#555",
+    fontSize: "0.75rem",
+    pointerEvents: "none" as const,
+  },
   groupHeading: {
     fontSize: "1rem",
     fontWeight: 800,
@@ -1085,7 +1101,11 @@ function MacroCodesPageContent() {
        * loadAll's doc comment) — this is the only visible sign one is in
        * flight, or that the last one failed/hit an expired token while
        * the view above kept showing cached/previous data. */}
-      {!loading && revalidating && <p style={styles.muted}>Refreshing…</p>}
+      {!loading && revalidating && (
+        <span style={styles.refreshIndicator} aria-live="polite">
+          Refreshing…
+        </span>
+      )}
       {!loading && !revalidating && refreshNote && <p style={styles.error}>{refreshNote}</p>}
 
       {!loading && (
