@@ -42,10 +42,25 @@ public sealed partial class PioneerOverlayWindow : Window
     /// <summary>Raw HWND for PioneerOverlayController's SetWindowPos calls — IntPtr.Zero until SourceInitialized has run.</summary>
     public IntPtr Handle { get; private set; } = IntPtr.Zero;
 
+    // V-T42 (Will, verbatim): "when I click on the vaccine icon on pioneer
+    // and then click away from it, the menu should close but doesn't." A
+    // plain ContextMenu's own close-on-outside-click handling can't be
+    // relied on for a click landing on Pioneer (a separate process) — see
+    // GlobalMouseDownHook's and OverlayMenuGeometry's own doc comments for
+    // the full fix. This app has exactly one overlay menu open at a time,
+    // so one hook instance for the window's whole lifetime is enough;
+    // Install()/Uninstall() (cheap, idempotent) track whether it's
+    // currently active.
+    private readonly GlobalMouseDownHook _outsideClickHook = new();
+    private ContextMenu? _openMenu;
+    private OverlayRect _openMenuScreenBounds;
+
     public PioneerOverlayWindow()
     {
         InitializeComponent();
         SourceInitialized += OnSourceInitialized;
+        Closed += (_, _) => _outsideClickHook.Dispose();
+        _outsideClickHook.MouseDown += OnGlobalMouseDown;
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -76,7 +91,87 @@ public sealed partial class PioneerOverlayWindow : Window
         }
 
         menu.PlacementTarget = IconBorder;
+        menu.Closed += Menu_OnClosed;
+        menu.PreviewKeyDown += Menu_OnPreviewKeyDown;
+        _openMenu = menu;
         menu.IsOpen = true;
+
+        // V-T42: install the global outside-click fallback only once the
+        // menu is actually open and laid out (ActualWidth/Height and
+        // PointToScreen are only meaningful once it has a real
+        // PresentationSource) — see class doc comment above and
+        // GlobalMouseDownHook/OverlayMenuGeometry's own doc comments.
+        menu.UpdateLayout();
+        TryInstallOutsideClickHook(menu);
+    }
+
+    /// <summary>Best-effort — a failure here just means this menu falls
+    /// back to WPF's own default close-on-outside-click behavior (which
+    /// still works for a click inside one of this app's own windows), same
+    /// posture as every other UI/native-interop helper in this
+    /// codebase.</summary>
+    private void TryInstallOutsideClickHook(ContextMenu menu)
+    {
+        try
+        {
+            var origin = menu.PointToScreen(new Point(0, 0));
+            _openMenuScreenBounds = new OverlayRect(
+                (int)Math.Round(origin.X),
+                (int)Math.Round(origin.Y),
+                (int)Math.Round(menu.ActualWidth),
+                (int)Math.Round(menu.ActualHeight));
+            _outsideClickHook.Install();
+        }
+        catch
+        {
+            // Best-effort — see doc comment above.
+        }
+    }
+
+    private void OnGlobalMouseDown(int screenX, int screenY)
+    {
+        var menu = _openMenu;
+        if (menu is null || !menu.IsOpen) return;
+        if (!OverlayMenuGeometry.IsPointOutsideMenu(_openMenuScreenBounds, screenX, screenY)) return;
+
+        // Posted back through the Dispatcher: the hook callback runs
+        // synchronously inside Windows' own hook-chain dispatch, and
+        // closing a Popup from within that reentrant context is best done
+        // via a normal dispatcher callback rather than inline.
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (ReferenceEquals(_openMenu, menu))
+            {
+                menu.IsOpen = false;
+            }
+        });
+    }
+
+    /// <summary>V-T42: Escape also closes the menu — belt-and-suspenders
+    /// alongside WPF's own default Escape-closes-a-ContextMenu behavior,
+    /// since this menu's owner window opts out of activation
+    /// (WS_EX_NOACTIVATE) in ways a normal ContextMenu owner never
+    /// does.</summary>
+    private void Menu_OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && sender is ContextMenu menu)
+        {
+            menu.IsOpen = false;
+        }
+    }
+
+    private void Menu_OnClosed(object sender, RoutedEventArgs e)
+    {
+        _outsideClickHook.Uninstall();
+        if (sender is ContextMenu menu)
+        {
+            menu.Closed -= Menu_OnClosed;
+            menu.PreviewKeyDown -= Menu_OnPreviewKeyDown;
+            if (ReferenceEquals(_openMenu, menu))
+            {
+                _openMenu = null;
+            }
+        }
     }
 
     private void Raise(NavItem item)
