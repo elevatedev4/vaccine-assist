@@ -40,6 +40,7 @@ const ACTIVE_CATALOG_NAMES = [
   "Flulaval",
   "Fluzone HD",
   "Fluzone PFS",
+  "mFLUSIVA 2026-27",
   "Priorix",
 ];
 
@@ -81,6 +82,28 @@ describe("vaccine-product-catalog seed data (V-T26 item 7)", () => {
 
   it("returns null for a name/NDC the catalog doesn't carry", () => {
     expect(lookupProduct({ name: "Some Future Vaccine", ndc: "99999999999" })).toBeNull();
+  });
+});
+
+// V-T45 prep (Will 2026-09-16, via the coordinator): mFLUSIVA 2026-27's
+// catalog row, added by NDC + on-file vaccine name (10-dose MDV).
+describe("mFLUSIVA 2026-27 (V-T45 prep)", () => {
+  it("resolves by its dashed on-file NDC to dosesPerPackage 10", () => {
+    const product = lookupProduct({ ndc: "80777-0500-20", name: "mFLUSIVA 2026-27" });
+    expect(product).toMatchObject({
+      productName: "mFLUSIVA (2026-27, MDV)",
+      ageRange: "50+",
+      dosesPerPackage: 10,
+      packageNdc: "80777-0500-20",
+    });
+  });
+
+  it("resolves by NDC alone (no name given)", () => {
+    expect(lookupProduct({ ndc: "80777-0500-20" })).toMatchObject({ dosesPerPackage: 10 });
+  });
+
+  it("resolves by the plain on-file name when no NDC is given", () => {
+    expect(lookupProduct({ name: "mFLUSIVA 2026-27" })).toMatchObject({ dosesPerPackage: 10 });
   });
 });
 
