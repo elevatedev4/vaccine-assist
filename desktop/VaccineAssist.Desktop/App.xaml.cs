@@ -464,6 +464,17 @@ public partial class App : Application
     /// its own cloud login form — both explicitly acceptable per the
     /// brief ("on timeout/failure log a [Startup] line and continue — the
     /// page will just show its own login").
+    ///
+    /// LATE-RECOVERY FIX (Will, 2026-09-16): EnsureInitializedAsync now
+    /// waits up to 45s (was 12s) before giving up — see
+    /// Services/InitWaitPolicy.cs — but this method's own wait is left
+    /// exactly as-is; it just takes longer on a slow start. If the wait
+    /// STILL times out, IsCoreWebView2Ready is false here and the handoff
+    /// is skipped for now (never double-waits by calling
+    /// PerformDesktopHandoffAsync against a not-yet-ready control) — but
+    /// CloudPageView.InitializedLate is subscribed so that if the
+    /// abandoned attempt succeeds on its own moments later, the handoff
+    /// still runs then, with whatever tokens are current at that point.
     /// </summary>
     private async Task<CloudPageView> PrepareMainCloudPageViewAsync()
     {
@@ -472,7 +483,30 @@ public partial class App : Application
         {
             await cloudPageView.EnsureInitializedAsync();
 
-            if (_authService.AccessToken is { Length: > 0 } accessToken &&
+            if (!cloudPageView.IsCoreWebView2Ready)
+            {
+                AppFileLog.Log("[Startup] cloud session handoff: deferred (WebView2 init timed out or failed) — will retry if it recovers on its own");
+                cloudPageView.InitializedLate += async (_, _) =>
+                {
+                    try
+                    {
+                        if (_authService.AccessToken is { Length: > 0 } lateAccessToken &&
+                            _authService.RefreshToken is { Length: > 0 } lateRefreshToken)
+                        {
+                            var lateHandoffOk = await cloudPageView.PerformDesktopHandoffAsync(
+                                lateAccessToken, lateRefreshToken, TimeSpan.FromSeconds(10));
+                            AppFileLog.Log(lateHandoffOk
+                                ? "[Startup] late cloud session handoff (post-timeout recovery): ok"
+                                : "[Startup] late cloud session handoff (post-timeout recovery): failed or timed out — the embedded page will show its own sign-in form");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppFileLog.LogException("PrepareMainCloudPageViewAsync.InitializedLate", ex);
+                    }
+                };
+            }
+            else if (_authService.AccessToken is { Length: > 0 } accessToken &&
                 _authService.RefreshToken is { Length: > 0 } refreshToken)
             {
                 var handoffOk = await cloudPageView.PerformDesktopHandoffAsync(accessToken, refreshToken, TimeSpan.FromSeconds(10));
