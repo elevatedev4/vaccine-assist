@@ -13,6 +13,16 @@ namespace VaccineAssist.Desktop.Uia;
 /// Deliberately UIA-free so it (and PioneerDialogCandidates.Select, which
 /// consumes it) is directly unit-testable with plain values — no live
 /// Windows session required.
+///
+/// V-T41 (Will, 2026-09-13 night — Auto-Suggest Dropdown timeout follow-up):
+/// `ClassName` (the raw Win32 window class, e.g. "Auto-Suggest Dropdown",
+/// "tooltips_class32") was added so DialogClassifier.IsTransientWindow can
+/// tell Pioneer's own transient popups (autocomplete dropdowns, tooltips)
+/// apart from a real pre-entry dialog using nothing but this struct's own
+/// fields — see that method. Appended as the LAST field with a default so
+/// every existing positional `new WindowInfo(...)` call (this class'
+/// Describe below, and every fixture in PioneerDialogCandidatesTests.cs)
+/// keeps compiling unchanged.
 /// </summary>
 public readonly record struct WindowInfo(
     IntPtr Handle,
@@ -20,7 +30,8 @@ public readonly record struct WindowInfo(
     int ProcessId,
     IntPtr OwnerHandle,
     bool IsPopupStyle,
-    bool IsDialogFrameStyle);
+    bool IsDialogFrameStyle,
+    string ClassName = "");
 
 /// <summary>
 /// V-... 2026-09-14 (Will, verbatim): "The app is not recognizing the
@@ -66,6 +77,9 @@ public static class Win32WindowEnumerator
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
@@ -164,7 +178,8 @@ public static class Win32WindowEnumerator
             SafeGetProcessId(hWnd),
             SafeGetOwner(hWnd),
             (style & WS_POPUP) != 0,
-            (style & WS_DLGFRAME) != 0);
+            (style & WS_DLGFRAME) != 0,
+            SafeGetClassName(hWnd));
     }
 
     private static void TryAdd(List<WindowInfo> results, IntPtr hWnd)
@@ -179,6 +194,17 @@ public static class Win32WindowEnumerator
         {
             var buffer = new StringBuilder(512);
             var length = GetWindowText(hWnd, buffer, buffer.Capacity);
+            return length > 0 ? buffer.ToString() : "";
+        }
+        catch { return ""; }
+    }
+
+    private static string SafeGetClassName(IntPtr hWnd)
+    {
+        try
+        {
+            var buffer = new StringBuilder(256);
+            var length = GetClassName(hWnd, buffer, buffer.Capacity);
             return length > 0 ? buffer.ToString() : "";
         }
         catch { return ""; }
