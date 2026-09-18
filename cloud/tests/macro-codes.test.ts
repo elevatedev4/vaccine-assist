@@ -356,6 +356,34 @@ describe("groupMacroRowsBySection", () => {
     expect(flu?.products.map((p) => p.displayName)).toEqual(["Afluria PFS", "Flucelvax MDV", "FluMist", "Fluad"]);
   });
 
+  it("V-T50: a mFLUSIVA row whose short_code doesn't (yet) match the catalog still lands in Flu via its NAME, with the right colorKey", () => {
+    const products: ProductView[] = [
+      view({ productKey: "name:mflusiva-row", displayName: "mFLUSIVA 2026-27", vaccineIds: ["mf1"] }),
+    ];
+    const vaccines: MacroRowVaccine[] = [
+      // short_code intentionally does NOT match any catalog entry —
+      // this is the live-DB gap V-T50's recon found (see
+      // scripts/set-vaccine-fields.mjs's new --short-code flag for
+      // fixing it at the source).
+      vaccine({ id: "mf1", name: "mFLUSIVA 2026-27", short_code: "unmapped123" }),
+    ];
+    const rows = buildMacroRows(products, vaccines, {});
+    expect(rows).toHaveLength(1);
+    expect(rows[0].section).toBe("Flu");
+    expect(rows[0].colorKey).toBe("mflusiva");
+
+    const sections = groupMacroRowsBySection(rows);
+    expect(sections.map((s) => s.section)).toEqual(["Flu"]);
+  });
+
+  it("a row with no short_code at all still falls to Other (name fallback never runs off an empty code+unrelated name)", () => {
+    const products: ProductView[] = [view({ productKey: "name:mystery-flu", displayName: "Some Future Vaccine", vaccineIds: ["m1"] })];
+    const vaccines: MacroRowVaccine[] = [vaccine({ id: "m1", name: "Some Future Vaccine", short_code: "totallyunknown" })];
+    const rows = buildMacroRows(products, vaccines, {});
+    expect(rows[0].section).toBe("Other");
+    expect(rows[0].colorKey).toBe("");
+  });
+
   it("groups a multi-dose product's real dose rows into one product entry with ordered doses", () => {
     const products: ProductView[] = [view({ productKey: "ndc:shingrix", displayName: "Shingrix", vaccineIds: ["s1", "s2"] })];
     const vaccines: MacroRowVaccine[] = [

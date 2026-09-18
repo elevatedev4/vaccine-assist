@@ -20,6 +20,7 @@ public class VaccineGroupCatalogTests
     [InlineData("mNEXSPIKE", "COVID")]
     [InlineData("Afluria MDV", "Flu")]
     [InlineData("FluMist (age 2-49)", "Flu")]
+    [InlineData("mFLUSIVA 2026-27", "Flu")]
     [InlineData("Prevnar 20", "Pneumonia")]
     [InlineData("Capvaxive", "Pneumonia")]
     [InlineData("Boostrix", "Tetanus/whooping cough")]

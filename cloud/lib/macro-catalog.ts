@@ -186,6 +186,15 @@ export type MacroCatalogEntry = {
    * (undefined for dose 1 and for single-dose products, regardless of
    * whether the product even has a doseSchedule). */
   doseSchedule?: Readonly<Record<number, string>>;
+  /** V-T50 (Will's verbatim feedback, 2026-09-18): "flu shots to be
+   * different colors on their buttons to easily tell them apart" — the
+   * key lib/macro-dose-button.tsx's PRODUCT_COLORS looks a product up
+   * by, e.g. "flucelvax" for BOTH flucelvaxmdv/flucelvaxpfs (two real
+   * short codes, one product/color), "mflusiva", "flumist". Defaults to
+   * the short_code this entry is keyed under (see MACRO_CATALOG's
+   * construction below) when a product doesn't need to share a color key
+   * with a sibling short code. */
+  colorKey: string;
 };
 
 /** sheetOrder for a short code with no catalog entry — sorts after
@@ -199,6 +208,7 @@ export const MACRO_CATALOG_OTHER: MacroCatalogEntry = {
   age: "",
   ageBase: "",
   ageMinMonths: Number.MAX_SAFE_INTEGER,
+  colorKey: "",
 };
 
 type RawCatalogEntry = {
@@ -209,6 +219,11 @@ type RawCatalogEntry = {
   note?: string;
   ageMinMonths: number;
   doseSchedule?: Readonly<Record<number, string>>;
+  /** Overrides the default colorKey (the short_code this entry is keyed
+   * under) — see MacroCatalogEntry.colorKey above. Only set where two
+   * distinct short codes must share one product color (flucelvaxmdv/
+   * flucelvaxpfs -> "flucelvax"). */
+  colorKey?: string;
 };
 
 /** Keyed by short_code (see this file's header for the exact-vs-base
@@ -235,8 +250,22 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
   comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageBase: "12+", ageMinMonths: 144 },
   mnexspike: { type: "Moderna 12+", sheetOrder: 2, age: "12+", ageBase: "12+", ageMinMonths: 144 },
   spikevax6mo11: { type: "Moderna 3-11", sheetOrder: 3, age: "3–11", ageBase: "3–11", ageMinMonths: 36 },
-  flucelvaxmdv: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageBase: "6 mo+", ageMinMonths: 6 },
-  flucelvaxpfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageBase: "6 mo+", ageMinMonths: 6 },
+  flucelvaxmdv: {
+    type: "Flu (regular)",
+    sheetOrder: 4,
+    age: "6 mo+",
+    ageBase: "6 mo+",
+    ageMinMonths: 6,
+    colorKey: "flucelvax",
+  },
+  flucelvaxpfs: {
+    type: "Flu (regular)",
+    sheetOrder: 4,
+    age: "6 mo+",
+    ageBase: "6 mo+",
+    ageMinMonths: 6,
+    colorKey: "flucelvax",
+  },
   mflusiva: { type: "Flu mRNA (50+)", sheetOrder: 20, age: "50+", ageBase: "50+", ageMinMonths: 600 },
   afluriapfs: { type: "Flu (regular)", sheetOrder: 4, age: "6 mo+", ageBase: "6 mo+", ageMinMonths: 6 },
   fluad: { type: "Flu (65+)", sheetOrder: 5, age: "65+", ageBase: "65+", ageMinMonths: 780 },
@@ -323,9 +352,42 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
 const MACRO_CATALOG: Readonly<Record<string, MacroCatalogEntry>> = Object.fromEntries(
   Object.entries(RAW_MACRO_CATALOG).map(([shortCode, entry]) => [
     shortCode,
-    { ...entry, section: sectionForType(entry.type) },
+    { ...entry, section: sectionForType(entry.type), colorKey: entry.colorKey ?? shortCode },
   ])
 );
+
+/**
+ * V-T50 (Will's verbatim feedback, 2026-09-18): "mFLUSIVA is a flu shot,
+ * move it to the flu shot section." The live `vaccine` row for mFLUSIVA
+ * doesn't (yet) carry the "mflusiva" short_code (see
+ * scripts/set-vaccine-fields.mjs's new --short-code flag for correcting
+ * that at the DB level) so a short_code-only lookup misses and
+ * lookupMacroCatalog falls through to "Other." This is a small,
+ * name-substring safety net: when the short_code lookup misses entirely,
+ * try matching the vaccine's NAME (case-insensitive substring) against
+ * this table before giving up to MACRO_CATALOG_OTHER. Intentionally
+ * covers ONLY mflusiva today — extend this table (never the fallback
+ * logic itself) if a future product needs the same treatment. */
+const NAME_FALLBACK_ALIASES: ReadonlyArray<{ substring: string; catalogKey: string }> = [
+  { substring: "mflusiva", catalogKey: "mflusiva" },
+  { substring: "flusiva", catalogKey: "mflusiva" },
+];
+
+/** Matches `name` (case-insensitive substring) against
+ * NAME_FALLBACK_ALIASES, returning the aliased catalog entry or
+ * MACRO_CATALOG_OTHER if nothing matches (or `name` is empty). Exported
+ * for its own unit test coverage; lookupMacroCatalog below is the only
+ * normal caller. */
+export function lookupMacroCatalogByName(name: string | null | undefined): MacroCatalogEntry {
+  const lowerName = (name ?? "").trim().toLowerCase();
+  if (!lowerName) return MACRO_CATALOG_OTHER;
+  for (const { substring, catalogKey } of NAME_FALLBACK_ALIASES) {
+    if (lowerName.includes(substring)) {
+      return MACRO_CATALOG[catalogKey] ?? MACRO_CATALOG_OTHER;
+    }
+  }
+  return MACRO_CATALOG_OTHER;
+}
 
 /** Lowercases and strips a trailing run of digits, e.g. "shingrix1" ->
  * "shingrix", "engerix3" -> "engerix". Pure and exported for its own
@@ -342,11 +404,17 @@ export function macroBaseShortCode(shortCode: string): string {
  * correctly resolves single-dose codes whose trailing digits are part
  * of the code ("comirnaty12", "spikevax6mo11", "prevnar20") — and only
  * falls back to the digit-stripped base (macroBaseShortCode) for
- * multi-dose per-dose codes ("shingrix1" -> "shingrix"). Returns
- * MACRO_CATALOG_OTHER, sorted last, for anything unrecognized.
+ * multi-dose per-dose codes ("shingrix1" -> "shingrix").
+ *
+ * V-T50: when BOTH short_code attempts miss, and an optional `name` is
+ * given, falls back to lookupMacroCatalogByName before giving up — see
+ * that function's doc comment. Returns MACRO_CATALOG_OTHER, sorted last,
+ * for anything still unrecognized.
  */
-export function lookupMacroCatalog(shortCode: string): MacroCatalogEntry {
+export function lookupMacroCatalog(shortCode: string, name?: string | null): MacroCatalogEntry {
   const lower = shortCode.trim().toLowerCase();
-  if (!lower) return MACRO_CATALOG_OTHER;
-  return MACRO_CATALOG[lower] ?? MACRO_CATALOG[macroBaseShortCode(lower)] ?? MACRO_CATALOG_OTHER;
+  const bySortCode = lower ? MACRO_CATALOG[lower] ?? MACRO_CATALOG[macroBaseShortCode(lower)] : undefined;
+  if (bySortCode) return bySortCode;
+  const byName = lookupMacroCatalogByName(name);
+  return byName !== MACRO_CATALOG_OTHER ? byName : MACRO_CATALOG_OTHER;
 }

@@ -16,7 +16,20 @@
 // Usage:
 //   node scripts/set-vaccine-fields.mjs --name "<vaccine name substring>" --ndc 12345-678-90
 //   node scripts/set-vaccine-fields.mjs --name "<vaccine name substring>" --doses-per-package 10
+//   node scripts/set-vaccine-fields.mjs --name "<vaccine name substring>" --short-code mflusiva
 //   node scripts/set-vaccine-fields.mjs --name "<vaccine name substring>" --ndc 12345-678-90 --doses-per-package 10 --apply
+//
+// --short-code (V-T50, Will's verbatim feedback, 2026-09-18 — "the
+// shortcode is mflusiva for the macro code") writes vaccine.short_code,
+// the same column lib/macro-catalog.ts's lookupMacroCatalog keys its
+// catalog off of. Same dry-run/--apply convention as --ndc above.
+// Validated lowercase-alnum-only (matching how every real short_code in
+// supabase/seed/vaccines.sql is formatted) and refused outright if
+// ANOTHER vaccine row already has that exact short_code — the column is
+// unique, so writing a duplicate would fail at the DB (or worse, silently
+// break lookupMacroCatalog's exact-match branch for both rows) — same
+// "don't guess/don't clobber" posture as the --name multi-match refusal
+// below.
 //
 // --name matches case-insensitively as a SUBSTRING of vaccine.name (not
 // exact) — e.g. "flusiva" matches "mFLUSIVA 2026-27". If that matches
@@ -107,8 +120,27 @@ export function nameMatchesSubstring(name, substring) {
   return name.toLowerCase().includes(substring.toLowerCase());
 }
 
+/** True if `code` is a valid short_code: lowercase letters/digits only,
+ * non-empty. Pure/unit-testable — same validation whether or not the DB
+ * is reachable, so --short-code's parse/validation path can be proven
+ * without Supabase (see this file's V-T50 header note). */
+export function isValidShortCode(code) {
+  return typeof code === "string" && /^[a-z0-9]+$/.test(code);
+}
+
+/** Finds another vaccine row (not `excludeId`) whose short_code already
+ * equals `shortCode` (case-insensitive) — short_code is unique, so this
+ * is the "don't write a duplicate" check --short-code refuses on. Pure/
+ * unit-testable. Returns the conflicting row, or null if none. */
+export function findShortCodeConflict(vaccines, shortCode, excludeId) {
+  const lower = shortCode.toLowerCase();
+  return (
+    vaccines.find((v) => v.id !== excludeId && (v.short_code ?? "").toLowerCase() === lower) ?? null
+  );
+}
+
 function parseArgs(argv) {
-  const args = { name: null, ndc: null, dosesPerPackage: null, apply: false };
+  const args = { name: null, ndc: null, dosesPerPackage: null, shortCode: null, apply: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--apply") args.apply = true;
@@ -119,6 +151,8 @@ function parseArgs(argv) {
     else if (arg.startsWith("--ndc=")) args.ndc = arg.slice("--ndc=".length);
     else if (arg === "--doses-per-package") args.dosesPerPackage = argv[++i];
     else if (arg.startsWith("--doses-per-package=")) args.dosesPerPackage = arg.slice("--doses-per-package=".length);
+    else if (arg === "--short-code") args.shortCode = argv[++i];
+    else if (arg.startsWith("--short-code=")) args.shortCode = arg.slice("--short-code=".length);
   }
   return args;
 }
@@ -141,12 +175,18 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.name) {
     console.error(
-      'Usage: node scripts/set-vaccine-fields.mjs --name "<vaccine name substring>" [--ndc 12345-678-90] [--doses-per-package N] [--apply]'
+      'Usage: node scripts/set-vaccine-fields.mjs --name "<vaccine name substring>" [--ndc 12345-678-90] [--doses-per-package N] [--short-code mflusiva] [--apply]'
     );
     process.exit(1);
   }
-  if (args.ndc === null && args.dosesPerPackage === null) {
-    console.error("Nothing to do — pass --ndc and/or --doses-per-package.");
+  if (args.ndc === null && args.dosesPerPackage === null && args.shortCode === null) {
+    console.error("Nothing to do — pass --ndc, --doses-per-package, and/or --short-code.");
+    process.exit(1);
+  }
+  if (args.shortCode !== null && !isValidShortCode(args.shortCode)) {
+    console.error(
+      `\n--short-code ${JSON.stringify(args.shortCode)} is invalid — short codes are lowercase letters/digits only (e.g. "mflusiva"). Refusing to proceed.`
+    );
     process.exit(1);
   }
 
@@ -196,6 +236,17 @@ async function main() {
 
   const vaccine = matches[0];
 
+  if (args.shortCode !== null) {
+    const conflict = findShortCodeConflict(vaccines ?? [], args.shortCode, vaccine.id);
+    if (conflict) {
+      console.error(
+        `\n--short-code ${JSON.stringify(args.shortCode)} is already used by ${conflict.name} (id ${conflict.id}) — ` +
+          "short_code is unique. Refusing to proceed."
+      );
+      process.exit(1);
+    }
+  }
+
   // --- Build the current-vs-requested field table ---
   const fieldRows = [];
   /** @type {string | null} */
@@ -221,6 +272,14 @@ async function main() {
       writesTo: "NOTHING — not applied to Supabase, see note below",
     });
   }
+  if (args.shortCode !== null) {
+    fieldRows.push({
+      field: "short_code",
+      current: vaccine.short_code ?? "(none)",
+      requested: args.shortCode,
+      writesTo: "vaccine.short_code",
+    });
+  }
 
   console.log("\n=== Current vs requested ===");
   printTable(fieldRows, [
@@ -240,24 +299,36 @@ async function main() {
   }
 
   if (!args.apply) {
-    console.log("\nDry run only — no changes written. Re-run with --apply to write the ndc change above (if any).");
+    console.log(
+      "\nDry run only — no changes written. Re-run with --apply to write the ndc/short_code change(s) above (if any)."
+    );
     process.exit(0);
   }
 
-  if (formattedNdc === null) {
+  /** @type {Record<string, string>} */
+  const update = {};
+  if (formattedNdc !== null) update.ndc = formattedNdc;
+  if (args.shortCode !== null) update.short_code = args.shortCode;
+
+  if (Object.keys(update).length === 0) {
     console.log("\nNothing to write to the database (only --doses-per-package was given, which has no DB column).");
     process.exit(0);
   }
 
   console.log("\nApplying...");
-  const { error: updateError } = await supabase.from("vaccine").update({ ndc: formattedNdc }).eq("id", vaccine.id);
-  if (updateError) throw new Error(`Updating ndc for ${vaccine.name}: ${updateError.message}`);
-  console.log(`Updated ${vaccine.name} (id ${vaccine.id}): ndc -> ${formattedNdc}.`);
+  const { error: updateError } = await supabase.from("vaccine").update(update).eq("id", vaccine.id);
+  if (updateError) throw new Error(`Updating ${Object.keys(update).join(", ")} for ${vaccine.name}: ${updateError.message}`);
+  console.log(
+    `Updated ${vaccine.name} (id ${vaccine.id}): ${Object.entries(update)
+      .map(([field, value]) => `${field} -> ${value}`)
+      .join(", ")}.`
+  );
   process.exit(0);
 }
 
 // Only run main() when executed directly (not when imported for unit
-// tests — loadEnvFile/nameMatchesSubstring are exported above for that).
+// tests — loadEnvFile/nameMatchesSubstring/isValidShortCode/
+// findShortCodeConflict are exported above for that).
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));

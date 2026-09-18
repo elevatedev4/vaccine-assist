@@ -49,6 +49,30 @@ export const SECTION_COLORS: Readonly<Record<MacroSection, SectionColors>> = {
   Other: { bg: "#f2f2f2", border: "#aaaaaa", text: "#4d4d4d" },
 };
 
+/** V-T50 (Will's verbatim feedback, 2026-09-18): "I would like the flu
+ * shots to be different colors on their buttons to easily tell them
+ * apart. Flucelvax is light green, Fluad light blue, FluMist gray,
+ * mFLUSIVA light red." Keyed by MacroCatalogEntry.colorKey (lib/
+ * macro-catalog.ts) — flucelvaxmdv AND flucelvaxpfs both resolve to the
+ * "flucelvax" key so both short codes get the same color. Fluad has no
+ * entry here on purpose: Will's ask for Fluad is "light blue," which is
+ * already SECTION_COLORS.Flu's own hue, so it just falls through to that
+ * (see resolveDoseButtonColors below) rather than duplicating it. Every
+ * OTHER flu product (Afluria, Fluzone, Flublok) also falls through to
+ * SECTION_COLORS.Flu, unchanged. */
+export const PRODUCT_COLORS: Readonly<Record<string, SectionColors>> = {
+  flucelvax: { bg: "#e6f8ec", border: "#6cc084", text: "#1c6b35" },
+  flumist: { bg: "#ececec", border: "#9a9a9a", text: "#3f3f3f" },
+  mflusiva: { bg: "#fdecea", border: "#e2867e", text: "#8f2a20" },
+};
+
+/** Resolves a dose button's colors: a per-product PRODUCT_COLORS override
+ * when its resolved macro-catalog colorKey has one, else the row's
+ * section color. Exported for its own unit test coverage. */
+export function resolveDoseButtonColors(row: Pick<MacroRow, "section" | "colorKey">): SectionColors {
+  return PRODUCT_COLORS[row.colorKey] ?? SECTION_COLORS[row.section];
+}
+
 /** "Copied ✓" is 8 characters — a button's reserved width is at least
  * that (plus a little breathing room) so swapping the label to the
  * copied flag never shifts layout, per Will's brief ("'Copied ✓'

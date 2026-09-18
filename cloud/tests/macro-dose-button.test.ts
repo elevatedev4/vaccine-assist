@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { renderMacroDoseButton, SECTION_COLORS, subLabelFontSizePx, subLabelSlotHeightPx, SUB_LABEL_LINE_HEIGHT } from "@/lib/macro-dose-button";
+import {
+  PRODUCT_COLORS,
+  renderMacroDoseButton,
+  resolveDoseButtonColors,
+  SECTION_COLORS,
+  subLabelFontSizePx,
+  subLabelSlotHeightPx,
+  SUB_LABEL_LINE_HEIGHT,
+} from "@/lib/macro-dose-button";
 import type { MacroDoseButton, MacroRow } from "@/lib/macro-codes";
 
 function makeRow(overrides: Partial<MacroRow> = {}): MacroRow {
@@ -23,6 +31,7 @@ function makeRow(overrides: Partial<MacroRow> = {}): MacroRow {
     ageMinMonths: 0,
     doseCount: 1,
     vaccineIds: ["v1"],
+    colorKey: "",
     ...overrides,
   };
 }
@@ -49,6 +58,36 @@ function collectText(node: unknown, out: string[], depth = 0): void {
   const el = node as { props?: { children?: unknown } };
   if (el.props && "children" in el.props) collectText(el.props.children, out, depth + 1);
 }
+
+describe("resolveDoseButtonColors (V-T50: per-product flu button colors)", () => {
+  it("returns the PRODUCT_COLORS override for flucelvax, flumist, and mflusiva", () => {
+    expect(resolveDoseButtonColors(makeRow({ section: "Flu", colorKey: "flucelvax" }))).toEqual(
+      PRODUCT_COLORS.flucelvax
+    );
+    expect(resolveDoseButtonColors(makeRow({ section: "Flu", colorKey: "flumist" }))).toEqual(PRODUCT_COLORS.flumist);
+    expect(resolveDoseButtonColors(makeRow({ section: "Flu", colorKey: "mflusiva" }))).toEqual(
+      PRODUCT_COLORS.mflusiva
+    );
+  });
+
+  it("falls back to the section color for a flu product with no override (e.g. Fluad, Afluria, Fluzone)", () => {
+    expect(resolveDoseButtonColors(makeRow({ section: "Flu", colorKey: "fluad" }))).toEqual(SECTION_COLORS.Flu);
+    expect(resolveDoseButtonColors(makeRow({ section: "Flu", colorKey: "afluriapfs" }))).toEqual(SECTION_COLORS.Flu);
+  });
+
+  it("falls back to the section color for any non-flu row (no colorKey override exists outside flu)", () => {
+    expect(resolveDoseButtonColors(makeRow({ section: "Shingles", colorKey: "shingrix" }))).toEqual(
+      SECTION_COLORS.Shingles
+    );
+    expect(resolveDoseButtonColors(makeRow({ section: "Other", colorKey: "" }))).toEqual(SECTION_COLORS.Other);
+  });
+
+  it("gives every flu color override a distinct triple from each other and from the base Flu section color", () => {
+    const palette = [PRODUCT_COLORS.flucelvax, PRODUCT_COLORS.flumist, PRODUCT_COLORS.mflusiva, SECTION_COLORS.Flu];
+    const bgs = new Set(palette.map((c) => c.bg));
+    expect(bgs.size).toBe(palette.length);
+  });
+});
 
 describe("subLabelFontSizePx", () => {
   it("is the same for every doseCountInRow — round 12 dropped the per-crowding font shrink", () => {

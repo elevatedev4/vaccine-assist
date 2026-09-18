@@ -269,6 +269,12 @@ export type MacroRow = {
    * the fan-out target for a lot save, matching how /lots already
    * writes the same lot across every dose row of a product. */
   vaccineIds: string[];
+  /** V-T50: the resolved macro-catalog product color key (lib/
+   * macro-catalog.ts's MacroCatalogEntry.colorKey) — lib/
+   * macro-dose-button.tsx's PRODUCT_COLORS looks a dose button's color
+   * up by this before falling back to the section color. "" for an
+   * unrecognized short code (MACRO_CATALOG_OTHER). */
+  colorKey: string;
 };
 
 /** Round-7 per-page display-name overrides (see this file's header) —
@@ -381,6 +387,7 @@ export function buildMacroRows(
         doseInterval: undefined,
         doseCount: 1,
         vaccineIds: product.vaccineIds,
+        colorKey: MACRO_CATALOG_OTHER.colorKey,
       });
       continue;
     }
@@ -404,7 +411,7 @@ export function buildMacroRows(
       const lotNumber = currentLot?.lot_number ?? null;
       const expirationIso = currentLot?.expiration ?? null;
       const macroResult = buildMacroCode({ shortCode, doseNumber, doseCount: 1, lotNumber, expirationIso });
-      const catalogEntry = lookupMacroCatalog(shortCode);
+      const catalogEntry = lookupMacroCatalog(shortCode, realVaccine.name);
       // ROUND 10: only a dose past the first, of a genuinely multi-dose
       // product, ever carries an interval — see MacroRow.doseInterval's
       // doc comment above.
@@ -432,6 +439,7 @@ export function buildMacroRows(
         doseInterval,
         doseCount,
         vaccineIds: product.vaccineIds,
+        colorKey: catalogEntry.colorKey,
       });
     }
   }

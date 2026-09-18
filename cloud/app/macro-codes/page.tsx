@@ -40,6 +40,7 @@ import {
   macroRowKey,
   missingNote,
   renderMacroDoseButton,
+  resolveDoseButtonColors,
   type SectionColors,
 } from "@/lib/macro-dose-button";
 
@@ -1007,7 +1008,12 @@ function MacroCodesPageContent() {
               </div>
               <div className="macro-dose-buttons-c">
                 {product.doses.map((dose) =>
-                  renderDoseButton(dose, colors, {
+                  // V-T50: per-product flu color override (Flucelvax
+                  // green, FluMist gray, mFLUSIVA red) when one exists,
+                  // else the section color used everywhere else — see
+                  // lib/macro-dose-button.tsx's PRODUCT_COLORS/
+                  // resolveDoseButtonColors.
+                  renderDoseButton(dose, resolveDoseButtonColors(dose.row), {
                     // ROUND 14 (V-T48): the vaccine name as the button's
                     // own first row, above the existing dose row (2) and
                     // schedule row (3, where present) — see this file's
