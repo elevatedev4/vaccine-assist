@@ -2,7 +2,12 @@ import { describe, expect, it, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { loadEnvFile, nameMatchesSubstring } from "../scripts/set-vaccine-fields.mjs";
+import {
+  findShortCodeConflict,
+  isValidShortCode,
+  loadEnvFile,
+  nameMatchesSubstring,
+} from "../scripts/set-vaccine-fields.mjs";
 
 describe("nameMatchesSubstring", () => {
   it("matches case-insensitively", () => {
@@ -16,6 +21,51 @@ describe("nameMatchesSubstring", () => {
 
   it("returns false when the substring isn't present", () => {
     expect(nameMatchesSubstring("Boostrix", "flusiva")).toBe(false);
+  });
+});
+
+describe("isValidShortCode (V-T50: --short-code arg)", () => {
+  it("accepts lowercase letters and digits", () => {
+    expect(isValidShortCode("mflusiva")).toBe(true);
+    expect(isValidShortCode("shingrix1")).toBe(true);
+    expect(isValidShortCode("comirnaty12")).toBe(true);
+  });
+
+  it("rejects uppercase, spaces, punctuation, and empty strings", () => {
+    expect(isValidShortCode("mFLUSIVA")).toBe(false);
+    expect(isValidShortCode("m flusiva")).toBe(false);
+    expect(isValidShortCode("mflusiva-2026")).toBe(false);
+    expect(isValidShortCode("")).toBe(false);
+  });
+
+  it("rejects non-string input", () => {
+    expect(isValidShortCode(null)).toBe(false);
+    expect(isValidShortCode(undefined)).toBe(false);
+  });
+});
+
+describe("findShortCodeConflict (V-T50: --short-code uniqueness check)", () => {
+  const vaccines = [
+    { id: "v1", name: "mFLUSIVA 2026-27", short_code: "unmapped123" },
+    { id: "v2", name: "Fluad", short_code: "fluad" },
+    { id: "v3", name: "No Code Yet", short_code: null },
+  ];
+
+  it("finds another vaccine already using the requested short_code, case-insensitively", () => {
+    expect(findShortCodeConflict(vaccines, "fluad", "v1")).toEqual(vaccines[1]);
+    expect(findShortCodeConflict(vaccines, "FLUAD", "v1")).toEqual(vaccines[1]);
+  });
+
+  it("returns null when the code is free", () => {
+    expect(findShortCodeConflict(vaccines, "mflusiva", "v1")).toBeNull();
+  });
+
+  it("excludes the vaccine's own row (re-applying its own current code is not a conflict)", () => {
+    expect(findShortCodeConflict(vaccines, "unmapped123", "v1")).toBeNull();
+  });
+
+  it("never matches against a null short_code", () => {
+    expect(findShortCodeConflict(vaccines, "somecode", "v2")).toBeNull();
   });
 });
 

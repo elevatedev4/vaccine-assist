@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   lookupMacroCatalog,
+  lookupMacroCatalogByName,
   macroBaseShortCode,
   MACRO_CATALOG_OTHER_ORDER,
   MACRO_SECTION_ORDER,
@@ -215,6 +216,61 @@ describe("lookupMacroCatalog", () => {
 
     it("a product with no interval data (Boostrix) has no doseSchedule", () => {
       expect(lookupMacroCatalog("boostrix").doseSchedule).toBeUndefined();
+    });
+  });
+
+  describe("V-T50: name fallback ('mFLUSIVA is a flu shot, move it to the flu shot section')", () => {
+    it("resolves to the Flu section via the vaccine's NAME when the short_code lookup misses", () => {
+      const result = lookupMacroCatalog("someothercode", "mFLUSIVA 2026-27");
+      expect(result).toMatchObject({ type: "Flu mRNA (50+)", section: "Flu", age: "50+", ageMinMonths: 600 });
+    });
+
+    it("still resolves via short_code first when it matches, ignoring name", () => {
+      // Even a totally unrelated name shouldn't override a real short_code hit.
+      expect(lookupMacroCatalog("shingrix1", "mFLUSIVA 2026-27")).toMatchObject({ type: "Shingles", section: "Shingles" });
+    });
+
+    it("an unrelated name with no short_code match still falls through to Other", () => {
+      const result = lookupMacroCatalog("somethingbrandnew", "Some Future Vaccine");
+      expect(result.type).toBe("Other");
+      expect(result.section).toBe("Other");
+    });
+
+    it("existing short_code-only callers (no name argument) are unaffected", () => {
+      expect(lookupMacroCatalog("mflusiva")).toMatchObject({ type: "Flu mRNA (50+)", section: "Flu" });
+      expect(lookupMacroCatalog("somethingbrandnew")).toMatchObject({ type: "Other", section: "Other" });
+    });
+
+    it("lookupMacroCatalogByName matches 'mflusiva'/'flusiva' case-insensitively and falls back to Other otherwise", () => {
+      expect(lookupMacroCatalogByName("mFLUSIVA 2026-27")).toMatchObject({ section: "Flu" });
+      expect(lookupMacroCatalogByName("Flusiva 10pk")).toMatchObject({ section: "Flu" });
+      expect(lookupMacroCatalogByName("Boostrix")).toMatchObject({ type: "Other" });
+      expect(lookupMacroCatalogByName(null)).toMatchObject({ type: "Other" });
+      expect(lookupMacroCatalogByName(undefined)).toMatchObject({ type: "Other" });
+    });
+  });
+
+  describe("V-T50: colorKey (per-product flu button colors)", () => {
+    it("gives flucelvaxmdv and flucelvaxpfs the SAME colorKey so both share one button color", () => {
+      expect(lookupMacroCatalog("flucelvaxmdv").colorKey).toBe("flucelvax");
+      expect(lookupMacroCatalog("flucelvaxpfs").colorKey).toBe("flucelvax");
+    });
+
+    it("defaults colorKey to the resolved short_code for products with no explicit override", () => {
+      expect(lookupMacroCatalog("mflusiva").colorKey).toBe("mflusiva");
+      expect(lookupMacroCatalog("flumist").colorKey).toBe("flumist");
+      expect(lookupMacroCatalog("fluad").colorKey).toBe("fluad");
+      expect(lookupMacroCatalog("shingrix1").colorKey).toBe("shingrix");
+    });
+
+    it("the name-fallback path resolves the SAME entry (and colorKey) as an exact short_code match", () => {
+      const byShortCode = lookupMacroCatalog("mflusiva");
+      const byName = lookupMacroCatalog("someothercode", "mFLUSIVA 2026-27");
+      expect(byName.colorKey).toBe(byShortCode.colorKey);
+    });
+
+    it("Other has an empty colorKey", () => {
+      expect(lookupMacroCatalog("somethingbrandnew").colorKey).toBe("");
     });
   });
 

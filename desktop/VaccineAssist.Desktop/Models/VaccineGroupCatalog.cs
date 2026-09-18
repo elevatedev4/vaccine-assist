@@ -40,7 +40,7 @@ public static class VaccineGroupCatalog
     private static readonly (string Group, string[] NamePrefixes)[] Mappings =
     {
         ("COVID", new[] { "Comirnaty", "Spikevax", "mNEXSPIKE", "Novavax" }),
-        ("Flu", new[] { "Afluria", "Fluad", "Flucelvax", "FluMist", "Fluzone", "Flublok" }),
+        ("Flu", new[] { "Afluria", "Fluad", "Flucelvax", "FluMist", "Fluzone", "Flublok", "mFLUSIVA", "Flusiva" }),
         ("Pneumonia", new[] { "Prevnar", "Capvaxive", "Pneumovax", "Vaxneuvance" }),
         ("Tetanus/whooping cough", new[] { "Boostrix", "Adacel", "Tdap" }),
         ("Shingles", new[] { "Shingrix" }),
