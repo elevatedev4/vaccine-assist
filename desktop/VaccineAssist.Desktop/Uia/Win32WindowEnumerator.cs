@@ -19,10 +19,25 @@ namespace VaccineAssist.Desktop.Uia;
 /// "tooltips_class32") was added so DialogClassifier.IsTransientWindow can
 /// tell Pioneer's own transient popups (autocomplete dropdowns, tooltips)
 /// apart from a real pre-entry dialog using nothing but this struct's own
-/// fields — see that method. Appended as the LAST field with a default so
-/// every existing positional `new WindowInfo(...)` call (this class'
-/// Describe below, and every fixture in PioneerDialogCandidatesTests.cs)
-/// keeps compiling unchanged.
+/// fields — see that method.
+///
+/// V-T41 ROUND 3 (Will, 2026-09-21 log — Priority/untitled-window Escape
+/// loop): `IsVisible`/`IsEnabled`/`Width`/`Height`/`Style`/`ExStyle` were
+/// added so DialogClassifier can tell an invisible/disabled/zero-area
+/// owner-or-notification window (e.g. WinForms' own hidden
+/// "ThemeManagerNotification" window, or an untitled
+/// "WindowsForms10.Window.0.*" support window) apart from a real modal
+/// dialog, and so a candidate can be checked against the main window's
+/// OWN enabled state (a real modal disables its owner) before ever being
+/// Escaped — see IsTransientWindow and IsConfirmedBlockingModal. `Width`/
+/// `Height` default to -1 ("not measured") rather than 0 so an existing
+/// test fixture that never set them is never mistaken for a zero-area
+/// window; `IsVisible`/`IsEnabled` default to true (assume normal) for the
+/// same backward-compatibility reason. All six are appended as the LAST
+/// fields with defaults so every existing positional `new WindowInfo(...)`
+/// call (this class' Describe below, and every fixture in
+/// PioneerDialogCandidatesTests.cs / DialogClassifierTests.cs) keeps
+/// compiling unchanged.
 /// </summary>
 public readonly record struct WindowInfo(
     IntPtr Handle,
@@ -31,7 +46,33 @@ public readonly record struct WindowInfo(
     IntPtr OwnerHandle,
     bool IsPopupStyle,
     bool IsDialogFrameStyle,
-    string ClassName = "");
+    string ClassName = "",
+    bool IsVisible = true,
+    bool IsEnabled = true,
+    int Width = -1,
+    int Height = -1,
+    long Style = 0,
+    long ExStyle = 0)
+{
+    private const long WS_EX_TOOLWINDOW = 0x00000080L;
+    private const long WS_EX_NOACTIVATE = 0x08000000L;
+
+    /// <summary>WS_EX_TOOLWINDOW — a tool window never appears in the
+    /// taskbar/Alt+Tab and is never a real modal dialog PioneerRx expects
+    /// the user to answer.</summary>
+    public bool IsToolWindow => (ExStyle & WS_EX_TOOLWINDOW) != 0;
+
+    /// <summary>WS_EX_NOACTIVATE — a window that never takes activation
+    /// (used for notification/owner-only helper windows) is never a real
+    /// modal dialog either.</summary>
+    public bool IsNoActivateWindow => (ExStyle & WS_EX_NOACTIVATE) != 0;
+
+    /// <summary>True only when Width/Height were actually measured (not
+    /// left at their -1 "unmeasured" default) and came back 0 on either
+    /// axis — the shape of an invisible support window Win32 still reports
+    /// a handle for.</summary>
+    public bool HasZeroArea => Width == 0 || Height == 0;
+}
 
 /// <summary>
 /// V-... 2026-09-14 (Will, verbatim): "The app is not recognizing the
@@ -87,6 +128,33 @@ public static class Win32WindowEnumerator
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
 
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowEnabled(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
     // GetWindowLongPtr only exists as a real export on 64-bit Windows;
     // GetWindowLong is the correct call for a 32-bit process. Both are
     // wrapped by SafeGetStyle below, chosen by IntPtr.Size (this process'
@@ -101,6 +169,7 @@ public static class Win32WindowEnumerator
 
     private const uint GW_OWNER = 4;
     private const int GWL_STYLE = -16;
+    private const int GWL_EXSTYLE = -20;
     private const long WS_POPUP = unchecked((long)0x80000000);
     private const long WS_DLGFRAME = 0x00400000L;
 
@@ -172,6 +241,8 @@ public static class Win32WindowEnumerator
     public static WindowInfo Describe(IntPtr hWnd)
     {
         var style = SafeGetStyle(hWnd);
+        var exStyle = SafeGetExStyle(hWnd);
+        var (width, height) = SafeGetSize(hWnd);
         return new WindowInfo(
             hWnd,
             SafeGetWindowText(hWnd),
@@ -179,7 +250,13 @@ public static class Win32WindowEnumerator
             SafeGetOwner(hWnd),
             (style & WS_POPUP) != 0,
             (style & WS_DLGFRAME) != 0,
-            SafeGetClassName(hWnd));
+            SafeGetClassName(hWnd),
+            IsVisible: SafeIsVisible(hWnd),
+            IsEnabled: SafeIsEnabled(hWnd),
+            Width: width,
+            Height: height,
+            Style: style,
+            ExStyle: exStyle);
     }
 
     private static void TryAdd(List<WindowInfo> results, IntPtr hWnd)
@@ -233,5 +310,106 @@ public static class Win32WindowEnumerator
             return IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, GWL_STYLE).ToInt64() : GetWindowLong32(hWnd, GWL_STYLE);
         }
         catch { return 0; }
+    }
+
+    private static long SafeGetExStyle(IntPtr hWnd)
+    {
+        try
+        {
+            return IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, GWL_EXSTYLE).ToInt64() : GetWindowLong32(hWnd, GWL_EXSTYLE);
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>Width/Height in screen pixels, or (-1, -1) — "not
+    /// measured" — on any failure, matching WindowInfo's own default so a
+    /// failed measurement is never mistaken for a genuine zero-area
+    /// window.</summary>
+    private static (int Width, int Height) SafeGetSize(IntPtr hWnd)
+    {
+        try
+        {
+            if (GetWindowRect(hWnd, out var rect))
+            {
+                return (rect.Right - rect.Left, rect.Bottom - rect.Top);
+            }
+        }
+        catch { /* fall through to (-1, -1) below */ }
+        return (-1, -1);
+    }
+
+    /// <summary>Best-effort: "can't tell" is treated as visible (true),
+    /// same safe-default posture WindowInfo's own default uses.</summary>
+    private static bool SafeIsVisible(IntPtr hWnd)
+    {
+        try { return IsWindowVisible(hWnd); }
+        catch { return true; }
+    }
+
+    /// <summary>Best-effort: "can't tell" is treated as enabled (true),
+    /// same safe-default posture WindowInfo's own default uses.</summary>
+    private static bool SafeIsEnabled(IntPtr hWnd)
+    {
+        try { return IsWindowEnabled(hWnd); }
+        catch { return true; }
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 4 (Will's 2026-09-21 brief, point 1): "make 'OK' mean
+    /// VERIFIED: ... wait up to ~1.5s for that dialog HWND to be gone
+    /// (IsWindow false / not visible)." True once the handle no longer
+    /// refers to a live window at all, OR still exists but is no longer
+    /// visible (a dialog that's been hidden rather than destroyed still
+    /// counts as "gone" for this purpose). Fail-safe in the SAFE direction
+    /// for this specific use (unlike SafeIsVisible/SafeIsEnabled above): a
+    /// read failure returns false ("not gone yet") so a strategy can never
+    /// falsely claim success from an unreadable handle.
+    /// </summary>
+    public static bool IsWindowGone(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return true;
+        try { return !IsWindow(hWnd) || !IsWindowVisible(hWnd); }
+        catch { return false; }
+    }
+
+    /// <summary>True when `hWnd` is currently the foreground window — used
+    /// by the Priority dialog's keyboard strategy (point 2b of the brief:
+    /// "verify foreground == dialog hwnd first; if not, SetForegroundWindow
+    /// it") before sending any keystrokes, since Windows delivers keyboard
+    /// input to whichever window has focus, not necessarily the window a
+    /// caller intends. Never throws.</summary>
+    public static bool IsForegroundWindow(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return false;
+        try { return GetForegroundWindow() == hWnd; }
+        catch { return false; }
+    }
+
+    /// <summary>Best-effort SetForegroundWindow — Windows can refuse a
+    /// foreground-switch request from a background process depending on
+    /// focus-stealing rules, so this is never guaranteed to succeed; the
+    /// caller re-checks IsForegroundWindow (or simply proceeds best-effort)
+    /// rather than treating a failure here as fatal. Never throws.</summary>
+    public static void TryBringToForeground(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return;
+        try { SetForegroundWindow(hWnd); }
+        catch { /* best-effort — see doc comment above */ }
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 4 REVIEW FIX (BLOCKER 1 — safety reviewer): the raw
+    /// foreground HWND, exposed so SendF3AndDismissPreEntryDialogsStep.
+    /// TryAuthorizeDialogInput can Describe() it and check whether it's a
+    /// same-process 'ComboLBox' popup (the one window besides the dialog
+    /// itself ever accepted as safe to send raw keystrokes/clicks to — see
+    /// PriorityInputGuard) rather than only being able to compare it
+    /// against a single known handle the way IsForegroundWindow does.
+    /// Never throws (IntPtr.Zero on failure).
+    /// </summary>
+    public static IntPtr GetForegroundWindowHandle()
+    {
+        try { return GetForegroundWindow(); }
+        catch { return IntPtr.Zero; }
     }
 }

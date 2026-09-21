@@ -117,7 +117,84 @@ public static class DialogClassifier
     public static bool IsTransientWindow(WindowInfo info)
     {
         if (IsTransientWindowClass(info.ClassName)) return true;
-        if (string.IsNullOrEmpty(info.Title) && !info.IsDialogFrameStyle) return true;
+        if (IsThemeManagerNotification(info.Title)) return true;
+        if (info.IsToolWindow || info.IsNoActivateWindow) return true;
+        if (string.IsNullOrEmpty(info.Title) &&
+            (!info.IsVisible || info.HasZeroArea || !info.IsEnabled ||
+             IsWindowsFormsWindowZeroClass(info.ClassName) || !info.IsDialogFrameStyle))
+        {
+            return true;
+        }
         return false;
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 3 (Will's 2026-09-21 17:15-17:16 log — 55s stuck inside
+    /// "Start Add New Rx (F3) and dismiss pre-entry dialogs" with the
+    /// Priority dialog handled 6 times and never reaching the prescriber
+    /// field): the log showed this step repeatedly pressing Escape on
+    /// untitled windows with class 'WindowsForms10.Window.0.*' and on
+    /// windows titled "ThemeManagerNotification" — .NET WinForms' own
+    /// internal hidden notification window, created once per process to
+    /// receive WM_THEMECHANGED/WM_SYSCOLORCHANGE broadcasts, NEVER shown to
+    /// the user and NEVER a dialog to answer. Escaping it (or the similarly
+    /// invisible, untitled 'WindowsForms10.Window.0.*' support windows
+    /// alongside it) most likely cancelled the just-opened New Rx form (or
+    /// its still-open Priority step) out from under the user, which is
+    /// exactly why Priority kept reappearing — 6 handled cycles, 55s, never
+    /// reaching "Add New Rx." <see cref="IsTransientWindow"/>'s extra
+    /// checks above (ThemeManagerNotification by title, tool/no-activate
+    /// windows by ExStyle, and an untitled+invisible-or-zero-area-or-
+    /// disabled-or-Window.0-classed window) are the fix: none of those
+    /// shapes are ever ESC'd or counted as blocking again.
+    /// </summary>
+    private static bool IsThemeManagerNotification(string? title) =>
+        string.Equals(title, "ThemeManagerNotification", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Matches window classes like
+    /// 'WindowsForms10.Window.0.app.0.37e3228_r7_ad1' — WinForms' own
+    /// naming scheme encodes the control-style bits used to create the
+    /// window into the class name (e.g. "...Window.8..." for one style
+    /// combination, "...Window.0..." for none) — class number 0 is the
+    /// shape WinForms uses for a window created with no CS_ style flags at
+    /// all, which in practice (see the doc comment above) is an invisible
+    /// support/owner window, never a real user-facing dialog.</summary>
+    private static bool IsWindowsFormsWindowZeroClass(string? className) =>
+        !string.IsNullOrEmpty(className) &&
+        className.StartsWith("WindowsForms10.Window.0.", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// V-T41 ROUND 3 — the other half of the loop-loop fix (see
+    /// IsThemeManagerNotification's doc comment): once every known-shape
+    /// non-dialog window is filtered out by IsTransientWindow, this repo
+    /// used to blind-ESC WHATEVER top-level window was left over just
+    /// because its title didn't match a known dialog. That is unsafe for
+    /// exactly the same reason — an unrecognized-but-real window might be
+    /// Pioneer's own transient artifact this class hasn't been taught to
+    /// name yet, not a dialog waiting to be answered. The one reliable,
+    /// general signal that a window IS a real modal blocking dialog
+    /// (without needing to know its specific shape) is the standard Win32
+    /// modal-dialog convention: showing a modal dialog DISABLES its owner
+    /// window, and the dialog itself stays enabled. So a candidate is only
+    /// treated as a confirmed blocking modal when the attached main window
+    /// is currently disabled AND the candidate itself is enabled — and, if
+    /// the candidate reports an explicit Win32 owner at all, that owner
+    /// must be the main window (a candidate positively owned by some OTHER
+    /// window is never this step's modal to dismiss). A candidate with no
+    /// owner set (OwnerHandle == IntPtr.Zero) is still eligible —
+    /// PioneerDialogCandidates.Select's own doc comment already documents
+    /// that Pioneer's Priority/Cycle Fill/Scan Hard Copy prompts may not
+    /// set an explicit Win32 owner on themselves, so requiring one here
+    /// would risk silently going back to never finding a real dialog.
+    /// Only reached for an UNRECOGNIZED window (Priority/Scan Hard
+    /// Copy/Patient on Cycle Fill are always handled by name before this
+    /// runs) — see SendF3AndDismissPreEntryDialogsStep.TryDismissNextStrayPioneerWindow.
+    /// </summary>
+    public static bool IsConfirmedBlockingModal(WindowInfo candidate, IntPtr mainHandle, bool mainWindowEnabled)
+    {
+        if (mainWindowEnabled) return false;
+        if (!candidate.IsEnabled) return false;
+        if (candidate.OwnerHandle != IntPtr.Zero && candidate.OwnerHandle != mainHandle) return false;
+        return true;
     }
 }

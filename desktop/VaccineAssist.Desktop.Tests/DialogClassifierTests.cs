@@ -138,4 +138,142 @@ public class DialogClassifierTests
         var window = new WindowInfo(new IntPtr(5), "", 1234, IntPtr.Zero, IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "#32770");
         Assert.False(DialogClassifier.IsTransientWindow(window));
     }
+
+    // --- V-T41 ROUND 3 (2026-09-21 log): ThemeManagerNotification /
+    // WindowsForms10.Window.0.* / invisible-or-disabled-or-zero-area /
+    // tool-or-no-activate windows must never be Escaped ---
+
+    [Fact]
+    public void IsTransientWindowIsTrueForThemeManagerNotificationRegardlessOfShape()
+    {
+        // The exact window from Will's 2026-09-21 log: titled
+        // "ThemeManagerNotification" — WinForms' own hidden theme-change
+        // notification window, never a dialog to answer — even though its
+        // class here is a real dialog-frame shape and it reports as
+        // visible/enabled, so nothing else about it would flag it.
+        var window = new WindowInfo(new IntPtr(10), "ThemeManagerNotification", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "WindowsForms10.Window.8.app.0.37e3228_r7_ad1",
+            IsVisible: true, IsEnabled: true, Width: 10, Height: 10);
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsTrueForThemeManagerNotificationCaseInsensitive()
+    {
+        var window = new WindowInfo(new IntPtr(11), "thememanagernotification", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true);
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsTrueForAnEmptyTitledWindowsForms10Window0Class()
+    {
+        // The other exact shape from the 2026-09-21 log: empty title,
+        // class 'WindowsForms10.Window.0.app.0.37e3228_r7_ad1' — even with
+        // IsDialogFrameStyle true (so the pre-existing "untitled non-dialog
+        // frame" check alone wouldn't catch it).
+        var window = new WindowInfo(new IntPtr(12), "", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "WindowsForms10.Window.0.app.0.37e3228_r7_ad1");
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsTrueForAnEmptyTitledInvisibleWindow()
+    {
+        var window = new WindowInfo(new IntPtr(13), "", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "#32770", IsVisible: false);
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsTrueForAnEmptyTitledDisabledWindow()
+    {
+        var window = new WindowInfo(new IntPtr(14), "", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "#32770", IsEnabled: false);
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsTrueForAnEmptyTitledZeroAreaWindow()
+    {
+        var window = new WindowInfo(new IntPtr(15), "", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "#32770", Width: 0, Height: 0);
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsFalseForAnEmptyTitledRealDialogWithMeasuredNonZeroArea()
+    {
+        // A genuine, visible, enabled, sized dialog frame with a blank
+        // title is still NOT transient — every new check above must be a
+        // narrowing condition, not a blanket "empty title" rule.
+        var window = new WindowInfo(new IntPtr(16), "", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "#32770",
+            IsVisible: true, IsEnabled: true, Width: 300, Height: 150);
+        Assert.False(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsTrueForAToolWindowRegardlessOfTitle()
+    {
+        const long WS_EX_TOOLWINDOW = 0x00000080L;
+        var window = new WindowInfo(new IntPtr(17), "Priority", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ExStyle: WS_EX_TOOLWINDOW);
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    [Fact]
+    public void IsTransientWindowIsTrueForANoActivateWindowRegardlessOfTitle()
+    {
+        const long WS_EX_NOACTIVATE = 0x08000000L;
+        var window = new WindowInfo(new IntPtr(18), "Priority", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ExStyle: WS_EX_NOACTIVATE);
+        Assert.True(DialogClassifier.IsTransientWindow(window));
+    }
+
+    // --- V-T41 ROUND 3: DialogClassifier.IsConfirmedBlockingModal ---
+
+    [Fact]
+    public void IsConfirmedBlockingModalIsFalseWhenMainWindowIsStillEnabled()
+    {
+        var main = new IntPtr(100);
+        var candidate = new WindowInfo(new IntPtr(101), "Mystery", 1234, main, false, false, IsEnabled: true);
+        Assert.False(DialogClassifier.IsConfirmedBlockingModal(candidate, main, mainWindowEnabled: true));
+    }
+
+    [Fact]
+    public void IsConfirmedBlockingModalIsFalseWhenTheCandidateItselfIsDisabled()
+    {
+        var main = new IntPtr(100);
+        var candidate = new WindowInfo(new IntPtr(101), "Mystery", 1234, main, false, false, IsEnabled: false);
+        Assert.False(DialogClassifier.IsConfirmedBlockingModal(candidate, main, mainWindowEnabled: false));
+    }
+
+    [Fact]
+    public void IsConfirmedBlockingModalIsTrueWhenMainIsDisabledAndCandidateIsEnabledAndOwnedByMain()
+    {
+        var main = new IntPtr(100);
+        var candidate = new WindowInfo(new IntPtr(101), "Mystery", 1234, main, false, false, IsEnabled: true);
+        Assert.True(DialogClassifier.IsConfirmedBlockingModal(candidate, main, mainWindowEnabled: false));
+    }
+
+    [Fact]
+    public void IsConfirmedBlockingModalIsTrueWhenMainIsDisabledAndCandidateHasNoExplicitOwner()
+    {
+        // PioneerDialogCandidates' own doc comment: Pioneer's real dialogs
+        // may not set an explicit Win32 owner — OwnerHandle == Zero must
+        // still be eligible, not rejected.
+        var main = new IntPtr(100);
+        var candidate = new WindowInfo(new IntPtr(101), "Mystery", 1234, IntPtr.Zero, false, false, IsEnabled: true);
+        Assert.True(DialogClassifier.IsConfirmedBlockingModal(candidate, main, mainWindowEnabled: false));
+    }
+
+    [Fact]
+    public void IsConfirmedBlockingModalIsFalseWhenCandidateIsOwnedByADifferentWindow()
+    {
+        var main = new IntPtr(100);
+        var someOtherWindow = new IntPtr(200);
+        var candidate = new WindowInfo(new IntPtr(101), "Mystery", 1234, someOtherWindow, false, false, IsEnabled: true);
+        Assert.False(DialogClassifier.IsConfirmedBlockingModal(candidate, main, mainWindowEnabled: false));
+    }
 }
