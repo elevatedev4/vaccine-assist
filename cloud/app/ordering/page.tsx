@@ -11,7 +11,7 @@ import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 import { buildToOrderRows } from "@/lib/ordering-to-order";
-import { SaveStatusIndicator, TargetInput, saveStatusStyle, type SaveStatus } from "@/app/ordering/target-input";
+import { SaveStatusIndicator, TargetInput, type SaveStatus } from "@/app/ordering/target-input";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -265,6 +265,30 @@ const styles = {
   // in ./target-input.tsx (V-T51) alongside the TargetInput component
   // that uses them.
   walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  // The "saves after a 1-minute database step" hint (V-T-ordering-
+  // target-one-line) was only mounted while walkInPctPending was true, so
+  // the settings-menu panel grew/shrank by a line every time that flag
+  // flipped, shifting "Email-in setup" and everything else below it. First
+  // fix took it out of flow with position:absolute — reviewer follow-up
+  // caught that, with no background, its 0.7rem line is taller than the
+  // 0.5rem gap to "Email-in setup" below it, so it overlapped that link
+  // for up to a minute while walkInPctPending stayed true.
+  //
+  // Fixed properly now: always mounted, visibility toggled, back IN flow,
+  // with a fixed minHeight (one 0.7rem line, whiteSpace:nowrap so it can
+  // never wrap onto a second) reserving its own line permanently —
+  // constant either way, so nothing shifts when it toggles, and nothing
+  // overlaps "Email-in setup" since the line is really there, not just
+  // painted over it.
+  walkInPendingHint: {
+    display: "block" as const,
+    marginTop: "2px",
+    fontSize: "0.7rem",
+    lineHeight: 1.2,
+    minHeight: "1.2em",
+    whiteSpace: "nowrap" as const,
+    color: "#555",
+  },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
   modalOverlay: {
     position: "fixed" as const,
@@ -912,7 +936,15 @@ export default function OrderingPage() {
                   onKeyDown={handleWalkInPctKeyDown}
                 />
                 <SaveStatusIndicator status={walkInPctStatus} />
-                {data?.walkInPctPending && <span style={saveStatusStyle}>saves after a 1-minute database step</span>}
+                <span
+                  style={{
+                    ...styles.walkInPendingHint,
+                    visibility: data?.walkInPctPending ? ("visible" as const) : ("hidden" as const),
+                  }}
+                  aria-live="polite"
+                >
+                  saves after a 1-minute database step
+                </span>
               </span>
               {showEmailSetupLink && (
                 <a href="#" style={styles.link} onClick={(e) => { e.preventDefault(); setShowEmailModal(true); setMenuOpen(false); }}>
@@ -1100,6 +1132,7 @@ export default function OrderingPage() {
                           disabled={targetsPending || !row.ndc}
                           disabledTitle={targetsPending ? "activates after the database step" : "no NDC on file for this product"}
                           onSave={(value) => (row.ndc ? saveTarget("ndc", row.ndc, value) : Promise.resolve(false))}
+                          highlighted={row.order > 0}
                         />
                       </td>
                       <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
