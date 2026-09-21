@@ -177,6 +177,62 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// dismissed ZERO windows (the exact shape of the V-T41 log line above,
 /// including a "ready=True" finish), a full PioneerWindowInventory.Describe()
 /// is logged once so the NEXT stall names every window actually on screen.
+///
+/// ROUND 3 — ESCAPE LOOP FIX (V-T41, Will's 2026-09-21 17:15-17:16 log,
+/// verbatim task: third round on this same bug): that night's log showed
+/// the "Priority" dialog handled 6 times (throttled log lines; the raw
+/// per-tick attempt count is much higher — see the timestamps: ~1.1-1.2s
+/// per real attempt, so attempt 25 by 49.086s lines up with attempt 1 at
+/// 22.712s) and 6 more Escape keypresses against windows with an EMPTY
+/// title and class 'WindowsForms10.Window.0.*', plus TWO against a window
+/// titled "ThemeManagerNotification" (.NET WinForms' own internal hidden
+/// theme-change-notification window — never shown to the user, never a
+/// dialog to answer) — never reaching the prescriber field in the ~55s the
+/// log covers this step. ROOT CAUSE (confirmed against the code, not just
+/// the log): TryDismissNextStrayPioneerWindow used to Escape ANY
+/// unrecognized top-level window with no further check — including these
+/// invisible owner/notification windows. Escaping one of them most likely
+/// cancelled the just-opened New Rx form (or its still-open Priority
+/// step) out from under the user, which is exactly why Priority kept
+/// reappearing: F3's whole flow was being restarted by this step's own
+/// Escapes, not by PioneerRx or the user. Compounding it:
+/// RunCombinedPreEntryLoopAsync's ONLY give-up signal is `maxEmptyTicks`
+/// CONSECUTIVE ticks where NOTHING was dismissed (see its own doc comment
+/// and NeverBecomingReadyWithNothingToDismissTimesOutAfterMaxEmptyTicks in
+/// the test suite) — and every tick in this run WAS "dismissing"
+/// something (Priority, or a fresh Escape target), so `emptyTicks` reset
+/// to 0 every time and the loop's nominal ~15s CombinedPreEntryLoopTimeout
+/// was never actually enforced, letting a genuinely stuck run continue
+/// indefinitely instead of failing loud within its stated budget.
+///
+/// TWO independent fixes:
+///   1. DialogClassifier.IsTransientWindow now also recognizes (never
+///      Escaped, never counted as blocking): any window titled
+///      "ThemeManagerNotification"; tool/no-activate windows
+///      (WS_EX_TOOLWINDOW/WS_EX_NOACTIVATE); and an untitled window that's
+///      not visible, zero-area, not enabled, or classed
+///      'WindowsForms10.Window.0.*'. And: TryDismissNextStrayPioneerWindow
+///      now only Escapes an UNRECOGNIZED window once
+///      DialogClassifier.IsConfirmedBlockingModal says so — the standard
+///      Win32 signal that a real modal is up (its owner window disabled,
+///      the candidate itself enabled) — rather than blind-ESCing whatever
+///      wasn't filtered out as transient. See both methods' own doc
+///      comments.
+///   2. PreEntryLoopGuard (new, pure, unit-tested) is a hard circuit
+///      breaker independent of fix 1: a given DialogKind handled more than
+///      PreEntryLoopGuard.MaxHandledPerDialogKind times, or more than
+///      PreEntryLoopGuard.MaxTotalEscapes total Escapes, in one run throws
+///      PreEntryLoopProtectionException — caught in ExecuteAsync to stop
+///      immediately with a clear, loud failure result AND a NO-PHI window
+///      inventory log line (class, title LENGTH only, visible, enabled,
+///      size, exstyle, owner handle — see WindowInfoDiagnostics) instead
+///      of ever running 55+ seconds again. This also covers a genuinely
+///      un-fixable-by-classification stall (e.g. Priority truly can't be
+///      resolved for some other reason).
+/// Every window TryDismissNextStrayPioneerWindow considers is now logged
+/// with its full NO-PHI diagnostic shape plus the decision made about it
+/// (ignored-nonblocking / handled-known / escaped-unknown-modal) so the
+/// next stall's log is conclusive without guessing.
 /// </summary>
 public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 {
@@ -296,8 +352,9 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         context.Log($"[{Name}] Sent F3 (took {f3Stopwatch.ElapsedMilliseconds}ms).");
 
         var strayAttempts = new Dictionary<IntPtr, int>();
-        var loggedTransientHandles = new HashSet<IntPtr>();
+        var loggedIgnoredHandles = new HashSet<IntPtr>();
         var priorityAttempt = 0;
+        var loopGuard = new PreEntryLoopGuard();
         AutomationElement? addNewRxWindow = null;
 
         bool IsAddNewRxReady()
@@ -328,8 +385,32 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             return true;
         }
 
-        string? TryDismissNext() =>
-            TryDismissNextPendingDialogOrStrayWindow(attachedWindow, baselineHandles, previousHandle, mainProcessId, strayAttempts, loggedTransientHandles, ref priorityAttempt, context.Log);
+        // V-T41 ROUND 3: wraps TryDismissNextPendingDialogOrStrayWindow with
+        // PreEntryLoopGuard's hard circuit breaker — see class doc
+        // comment's ROUND 3 section. `title` is exactly
+        // PreEntryDialogTitles.Priority only when the Priority dialog was
+        // select+confirmed (never Escaped); every other non-null title
+        // (a known-title Escape, or an unrecognized-but-confirmed-modal
+        // Escape) corresponds to one real Escape keypress.
+        string? TryDismissNext()
+        {
+            var title = TryDismissNextPendingDialogOrStrayWindow(
+                attachedWindow, baselineHandles, previousHandle, mainProcessId, strayAttempts, loggedIgnoredHandles, ref priorityAttempt, context.Log);
+            if (title is null) return null;
+
+            var kind = title == PreEntryDialogTitles.Priority ? DialogKind.Priority : DialogClassifier.Classify(title);
+            if (loopGuard.RecordHandled(kind))
+            {
+                throw new PreEntryLoopProtectionException(
+                    $"the \"{title}\" dialog/window was handled more than {PreEntryLoopGuard.MaxHandledPerDialogKind} times in this run without ever reaching \"Add New Rx\"");
+            }
+            if (title != PreEntryDialogTitles.Priority && loopGuard.RecordEscape())
+            {
+                throw new PreEntryLoopProtectionException(
+                    $"more than {PreEntryLoopGuard.MaxTotalEscapes} Escape keypresses were sent to pre-entry windows in this run without ever reaching \"Add New Rx\"");
+            }
+            return title;
+        }
 
         var loopStopwatch = Stopwatch.StartNew();
         CombinedPreEntryLoopResult loopResult;
@@ -337,6 +418,15 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         {
             loopResult = await RunCombinedPreEntryLoopAsync(
                 IsAddNewRxReady, TryDismissNext, TicksFor(CombinedPreEntryLoopTimeout), WaitTick, cancellationToken);
+        }
+        catch (PreEntryLoopProtectionException ex)
+        {
+            var inventory = DescribeWindowInventoryNoPhi(previousHandle, mainProcessId);
+            context.Log($"[{Name}] Loop protection stopped this run: {ex.Message} — PioneerRx window inventory: {inventory}");
+            return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+                $"Stopped to avoid an infinite retry loop: {ex.Message}. This usually means a non-dialog Pioneer " +
+                "window was being Escaped and restarting the New Rx flow. See app.log for the window inventory " +
+                "(class/visibility/enabled/size/style — no titles logged).");
         }
         catch (Exception ex)
         {
@@ -572,7 +662,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// </summary>
     private string? TryDismissNextPendingDialogOrStrayWindow(
         AutomationElement attachedWindow, IReadOnlySet<IntPtr> baselineHandles, IntPtr mainHandle, int mainProcessId,
-        Dictionary<IntPtr, int> strayAttempts, HashSet<IntPtr> loggedTransientHandles, ref int priorityAttempt, Action<string> log)
+        Dictionary<IntPtr, int> strayAttempts, HashSet<IntPtr> loggedIgnoredHandles, ref int priorityAttempt, Action<string> log)
     {
         if (TryHandlePriorityIfShowing(attachedWindow, mainHandle, mainProcessId, ref priorityAttempt, log))
         {
@@ -582,9 +672,23 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         foreach (var title in PreEntryDialogTitles.All)
         {
             if (title == PreEntryDialogTitles.Priority) continue; // handled above — select+confirm, not ESC
-            if (TryDismissIfShowing(attachedWindow, title, mainHandle, mainProcessId)) return title;
+            if (TryDismissIfShowing(attachedWindow, title, mainHandle, mainProcessId, log)) return title;
         }
-        return TryDismissNextStrayPioneerWindow(baselineHandles, mainHandle, mainProcessId, strayAttempts, loggedTransientHandles, ref priorityAttempt, log);
+
+        // V-T41 ROUND 3: the main window's OWN enabled state right now —
+        // see DialogClassifier.IsConfirmedBlockingModal's doc comment for
+        // why this is the signal TryDismissNextStrayPioneerWindow needs
+        // before it may Escape an UNRECOGNIZED window. Deliberately NOT
+        // IsEnabledSafe (that helper returns false — "not enabled" — on a
+        // read failure, which is the wrong fail-safe direction here: it
+        // would make an unrecognized window MORE likely to look like a
+        // confirmed blocking modal and get Escaped). "Can't tell" must mean
+        // "assume the main window IS enabled" so nothing is confirmed as
+        // blocking and this step never Escapes blind on a read failure.
+        bool mainWindowEnabled;
+        try { mainWindowEnabled = attachedWindow.Properties.IsEnabled.ValueOrDefault; }
+        catch { mainWindowEnabled = true; }
+        return TryDismissNextStrayPioneerWindow(baselineHandles, mainHandle, mainProcessId, strayAttempts, loggedIgnoredHandles, ref priorityAttempt, mainWindowEnabled, log);
     }
 
     /// <summary>
@@ -597,12 +701,13 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// a title matching `titleSubstring` (via
     /// PreEntryDialogTitles.MatchesWithAliases) — see class doc comment.
     /// </summary>
-    private static bool TryDismissIfShowing(AutomationElement attachedWindow, string titleSubstring, IntPtr mainHandle, int mainProcessId)
+    private bool TryDismissIfShowing(AutomationElement attachedWindow, string titleSubstring, IntPtr mainHandle, int mainProcessId, Action<string> log)
     {
         foreach (var (element, info) in FindPioneerDialogCandidates(mainHandle, mainProcessId))
         {
             if (PreEntryDialogTitles.MatchesWithAliases(info.Title, titleSubstring))
             {
+                log($"[{Name}] \"{titleSubstring}\" dialog matched — {WindowInfoDiagnostics.DescribeNoPhiWithDecision(info, "handled-known")}.");
                 return TryDismiss(element);
             }
         }
@@ -641,6 +746,28 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         catch
         {
             return new List<(AutomationElement, WindowInfo)>();
+        }
+    }
+
+    /// <summary>V-T41 ROUND 3: NO-PHI (title LENGTH only — see
+    /// WindowInfoDiagnostics' own doc comment) inventory of every
+    /// dialog-candidate window, for PreEntryLoopProtectionException's
+    /// failure log — deliberately distinct from
+    /// PioneerWindowInventory.Describe() (which logs a truncated but still
+    /// partial title) since this dump is reached specifically because
+    /// something already went wrong and titles must not risk carrying a
+    /// patient name into the log. Never throws.</summary>
+    private static string DescribeWindowInventoryNoPhi(IntPtr mainHandle, int mainProcessId)
+    {
+        try
+        {
+            var candidates = FindPioneerDialogCandidates(mainHandle, mainProcessId);
+            if (candidates.Count == 0) return "no non-main PioneerRx window found.";
+            return string.Join(" \\ ", candidates.Select(c => WindowInfoDiagnostics.DescribeNoPhi(c.Info)));
+        }
+        catch (Exception ex)
+        {
+            return $"<window inventory failed: {ex.GetType().Name}: {ex.Message}>";
         }
     }
 
@@ -950,7 +1077,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// TryDismissIfShowing's title match).</summary>
     private string? TryDismissNextStrayPioneerWindow(
         IReadOnlySet<IntPtr> baselineHandles, IntPtr mainHandle, int mainProcessId, Dictionary<IntPtr, int> attempts,
-        HashSet<IntPtr> loggedTransientHandles, ref int priorityAttempt, Action<string> log)
+        HashSet<IntPtr> loggedIgnoredHandles, ref int priorityAttempt, bool mainWindowEnabled, Action<string> log)
     {
         const int maxAttemptsPerWindow = 3;
         try
@@ -962,27 +1089,27 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 if (baselineHandles.Contains(handle)) continue;
 
                 // V-T41 (see class doc comment's "Auto-Suggest Dropdown"
-                // timeout fix): a transient popup (autocomplete dropdown,
-                // tooltip, etc.) is NEVER a pre-entry dialog — it must not
-                // be ESC'd (that likely also cancels the field/form
-                // underneath, which is exactly how the 18:53 run's repeat-
-                // every-7s loop happened) or counted against
+                // timeout fix, and ROUND 3's ThemeManagerNotification/
+                // WindowsForms10.Window.0 fix): a transient window (an
+                // autocomplete dropdown, tooltip, tool/no-activate window,
+                // WinForms' own invisible ThemeManagerNotification, or any
+                // other untitled+invisible/zero-area/disabled window) is
+                // NEVER a pre-entry dialog — it must not be ESC'd (that
+                // likely cancels the field/form underneath, exactly how
+                // both the 18:53 Auto-Suggest run and this round's
+                // Priority-loop run happened) or counted against
                 // maxAttemptsPerWindow. Logged once per handle so it's
                 // visible in app.log without spamming every ~250ms tick.
                 if (DialogClassifier.IsTransientWindow(info))
                 {
-                    if (loggedTransientHandles.Add(handle))
+                    if (loggedIgnoredHandles.Add(handle))
                     {
-                        log($"[{Name}] Ignoring transient window class '{info.ClassName}'.");
+                        log($"[{Name}] Ignoring transient window class '{info.ClassName}' — {WindowInfoDiagnostics.DescribeNoPhiWithDecision(info, "ignored-nonblocking")}.");
                     }
                     continue;
                 }
 
-                attempts.TryGetValue(handle, out var count);
-                if (count >= maxAttemptsPerWindow) continue;
-
                 var title = info.Title;
-                attempts[handle] = count + 1;
 
                 // NO PHI IN LOGS: same "truncate before ' - '" convention
                 // as DescribeAnyPioneerWindowForLog/PioneerRxAttachment.TryAttach's
@@ -997,13 +1124,17 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 var classificationText = BuildClassificationText(window, title);
                 var kind = DialogClassifier.Classify(classificationText);
 
+                attempts.TryGetValue(handle, out var count);
+
                 if (kind == DialogKind.Priority)
                 {
+                    if (count >= maxAttemptsPerWindow) continue;
+                    attempts[handle] = count + 1;
                     priorityAttempt++;
                     var announce = AutoWatchRetry.ShouldLogRetry(priorityAttempt);
                     if (announce)
                     {
-                        log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Priority\" — treating it as the Priority dialog.");
+                        log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Priority\" — treating it as the Priority dialog. {WindowInfoDiagnostics.DescribeNoPhiWithDecision(info, "handled-known")}.");
                     }
                     HandlePriorityDialog(window, priorityAttempt, announce, log);
                     return PreEntryDialogTitles.Priority;
@@ -1011,19 +1142,40 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
                 if (kind == DialogKind.ScanHardCopy)
                 {
-                    log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Scan\"/\"Hard Copy\" — dismissing.");
+                    if (count >= maxAttemptsPerWindow) continue;
+                    attempts[handle] = count + 1;
+                    log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Scan\"/\"Hard Copy\" — dismissing. {WindowInfoDiagnostics.DescribeNoPhiWithDecision(info, "handled-known")}.");
                     if (TryDismiss(window)) return PreEntryDialogTitles.ScanHardCopy;
                     continue;
                 }
 
                 if (kind == DialogKind.PatientOnCycleFill)
                 {
-                    log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Cycle Fill\" — dismissing.");
+                    if (count >= maxAttemptsPerWindow) continue;
+                    attempts[handle] = count + 1;
+                    log($"[{Name}] Unrecognized top-level window \"{screenNameOnly}\" contains \"Cycle Fill\" — dismissing. {WindowInfoDiagnostics.DescribeNoPhiWithDecision(info, "handled-known")}.");
                     if (TryDismiss(window)) return PreEntryDialogTitles.PatientOnCycleFill;
                     continue;
                 }
 
-                log($"[{Name}] Unrecognized pre-entry window \"{screenNameOnly}\" (class '{SafeClassNameForLog(window)}') — pressing Escape once.");
+                // V-T41 ROUND 3: kind == Unknown — only Escape a window
+                // POSITIVELY identified as a modal blocking dialog (see
+                // DialogClassifier.IsConfirmedBlockingModal's own doc
+                // comment). This is the fix for the exact bug in this
+                // round's log: blind-ESCing whatever unrecognized window
+                // was left over cancelled the New Rx flow itself.
+                if (!DialogClassifier.IsConfirmedBlockingModal(info, mainHandle, mainWindowEnabled))
+                {
+                    if (loggedIgnoredHandles.Add(handle))
+                    {
+                        log($"[{Name}] Ignoring unrecognized non-modal window (main window still enabled, or this window isn't its owned popup) — {WindowInfoDiagnostics.DescribeNoPhiWithDecision(info, "ignored-nonblocking")}.");
+                    }
+                    continue;
+                }
+
+                if (count >= maxAttemptsPerWindow) continue;
+                attempts[handle] = count + 1;
+                log($"[{Name}] Unrecognized pre-entry window \"{screenNameOnly}\" (class '{info.ClassName}') confirmed as a blocking modal (main window disabled) — pressing Escape once. {WindowInfoDiagnostics.DescribeNoPhiWithDecision(info, "escaped-unknown-modal")}.");
                 if (TryDismiss(window)) return title;
             }
         }
@@ -1074,11 +1226,6 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             // Best-effort — title alone is still usable for classification.
         }
         return sb.ToString();
-    }
-
-    private static string SafeClassNameForLog(AutomationElement element)
-    {
-        try { return element.ClassName ?? "<null>"; } catch { return "<unknown>"; }
     }
 
     /// <summary>V-T41: true when some Pioneer top-level window OTHER THAN
