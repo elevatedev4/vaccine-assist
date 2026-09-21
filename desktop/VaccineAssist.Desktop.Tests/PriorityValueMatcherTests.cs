@@ -37,4 +37,33 @@ public class PriorityValueMatcherTests
     {
         Assert.False(PriorityValueMatcher.Matches("Vaccine", ""));
     }
+
+    // --- V-T41 ROUND 4: StartsWith (raw-view UIA select + keyboard type-ahead verification) ---
+
+    [Theory]
+    [InlineData("Vaccine", "Vaccine", true)]
+    [InlineData("vaccine", "Vaccine", true)]
+    [InlineData("VACCINE ADMINISTRATION", "Vaccine", true)]
+    [InlineData("Vaccine Administration", "Vaccine", true)]
+    [InlineData("  Vaccine", "Vaccine", true)] // leading whitespace trimmed
+    [InlineData("Flu Vaccine Priority Order", "Vaccine", false)] // "Vaccine" appears, but not at the start
+    [InlineData("Routine", "Vaccine", false)]
+    public void StartsWithIsPrefixCaseInsensitive(string elementName, string targetValue, bool expected)
+    {
+        Assert.Equal(expected, PriorityValueMatcher.StartsWith(elementName, targetValue));
+    }
+
+    [Theory]
+    [InlineData(null, "Vaccine")]
+    [InlineData("", "Vaccine")]
+    public void StartsWithNullOrEmptyElementNameNeverMatches(string? elementName, string targetValue)
+    {
+        Assert.False(PriorityValueMatcher.StartsWith(elementName, targetValue));
+    }
+
+    [Fact]
+    public void StartsWithEmptyTargetValueNeverMatches()
+    {
+        Assert.False(PriorityValueMatcher.StartsWith("Vaccine", ""));
+    }
 }

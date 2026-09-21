@@ -134,6 +134,15 @@ public static class Win32WindowEnumerator
     [DllImport("user32.dll")]
     private static extern bool IsWindowEnabled(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT
     {
@@ -343,5 +352,48 @@ public static class Win32WindowEnumerator
     {
         try { return IsWindowEnabled(hWnd); }
         catch { return true; }
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 4 (Will's 2026-09-21 brief, point 1): "make 'OK' mean
+    /// VERIFIED: ... wait up to ~1.5s for that dialog HWND to be gone
+    /// (IsWindow false / not visible)." True once the handle no longer
+    /// refers to a live window at all, OR still exists but is no longer
+    /// visible (a dialog that's been hidden rather than destroyed still
+    /// counts as "gone" for this purpose). Fail-safe in the SAFE direction
+    /// for this specific use (unlike SafeIsVisible/SafeIsEnabled above): a
+    /// read failure returns false ("not gone yet") so a strategy can never
+    /// falsely claim success from an unreadable handle.
+    /// </summary>
+    public static bool IsWindowGone(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return true;
+        try { return !IsWindow(hWnd) || !IsWindowVisible(hWnd); }
+        catch { return false; }
+    }
+
+    /// <summary>True when `hWnd` is currently the foreground window — used
+    /// by the Priority dialog's keyboard strategy (point 2b of the brief:
+    /// "verify foreground == dialog hwnd first; if not, SetForegroundWindow
+    /// it") before sending any keystrokes, since Windows delivers keyboard
+    /// input to whichever window has focus, not necessarily the window a
+    /// caller intends. Never throws.</summary>
+    public static bool IsForegroundWindow(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return false;
+        try { return GetForegroundWindow() == hWnd; }
+        catch { return false; }
+    }
+
+    /// <summary>Best-effort SetForegroundWindow — Windows can refuse a
+    /// foreground-switch request from a background process depending on
+    /// focus-stealing rules, so this is never guaranteed to succeed; the
+    /// caller re-checks IsForegroundWindow (or simply proceeds best-effort)
+    /// rather than treating a failure here as fatal. Never throws.</summary>
+    public static void TryBringToForeground(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return;
+        try { SetForegroundWindow(hWnd); }
+        catch { /* best-effort — see doc comment above */ }
     }
 }
