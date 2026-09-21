@@ -11,7 +11,7 @@ import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 import { buildToOrderRows } from "@/lib/ordering-to-order";
-import { SaveStatusIndicator, TargetInput, saveStatusStyle, type SaveStatus } from "@/app/ordering/target-input";
+import { SaveStatusIndicator, TargetInput, type SaveStatus } from "@/app/ordering/target-input";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -265,6 +265,25 @@ const styles = {
   // in ./target-input.tsx (V-T51) alongside the TargetInput component
   // that uses them.
   walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  // The "saves after a 1-minute database step" hint (V-T-ordering-
+  // target-one-line) was only mounted while walkInPctPending was true, so
+  // the settings-menu panel grew/shrank by a line every time that flag
+  // flipped, shifting "Email-in setup" and everything else below it. Now
+  // always mounted (visibility toggled) but taken out of flow —
+  // position:absolute under the Walk-up % row, anchored to that row's own
+  // walkInPctRow (position:relative) — so it reserves no height and can't
+  // shift the menu's other items either way.
+  walkInPendingHint: {
+    position: "absolute" as const,
+    top: "100%",
+    left: 0,
+    right: 0,
+    marginTop: "2px",
+    fontSize: "0.7rem",
+    color: "#555",
+    pointerEvents: "none" as const,
+  },
+  walkInPctRow: { position: "relative" as const },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
   modalOverlay: {
     position: "fixed" as const,
@@ -895,7 +914,7 @@ export default function OrderingPage() {
                   </button>
                 </span>
               )}
-              <span style={styles.muted}>
+              <span style={{ ...styles.muted, ...styles.walkInPctRow }}>
                 <label htmlFor="walk-in-pct">Walk-up %</label>{" "}
                 <input
                   id="walk-in-pct"
@@ -912,7 +931,15 @@ export default function OrderingPage() {
                   onKeyDown={handleWalkInPctKeyDown}
                 />
                 <SaveStatusIndicator status={walkInPctStatus} />
-                {data?.walkInPctPending && <span style={saveStatusStyle}>saves after a 1-minute database step</span>}
+                <span
+                  style={{
+                    ...styles.walkInPendingHint,
+                    visibility: data?.walkInPctPending ? ("visible" as const) : ("hidden" as const),
+                  }}
+                  aria-live="polite"
+                >
+                  saves after a 1-minute database step
+                </span>
               </span>
               {showEmailSetupLink && (
                 <a href="#" style={styles.link} onClick={(e) => { e.preventDefault(); setShowEmailModal(true); setMenuOpen(false); }}>
