@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using VaccineAssist.Desktop.Uia;
 using Xunit;
 
@@ -65,5 +66,55 @@ public class PriorityValueMatcherTests
     public void StartsWithEmptyTargetValueNeverMatches()
     {
         Assert.False(PriorityValueMatcher.StartsWith("Vaccine", ""));
+    }
+
+    // --- V-T41 ROUND 4 REVIEW FIX (non-blocking, safety reviewer): Exact + FindBestMatchIndex precedence ---
+
+    [Theory]
+    [InlineData("Vaccine", "Vaccine", true)]
+    [InlineData("vaccine", "Vaccine", true)]
+    [InlineData("  Vaccine  ", "Vaccine", true)] // trimmed
+    [InlineData("Vaccine Administration", "Vaccine", false)] // starts-with, not exact
+    [InlineData("Routine", "Vaccine", false)]
+    public void ExactIsCaseInsensitiveTrimmedEquality(string elementName, string targetValue, bool expected)
+    {
+        Assert.Equal(expected, PriorityValueMatcher.Exact(elementName, targetValue));
+    }
+
+    [Theory]
+    [InlineData(null, "Vaccine")]
+    [InlineData("", "Vaccine")]
+    public void ExactNullOrEmptyElementNameNeverMatches(string? elementName, string targetValue)
+    {
+        Assert.False(PriorityValueMatcher.Exact(elementName, targetValue));
+    }
+
+    [Fact]
+    public void FindBestMatchIndexPrefersExactOverEarlierStartsWith()
+    {
+        // "Vaccine Administration" (index 0, StartsWith-only) appears before
+        // the exact "Vaccine" (index 1) — the exact match must still win.
+        var names = new List<string?> { "Vaccine Administration", "Vaccine" };
+        Assert.Equal(1, PriorityValueMatcher.FindBestMatchIndex(names, "Vaccine"));
+    }
+
+    [Fact]
+    public void FindBestMatchIndexFallsBackToStartsWithWhenNoExactMatch()
+    {
+        var names = new List<string?> { "Routine", "Vaccine Administration", "Flu Shot" };
+        Assert.Equal(1, PriorityValueMatcher.FindBestMatchIndex(names, "Vaccine"));
+    }
+
+    [Fact]
+    public void FindBestMatchIndexReturnsNegativeOneWhenNothingMatches()
+    {
+        var names = new List<string?> { "Routine", "Flu Shot", null, "" };
+        Assert.Equal(-1, PriorityValueMatcher.FindBestMatchIndex(names, "Vaccine"));
+    }
+
+    [Fact]
+    public void FindBestMatchIndexEmptyListReturnsNegativeOne()
+    {
+        Assert.Equal(-1, PriorityValueMatcher.FindBestMatchIndex(new List<string?>(), "Vaccine"));
     }
 }

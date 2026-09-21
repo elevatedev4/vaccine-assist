@@ -396,4 +396,20 @@ public static class Win32WindowEnumerator
         try { SetForegroundWindow(hWnd); }
         catch { /* best-effort — see doc comment above */ }
     }
+
+    /// <summary>
+    /// V-T41 ROUND 4 REVIEW FIX (BLOCKER 1 — safety reviewer): the raw
+    /// foreground HWND, exposed so SendF3AndDismissPreEntryDialogsStep.
+    /// TryAuthorizeDialogInput can Describe() it and check whether it's a
+    /// same-process 'ComboLBox' popup (the one window besides the dialog
+    /// itself ever accepted as safe to send raw keystrokes/clicks to — see
+    /// PriorityInputGuard) rather than only being able to compare it
+    /// against a single known handle the way IsForegroundWindow does.
+    /// Never throws (IntPtr.Zero on failure).
+    /// </summary>
+    public static IntPtr GetForegroundWindowHandle()
+    {
+        try { return GetForegroundWindow(); }
+        catch { return IntPtr.Zero; }
+    }
 }

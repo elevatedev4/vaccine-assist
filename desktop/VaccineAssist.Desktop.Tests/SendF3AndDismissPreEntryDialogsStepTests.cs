@@ -285,6 +285,77 @@ public class SendF3AndDismissPreEntryDialogsStepTests
                 () => false, () => null, maxEmptyTicks: 5, NoOpWait, cts.Token));
     }
 
+    // --- V-T41 ROUND 4 REVIEW FIX (non-blocking, safety reviewer): a real
+    // wall-clock absolute deadline, independent of/in addition to the
+    // existing maxEmptyTicks action-count guard, failing loud when
+    // exceeded. A fake `now` clock is injected so the test is deterministic
+    // and never actually sleeps — real elapsed time during a fast unit test
+    // run stays near-zero either way. ---
+
+    [Fact]
+    public async Task ExceedingTheAbsoluteDeadlineThrowsEvenWithEmptyTicksStillAvailable()
+    {
+        var start = new DateTime(2026, 9, 21, 12, 0, 0, DateTimeKind.Utc);
+        var callCount = 0;
+        DateTime Clock()
+        {
+            callCount++;
+            // First read establishes "start"; every read after that reports
+            // well past the 5s deadline used below — maxEmptyTicks is huge
+            // so only the deadline check can possibly stop the loop.
+            return callCount == 1 ? start : start.AddSeconds(31);
+        }
+
+        var ex = await Assert.ThrowsAsync<PreEntryLoopProtectionException>(() =>
+            SendF3AndDismissPreEntryDialogsStep.RunCombinedPreEntryLoopAsync(
+                isAddNewRxReady: () => false,
+                tryDismissNextPending: () => null,
+                maxEmptyTicks: 1_000_000,
+                waitTick: NoOpWait,
+                cancellationToken: default,
+                absoluteDeadline: TimeSpan.FromSeconds(5),
+                now: Clock));
+
+        Assert.Contains("absolute deadline", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StaysWithinTheDeadlineWhenClockBarelyMoves()
+    {
+        var start = new DateTime(2026, 9, 21, 12, 0, 0, DateTimeKind.Utc);
+        DateTime Clock() => start; // clock never advances
+
+        var result = await SendF3AndDismissPreEntryDialogsStep.RunCombinedPreEntryLoopAsync(
+            isAddNewRxReady: () => true,
+            tryDismissNextPending: () => null,
+            maxEmptyTicks: 5,
+            waitTick: NoOpWait,
+            cancellationToken: default,
+            absoluteDeadline: TimeSpan.FromSeconds(30),
+            now: Clock);
+
+        Assert.True(result.AddNewRxReady);
+    }
+
+    [Fact]
+    public async Task ExistingTickCountBasedTestsAreUnaffectedByTheNewDefaultDeadline()
+    {
+        // No `now`/`absoluteDeadline` override — real DateTime.UtcNow is
+        // used with the 30s default, and this fast unit test finishes in
+        // well under that, so the pre-existing tick-count-timeout behavior
+        // (maxEmptyTicks) is still what actually stops the loop here.
+        var waitTickCallCount = 0;
+        Task CountingWait() { waitTickCallCount++; return Task.CompletedTask; }
+
+        var result = await SendF3AndDismissPreEntryDialogsStep.RunCombinedPreEntryLoopAsync(
+            isAddNewRxReady: () => false,
+            tryDismissNextPending: () => null,
+            maxEmptyTicks: 3, CountingWait);
+
+        Assert.False(result.AddNewRxReady);
+        Assert.Equal(3, waitTickCallCount);
+    }
+
     // --- WaitForAsync (two-signal "either" polling primitive) ---
 
     [Fact]
