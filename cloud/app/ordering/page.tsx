@@ -11,6 +11,7 @@ import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 import { buildToOrderRows } from "@/lib/ordering-to-order";
+import { SaveStatusIndicator, TargetInput, saveStatusStyle, type SaveStatus } from "@/app/ordering/target-input";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -260,11 +261,10 @@ const styles = {
   // easier to distinguish") from the original #f4f6f8, still light
   // enough for black text to stay readable.
   groupRow: { background: "#d9dde3", fontWeight: 600 },
-  // Inputs sized to fit inside a compact cell — fixed ~64px width, thin
-  // 1px border, no tall padding.
-  targetInput: { width: 64, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  // "Your target" input's own style + its saveStatus indicator style live
+  // in ./target-input.tsx (V-T51) alongside the TargetInput component
+  // that uses them.
   walkInInput: { width: 48, padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
-  saveStatus: { fontSize: "0.7rem", marginLeft: "0.35rem" },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
   modalOverlay: {
     position: "fixed" as const,
@@ -338,75 +338,6 @@ function orderCellStyle(row: RecommendationRow): CSSProperties {
  * yellow, don't leave the last part green."). */
 function orderCellStyleInHighlightedRow(row: RecommendationRow): CSSProperties {
   return row.order > 0 ? styles.tdRightOrderDueBold : styles.tdRight;
-}
-
-/** A single "target on-hand" cell — a row's own NDC-scoped override
- * (V-T26 item 6 removed the group-header version of this control; the
- * group-header cell is now a plain "—" placeholder, see the render
- * below). Local editable text, autosaving on blur/Enter; an empty value
- * on save clears the override (PUT targetOnHand: null). */
-function TargetInput({
-  value,
-  disabled,
-  disabledTitle,
-  onSave,
-}: {
-  value: number | null;
-  disabled: boolean;
-  disabledTitle?: string;
-  onSave: (value: number | null) => Promise<boolean>;
-}) {
-  const [text, setText] = useState(value === null ? "" : String(value));
-  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-
-  useEffect(() => {
-    setText(value === null ? "" : String(value));
-  }, [value]);
-
-  async function commit() {
-    const trimmed = text.trim();
-    const parsed = trimmed === "" ? null : Number(trimmed);
-    if (parsed !== null && (!Number.isInteger(parsed) || parsed < 0)) {
-      setStatus("error");
-      return;
-    }
-    // No-op save (value unchanged) — skip the request but still clear any
-    // stale save/error indicator from a previous edit.
-    if (parsed === value) {
-      setStatus("idle");
-      return;
-    }
-    setStatus("saving");
-    const ok = await onSave(parsed);
-    setStatus(ok ? "saved" : "error");
-    if (ok) setTimeout(() => setStatus((current) => (current === "saved" ? "idle" : current)), 2000);
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
-      event.currentTarget.blur();
-    }
-  }
-
-  return (
-    <span>
-      <input
-        type="number"
-        min={0}
-        step={1}
-        style={styles.targetInput}
-        value={text}
-        disabled={disabled}
-        title={disabled ? disabledTitle : undefined}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => void commit()}
-        onKeyDown={handleKeyDown}
-      />
-      {status === "saving" && <span style={styles.saveStatus}>saving…</span>}
-      {status === "saved" && <span style={{ ...styles.saveStatus, color: "#0a7d27" }}>saved</span>}
-      {status === "error" && <span style={{ ...styles.saveStatus, color: "#b00020" }}>error</span>}
-    </span>
-  );
 }
 
 function sortRows(rows: RecommendationRow[]): RecommendationRow[] {
@@ -489,7 +420,7 @@ export default function OrderingPage() {
   // inline here since it's a single page-level setting, not a per-row
   // control.
   const [walkInPctText, setWalkInPctText] = useState("");
-  const [walkInPctStatus, setWalkInPctStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [walkInPctStatus, setWalkInPctStatus] = useState<SaveStatus>("idle");
 
   // V-T26 item 2: "Copy recommended → Your target" — a two-step
   // confirm (Will's brief: "small 'Overwrite existing Your targets?'
@@ -980,10 +911,8 @@ export default function OrderingPage() {
                   onBlur={() => void handleSaveWalkInPct()}
                   onKeyDown={handleWalkInPctKeyDown}
                 />
-                {walkInPctStatus === "saving" && <span style={styles.saveStatus}>saving…</span>}
-                {walkInPctStatus === "saved" && <span style={{ ...styles.saveStatus, color: "#0a7d27" }}>saved</span>}
-                {walkInPctStatus === "error" && <span style={{ ...styles.saveStatus, color: "#b00020" }}>error</span>}
-                {data?.walkInPctPending && <span style={styles.saveStatus}>saves after a 1-minute database step</span>}
+                <SaveStatusIndicator status={walkInPctStatus} />
+                {data?.walkInPctPending && <span style={saveStatusStyle}>saves after a 1-minute database step</span>}
               </span>
               {showEmailSetupLink && (
                 <a href="#" style={styles.link} onClick={(e) => { e.preventDefault(); setShowEmailModal(true); setMenuOpen(false); }}>
