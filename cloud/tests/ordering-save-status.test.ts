@@ -36,12 +36,18 @@ import { SaveStatusIndicator, TargetInput, targetSaveStatusStyle, type SaveStatu
  * never conditional rendering), so nothing is added/removed next to the
  * input either.
  *
- * Review follow-up: an absolutely positioned indicator with no background
- * sits on top of the next ("BOH") column's number for the ~2s a "saved"
- * message shows, garbling both as overlapping text. targetSaveStatusStyle
- * now also carries a solid background, padding, borderRadius and
- * zIndex:1, so it reads as a small opaque pill covering what's beneath it
- * instead of blending into it.
+ * Review follow-up #1: an absolutely positioned indicator with no
+ * background sits on top of the next ("BOH") column's number for the ~2s
+ * a "saved" message shows, garbling both as overlapping text.
+ * targetSaveStatusStyle(...) now also carries a solid background,
+ * padding, borderRadius and zIndex:1, so it reads as a small opaque pill
+ * covering what's beneath it instead of blending into it.
+ *
+ * Review follow-up #2: a hard-coded white pill background mismatched
+ * order-due rows (page.tsx's trOrderDue, background "#fff8d6").
+ * targetSaveStatusStyle is now a function of TargetInput's own
+ * `highlighted` prop (page.tsx passes row.order > 0), so the pill matches
+ * whichever background the row it sits in actually has.
  *
  * No jsdom/testing-library in this project (vitest.config.ts runs the
  * "node" environment — see tests/layout-nav.test.ts's own note on this).
@@ -71,7 +77,7 @@ describe("SaveStatusIndicator", () => {
   });
 
   it("is present (never unmounted) at every save status, and only 'visibility' toggles with status, for both the default and the absolute style", () => {
-    for (const style of [undefined, targetSaveStatusStyle]) {
+    for (const style of [undefined, targetSaveStatusStyle(false), targetSaveStatusStyle(true)]) {
       for (const status of ALL_STATUSES) {
         const el = SaveStatusIndicator(style ? { status, style } : { status }) as unknown as Rendered;
         expect(el.type).toBe("span");
@@ -81,8 +87,8 @@ describe("SaveStatusIndicator", () => {
     }
   });
 
-  it("with targetSaveStatusStyle (TargetInput's usage), is positioned absolute and reserves no width in flow", () => {
-    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle }) as unknown as Rendered;
+  it("with targetSaveStatusStyle(...) (TargetInput's usage), is positioned absolute and reserves no width in flow", () => {
+    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle(false) }) as unknown as Rendered;
     const style = el.props.style as Record<string, unknown>;
     expect(style.position).toBe("absolute");
     expect(style.left).toBe("100%");
@@ -90,13 +96,18 @@ describe("SaveStatusIndicator", () => {
     expect(style.width).toBeUndefined();
   });
 
-  it("with targetSaveStatusStyle, paints as an opaque pill (background + padding + borderRadius + zIndex) so it covers the BOH cell text beneath it instead of overlapping it", () => {
-    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle }) as unknown as Rendered;
+  it("with targetSaveStatusStyle(...), paints as an opaque pill (background + padding + borderRadius + zIndex) so it covers the BOH cell text beneath it instead of overlapping it", () => {
+    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle(false) }) as unknown as Rendered;
     const style = el.props.style as Record<string, unknown>;
     expect(style.background).toBeTruthy();
     expect(style.padding).toBeTruthy();
     expect(style.borderRadius).toBeTruthy();
     expect(style.zIndex).toBe(1);
+  });
+
+  it("targetSaveStatusStyle(highlighted) matches the pill background to the row it sits in — white on default rows, order-due yellow on highlighted ones", () => {
+    expect(targetSaveStatusStyle(false).background).toBe("#fff");
+    expect(targetSaveStatusStyle(true).background).toBe("#fff8d6");
   });
 
   it("reserves the same width for every message under the default style, including the longest ('saving…') and the error state, so switching between them can't shift anything", () => {
@@ -114,9 +125,9 @@ describe("SaveStatusIndicator", () => {
 });
 
 describe("TargetInput (rendered markup)", () => {
-  function renderTargetInput(value: number | null) {
+  function renderTargetInput(value: number | null, highlighted = false) {
     return ReactDOMServer.renderToStaticMarkup(
-      React.createElement(TargetInput, { value, disabled: false, onSave: async () => true })
+      React.createElement(TargetInput, { value, disabled: false, onSave: async () => true, highlighted })
     );
   }
 
@@ -143,6 +154,14 @@ describe("TargetInput (rendered markup)", () => {
     expect(html).toContain("background:#fff");
     expect(html).toContain("border-radius:3px");
     expect(html).toContain("z-index:1");
+  });
+
+  it("matches the pill's background to the row's own highlight — plain rows get white, order-due rows (highlighted=true) get the same yellow as styles.trOrderDue", () => {
+    const plainRow = renderTargetInput(5, false);
+    const orderDueRow = renderTargetInput(5, true);
+    expect(plainRow).toContain("background:#fff");
+    expect(plainRow).not.toContain("#fff8d6");
+    expect(orderDueRow).toContain("background:#fff8d6");
   });
 
   it("wraps the input in a position:relative, nowrap span so the indicator anchors to it without affecting the cell's own layout", () => {

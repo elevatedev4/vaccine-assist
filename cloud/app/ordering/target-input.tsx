@@ -42,10 +42,19 @@ import { useEffect, useState, type CSSProperties, type KeyboardEvent } from "rea
  * edge renders in full — it is not clipped by any ancestor. It does still
  * visually sit over the start of the next ("BOH") cell for the ~2s a
  * "saved" message shows — reviewer follow-up caught that this garbled
- * status text over the BOH number, so targetSaveStatusStyle also carries
- * a solid background, padding, borderRadius and zIndex:1, turning it into
- * a small pill that covers what's beneath it instead of overlapping it
- * (see that constant's own comment for the background color choice).
+ * status text over the BOH number, so targetSaveStatusStyle() also
+ * carries a solid background, padding, borderRadius and zIndex:1, turning
+ * it into a small pill that covers what's beneath it instead of
+ * overlapping it. Second reviewer follow-up: a hard-coded white pill
+ * background mismatched order-due rows (page.tsx's trOrderDue,
+ * background "#fff8d6" — a highlighted row highlighted, verbatim, "to
+ * indicate action is needed"). The Target <td> has no background of its
+ * own (styles.td), so — per the "a td's own background always paints
+ * over its parent tr's" note at page.tsx:247-251 — it, and the BOH <td>
+ * the pill sits over, both show whatever the <tr> painted: white by
+ * default, or "#fff8d6" when order-due. targetSaveStatusStyle is now a
+ * function of that row's own highlighted flag so the pill always matches
+ * what's actually behind it, instead of assuming white.
  *
  * The Walk-up % field's own indicator (page.tsx) keeps the original
  * reserved-width saveStatusStyle unchanged — that row (label + input +
@@ -85,26 +94,32 @@ export const saveStatusStyle: CSSProperties = {
 // meant status text garbled on top of the BOH number. zIndex:1 makes sure
 // it paints above that cell's content, and a solid background (+ padding
 // + borderRadius) turns it into a small pill that covers what's beneath
-// instead of overlapping it. "All vaccines" rows don't share one
-// background (default rows are unstyled/white; trOrderDue rows are pale
-// yellow #fff8d6 — see page.tsx's styles.trOrderDue) so there's no single
-// row color to match; "#fff" is this page's own surface color, reused
-// here the same way it's already used for every other panel/card on this
-// page (gearButton, menuPanel, modalCard).
-export const targetSaveStatusStyle: CSSProperties = {
-  position: "absolute",
-  left: "100%",
-  top: "50%",
-  transform: "translateY(-50%)",
-  marginLeft: "4px",
-  fontSize: "0.7rem",
-  whiteSpace: "nowrap",
-  pointerEvents: "none",
-  background: "#fff",
-  padding: "0 4px",
-  borderRadius: 3,
-  zIndex: 1,
-};
+// instead of overlapping it.
+//
+// The background must follow the row, not a fixed white: "All vaccines"
+// rows don't share one background (default rows are unstyled/white;
+// order-due rows are pale yellow "#fff8d6" — styles.trOrderDue), and
+// since the Target/BOH <td>s have no background of their own, both show
+// whatever the <tr> painted (page.tsx:247-251's own note that a td's own
+// background always wins over its tr's — these cells have none, so the
+// tr's does). `highlighted` is TargetInput's own row.order > 0 flag,
+// threaded straight through from its caller in page.tsx.
+export function targetSaveStatusStyle(highlighted: boolean): CSSProperties {
+  return {
+    position: "absolute",
+    left: "100%",
+    top: "50%",
+    transform: "translateY(-50%)",
+    marginLeft: "4px",
+    fontSize: "0.7rem",
+    whiteSpace: "nowrap",
+    pointerEvents: "none",
+    background: highlighted ? "#fff8d6" : "#fff",
+    padding: "0 4px",
+    borderRadius: 3,
+    zIndex: 1,
+  };
+}
 
 const targetInputStyle: CSSProperties = {
   width: 64,
@@ -171,11 +186,16 @@ export function TargetInput({
   disabled,
   disabledTitle,
   onSave,
+  highlighted,
 }: {
   value: number | null;
   disabled: boolean;
   disabledTitle?: string;
   onSave: (value: number | null) => Promise<boolean>;
+  /** True when this row is order-due (page.tsx's row.order > 0 /
+   * styles.trOrderDue) — matches the status pill's background to that
+   * row's actual highlight color instead of assuming white. */
+  highlighted: boolean;
 }) {
   const [text, setText] = useState(value === null ? "" : String(value));
   const [status, setStatus] = useState<SaveStatus>("idle");
@@ -223,7 +243,7 @@ export function TargetInput({
         onBlur={() => void commit()}
         onKeyDown={handleKeyDown}
       />
-      <SaveStatusIndicator status={status} style={targetSaveStatusStyle} />
+      <SaveStatusIndicator status={status} style={targetSaveStatusStyle(highlighted)} />
     </span>
   );
 }

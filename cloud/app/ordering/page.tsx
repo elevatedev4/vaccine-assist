@@ -268,22 +268,27 @@ const styles = {
   // The "saves after a 1-minute database step" hint (V-T-ordering-
   // target-one-line) was only mounted while walkInPctPending was true, so
   // the settings-menu panel grew/shrank by a line every time that flag
-  // flipped, shifting "Email-in setup" and everything else below it. Now
-  // always mounted (visibility toggled) but taken out of flow —
-  // position:absolute under the Walk-up % row, anchored to that row's own
-  // walkInPctRow (position:relative) — so it reserves no height and can't
-  // shift the menu's other items either way.
+  // flipped, shifting "Email-in setup" and everything else below it. First
+  // fix took it out of flow with position:absolute — reviewer follow-up
+  // caught that, with no background, its 0.7rem line is taller than the
+  // 0.5rem gap to "Email-in setup" below it, so it overlapped that link
+  // for up to a minute while walkInPctPending stayed true.
+  //
+  // Fixed properly now: always mounted, visibility toggled, back IN flow,
+  // with a fixed minHeight (one 0.7rem line, whiteSpace:nowrap so it can
+  // never wrap onto a second) reserving its own line permanently —
+  // constant either way, so nothing shifts when it toggles, and nothing
+  // overlaps "Email-in setup" since the line is really there, not just
+  // painted over it.
   walkInPendingHint: {
-    position: "absolute" as const,
-    top: "100%",
-    left: 0,
-    right: 0,
+    display: "block" as const,
     marginTop: "2px",
     fontSize: "0.7rem",
+    lineHeight: 1.2,
+    minHeight: "1.2em",
+    whiteSpace: "nowrap" as const,
     color: "#555",
-    pointerEvents: "none" as const,
   },
-  walkInPctRow: { position: "relative" as const },
   inactiveToggle: { marginTop: "1.5rem", background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "0.4rem 0.75rem", cursor: "pointer" },
   modalOverlay: {
     position: "fixed" as const,
@@ -914,7 +919,7 @@ export default function OrderingPage() {
                   </button>
                 </span>
               )}
-              <span style={{ ...styles.muted, ...styles.walkInPctRow }}>
+              <span style={styles.muted}>
                 <label htmlFor="walk-in-pct">Walk-up %</label>{" "}
                 <input
                   id="walk-in-pct"
@@ -1127,6 +1132,7 @@ export default function OrderingPage() {
                           disabled={targetsPending || !row.ndc}
                           disabledTitle={targetsPending ? "activates after the database step" : "no NDC on file for this product"}
                           onSave={(value) => (row.ndc ? saveTarget("ndc", row.ndc, value) : Promise.resolve(false))}
+                          highlighted={row.order > 0}
                         />
                       </td>
                       <td style={styles.td}>{onHandDisplay(row.onHand)}</td>
