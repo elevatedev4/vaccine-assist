@@ -39,6 +39,12 @@ public sealed partial class PioneerOverlayWindow : Window
     public event EventHandler? DataEntryRequested;
     public event EventHandler? MacroCodesRequested;
 
+    /// <summary>Raised when the menu's trailing "Exit" row is clicked — same
+    /// *Requested shape as the others so PioneerOverlayController wires it
+    /// the same way (see class doc comment). Owner's ask, 2026-09-21: "a
+    /// quick way to close the app" from the vaccine icon's popup menu.</summary>
+    public event EventHandler? ExitRequested;
+
     /// <summary>Raw HWND for PioneerOverlayController's SetWindowPos calls — IntPtr.Zero until SourceInitialized has run.</summary>
     public IntPtr Handle { get; private set; } = IntPtr.Zero;
 
@@ -89,6 +95,17 @@ public sealed partial class PioneerOverlayWindow : Window
             menuItem.Click += (_, _) => Raise(captured);
             menu.Items.Add(menuItem);
         }
+
+        // Owner's ask (2026-09-21): "Add 'Exit' to the popup menu ... for a
+        // quick way to close the app" — same trailing separator + Exit row
+        // as the tray menu (Tray/TrayMenuBuilder.cs). No _openMenu/hook
+        // handling needed here beyond what Raise's callers already get:
+        // clicking any MenuItem closes this ContextMenu on its own, which
+        // fires Menu_OnClosed and uninstalls the V-T42 outside-click hook.
+        var exitItem = new MenuItem { Header = "Exit" };
+        exitItem.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(exitItem);
 
         menu.PlacementTarget = IconBorder;
         menu.Closed += Menu_OnClosed;

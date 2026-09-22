@@ -187,6 +187,7 @@ public partial class MainWindow : Window
                 navigateTo: NavigateTo,
                 showDataEntryPopup: ShowDataEntryPopup,
                 showMacroCodesPopup: ShowMacroCodesPopup,
+                exit: ExitApplication,
                 settings: _settings);
         }
         catch (Exception ex)

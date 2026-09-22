@@ -31,6 +31,7 @@ public sealed class PioneerOverlayController : IDisposable
     private readonly Action<string> _navigateTo;
     private readonly Action _showDataEntryPopup;
     private readonly Action _showMacroCodesPopup;
+    private readonly Action _exit;
     private readonly AppSettings _settings;
     private readonly DispatcherTimer _timer;
 
@@ -42,11 +43,13 @@ public sealed class PioneerOverlayController : IDisposable
         Action<string> navigateTo,
         Action showDataEntryPopup,
         Action showMacroCodesPopup,
+        Action exit,
         AppSettings settings)
     {
         _navigateTo = navigateTo ?? throw new ArgumentNullException(nameof(navigateTo));
         _showDataEntryPopup = showDataEntryPopup ?? throw new ArgumentNullException(nameof(showDataEntryPopup));
         _showMacroCodesPopup = showMacroCodesPopup ?? throw new ArgumentNullException(nameof(showMacroCodesPopup));
+        _exit = exit ?? throw new ArgumentNullException(nameof(exit));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
@@ -108,6 +111,7 @@ public sealed class PioneerOverlayController : IDisposable
         window.NavigationRequested += (_, path) => SafeInvoke(() => _navigateTo(path));
         window.DataEntryRequested += (_, _) => SafeInvoke(_showDataEntryPopup);
         window.MacroCodesRequested += (_, _) => SafeInvoke(_showMacroCodesPopup);
+        window.ExitRequested += (_, _) => SafeInvoke(_exit);
         // ShowActivated="False" + the WS_EX_NOACTIVATE/WS_EX_TOOLWINDOW
         // styles set in its own OnSourceInitialized mean this never
         // steals focus from PioneerRx.
