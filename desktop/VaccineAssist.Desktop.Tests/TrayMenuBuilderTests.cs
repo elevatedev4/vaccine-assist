@@ -40,6 +40,10 @@ public class TrayMenuBuilderTests
                 TrayMenuAction.Open,
                 TrayMenuAction.ToggleOverlay,
                 TrayMenuAction.Separator,
+                TrayMenuAction.FaxRunNow,   // V-T53
+                TrayMenuAction.FaxSettings,
+                TrayMenuAction.FaxOpenFolder,
+                TrayMenuAction.Separator,
                 TrayMenuAction.SignOut,
                 TrayMenuAction.Exit,
             },

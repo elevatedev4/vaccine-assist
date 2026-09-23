@@ -1,7 +1,10 @@
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Windows;
+using VaccineAssist.Desktop.Fax;
 using VaccineAssist.Desktop.Hotkeys;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Overlay;
@@ -63,6 +66,19 @@ public partial class MainWindow : Window
     private readonly ILocalSettingsService _localSettingsService;
     private readonly AppSettings _settings;
     private readonly CloudPageView _cloudPageView;
+
+    /// <summary>V-T53 (vaccine -> PCP fax): owns the daily-run/receipt-poll
+    /// timers for the whole signed-in session — same lifetime pattern as
+    /// _pioneerOverlayController (Start() on Loaded, Dispose() on Closed).</summary>
+    private readonly FaxRunScheduler _faxRunScheduler;
+    private readonly FaxRunOrchestrator _faxRunOrchestrator;
+    private readonly IFaxCredentialStore _faxCredentialStore;
+    private readonly IPrescriberDirectory _prescriberDirectory;
+    private readonly HttpClient _faxHttpClient;
+
+    /// <summary>At most one Fax settings window at a time — same
+    /// re-activate-not-stack rule as _openDataEntryPopup/_openMacroCodesPopup.</summary>
+    private FaxSettingsWindow? _openFaxSettingsWindow;
 
     /// <summary>
     /// BUG FIX (Will, 2026-09-14): null when TrayIconController's
@@ -147,7 +163,12 @@ public partial class MainWindow : Window
         IPioneerEntrySequence pioneerEntrySequence,
         CloudPageView cloudPageView,
         ILocalSettingsService localSettingsService,
-        AppSettings settings)
+        AppSettings settings,
+        FaxRunScheduler faxRunScheduler,
+        FaxRunOrchestrator faxRunOrchestrator,
+        IFaxCredentialStore faxCredentialStore,
+        IPrescriberDirectory prescriberDirectory,
+        HttpClient faxHttpClient)
     {
         _authService = authService;
         _vaccineApiService = vaccineApiService;
@@ -156,10 +177,17 @@ public partial class MainWindow : Window
         _cloudPageView = cloudPageView;
         _localSettingsService = localSettingsService;
         _settings = settings;
+        _faxRunScheduler = faxRunScheduler;
+        _faxRunOrchestrator = faxRunOrchestrator;
+        _faxCredentialStore = faxCredentialStore;
+        _prescriberDirectory = prescriberDirectory;
+        _faxHttpClient = faxHttpClient;
 
         InitializeComponent();
 
         MainContent.Content = _cloudPageView;
+
+        _faxRunScheduler.RunCompleted += FaxRunScheduler_OnRunCompleted;
 
         try
         {
@@ -171,6 +199,9 @@ public partial class MainWindow : Window
             trayIconController.MacroCodesRequested += (_, _) => ShowMacroCodesPopup();
             trayIconController.NavigationRequested += (_, path) => NavigateTo(path);
             trayIconController.ShowOverlayToggled += (_, isChecked) => SetShowPioneerOverlay(isChecked);
+            trayIconController.FaxRunNowRequested += async (_, _) => await _faxRunScheduler.RunNowAsync();
+            trayIconController.FaxSettingsRequested += (_, _) => ShowFaxSettings();
+            trayIconController.FaxOpenFolderRequested += (_, _) => OpenFaxFolder();
             _trayIconController = trayIconController;
         }
         catch (Exception ex)
@@ -378,6 +409,7 @@ public partial class MainWindow : Window
     private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
         _pioneerOverlayController?.Start();
+        _faxRunScheduler.Start();
     }
 
     private void MainWindow_OnClosed(object? sender, EventArgs e)
@@ -390,6 +422,10 @@ public partial class MainWindow : Window
 
         _trayIconController?.Dispose();
         _pioneerOverlayController?.Dispose();
+        _faxRunScheduler.Dispose();
+
+        _openFaxSettingsWindow?.Close();
+        _openFaxSettingsWindow = null;
 
         // Covers both exit paths: MainWindow closing directly (chrome/
         // Alt+F4, or the tray's Exit — both only reach here now via
@@ -490,6 +526,63 @@ public partial class MainWindow : Window
         _openMacroCodesPopup = popup;
 
         popup.Show();
+    }
+
+    /// <summary>V-T53: tray menu's "Vaccine faxes — Settings" — same
+    /// at-most-one-instance/re-activate rule as the data-entry/macro-codes
+    /// popups.</summary>
+    private void ShowFaxSettings()
+    {
+        if (_openFaxSettingsWindow is not null)
+        {
+            _openFaxSettingsWindow.Activate();
+            return;
+        }
+
+        var viewModel = new FaxSettingsViewModel(_settings, _localSettingsService, _faxCredentialStore, _prescriberDirectory, _faxHttpClient);
+        var window = new FaxSettingsWindow(viewModel);
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_openFaxSettingsWindow, window))
+            {
+                _openFaxSettingsWindow = null;
+            }
+        };
+        _openFaxSettingsWindow = window;
+        window.Show();
+    }
+
+    /// <summary>V-T53: tray menu's "Open fax folder" — the shared
+    /// %AppData%\VaccineAssist\fax\ root (outbox/sent/failed/runs/
+    /// ledger.json/prescribers.json all live under it).</summary>
+    private void OpenFaxFolder()
+    {
+        try
+        {
+            var faxDir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "VaccineAssist", "fax");
+            System.IO.Directory.CreateDirectory(faxDir);
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{faxDir}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.OpenFaxFolder", ex);
+        }
+    }
+
+    /// <summary>V-T53: shows FaxRunSummaryWindow plus a tray balloon after
+    /// every completed run (scheduled or "Run now") — Will's brief: "tray
+    /// balloon 'Vaccine faxes: 12 sent, 1 failed, 2 need a fax number'."</summary>
+    private void FaxRunScheduler_OnRunCompleted(object? sender, FaxRunSummary summary)
+    {
+        _trayIconController?.ShowBalloonTip(
+            "Vaccine faxes",
+            $"{summary.Sent} sent, {summary.Failed} failed, {summary.NeedsFaxNumber} need a fax number");
+
+        var viewModel = new FaxRunSummaryViewModel(summary, _faxRunOrchestrator, _settings);
+        var window = new FaxRunSummaryWindow(viewModel);
+        window.Show();
     }
 
     /// <summary>

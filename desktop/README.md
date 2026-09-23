@@ -78,10 +78,68 @@ message rather than crashing.
 4. Vaccine/lot/eligibility data itself always goes through the cloud app —
    this project never queries Supabase's Postgrest API directly.
 
+## Vaccine → PCP fax (V-T53)
+
+Pioneer Rx won't email PHI, so a designated local folder is watched for a
+daily immunization report (CSV/XLSX — how the file lands there, SFTP drop
+or a UI-automated export, is out of scope here); the app builds one PDF
+vaccine-administration record per patient/prescriber and faxes it to the
+prescriber via SRFax, tracks delivery receipts, and runs automatically
+once a day. Nothing PHI leaves the machine except to SRFax.
+
+**Setup** (tray icon → "Vaccine faxes — Settings"):
+
+1. SRFax access ID/password (saved DPAPI-protected, never in
+   settings.json — see `Fax/FaxCredentialStore.cs`); "Test connection"
+   calls SRFax's `Get_FaxUsage`.
+2. Sender email, pharmacy name/phone/fax (the fax is used as SRFax's
+   caller ID).
+3. Input folder to watch, and the daily run time (default 18:30 local).
+4. Column map — the report's actual header text for each field. Defaults
+   are Pioneer-looking guesses; only patient first/last name, vaccine
+   name, and administered date are required — a report missing one of
+   those four is rejected outright with a clear message rather than
+   silently skipping rows.
+5. Prescriber fax number table (`%AppData%\VaccineAssist\fax\prescribers.json`,
+   keyed by NPI or normalized name) — used when the report itself has no
+   fax-number column. A row that resolves to no fax number at all shows
+   up in the run summary as "needs fax number" instead of being sent.
+
+**Folder layout** (all under `%AppData%\VaccineAssist\fax\` unless noted):
+
+```
+prescribers.json        editable NPI/name -> fax number table
+imported.json            row-fingerprint ledger (patient+vaccine+date+lot) —
+                          prevents re-faxing the same administration twice
+ledger.json               one entry per fax: id, patient initials, fax
+                          last-4, pdf path, status, receipt-check history —
+                          never a patient's full name
+runs\<timestamp>.json     one summary per run (counts + per-row grid)
+outbox\<yyyyMMdd>\        %LocalAppData% — PDFs freshly built this run
+sent\ / failed\           %LocalAppData% — PDFs after a terminal receipt
+<input folder>\processed\<yyyy-MM-dd>\   source report files, moved here
+                          after each run (never deleted)
+```
+
+**Run it manually**: tray icon → "Vaccine faxes — Run now" (works even
+if the daily timer is disabled). "Open fax folder" jumps straight to the
+folder above. A run shows a summary window (sent/in-process/failed/needs-
+fax-number counts + a per-row grid); a Failed row has an explicit Retry
+button — nothing is ever auto-retried after a vendor-reported failure, to
+avoid a double-send.
+
+Adding a second fax vendor later (Will is comparing SRFax against
+Notifyre/Telnyx on price) means a new `IFaxClient` implementation plus one
+line in `Fax/FaxClientFactory.cs` — nothing else in the app names
+`SrFaxClient` directly.
+
 ## Tests
 
-`VaccineAssist.Desktop.Tests` (xUnit) covers the auto-login logic above —
-`dotnet test` from `desktop\` (or open `VaccineAssist.sln`).
+`VaccineAssist.Desktop.Tests` (xUnit) covers the auto-login logic above,
+plus the vaccine-fax pipeline (report import/column-map validation,
+patient/prescriber grouping, PDF generation, SRFax request/response
+handling, the daily-run schedule, and ledger state) — `dotnet test` from
+`desktop\` (or open `VaccineAssist.sln`).
 
 ## PioneerEntryAutomation
 
