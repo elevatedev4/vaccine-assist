@@ -1,0 +1,158 @@
+<Window x:Class="VaccineAssist.Desktop.Views.FaxSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Vaccine Assist — Fax settings"
+        Width="720" Height="720"
+        WindowStartupLocation="CenterScreen">
+    <!--
+        V-T53 (vaccine -> PCP fax, Will's brief): SRFax credentials, sender
+        email, pharmacy identity/caller-id, input folder, daily run time,
+        column-map editor, and the prescriber-fax-number table — see
+        ViewModels/FaxSettingsViewModel.cs. Password is read from
+        AccessPasswordBox in code-behind on Save, same pattern as
+        LoginWindow's PasswordInput (PasswordBox.Password isn't bindable).
+    -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
+        <StackPanel>
+            <TextBlock Text="Vaccine → PCP fax settings" FontSize="18" FontWeight="Bold" Margin="0,0,0,12"/>
+
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="SRFax account" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Access ID" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding AccessId, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Access password" VerticalAlignment="Center"/>
+                        <PasswordBox Grid.Row="2" Grid.Column="1" x:Name="AccessPasswordBox" MinHeight="26" Padding="4,2"/>
+
+                        <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button Content="Test connection" Click="TestConnectionButton_OnClick" Padding="8,2"/>
+                            <TextBlock Text="{Binding StatusMessage}" Foreground="Green" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="Pharmacy identity" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Pharmacy name" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding PharmacyName, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Phone" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PharmacyPhone, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Fax (caller ID)" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding PharmacyFax, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Sender email" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding SenderEmail, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Account code (optional)" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding AccountCode, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="Report import" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Input folder" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding InputFolder, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+                        <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Click="BrowseInputFolder_OnClick" Padding="8,2" Margin="6,0,0,0"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Daily run time (HH:mm)" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding DailyRunTime, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2" Width="80" HorizontalAlignment="Left"/>
+
+                        <CheckBox Grid.Row="4" Grid.Column="1" Content="Run automatically every day" IsChecked="{Binding DailyRunEnabled}" VerticalAlignment="Center"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="Report column map — type the report's actual header for each field" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                    <DataGrid ItemsSource="{Binding ColumnMap}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" MaxHeight="260">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Field" Binding="{Binding Field}" IsReadOnly="True" Width="*"/>
+                            <DataGridTextColumn Header="Required" Binding="{Binding Required}" IsReadOnly="True" Width="70"/>
+                            <DataGridTextColumn Header="Report column header" Binding="{Binding Header, UpdateSourceTrigger=LostFocus}" Width="2*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </StackPanel>
+            </Border>
+
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="Prescriber fax numbers" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <DataGrid ItemsSource="{Binding Prescribers}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" MaxHeight="220">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name, UpdateSourceTrigger=LostFocus}" Width="2*"/>
+                            <DataGridTextColumn Header="NPI" Binding="{Binding Npi, UpdateSourceTrigger=LostFocus}" Width="*"/>
+                            <DataGridTextColumn Header="Fax number" Binding="{Binding FaxNumber, UpdateSourceTrigger=LostFocus}" Width="*"/>
+                            <DataGridTemplateColumn Header="" Width="70">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="Remove" Padding="4,1"
+                                                Command="{Binding DataContext.DeletePrescriberCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                CommandParameter="{Binding}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <Button Content="Add prescriber" Command="{Binding AddPrescriberCommand}" Padding="8,2" Margin="0,6,0,0" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Orientation="Horizontal">
+                <Button Content="Save" Click="SaveButton_OnClick" Padding="14,4" MinWidth="90"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Window>

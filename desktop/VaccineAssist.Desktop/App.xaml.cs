@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using VaccineAssist.Desktop.Fax;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.PioneerEntryAutomation;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
@@ -32,6 +33,13 @@ public partial class App : Application
     private IClipboardService _clipboardService = null!;
     private IPioneerEntryAutomation _pioneerEntryAutomation = null!;
     private IPioneerEntrySequence _pioneerEntrySequence = null!;
+
+    // V-T53 (vaccine -> PCP fax, Will's brief).
+    private HttpClient _faxHttpClient = null!;
+    private IFaxCredentialStore _faxCredentialStore = null!;
+    private IPrescriberDirectory _prescriberDirectory = null!;
+    private FaxRunOrchestrator _faxRunOrchestrator = null!;
+    private FaxRunScheduler _faxRunScheduler = null!;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -97,6 +105,52 @@ public partial class App : Application
         // through here so a workstation can change it via settings.json with
         // no rebuild — see SendF3AndDismissPreEntryDialogsStep's own doc comment.
         _pioneerEntrySequence = new PlaceholderVaccineEntrySequence(_settings.PriorityValue);
+
+        // V-T53 (vaccine -> PCP fax): a SEPARATE HttpClient from
+        // _httpClient above — that one's BaseAddress is pinned to the
+        // cloud app's API; SRFax's client posts to its own absolute URL
+        // (see SrFaxClient) and must never accidentally inherit the cloud
+        // BaseAddress.
+        // Reviewer fix (V-T53): an explicit timeout so a hung SRFax
+        // request can't block a daily run (or the receipt poller) forever —
+        // HttpClient's own default is 100s, which is fine, but leaving it
+        // implicit means a future change to the default silently changes
+        // this too.
+        _faxHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        _faxCredentialStore = new FaxCredentialStore();
+        _prescriberDirectory = new PrescriberDirectory();
+        var importLedger = new ImportLedger();
+        var reportImporter = new ReportImporter(importLedger);
+        var pdfBuilder = new VaccineRecordPdfBuilder();
+        var faxLedger = new FaxLedger();
+        var faxRunMarker = new FaxRunMarker();
+        // LocalApplicationData (not the roaming ApplicationData used by
+        // FaxLedger/ImportLedger/PrescriberDirectory/FaxRunMarker above) —
+        // reviewer fix (V-T53): this root holds outbox\/sent\/failed\, i.e.
+        // actual patient PDFs, plus runs\ summaries. On a domain-joined PC
+        // with roaming profiles, anything under ApplicationData replicates
+        // to a profile server; PHI-bearing PDFs must never do that. Same
+        // root FaxCredentialStore already uses for this reason.
+        var faxRootDir = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "VaccineAssist", "fax");
+
+        // The IFaxClient used for the WHOLE signed-in session is built
+        // from whatever credentials are on disk right now — the Settings
+        // window's Save re-persists FaxCredentialStore, but picking up a
+        // credential CHANGE without a restart would need this to be
+        // rebuilt; not done for phase 1 (matches _pioneerEntrySequence's
+        // own "settings.json change needs a restart" posture above for
+        // PriorityValue). FaxSettingsViewModel's own Test-connection
+        // button builds its own short-lived IFaxClient from whatever is
+        // currently TYPED (see that class), so testing never needs a
+        // restart even though a saved-and-resumed session does.
+        var faxCredentials = _faxCredentialStore.Load() ?? new FaxCredentials();
+        var faxClient = FaxClientFactory.Create(_settings.Fax.Provider, _faxHttpClient, faxCredentials);
+
+        _faxRunOrchestrator = new FaxRunOrchestrator(
+            reportImporter, _prescriberDirectory, pdfBuilder, faxClient, faxLedger, importLedger, faxRootDir);
+        _faxRunScheduler = new FaxRunScheduler(_faxRunOrchestrator, () => _settings, faxRunMarker);
 
         _ = StartSignInFlowAsync();
     }
@@ -644,7 +698,8 @@ public partial class App : Application
         // See MainWindow.xaml.cs's own doc comment.
         var mainWindow = new MainWindow(
             _authService, _vaccineApiService, _clipboardService,
-            _pioneerEntrySequence, cloudPageView, _localSettingsService, _settings);
+            _pioneerEntrySequence, cloudPageView, _localSettingsService, _settings,
+            _faxRunScheduler, _faxRunOrchestrator, _faxCredentialStore, _prescriberDirectory, _faxHttpClient);
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>

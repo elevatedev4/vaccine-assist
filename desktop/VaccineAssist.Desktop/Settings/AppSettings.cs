@@ -1,3 +1,5 @@
+using VaccineAssist.Desktop.Fax;
+
 namespace VaccineAssist.Desktop.Settings;
 
 /// <summary>
@@ -43,4 +45,12 @@ public sealed class AppSettings
     /// on"); persisted here so the choice survives a restart.
     /// </summary>
     public bool ShowPioneerOverlay { get; set; } = true;
+
+    /// <summary>
+    /// V-T53 (Will's brief): vaccine -> PCP fax configuration — input
+    /// folder, column map, pharmacy identity, run schedule. SRFax
+    /// access id/password are NEVER stored here (see
+    /// Fax/FaxCredentialStore.cs, DPAPI-protected, a separate file).
+    /// </summary>
+    public FaxSettings Fax { get; set; } = new();
 }

@@ -84,6 +84,22 @@
       for in the brief by name.
     -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="5.0.0" />
+
+    <!--
+      V-T53 (vaccine -> PCP fax, Will's brief): report import (CSV/XLSX)
+      and per-patient PDF generation. All three are MIT-licensed —
+      CsvHelper (github.com/JoshClose/CsvHelper) and ClosedXML
+      (github.com/ClosedXML/ClosedXML) for the two report formats
+      ReportImporter accepts; PDFsharp-WPF (github.com/empira/PDFsharp,
+      the WPF-flavored build — this project already has UseWPF=true, and
+      the WPF/GDI builds resolve standard fonts like Arial straight from
+      the OS with no custom IFontResolver needed, unlike the fully
+      cross-platform "PDFsharp" Core package) for
+      Fax/VaccineRecordPdfBuilder.cs.
+    -->
+    <PackageReference Include="CsvHelper" Version="33.1.0" />
+    <PackageReference Include="ClosedXML" Version="0.105.1" />
+    <PackageReference Include="PDFsharp-WPF" Version="6.2.4" />
   </ItemGroup>
 
 </Project>

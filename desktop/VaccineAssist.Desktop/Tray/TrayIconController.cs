@@ -46,6 +46,12 @@ public sealed class TrayIconController : IDisposable
     public event EventHandler? DataEntryRequested;
     public event EventHandler? MacroCodesRequested;
 
+    /// <summary>V-T53: "Vaccine faxes — Run now" / "— Settings" / "Open
+    /// fax folder" tray rows.</summary>
+    public event EventHandler? FaxRunNowRequested;
+    public event EventHandler? FaxSettingsRequested;
+    public event EventHandler? FaxOpenFolderRequested;
+
     /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a Navigate row is clicked.</summary>
     public event EventHandler<string>? NavigationRequested;
 
@@ -90,6 +96,15 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon.DoubleClick += (_, _) => OpenRequested?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>V-T53: "tray balloon 'Vaccine faxes: 12 sent, 1 failed, 2
+    /// need a fax number'" after a run completes.</summary>
+    public void ShowBalloonTip(string title, string text)
+    {
+        _notifyIcon.BalloonTipTitle = title;
+        _notifyIcon.BalloonTipText = text;
+        _notifyIcon.ShowBalloonTip(8000);
+    }
+
     private void RaiseAction(TrayMenuItemDescriptor descriptor, ToolStripMenuItem menuItem)
     {
         switch (descriptor.Action)
@@ -108,6 +123,15 @@ public sealed class TrayIconController : IDisposable
                 break;
             case TrayMenuAction.MacroCodes:
                 MacroCodesRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case TrayMenuAction.FaxRunNow:
+                FaxRunNowRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case TrayMenuAction.FaxSettings:
+                FaxSettingsRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case TrayMenuAction.FaxOpenFolder:
+                FaxOpenFolderRequested?.Invoke(this, EventArgs.Empty);
                 break;
             case TrayMenuAction.Navigate:
                 if (descriptor.RelativePath is { Length: > 0 } path)

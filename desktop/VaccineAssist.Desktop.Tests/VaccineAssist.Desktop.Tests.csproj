@@ -24,6 +24,13 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+
+    <!-- V-T53: ReportImporterTests.cs builds *.xlsx fixtures directly
+         with ClosedXML (writing files with plain CSV text is enough for
+         the CSV-format tests, but an XLSX fixture needs the real
+         library) — referenced explicitly here rather than relying on it
+         flowing transitively through the ProjectReference below. -->
+    <PackageReference Include="ClosedXML" Version="0.105.1" />
   </ItemGroup>
 
   <ItemGroup>
