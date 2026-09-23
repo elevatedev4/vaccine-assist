@@ -105,18 +105,25 @@ once a day. Nothing PHI leaves the machine except to SRFax.
    fax-number column. A row that resolves to no fax number at all shows
    up in the run summary as "needs fax number" instead of being sent.
 
-**Folder layout** (all under `%AppData%\VaccineAssist\fax\` unless noted):
+**Folder layout**:
 
 ```
-prescribers.json        editable NPI/name -> fax number table
-imported.json            row-fingerprint ledger (patient+vaccine+date+lot) —
-                          prevents re-faxing the same administration twice
-ledger.json               one entry per fax: id, patient initials, fax
-                          last-4, pdf path, status, receipt-check history —
-                          never a patient's full name
-runs\<timestamp>.json     one summary per run (counts + per-row grid)
-outbox\<yyyyMMdd>\        %LocalAppData% — PDFs freshly built this run
-sent\ / failed\           %LocalAppData% — PDFs after a terminal receipt
+%AppData%\VaccineAssist\fax\        (roaming — small JSON config/state only)
+  prescribers.json        editable NPI/name -> fax number table
+  imported.json            row-fingerprint ledger (patient+vaccine+date+lot) —
+                            prevents re-faxing the same administration twice
+  ledger.json               one entry per fax: id, patient initials, fax
+                            last-4, pdf path, status, receipt-check history —
+                            never a patient's full name
+  last-run.json             last local date the daily run completed
+
+%LocalAppData%\VaccineAssist\fax\   (local to this PC only — never
+                                      replicates to a roaming profile share
+                                      on a domain-joined machine)
+  outbox\<yyyyMMdd>\        PDFs freshly built this run
+  sent\ / failed\           PDFs after a terminal receipt
+  runs\<timestamp>.json     one summary per run (counts + per-row grid)
+
 <input folder>\processed\<yyyy-MM-dd>\   source report files, moved here
                           after each run (never deleted)
 ```

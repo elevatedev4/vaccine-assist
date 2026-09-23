@@ -25,6 +25,13 @@ public sealed class FaxRunScheduler : IDisposable
     /// and a tray balloon from this.</summary>
     public event EventHandler<FaxRunSummary>? RunCompleted;
 
+    /// <summary>Raised on the UI thread when RunNowAsync (or the daily
+    /// timer) fired but FaxRunOrchestrator.RunAsync returned null because
+    /// a run was already in progress — reviewer fix (V-T53): tray "Run
+    /// now" must not silently do nothing. MainWindow shows a tray balloon
+    /// from this.</summary>
+    public event EventHandler? RunAlreadyInProgress;
+
     public FaxRunScheduler(FaxRunOrchestrator orchestrator, Func<AppSettings> settingsProvider, IFaxRunMarker runMarker)
         : this(orchestrator, settingsProvider, runMarker, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(10))
     {
@@ -79,7 +86,12 @@ public sealed class FaxRunScheduler : IDisposable
     {
         var settings = _settingsProvider();
         var summary = await _orchestrator.RunAsync(settings.Fax);
-        if (summary is null) return; // already running — see FaxRunOrchestrator.RunAsync
+        if (summary is null)
+        {
+            // Already running — see FaxRunOrchestrator.RunAsync.
+            RunAlreadyInProgress?.Invoke(this, EventArgs.Empty);
+            return;
+        }
 
         _runMarker.SaveLastRunLocalDate(DateOnly.FromDateTime(DateTime.Now));
         RunCompleted?.Invoke(this, summary);

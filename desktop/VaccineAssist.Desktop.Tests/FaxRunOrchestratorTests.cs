@@ -192,4 +192,36 @@ public class FaxRunOrchestratorTests : IDisposable
         Assert.Equal(2, faxClient.QueuedRequests.Count);
         Assert.Equal("5555550300", faxClient.QueuedRequests[1].ToFaxNumber);
     }
+
+    [Fact]
+    public async Task MoveAcceptedFilesFailureAfterQueueingStillProducesASummaryAndDoesNotThrow()
+    {
+        // Reviewer fix (V-T53): a locked/permission-denied source report
+        // file must not abort the run after faxes were already queued —
+        // it should show up as a Warning in the summary instead, and
+        // RunAsync must still return (never throw) so FaxRunScheduler's
+        // RunCompleted still fires.
+        WriteReport("report.csv");
+        var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
+        var importer = new ThrowingMoveReportImporter(new ReportImporter(importLedger));
+        var prescriberDirectory = new PrescriberDirectory(Path.Combine(_tempDir, "prescribers.json"));
+        var faxClient = new FakeFaxClient();
+        var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
+        var orchestrator = new FaxRunOrchestrator(
+            importer, prescriberDirectory, new VaccineRecordPdfBuilder(),
+            faxClient, faxLedger, importLedger, _faxRootDir);
+
+        var summary = await orchestrator.RunAsync(MakeSettings());
+
+        Assert.NotNull(summary);
+        Assert.Single(faxClient.QueuedRequests); // the fax was queued before the move failure
+        Assert.Single(summary!.Warnings);
+        Assert.Contains("processed", summary.Warnings[0], StringComparison.OrdinalIgnoreCase);
+
+        // The source file was never moved (MoveAcceptedFiles threw before
+        // doing anything) — still sitting in the input folder so the next
+        // run can retry the move (the row itself won't be re-faxed, since
+        // it was already fingerprinted above).
+        Assert.True(File.Exists(Path.Combine(_inputDir, "report.csv")));
+    }
 }

@@ -188,6 +188,10 @@ public partial class MainWindow : Window
         MainContent.Content = _cloudPageView;
 
         _faxRunScheduler.RunCompleted += FaxRunScheduler_OnRunCompleted;
+        // Reviewer fix (V-T53): tray "Run now" while a run is already in
+        // flight must say so instead of silently doing nothing.
+        _faxRunScheduler.RunAlreadyInProgress += (_, _) => _trayIconController?.ShowBalloonTip(
+            "Vaccine faxes", "A run is already in progress.");
 
         try
         {

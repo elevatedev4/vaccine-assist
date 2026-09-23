@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -105,4 +106,20 @@ internal sealed class FaultyPdfBuilder : IVaccineRecordPdfBuilder
 {
     public VaccinePdfResult Build(PatientFaxGroup group, FaxSettings faxSettings) =>
         throw new InvalidOperationException("simulated PDF build failure");
+}
+
+/// <summary>Delegates Import to a real IReportImporter but always throws
+/// from MoveAcceptedFiles — used to test FaxRunOrchestrator's reviewer fix
+/// (V-T53) that a locked/permission-denied source file after faxes are
+/// already queued must not abort the run.</summary>
+internal sealed class ThrowingMoveReportImporter : IReportImporter
+{
+    private readonly IReportImporter _inner;
+
+    public ThrowingMoveReportImporter(IReportImporter inner) => _inner = inner;
+
+    public ImportOutcome Import(string inputFolder, FaxColumnMap columnMap) => _inner.Import(inputFolder, columnMap);
+
+    public void MoveAcceptedFiles(IReadOnlyList<string> acceptedFilePaths, string inputFolder, DateOnly runDate) =>
+        throw new IOException("simulated locked source file");
 }

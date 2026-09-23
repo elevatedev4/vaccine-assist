@@ -111,7 +111,12 @@ public partial class App : Application
         // cloud app's API; SRFax's client posts to its own absolute URL
         // (see SrFaxClient) and must never accidentally inherit the cloud
         // BaseAddress.
-        _faxHttpClient = new HttpClient();
+        // Reviewer fix (V-T53): an explicit timeout so a hung SRFax
+        // request can't block a daily run (or the receipt poller) forever —
+        // HttpClient's own default is 100s, which is fine, but leaving it
+        // implicit means a future change to the default silently changes
+        // this too.
+        _faxHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         _faxCredentialStore = new FaxCredentialStore();
         _prescriberDirectory = new PrescriberDirectory();
         var importLedger = new ImportLedger();
@@ -119,8 +124,15 @@ public partial class App : Application
         var pdfBuilder = new VaccineRecordPdfBuilder();
         var faxLedger = new FaxLedger();
         var faxRunMarker = new FaxRunMarker();
+        // LocalApplicationData (not the roaming ApplicationData used by
+        // FaxLedger/ImportLedger/PrescriberDirectory/FaxRunMarker above) —
+        // reviewer fix (V-T53): this root holds outbox\/sent\/failed\, i.e.
+        // actual patient PDFs, plus runs\ summaries. On a domain-joined PC
+        // with roaming profiles, anything under ApplicationData replicates
+        // to a profile server; PHI-bearing PDFs must never do that. Same
+        // root FaxCredentialStore already uses for this reason.
         var faxRootDir = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "VaccineAssist", "fax");
 
         // The IFaxClient used for the WHOLE signed-in session is built

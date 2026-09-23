@@ -284,8 +284,22 @@ public sealed class FaxRunOrchestrator
         }
 
         // Only after every group above has been attempted — see
-        // ReportImporter's own doc comment.
-        _importer.MoveAcceptedFiles(importOutcome.AcceptedFilePaths, settings.InputFolder, runDate);
+        // ReportImporter's own doc comment. Wrapped (reviewer fix,
+        // V-T53): a locked/permission-denied source file must not abort
+        // the run after faxes have already been queued — the run still
+        // needs to reach WriteRunSummaryFile/RunCompleted below so Will
+        // sees what DID send instead of silence; the source file is just
+        // left in the input folder (never deleted) and will be retried
+        // on the next run.
+        try
+        {
+            _importer.MoveAcceptedFiles(importOutcome.AcceptedFilePaths, settings.InputFolder, runDate);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("FaxRunOrchestrator.MoveAcceptedFiles", ex);
+            summary.Warnings.Add($"Couldn't move imported report file(s) to processed\\: {ex.Message}");
+        }
 
         // A second poll pass right after queuing — a nicer first-look
         // summary if SRFax resolves a fast fax immediately; the
