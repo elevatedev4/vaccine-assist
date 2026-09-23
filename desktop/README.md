@@ -80,13 +80,18 @@ message rather than crashing.
 
 ## Vaccine → PCP fax (V-T53)
 
-Pioneer Rx won't email PHI, so a designated local folder is watched for a
-daily immunization report (CSV/XLSX — how the file lands there, SFTP drop
-or a UI-automated export, is out of scope here); the app builds one PDF
+Pioneer Rx won't email PHI, so the pharmacist imports the daily
+immunization report (CSV/XLSX) into the app directly (Will, 2026-09-22 —
+no SFTP drop, no cloud pull): tray icon → "Vaccine faxes — Import report
+file…" opens a file picker, copies the chosen file into the configured
+input folder, and runs immediately. The app builds one PDF
 vaccine-administration record per patient/prescriber and faxes it to the
 prescriber via Notifyre (Will's pick — SRFax also still supported, see
-below), tracks delivery receipts, and runs automatically once a day.
-Nothing PHI leaves the machine except to the fax vendor.
+below), and tracks delivery receipts. The daily timer that scans the same
+input folder automatically still exists (same pipeline either way) for
+anyone who wants that instead — see "Automatic daily run" below — but
+it's OFF by default now that the normal path is a manual import. Nothing
+PHI leaves the machine except to the fax vendor.
 
 **Setup** (tray icon → "Vaccine faxes — Settings"):
 
@@ -101,7 +106,9 @@ Nothing PHI leaves the machine except to the fax vendor.
      connection" calls SRFax's `Get_FaxUsage`.
 2. Sender email, pharmacy name/phone/fax (SRFax uses the fax number as
    its caller ID; Notifyre doesn't use pharmacy fax/caller-id fields).
-3. Input folder to watch, and the daily run time (default 18:30 local).
+3. Input folder (where "Import report file…" copies the picked report to,
+   and what the optional daily timer scans), and the daily run time
+   (default 18:30 local, only used if "Automatic daily run" is on).
 4. Column map — the report's actual header text for each field. Defaults
    are Pioneer-looking guesses; only patient first/last name, vaccine
    name, and administered date are required — a report missing one of
@@ -135,10 +142,13 @@ Nothing PHI leaves the machine except to the fax vendor.
                           after each run (never deleted)
 ```
 
-**Run it manually**: tray icon → "Vaccine faxes — Run now" (works even
-if the daily timer is disabled). "Open fax folder" jumps straight to the
-folder above. A run shows a summary window (sent/in-process/failed/needs-
-fax-number counts + a per-row grid); a Failed row has an explicit Retry
+**Run it**: tray icon → "Vaccine faxes — Import report file…" (the normal
+path — picks a CSV/XLSX, copies it into the input folder, runs
+immediately) or "— Run now" (re-scans whatever's already in the input
+folder, works even if "Automatic daily run" is off). "Open fax folder"
+jumps straight to the folder above. A run shows a summary window
+(sent/in-process/failed/needs-fax-number counts + a per-row grid); a
+Failed row has an explicit Retry
 button — nothing is ever auto-retried after a vendor-reported failure, to
 avoid a double-send.
 

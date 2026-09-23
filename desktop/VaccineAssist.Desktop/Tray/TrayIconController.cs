@@ -52,6 +52,10 @@ public sealed class TrayIconController : IDisposable
     public event EventHandler? FaxSettingsRequested;
     public event EventHandler? FaxOpenFolderRequested;
 
+    /// <summary>2026-09-22: "Vaccine faxes — Import report file…" — see
+    /// MainWindow.xaml.cs's ImportReportFileAndRunAsync.</summary>
+    public event EventHandler? FaxImportFileRequested;
+
     /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a Navigate row is clicked.</summary>
     public event EventHandler<string>? NavigationRequested;
 
@@ -132,6 +136,9 @@ public sealed class TrayIconController : IDisposable
                 break;
             case TrayMenuAction.FaxOpenFolder:
                 FaxOpenFolderRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case TrayMenuAction.FaxImportFile:
+                FaxImportFileRequested?.Invoke(this, EventArgs.Empty);
                 break;
             case TrayMenuAction.Navigate:
                 if (descriptor.RelativePath is { Length: > 0 } path)

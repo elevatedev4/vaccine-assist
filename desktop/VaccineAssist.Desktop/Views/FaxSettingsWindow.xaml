@@ -134,7 +134,7 @@
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="Daily run time (HH:mm)" VerticalAlignment="Center"/>
                         <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding DailyRunTime, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2" Width="80" HorizontalAlignment="Left"/>
 
-                        <CheckBox Grid.Row="4" Grid.Column="1" Content="Run automatically every day" IsChecked="{Binding DailyRunEnabled}" VerticalAlignment="Center"/>
+                        <CheckBox Grid.Row="4" Grid.Column="1" Content="Automatic daily run" IsChecked="{Binding DailyRunEnabled}" VerticalAlignment="Center"/>
                     </Grid>
                 </StackPanel>
             </Border>

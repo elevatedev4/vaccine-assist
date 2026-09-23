@@ -20,6 +20,7 @@ public enum TrayMenuAction
     FaxRunNow,
     FaxSettings,
     FaxOpenFolder,
+    FaxImportFile,
 }
 
 /// <summary>
@@ -97,6 +98,13 @@ public static class TrayMenuBuilder
         // WinForms submenu (TrayMenuItemDescriptor has no submenu
         // concept — not worth adding for three rows).
         items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Run now", true, TrayMenuAction.FaxRunNow, null, false));
+        // Will, 2026-09-22 (verbatim): "A user will import the report into
+        // the app directly" — no SFTP drop, no cloud pull. Opens a file
+        // picker, copies the chosen CSV/XLSX into the configured input
+        // folder, then runs immediately (same RunNowAsync path/summary
+        // window as "Run now" above) — see MainWindow.xaml.cs's
+        // ImportReportFileAndRunAsync and Fax/FaxImportFileCopier.cs.
+        items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Import report file…", true, TrayMenuAction.FaxImportFile, null, false));
         items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Settings", true, TrayMenuAction.FaxSettings, null, false));
         items.Add(new TrayMenuItemDescriptor("Open fax folder", true, TrayMenuAction.FaxOpenFolder, null, false));
         items.Add(Separator);
