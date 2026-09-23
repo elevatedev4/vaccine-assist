@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace VaccineAssist.Desktop.Fax;
@@ -52,6 +53,15 @@ public sealed class NotifyreFaxClient : IFaxClient
     private const string BaseUrl = "https://api.notifyre.com";
 
     private static readonly JsonSerializerOptions ResponseJsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    // System.Text.Json's DEFAULT encoder escapes "+" (and other characters
+    // that are harmless in plain JSON but unsafe embedded in HTML/JS) as
+    // \uXXXX — functionally fine for a REST API (any JSON parser decodes
+    // + back to '+'), but makes a captured request body confusing to
+    // read/grep and broke a naive substring test. Relaxed here since this
+    // JSON is never embedded in a web page — only ever POSTed as a request
+    // body.
+    private static readonly JsonSerializerOptions RequestJsonOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private readonly HttpClient _httpClient;
     private readonly FaxCredentials _credentials;
@@ -229,7 +239,7 @@ public sealed class NotifyreFaxClient : IFaxClient
         request.Headers.TryAddWithoutValidation("x-api-token", _credentials.ApiToken);
         if (jsonBody is not null)
         {
-            request.Content = new StringContent(JsonSerializer.Serialize(jsonBody), Encoding.UTF8, "application/json");
+            request.Content = new StringContent(JsonSerializer.Serialize(jsonBody, RequestJsonOptions), Encoding.UTF8, "application/json");
         }
 
         return request;
