@@ -130,7 +130,11 @@ public class FaxRunOrchestratorTests : IDisposable
     {
         WriteReport("report.csv");
         var orchestrator = MakeOrchestrator(out var faxClient, out _);
-        faxClient.HoldNextQueueUntil = new TaskCompletionSource<bool>();
+        // Held in a local, not re-read from faxClient.HoldNextQueueUntil
+        // later — QueueAsync consumes (nulls out) that property the
+        // moment it reads it, by design (see FakeFaxClient's doc comment).
+        var hold = new TaskCompletionSource<bool>();
+        faxClient.HoldNextQueueUntil = hold;
 
         var firstRunTask = orchestrator.RunAsync(MakeSettings());
         // Give the first run a chance to reach (and block inside)
@@ -153,7 +157,7 @@ public class FaxRunOrchestratorTests : IDisposable
         var secondResult = await orchestrator.RunAsync(MakeSettings());
         Assert.Null(secondResult); // skipped — a run was already in progress
 
-        faxClient.HoldNextQueueUntil.SetResult(true);
+        hold.SetResult(true);
         var firstResult = await firstRunTask;
         Assert.NotNull(firstResult);
     }
