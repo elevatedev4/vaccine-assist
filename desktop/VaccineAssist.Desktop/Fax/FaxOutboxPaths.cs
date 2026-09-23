@@ -1,3 +1,4 @@
+using System.IO;
 using VaccineAssist.Desktop.Logging;
 
 namespace VaccineAssist.Desktop.Fax;

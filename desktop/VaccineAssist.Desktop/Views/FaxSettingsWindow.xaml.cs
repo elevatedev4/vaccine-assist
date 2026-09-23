@@ -50,7 +50,12 @@ public partial class FaxSettingsWindow : Window
             SelectedPath = string.IsNullOrWhiteSpace(_viewModel.InputFolder) ? "" : _viewModel.InputFolder,
         };
 
-        if (dialog.ShowDialog() == DialogResult.OK)
+        // Fully qualified: this class derives from System.Windows.Window,
+        // which has its OWN instance property named "DialogResult" (bool?)
+        // — an unqualified "DialogResult" here would bind to THAT
+        // (this.DialogResult), not the System.Windows.Forms.DialogResult
+        // enum type, and fail to compile against ".OK".
+        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
         {
             _viewModel.SetInputFolder(dialog.SelectedPath);
         }

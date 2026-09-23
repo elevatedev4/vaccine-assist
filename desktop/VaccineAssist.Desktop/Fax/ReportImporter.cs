@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace VaccineAssist.Desktop.Fax;
 
 /// <summary>
