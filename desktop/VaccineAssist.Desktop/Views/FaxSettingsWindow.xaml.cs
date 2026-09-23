@@ -16,13 +16,16 @@ public partial class FaxSettingsWindow : Window
 
         // PasswordBox.Password isn't bindable (same reasoning as
         // LoginWindow's PasswordInput) — prefill once from whatever the
-        // ViewModel loaded from FaxCredentialStore.
+        // ViewModel loaded from FaxCredentialStore, for both vendors'
+        // password-style fields.
         AccessPasswordBox.Password = _viewModel.AccessPassword;
+        ApiTokenBox.Password = _viewModel.ApiToken;
     }
 
     private void SaveButton_OnClick(object sender, RoutedEventArgs e)
     {
         _viewModel.AccessPassword = AccessPasswordBox.Password;
+        _viewModel.ApiToken = ApiTokenBox.Password;
         if (_viewModel.SaveCommand.CanExecute(null))
         {
             _viewModel.SaveCommand.Execute(null);
@@ -32,6 +35,7 @@ public partial class FaxSettingsWindow : Window
     private void TestConnectionButton_OnClick(object sender, RoutedEventArgs e)
     {
         _viewModel.AccessPassword = AccessPasswordBox.Password;
+        _viewModel.ApiToken = ApiTokenBox.Password;
         if (_viewModel.TestConnectionCommand.CanExecute(null))
         {
             _viewModel.TestConnectionCommand.Execute(null);

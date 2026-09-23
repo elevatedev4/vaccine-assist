@@ -11,8 +11,10 @@ namespace VaccineAssist.Desktop.Fax;
 /// </summary>
 public sealed class FaxSettings
 {
-    /// <summary>SRFax only for now — see FaxProvider's own doc comment.</summary>
-    public FaxProvider Provider { get; set; } = FaxProvider.SrFax;
+    /// <summary>Notifyre is the default for a fresh install (Will's pick,
+    /// V-T53 follow-up) — SRFax stays available for any install that was
+    /// already configured with it. See FaxProvider's own doc comment.</summary>
+    public FaxProvider Provider { get; set; } = FaxProvider.Notifyre;
 
     /// <summary>Folder ReportImporter scans for new *.csv/*.xlsx files. Blank
     /// on a fresh checkout — FaxRunOrchestrator treats a blank/missing
