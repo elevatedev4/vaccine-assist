@@ -16,6 +16,13 @@ namespace VaccineAssist.Desktop.Fax;
 /// Uses PDFsharp-WPF (see the csproj's own comment on why that package
 /// specifically — standard fonts like Arial need no custom
 /// IFontResolver on net8.0-windows with that build).
+///
+/// PDFsharp allows at most ONE live XGraphics per PdfPage at a time
+/// (creating a second one for a page that already has an undisposed one
+/// throws InvalidOperationException) — so the footer is drawn INLINE,
+/// right before each page's XGraphics is disposed (either because a page
+/// break is happening, or because the whole document is done), rather
+/// than in a separate final pass that reopens every page.
 /// </summary>
 public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
 {
@@ -34,9 +41,6 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         var document = new PdfDocument();
         document.Info.Title = $"Immunization Record - {group.PatientFullName}";
 
-        var page = NewPage(document);
-        var gfx = XGraphics.FromPdfPage(page);
-
         var headerFont = new XFont("Arial", 15, XFontStyleEx.Bold);
         var labelFont = new XFont("Arial", 10, XFontStyleEx.Bold);
         var bodyFont = new XFont("Arial", 10, XFontStyleEx.Regular);
@@ -44,9 +48,12 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         var tableBodyFont = new XFont("Arial", 8, XFontStyleEx.Regular);
         var footerFont = new XFont("Arial", 8, XFontStyleEx.Italic);
 
-        var y = MarginPoints;
+        var page = NewPage(document);
+        var gfx = XGraphics.FromPdfPage(page);
         var left = MarginPoints;
         var right = page.Width.Point - MarginPoints;
+
+        var y = MarginPoints;
 
         // Header — pharmacy identity, no cover page: this IS page 1.
         gfx.DrawString($"Immunization Administration Record — {NullToDash(faxSettings.PharmacyName)}", headerFont, XBrushes.Black, new XPoint(left, y));
@@ -72,6 +79,9 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         {
             if (y + RowHeight > page.Height.Point - 90)
             {
+                DrawFooter(gfx, page, faxSettings, footerFont, left, right);
+                gfx.Dispose();
+
                 page = NewPage(document);
                 gfx = XGraphics.FromPdfPage(page);
                 y = MarginPoints;
@@ -98,6 +108,9 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         // Prescriber block
         if (y + 60 > page.Height.Point - 90)
         {
+            DrawFooter(gfx, page, faxSettings, footerFont, left, right);
+            gfx.Dispose();
+
             page = NewPage(document);
             gfx = XGraphics.FromPdfPage(page);
             y = MarginPoints;
@@ -108,16 +121,11 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         y += 14;
         gfx.DrawString($"NPI: {NullToDash(group.PrescriberNpi)}", bodyFont, XBrushes.Black, new XPoint(left, y));
 
-        // Footer — on every page, drawn last so it always lands at the
-        // bottom regardless of how many pages the table above spanned.
-        foreach (var pdfPage in document.Pages.Cast<PdfPage>())
-        {
-            var footerGfx = XGraphics.FromPdfPage(pdfPage);
-            var footerText = $"Please add to the patient's immunization record. Questions: {NullToDash(faxSettings.PharmacyPhone)}";
-            footerGfx.DrawString(footerText, footerFont, XBrushes.Gray,
-                new XRect(left, pdfPage.Height.Point - 30, right - left, 20),
-                XStringFormats.BottomLeft);
-        }
+        // Footer for the final page — every earlier page already got its
+        // footer drawn (and its XGraphics disposed) at the page-break
+        // points above.
+        DrawFooter(gfx, page, faxSettings, footerFont, left, right);
+        gfx.Dispose();
 
         using var stream = new MemoryStream();
         document.Save(stream, false);
@@ -130,6 +138,14 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         var page = document.AddPage();
         page.Size = PageSize.Letter;
         return page;
+    }
+
+    private static void DrawFooter(XGraphics gfx, PdfPage page, FaxSettings faxSettings, XFont footerFont, double left, double right)
+    {
+        var footerText = $"Please add to the patient's immunization record. Questions: {NullToDash(faxSettings.PharmacyPhone)}";
+        gfx.DrawString(footerText, footerFont, XBrushes.Gray,
+            new XRect(left, page.Height.Point - 30, right - left, 20),
+            XStringFormats.BottomLeft);
     }
 
     private static void DrawTableHeader(XGraphics gfx, XFont font, double left, double y)

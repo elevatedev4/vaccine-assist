@@ -133,10 +133,21 @@ public class FaxRunOrchestratorTests : IDisposable
         faxClient.HoldNextQueueUntil = new TaskCompletionSource<bool>();
 
         var firstRunTask = orchestrator.RunAsync(MakeSettings());
-        // Give the first run a chance to reach (and block inside) QueueAsync.
+        // Give the first run a chance to reach (and block inside)
+        // QueueAsync — bounded rather than an unconditional spin, so a
+        // regression that stops the run from ever reaching QueueAsync
+        // (e.g. an exception earlier in the pipeline) fails this test
+        // fast instead of hanging the whole CI run.
+        var waited = TimeSpan.Zero;
+        var pollInterval = TimeSpan.FromMilliseconds(10);
         while (faxClient.QueuedRequests.Count == 0)
         {
-            await Task.Delay(10);
+            if (waited > TimeSpan.FromSeconds(10))
+            {
+                throw new TimeoutException("QueueAsync was never reached — see FaxRunOrchestrator.RunAsync's pipeline for what changed.");
+            }
+            await Task.Delay(pollInterval);
+            waited += pollInterval;
         }
 
         var secondResult = await orchestrator.RunAsync(MakeSettings());
