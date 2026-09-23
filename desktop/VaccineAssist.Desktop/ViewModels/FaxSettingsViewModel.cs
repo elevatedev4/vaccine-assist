@@ -13,7 +13,10 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// Get_FaxUsage), sender email, pharmacy name/phone/fax (caller id), input
 /// folder (browse), run time, enable/disable daily run, column map editor
 /// (simple key -> header grid), prescriber fax table grid. Saving
-/// validates fax numbers (digits, 10-11)."
+/// validates fax numbers (digits, 10-11)." Extended for Notifyre (Will's
+/// pick): a Provider dropdown selects SRFax or Notifyre, each with its own
+/// credential field(s) shown/hidden via IsSrFaxSelected/IsNotifyreSelected
+/// — see FaxSettingsWindow.xaml's Visibility bindings.
 /// </summary>
 public sealed class FaxSettingsViewModel : ObservableObject
 {
@@ -23,8 +26,10 @@ public sealed class FaxSettingsViewModel : ObservableObject
     private readonly IPrescriberDirectory _prescriberDirectory;
     private readonly HttpClient _httpClient;
 
+    private FaxProvider _selectedProvider = FaxProvider.Notifyre;
     private string _accessId = "";
     private string _accessPassword = "";
+    private string _apiToken = "";
     private string _senderEmail = "";
     private string _pharmacyName = "";
     private string _pharmacyPhone = "";
@@ -64,8 +69,38 @@ public sealed class FaxSettingsViewModel : ObservableObject
     public ObservableCollection<FaxColumnMapRow> ColumnMap { get; } = new();
     public ObservableCollection<PrescriberRow> Prescribers { get; } = new();
 
+    /// <summary>Backs the Settings window's provider dropdown.</summary>
+    public IReadOnlyList<FaxProvider> Providers { get; } = Enum.GetValues<FaxProvider>();
+
+    public FaxProvider SelectedProvider
+    {
+        get => _selectedProvider;
+        set
+        {
+            if (SetProperty(ref _selectedProvider, value))
+            {
+                OnPropertyChanged(nameof(IsSrFaxSelected));
+                OnPropertyChanged(nameof(IsNotifyreSelected));
+            }
+        }
+    }
+
+    /// <summary>Drives Visibility on the SRFax access id/password fields
+    /// in FaxSettingsWindow.xaml.</summary>
+    public bool IsSrFaxSelected => SelectedProvider == FaxProvider.SrFax;
+
+    /// <summary>Drives Visibility on the Notifyre API token field in
+    /// FaxSettingsWindow.xaml.</summary>
+    public bool IsNotifyreSelected => SelectedProvider == FaxProvider.Notifyre;
+
     public string AccessId { get => _accessId; set => SetProperty(ref _accessId, value); }
     public string AccessPassword { get => _accessPassword; set => SetProperty(ref _accessPassword, value); }
+
+    /// <summary>Notifyre's x-api-token value — read from ApiTokenBox in
+    /// code-behind on Save/Test connection, same PasswordBox-isn't-
+    /// bindable pattern as AccessPassword.</summary>
+    public string ApiToken { get => _apiToken; set => SetProperty(ref _apiToken, value); }
+
     public string SenderEmail { get => _senderEmail; set => SetProperty(ref _senderEmail, value); }
     public string PharmacyName { get => _pharmacyName; set => SetProperty(ref _pharmacyName, value); }
     public string PharmacyPhone { get => _pharmacyPhone; set => SetProperty(ref _pharmacyPhone, value); }
@@ -92,6 +127,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
     private void LoadFromCurrentState()
     {
         var fax = _settings.Fax;
+        SelectedProvider = fax.Provider;
         SenderEmail = fax.SenderEmail;
         PharmacyName = fax.PharmacyName;
         PharmacyPhone = fax.PharmacyPhone;
@@ -104,6 +140,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
         var credentials = _credentialStore.Load();
         AccessId = credentials?.AccessId ?? "";
         AccessPassword = credentials?.AccessPassword ?? "";
+        ApiToken = credentials?.ApiToken ?? "";
 
         ColumnMap.Clear();
         var map = fax.ColumnMap;
@@ -147,6 +184,14 @@ public sealed class FaxSettingsViewModel : ObservableObject
                 return;
             }
 
+            // Notifyre-only: a blank token would otherwise save silently
+            // and only fail later, mid-run, on the first real send.
+            if (SelectedProvider == FaxProvider.Notifyre && string.IsNullOrWhiteSpace(ApiToken))
+            {
+                ErrorMessage = "Enter a Notifyre API token.";
+                return;
+            }
+
             foreach (var row in Prescribers)
             {
                 if (!string.IsNullOrWhiteSpace(row.FaxNumber) && !FaxNumberNormalizer.IsValid(row.FaxNumber))
@@ -157,6 +202,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
             }
 
             var fax = _settings.Fax;
+            fax.Provider = SelectedProvider;
             fax.SenderEmail = SenderEmail.Trim();
             fax.PharmacyName = PharmacyName.Trim();
             fax.PharmacyPhone = PharmacyPhone.Trim();
@@ -169,7 +215,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
 
             _localSettingsService.Save(_settings);
 
-            _credentialStore.Save(new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword });
+            _credentialStore.Save(new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = ApiToken.Trim() });
 
             _prescriberDirectory.Save(Prescribers
                 .Where(r => !string.IsNullOrWhiteSpace(r.Name) || !string.IsNullOrWhiteSpace(r.Npi))
@@ -200,8 +246,12 @@ public sealed class FaxSettingsViewModel : ObservableObject
         StatusMessage = null;
         try
         {
-            var credentials = new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword };
-            var client = FaxClientFactory.Create(_settings.Fax.Provider, _httpClient, credentials);
+            // Uses the dropdown's CURRENT selection, not the last-saved
+            // _settings.Fax.Provider — otherwise switching the dropdown
+            // and clicking Test connection before Save would silently
+            // test the wrong vendor.
+            var credentials = new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = ApiToken.Trim() };
+            var client = FaxClientFactory.Create(SelectedProvider, _httpClient, credentials);
             var result = await client.TestConnectionAsync();
 
             StatusMessage = result.Success ? $"Connected. {result.Summary}" : null;

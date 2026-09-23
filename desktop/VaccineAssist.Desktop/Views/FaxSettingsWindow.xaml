@@ -5,28 +5,53 @@
         Width="720" Height="720"
         WindowStartupLocation="CenterScreen">
     <!--
-        V-T53 (vaccine -> PCP fax, Will's brief): SRFax credentials, sender
-        email, pharmacy identity/caller-id, input folder, daily run time,
-        column-map editor, and the prescriber-fax-number table — see
-        ViewModels/FaxSettingsViewModel.cs. Password is read from
-        AccessPasswordBox in code-behind on Save, same pattern as
+        V-T53 (vaccine -> PCP fax, Will's brief): fax vendor credentials,
+        sender email, pharmacy identity/caller-id, input folder, daily run
+        time, column-map editor, and the prescriber-fax-number table — see
+        ViewModels/FaxSettingsViewModel.cs. Notifyre added as a second
+        vendor (Will's pick, default for a fresh install) alongside SRFax
+        — the "Fax account" panel below shows either credential field set
+        depending on the Provider dropdown (BooleanToVisibilityConverter
+        bound to IsSrFaxSelected/IsNotifyreSelected). Both the SRFax
+        password and the Notifyre API token are read from their PasswordBox
+        in code-behind on Save/Test connection, same pattern as
         LoginWindow's PasswordInput (PasswordBox.Password isn't bindable).
     -->
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+    </Window.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
         <StackPanel>
             <TextBlock Text="Vaccine → PCP fax settings" FontSize="18" FontWeight="Bold" Margin="0,0,0,12"/>
 
             <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
                 <StackPanel>
-                    <TextBlock Text="SRFax account" FontWeight="Bold" Margin="0,0,0,6"/>
-                    <Grid>
+                    <TextBlock Text="Fax account" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Provider" VerticalAlignment="Center"/>
+                        <ComboBox Grid.Column="1" ItemsSource="{Binding Providers}" SelectedItem="{Binding SelectedProvider}"
+                                  MinHeight="26" Padding="4,2" HorizontalAlignment="Left" MinWidth="160"/>
+                    </Grid>
+
+                    <Grid Visibility="{Binding IsNotifyreSelected, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="API token" VerticalAlignment="Center"/>
+                        <PasswordBox Grid.Column="1" x:Name="ApiTokenBox" MinHeight="26" Padding="4,2"/>
+                    </Grid>
+
+                    <Grid Visibility="{Binding IsSrFaxSelected, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="140"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="4"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="4"/>
                             <RowDefinition Height="Auto"/>
@@ -37,13 +62,13 @@
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="Access password" VerticalAlignment="Center"/>
                         <PasswordBox Grid.Row="2" Grid.Column="1" x:Name="AccessPasswordBox" MinHeight="26" Padding="4,2"/>
-
-                        <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
-                            <Button Content="Test connection" Click="TestConnectionButton_OnClick" Padding="8,2"/>
-                            <TextBlock Text="{Binding StatusMessage}" Foreground="Green" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                        </StackPanel>
                     </Grid>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Test connection" Click="TestConnectionButton_OnClick" Padding="8,2"/>
+                        <TextBlock Text="{Binding StatusMessage}" Foreground="Green" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 
@@ -109,7 +134,7 @@
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="Daily run time (HH:mm)" VerticalAlignment="Center"/>
                         <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding DailyRunTime, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2" Width="80" HorizontalAlignment="Left"/>
 
-                        <CheckBox Grid.Row="4" Grid.Column="1" Content="Run automatically every day" IsChecked="{Binding DailyRunEnabled}" VerticalAlignment="Center"/>
+                        <CheckBox Grid.Row="4" Grid.Column="1" Content="Automatic daily run" IsChecked="{Binding DailyRunEnabled}" VerticalAlignment="Center"/>
                     </Grid>
                 </StackPanel>
             </Border>

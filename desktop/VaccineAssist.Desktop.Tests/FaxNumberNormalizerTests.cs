@@ -48,4 +48,23 @@ public class FaxNumberNormalizerTests
     {
         Assert.Equal("55", FaxNumberNormalizer.Last4("55"));
     }
+
+    [Theory]
+    [InlineData("5555550100", "+15555550100")]
+    [InlineData("(555) 555-0100", "+15555550100")]
+    [InlineData("15555550100", "+15555550100")]
+    public void ToE164OrNullPrefixesPlusOneForValidNumbers(string input, string expected)
+    {
+        Assert.Equal(expected, FaxNumberNormalizer.ToE164OrNull(input));
+    }
+
+    [Theory]
+    [InlineData("555-0100")] // 7 digits
+    [InlineData("25555550100")] // 11 digits not starting with 1
+    [InlineData("")]
+    [InlineData(null)]
+    public void ToE164OrNullReturnsNullForInvalidNumbers(string? input)
+    {
+        Assert.Null(FaxNumberNormalizer.ToE164OrNull(input));
+    }
 }

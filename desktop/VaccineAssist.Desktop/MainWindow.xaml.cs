@@ -206,6 +206,7 @@ public partial class MainWindow : Window
             trayIconController.FaxRunNowRequested += async (_, _) => await _faxRunScheduler.RunNowAsync();
             trayIconController.FaxSettingsRequested += (_, _) => ShowFaxSettings();
             trayIconController.FaxOpenFolderRequested += (_, _) => OpenFaxFolder();
+            trayIconController.FaxImportFileRequested += async (_, _) => await ImportReportFileAndRunAsync();
             _trayIconController = trayIconController;
         }
         catch (Exception ex)
@@ -573,6 +574,54 @@ public partial class MainWindow : Window
         {
             AppFileLog.LogException("MainWindow.OpenFaxFolder", ex);
         }
+    }
+
+    /// <summary>
+    /// 2026-09-22 (Will, verbatim): "A user will import the report into the
+    /// app directly" — no SFTP drop, no cloud pull. Opens a file picker for
+    /// a CSV/XLSX report, copies it into the configured Fax.InputFolder
+    /// (Fax/FaxImportFileCopier.cs — the pure/testable half of this), then
+    /// runs the SAME RunNowAsync path "Run now" already uses — the copied
+    /// file is picked up by the normal ReportImporter folder scan, so
+    /// nothing about import/dedup/PDF/queue/ledger/summary-window needed to
+    /// change for this to work. Cancelling the file picker is a silent
+    /// no-op; a copy failure (most commonly: no input folder configured
+    /// yet) surfaces via MessageBox, same pattern as the hotkey-registration
+    /// failures in MainWindow_OnSourceInitialized above, since this is a
+    /// directly user-triggered action that just showed a dialog — a silent
+    /// failure here would look like the click did nothing.
+    /// </summary>
+    private async System.Threading.Tasks.Task ImportReportFileAndRunAsync()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Import immunization report",
+            Filter = "Immunization reports (*.csv;*.xlsx)|*.csv;*.xlsx|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            FaxImportFileCopier.CopyIntoInputFolder(dialog.FileName, _settings.Fax.InputFolder);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.ImportReportFileAndRunAsync", ex);
+            MessageBox.Show(
+                this,
+                $"Couldn't import that file: {ex.Message}",
+                "Vaccine Assist",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        await _faxRunScheduler.RunNowAsync();
     }
 
     /// <summary>V-T53: shows FaxRunSummaryWindow plus a tray balloon after

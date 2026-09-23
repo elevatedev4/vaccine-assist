@@ -11,8 +11,10 @@ namespace VaccineAssist.Desktop.Fax;
 /// </summary>
 public sealed class FaxSettings
 {
-    /// <summary>SRFax only for now — see FaxProvider's own doc comment.</summary>
-    public FaxProvider Provider { get; set; } = FaxProvider.SrFax;
+    /// <summary>Notifyre is the default for a fresh install (Will's pick,
+    /// V-T53 follow-up) — SRFax stays available for any install that was
+    /// already configured with it. See FaxProvider's own doc comment.</summary>
+    public FaxProvider Provider { get; set; } = FaxProvider.Notifyre;
 
     /// <summary>Folder ReportImporter scans for new *.csv/*.xlsx files. Blank
     /// on a fresh checkout — FaxRunOrchestrator treats a blank/missing
@@ -48,6 +50,10 @@ public sealed class FaxSettings
     public string DailyRunTime { get; set; } = "18:30";
 
     /// <summary>Tray menu's "Vaccine faxes" daily timer on/off switch —
-    /// "Run now" always works regardless of this.</summary>
-    public bool DailyRunEnabled { get; set; } = true;
+    /// "Run now" and "Import report file…" always work regardless of this.
+    /// Default flipped to OFF (Will, 2026-09-22: "A user will import the
+    /// report into the app directly" — the workflow is now manual-trigger
+    /// by default; a pharmacy that DOES want the automatic folder-watch
+    /// daily run can still switch this back on in Fax settings).</summary>
+    public bool DailyRunEnabled { get; set; } = false;
 }

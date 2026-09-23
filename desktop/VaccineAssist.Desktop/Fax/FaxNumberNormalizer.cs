@@ -32,6 +32,19 @@ public static class FaxNumberNormalizer
         return IsValid(digits) ? digits : null;
     }
 
+    /// <summary>"+1" + the 10-digit number — Notifyre's expected E.164
+    /// form for a US/Canada fax number (its Send Fax recipient "Value"
+    /// field, e.g. "+61234356789" in AU docs examples), or null when the
+    /// input isn't a valid 10/11-digit number (same validity rule as
+    /// ToDialableOrNull).</summary>
+    public static string? ToE164OrNull(string? value)
+    {
+        var digits = StripToDigits(value);
+        if (!IsValid(digits)) return null;
+        var tenDigits = digits.Length == 11 ? digits[1..] : digits;
+        return "+1" + tenDigits;
+    }
+
     /// <summary>Last 4 digits only — the ONE fax-number form this app
     /// ever logs or writes to the ledger (Will's brief: "log ... fax
     /// last-4 only").</summary>
