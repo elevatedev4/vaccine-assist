@@ -12,7 +12,7 @@ import {
   type MacroTopGroup,
 } from "@/lib/macro-catalog";
 import type { ProductView } from "@/lib/product-view";
-import { covidVaccineMaker, vaccineDisplayName } from "@/lib/vaccine-display-name";
+import { covidVaccineMaker, stripCovidMakerPrefix, vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
 
@@ -538,9 +538,20 @@ const SEASON_TOKEN = /\(?\s*(\d{4})-(\d{4}|\d{2})\s*\)?/;
  * covidMacroLabel takes age from its own `age` parameter, the same
  * catalog age doseButtonLabel already used, not from the name), the
  * standalone word "Formula" is dropped, and "Comirnaty" (no season in
- * the name) -> {drugWord: "Comirnaty", season: null}. */
+ * the name) -> {drugWord: "Comirnaty", season: null}.
+ *
+ * ROUND 16 (reviewer finding, 2026-09-24): an already maker-prefixed
+ * name — "Pfizer Comirnaty 2026-27" (unreachable from any of today's
+ * real render sites, which always pass the RAW catalog name, but this
+ * function is exported and its input isn't otherwise constrained) —
+ * used to take "Pfizer" itself as the drug word, dropping "Comirnaty"
+ * entirely ("Pfizer 12+ (Pfizer 2026-27)"). lib/vaccine-display-name.
+ * ts's stripCovidMakerPrefix (reused, not duplicated) now strips a
+ * leading "Pfizer "/"Moderna " off the name FIRST, so the drug word is
+ * always the real product word regardless of whether the caller passed
+ * an already-prefixed or a raw name. */
 function splitCovidDrugNameAndSeason(displayName: string): { drugWord: string; season: string | null } {
-  const trimmed = displayName.trim();
+  const trimmed = stripCovidMakerPrefix(displayName.trim());
   const drugWordMatch = /^\S+/.exec(trimmed);
   const drugWord = drugWordMatch ? drugWordMatch[0] : trimmed;
 

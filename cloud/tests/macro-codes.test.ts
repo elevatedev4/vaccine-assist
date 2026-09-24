@@ -737,6 +737,20 @@ describe("covidMacroLabel (V-T-macro-round15: 'Pfizer 12+ (Comirnaty 2026-27)')"
       "Pfizer 12+ (Comirnaty 2026-27)"
     );
   });
+
+  // Reviewer finding, 2026-09-24: an already maker-prefixed input name
+  // used to be split as if the maker word itself were the drug word,
+  // dropping the real product name — "Pfizer Comirnaty 2026-27" ->
+  // "Pfizer 12+ (Pfizer 2026-27)". Unreachable from today's real render
+  // sites (they always pass the raw, un-prefixed catalog name), but
+  // covidMacroLabel is exported with no such constraint on its input.
+  it("an already maker-prefixed name still resolves the real drug name, not the maker itself", () => {
+    expect(covidMacroLabel({ displayName: "Pfizer Comirnaty 2026-27", age: "12+" })).toBe("Pfizer 12+ (Comirnaty 2026-27)");
+  });
+
+  it("an already maker-prefixed name with no season in it still resolves correctly", () => {
+    expect(covidMacroLabel({ displayName: "Moderna Spikevax", age: "3–11" })).toBe("Moderna 3–11 (Spikevax)");
+  });
 });
 
 describe("macroProductDisplayLabel", () => {
