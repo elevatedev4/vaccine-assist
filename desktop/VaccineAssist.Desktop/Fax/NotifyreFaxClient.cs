@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using VaccineAssist.Desktop.Logging;
 
 namespace VaccineAssist.Desktop.Fax;
 
@@ -147,13 +148,30 @@ public sealed class NotifyreFaxClient : IFaxClient
             return new FaxAccountInfo(false, null, "Enter a Notifyre API token first.");
         }
 
+        // V-T53 401 follow-up (Will, 2026-09-23): a masked fingerprint
+        // (never the token itself — see AppFileLog's own NO-secrets rule)
+        // so a paste error (wrong token, extra characters, a scheme
+        // prefix pasted along with it) is visible in the log even though
+        // the token's actual bytes never appear there.
+        AppFileLog.Log($"[NotifyreFaxClient] Test connection — token fingerprint {MaskToken(_credentials.ApiToken)}");
+
         string body;
         try
         {
             body = await SendWithRetryAsync(() => BuildRequest(HttpMethod.Get, "/fax/numbers", null), ct);
         }
+        catch (NotifyreHttpException ex)
+        {
+            // Will's brief: "Make Test connection show the HTTP status +
+            // Notifyre's error body text in the dialog and log (not just
+            // '401')" — ex.Message already carries both (see
+            // NotifyreHttpException below).
+            AppFileLog.Log($"[NotifyreFaxClient] Test connection failed — {ex.Message}");
+            return new FaxAccountInfo(false, null, ex.Message);
+        }
         catch (Exception ex)
         {
+            AppFileLog.Log($"[NotifyreFaxClient] Test connection failed — couldn't reach Notifyre: {ex.Message}");
             return new FaxAccountInfo(false, null, $"Couldn't reach Notifyre: {ex.Message}");
         }
 
@@ -211,13 +229,18 @@ public sealed class NotifyreFaxClient : IFaxClient
                     return await response.Content.ReadAsStringAsync(ct);
                 }
 
+                var errorBody = await ReadBodySafeAsync(response, ct);
                 if ((int)response.StatusCode < 500)
                 {
                     // Non-transient (bad request/auth/etc.) — never retried.
-                    throw new HttpRequestException($"Notifyre HTTP error {(int)response.StatusCode}");
+                    // Carries Notifyre's own status/body text (Will's brief:
+                    // "show the HTTP status + Notifyre's error body text in
+                    // the dialog and log, not just '401'") instead of a bare
+                    // status-code-only message.
+                    throw new NotifyreHttpException((int)response.StatusCode, errorBody);
                 }
 
-                transientError = new HttpRequestException($"Notifyre HTTP error {(int)response.StatusCode}");
+                transientError = new NotifyreHttpException((int)response.StatusCode, errorBody);
             }
 
             if (attempt >= _maxAttempts)
@@ -233,10 +256,44 @@ public sealed class NotifyreFaxClient : IFaxClient
         throw new HttpRequestException("Notifyre request failed after retries.");
     }
 
+    private static async Task<string> ReadBodySafeAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var text = await response.Content.ReadAsStringAsync(ct);
+            return string.IsNullOrWhiteSpace(text) ? "(empty response body)" : text;
+        }
+        catch
+        {
+            return "(couldn't read response body)";
+        }
+    }
+
+    /// <summary>First 4 + last 4 characters + length only — enough to
+    /// tell "this is the token I meant to paste" from "the wrong thing
+    /// (or an extra character/prefix) snuck in" in a log line, without
+    /// ever writing the credential itself (AppFileLog's own NO PHI/
+    /// secrets rule).</summary>
+    private static string MaskToken(string token)
+    {
+        var trimmed = token.Trim();
+        return trimmed.Length <= 8
+            ? $"(len={trimmed.Length})"
+            : $"{trimmed[..4]}...{trimmed[^4..]} (len={trimmed.Length})";
+    }
+
     private HttpRequestMessage BuildRequest(HttpMethod method, string pathAndQuery, object? jsonBody)
     {
         var request = new HttpRequestMessage(method, BaseUrl + pathAndQuery);
-        request.Headers.TryAddWithoutValidation("x-api-token", _credentials.ApiToken);
+        // Defense-in-depth trim (V-T53 401 follow-up): the Settings
+        // ViewModel already trims before Save/Test (see
+        // FaxSettingsViewModel), but this client must never trust an
+        // untrimmed credential either — a token with a trailing
+        // newline/space pasted in from some other source is a valid
+        // header BYTE-wise (so it's sent, not rejected/thrown) but won't
+        // match Notifyre's stored token, which reads as a plain 401 with
+        // no other symptom.
+        request.Headers.TryAddWithoutValidation("x-api-token", _credentials.ApiToken.Trim());
         if (jsonBody is not null)
         {
             request.Content = new StringContent(JsonSerializer.Serialize(jsonBody, RequestJsonOptions), Encoding.UTF8, "application/json");
@@ -323,6 +380,20 @@ public sealed class NotifyreFaxClient : IFaxClient
 
     private static string? FirstMessage<T>(NotifyreEnvelope<T>? envelope) where T : class =>
         !string.IsNullOrWhiteSpace(envelope?.Message) ? envelope!.Message : envelope?.Errors?.FirstOrDefault(e => !string.IsNullOrWhiteSpace(e));
+
+    /// <summary>A non-2xx HTTP response from Notifyre, carrying the status
+    /// code AND the response body text (truncated) — Will's brief: "Make
+    /// Test connection show the HTTP status + Notifyre's error body text
+    /// in the dialog and log (not just '401')".</summary>
+    private sealed class NotifyreHttpException : Exception
+    {
+        public NotifyreHttpException(int statusCode, string body)
+            : base($"Notifyre HTTP {statusCode}: {Truncate(body)}")
+        {
+        }
+
+        private static string Truncate(string body) => body.Length > 500 ? body[..500] + "…" : body;
+    }
 
     // ---- Request DTOs — property names match docs.notifyre.com's "Send
     // Fax" cURL example exactly (PascalCase); System.Text.Json serializes

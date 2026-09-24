@@ -170,6 +170,55 @@ public class NotifyreFaxClientTests
         Assert.Single(handler.Requests);
     }
 
+    [Fact]
+    public async Task BuildRequestSetsExactlyOneTrimmedXApiTokenHeaderFromAWhitespacePaddedToken()
+    {
+        // V-T53 401 follow-up (Will, 2026-09-23): a pasted token with a
+        // trailing newline/space is a valid HTTP header byte-wise (so it's
+        // sent, not thrown/rejected) but won't match Notifyre's stored
+        // token — this is the client's own defense-in-depth trim,
+        // independent of FaxSettingsViewModel's Save/Test trim.
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, "{\"Success\":true,\"Payload\":{\"Numbers\":[]}}");
+        var client = new NotifyreFaxClient(new HttpClient(handler), new FaxCredentials { ApiToken = "  test-token\r\n" }, backoffProvider: _ => TimeSpan.Zero);
+
+        await client.TestConnectionAsync();
+
+        Assert.Single(handler.Requests);
+        var sent = handler.Requests[0];
+        Assert.True(sent.Headers.TryGetValues("x-api-token", out var tokenValues));
+        Assert.Equal("test-token", tokenValues!.Single());
+    }
+
+    [Fact]
+    public async Task TestConnectionAsyncOn401SurfacesTheHttpStatusAndNotifyresErrorBody()
+    {
+        // Will's brief: "Make Test connection show the HTTP status +
+        // Notifyre's error body text in the dialog and log (not just
+        // '401')."
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, "{\"success\":false,\"message\":\"Invalid API token\"}");
+        var client = MakeClient(handler);
+
+        var result = await client.TestConnectionAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("401", result.ErrorMessage);
+        Assert.Contains("Invalid API token", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsyncOn401IsNeverRetried()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, "{\"success\":false,\"message\":\"Invalid API token\"}");
+        var client = MakeClient(handler);
+
+        await client.TestConnectionAsync();
+
+        Assert.Single(handler.Requests);
+    }
+
     [Theory]
     [InlineData("queued", FaxSendStatus.Queued)]
     [InlineData("accepted", FaxSendStatus.Queued)]

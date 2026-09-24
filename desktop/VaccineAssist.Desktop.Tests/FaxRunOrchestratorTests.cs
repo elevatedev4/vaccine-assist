@@ -52,11 +52,16 @@ public class FaxRunOrchestratorTests : IDisposable
         SenderEmail = "sender@example.com",
     };
 
+    // Headers match FaxColumnMap's DEFAULT (Pioneer's real export, V-T53
+    // 401/column-map follow-up) since MakeSettings() doesn't override
+    // ColumnMap — "Patient, Test" is one CSV field (quoted, since it has
+    // an internal comma) so ReportRowParser splits it into
+    // PatientLastName="Patient"/PatientFirstName="Test".
     private void WriteReport(string fileName, string prescriberFax = "5555550200")
     {
         File.WriteAllText(Path.Combine(_inputDir, fileName),
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered,Prescriber Name,Prescriber Fax\n" +
-            $"Test,Patient,Flu,2026-09-01,Dr. Synthetic,{prescriberFax}\n");
+            "Patient Full Name Last then First,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
+            $"\"Patient, Test\",Flu,2026-09-01,Dr. Synthetic,{prescriberFax}\n");
     }
 
     [Fact]
@@ -92,8 +97,8 @@ public class FaxRunOrchestratorTests : IDisposable
     {
         // No Prescriber Fax column value and nothing in PrescriberDirectory.
         File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered,Prescriber Name\n" +
-            "Test,Patient,Flu,2026-09-01,Dr. Nobody\n");
+            "Patient Full Name Last then First,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
+            "\"Patient, Test\",Flu,2026-09-01,Dr. Nobody\n");
         var orchestrator = MakeOrchestrator(out var faxClient, out _);
 
         var summary = await orchestrator.RunAsync(MakeSettings());
