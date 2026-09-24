@@ -12,7 +12,7 @@ import {
   type MacroTopGroup,
 } from "@/lib/macro-catalog";
 import type { ProductView } from "@/lib/product-view";
-import { vaccineDisplayName } from "@/lib/vaccine-display-name";
+import { covidVaccineMaker, vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
 
@@ -162,6 +162,27 @@ export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
  * writeMacroViewMode/MacroViewMode's old "A"|"B"|"C" union/
  * MACRO_VIEW_MODES/MACRO_VIEW_MODE_STORAGE_KEY/DEFAULT_MACRO_VIEW_MODE/
  * MacroViewModeStorage).
+ *
+ * ROUND 15 (Will's verbatim ask, 2026-09-24, follow-up to the maker-name
+ * feature: "vaccine macro codes: follow up to brand covnetion. Make it
+ * look liek this: Pfizer 12+ (Comirnaty 2026-27)"): for COVID products
+ * ONLY (Comirnaty/Spikevax/mNEXSPIKE), every name shown on this page —
+ * doseButtonLabel's per-dose button text, and the page's bare
+ * product-name sites (product-name row, dose button `topLabel`, the ⚙
+ * menu aria-label, the lot/exp modal heading, and the postToHost
+ * `product` field) — now reads "<Maker> <age> (<DrugName> <season>)"
+ * (e.g. "Pfizer 12+ (Comirnaty 2026-27)", "Moderna 3–11 (Spikevax
+ * 2026-27)") instead of round 7's "<Maker> <DrugName> <season> (<age>)"
+ * ("Pfizer Comirnaty 2026-2027 (12+)"). covidMacroLabel below builds
+ * this composite (maker via lib/vaccine-display-name.ts's new
+ * covidVaccineMaker export, reused rather than duplicated); a
+ * multi-dose product's "(Dose N)" clause — defensive, no COVID product
+ * is multi-dose today — lands after the maker+age, before the
+ * parenthesized drug name, per Will's brief. doseButtonLabel and the
+ * new macroProductDisplayLabel (the page's non-per-dose sites) both
+ * call it for a COVID name; every non-COVID name is untouched (still
+ * round 7/8's plain composition below, and vaccineDisplayName's
+ * identity no-op).
  */
 
 /** "YYYY-MM-DD" (or a longer ISO timestamp with that prefix) -> the
@@ -501,6 +522,73 @@ function flattenAgeForLabel(age: string): string {
   return age.replace(/\s*\(([^)]*)\)\s*$/, ", $1");
 }
 
+// A "YYYY-YY"/"YYYY-YYYY" season token, optionally wrapped in its own
+// parens — "2026-27", "2026-2027", "(2026-27)". Captures the two year
+// halves so splitCovidDrugNameAndSeason below can normalize a 4-digit
+// end year down to 2 digits.
+const SEASON_TOKEN = /\(?\s*(\d{4})-(\d{4}|\d{2})\s*\)?/;
+
+/** Splits a COVID product's stored display name into its base product
+ * word (in the name's own stored casing — "Comirnaty", "mNEXSPIKE",
+ * "Spikevax") and a normalized "YYYY-YY" season, if the name carries
+ * one — "Comirnaty 2026-2027" -> {drugWord: "Comirnaty", season:
+ * "2026-27"}, "mNEXSPIKE (2026-27)" -> {drugWord: "mNEXSPIKE", season:
+ * "2026-27"}, "Comirnaty 2025-26 12+" -> {drugWord: "Comirnaty",
+ * season: "2025-26"} (the embedded "12+" age token is never consulted —
+ * covidMacroLabel takes age from its own `age` parameter, the same
+ * catalog age doseButtonLabel already used, not from the name), the
+ * standalone word "Formula" is dropped, and "Comirnaty" (no season in
+ * the name) -> {drugWord: "Comirnaty", season: null}. */
+function splitCovidDrugNameAndSeason(displayName: string): { drugWord: string; season: string | null } {
+  const trimmed = displayName.trim();
+  const drugWordMatch = /^\S+/.exec(trimmed);
+  const drugWord = drugWordMatch ? drugWordMatch[0] : trimmed;
+
+  const remainder = trimmed
+    .slice(drugWord.length)
+    .replace(/\bformula\b/gi, "")
+    .trim();
+
+  const seasonMatch = SEASON_TOKEN.exec(remainder);
+  const season = seasonMatch ? `${seasonMatch[1]}-${seasonMatch[2].length === 4 ? seasonMatch[2].slice(2) : seasonMatch[2]}` : null;
+
+  return { drugWord, season };
+}
+
+/**
+ * ROUND 15: builds a COVID product's (Comirnaty/Spikevax/mNEXSPIKE)
+ * label as "<Maker> <age> (<DrugName> <season>)" — Will's verbatim
+ * example, "Pfizer 12+ (Comirnaty 2026-27)" — instead of round 7's
+ * "<Maker> <DrugName> <season> (<age>)". `age` empty drops the age
+ * clause ("Pfizer (Comirnaty)"); a name with no season in it drops the
+ * season clause the same way ("Pfizer 12+ (Comirnaty)"). Defensive
+ * `doseNumber`/`doseCount` (no COVID product is multi-dose today) add
+ * a "(Dose N)" clause after the maker+age, before the parenthesized
+ * drug name — "Pfizer 12+ (Dose 1) (Comirnaty 2026-27)" — matching
+ * where "(Dose N)" already sits in every other product's label below.
+ * Pure; not itself gated on the name being a COVID product — callers
+ * (doseButtonLabel, macroProductDisplayLabel below) check
+ * covidVaccineMaker first and only call this for a COVID name.
+ */
+export function covidMacroLabel(input: {
+  displayName: string;
+  age: string;
+  doseNumber?: number;
+  doseCount?: number;
+}): string {
+  const maker = covidVaccineMaker(input.displayName);
+  const { drugWord, season } = splitCovidDrugNameAndSeason(input.displayName);
+  const drugName = season ? `${drugWord} ${season}` : drugWord;
+
+  const prefixParts: string[] = [];
+  if (maker) prefixParts.push(maker);
+  if (input.age) prefixParts.push(flattenAgeForLabel(input.age));
+  if (input.doseCount && input.doseCount > 1 && input.doseNumber) prefixParts.push(`(Dose ${input.doseNumber})`);
+
+  const prefix = prefixParts.join(" ");
+  return prefix ? `${prefix} (${drugName})` : `(${drugName})`;
+}
+
 /**
  * Builds a round-7 dose button's label (Will's verbatim brief,
  * 2026-09-12): "Ages go in parenthesis... I think the dose needs to say
@@ -509,15 +597,36 @@ function flattenAgeForLabel(age: string): string {
  * "Shingrix (Dose 1)"/"Shingrix (Dose 2)"), PLUS " (<age>)" (the
  * catalog age-range label — flattened per flattenAgeForLabel above) for
  * every product that has one (e.g. "Shingrix (Dose 1) (50+, 19+ IC)",
- * "Abrysvo (75+, 18+ high-risk)", "Comirnaty 2026-2027 (12+)",
- * "Boostrix (10+)"). A product with no catalog age (age === "", e.g. an
- * unrecognized short code) gets no age suffix at all.
+ * "Abrysvo (75+, 18+ high-risk)", "Boostrix (10+)"). A product with no
+ * catalog age (age === "", e.g. an unrecognized short code) gets no age
+ * suffix at all.
+ *
+ * ROUND 15: a COVID product (Comirnaty/Spikevax/mNEXSPIKE) instead
+ * gets covidMacroLabel's "<Maker> <age> (<DrugName> <season>)" —
+ * "Comirnaty 2026-2027 (12+)" is now "Pfizer 12+ (Comirnaty 2026-27)"
+ * — see covidMacroLabel above for why.
  */
 function doseButtonLabel(row: MacroRow, doseCount: number): string {
+  if (covidVaccineMaker(row.displayName)) {
+    return covidMacroLabel({ displayName: row.displayName, age: row.age, doseNumber: row.doseNumber, doseCount });
+  }
   let label = vaccineDisplayName(row.displayName);
   if (doseCount > 1) label += ` (Dose ${row.doseNumber})`;
   if (row.age) label += ` (${flattenAgeForLabel(row.age)})`;
   return label;
+}
+
+/**
+ * ROUND 15: the same COVID-aware composite as doseButtonLabel above,
+ * for the macro-codes page's non-per-dose sites — the product-name
+ * row, a dose button's `topLabel`, the ⚙ menu's aria-label, the lot/exp
+ * modal heading, and the postToHost `product` field — all of which show
+ * one product name (not a per-dose one), so covidMacroLabel is called
+ * with no doseNumber/doseCount. Non-COVID names are untouched
+ * (vaccineDisplayName is a no-op for them).
+ */
+export function macroProductDisplayLabel(displayName: string, age: string): string {
+  return covidVaccineMaker(displayName) ? covidMacroLabel({ displayName, age }) : vaccineDisplayName(displayName);
 }
 
 /**

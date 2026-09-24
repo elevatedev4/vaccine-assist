@@ -12,6 +12,7 @@ import {
   filterMacroTopGroups,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
+  macroProductDisplayLabel,
   macroSectionDisplayName,
   type MacroDoseButton,
   type MacroLotLike,
@@ -33,7 +34,6 @@ import {
 } from "@/lib/macro-codes-cache";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
-import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import {
   CopyFallback,
   SECTION_COLORS,
@@ -220,6 +220,22 @@ import {
  * sizes/colors/order/grouping/hotkeys/instant-copy are all untouched;
  * only the button's minHeight grows the minimum needed to fit the name
  * line.
+ *
+ * ROUND 15 (Will's verbatim ask, 2026-09-24, follow-up to the maker-name
+ * feature): "vaccine macro codes: follow up to brand covnetion. Make it
+ * look liek this: Pfizer 12+ (Comirnaty 2026-27)." Every bare
+ * product-name render site on this page (the product-name row, a dose
+ * button's `topLabel`, the ⚙ menu's aria-label, the lot/exp modal
+ * heading, and the postToHost `product` field) swaps its direct
+ * `vaccineDisplayName(...)` call for lib/macro-codes.ts's new
+ * macroProductDisplayLabel(displayName, age) — a COVID product now
+ * reads "Pfizer 12+ (Comirnaty 2026-27)" everywhere instead of the
+ * bare maker-prefixed name; a non-COVID product's name is byte-for-byte
+ * unchanged (macroProductDisplayLabel falls back to vaccineDisplayName,
+ * a no-op for it). Dose button LABELS (doseButtonLabel, `dose.label`,
+ * used for the button's own visible text and the postToHost `label`
+ * field) get the same new composite from lib/macro-codes.ts directly —
+ * see that file's own ROUND 15 note.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -642,7 +658,7 @@ function MacroCodesPageContent() {
         // close. A FAILED copy falls through to the copy-failure
         // fallback below instead, same in embed mode as out of it.
         if (embed) {
-          postToHost({ type: "vaccine-assist:macro-copied", code: row.macro, label, product: vaccineDisplayName(row.displayName) });
+          postToHost({ type: "vaccine-assist:macro-copied", code: row.macro, label, product: macroProductDisplayLabel(row.displayName, row.age) });
           window.close();
         }
       } else {
@@ -733,7 +749,7 @@ function MacroCodesPageContent() {
       // reached via the lot/exp modal instead — finalCode is non-null
       // here since `copied` can only be true when it was.
       if (embed && finalCode) {
-        postToHost({ type: "vaccine-assist:macro-copied", code: finalCode, label: modal.label, product: vaccineDisplayName(modal.row.displayName) });
+        postToHost({ type: "vaccine-assist:macro-copied", code: finalCode, label: modal.label, product: macroProductDisplayLabel(modal.row.displayName, modal.row.age) });
         window.close();
       }
     } else {
@@ -853,7 +869,7 @@ function MacroCodesPageContent() {
 
     return (
       <details className="macro-settings-menu" style={styles.menuDetails} onToggle={handleSettingsMenuToggle}>
-        <summary style={styles.menuSummary} aria-label={`${vaccineDisplayName(product.displayName)} details`}>
+        <summary style={styles.menuSummary} aria-label={`${macroProductDisplayLabel(product.displayName, product.age)} details`}>
           ⚙
         </summary>
         <div style={styles.menuPanel}>
@@ -989,7 +1005,7 @@ function MacroCodesPageContent() {
           return (
             <div key={product.productKey} className="macro-row macro-row-c" style={rowStyle}>
               <div className="macro-product-name-cell-c">
-                <div className="macro-product-name-c" style={nameStyle}>{vaccineDisplayName(product.displayName)}</div>
+                <div className="macro-product-name-c" style={nameStyle}>{macroProductDisplayLabel(product.displayName, product.age)}</div>
                 <div className="macro-product-meta-c" style={metaStyle}>
                   {metaText}
                   {product.note && (
@@ -1019,7 +1035,7 @@ function MacroCodesPageContent() {
                     // own first row, above the existing dose row (2) and
                     // schedule row (3, where present) — see this file's
                     // ROUND 14 doc comment.
-                    topLabel: vaccineDisplayName(product.displayName),
+                    topLabel: macroProductDisplayLabel(product.displayName, product.age),
                     visibleLabel: doseButtonShortLabel(dose.row, doseCount),
                     subLabel: dose.row.doseInterval,
                     large: true,
@@ -1156,7 +1172,7 @@ function MacroCodesPageContent() {
         >
           <div style={styles.modalCard}>
             <h2 style={{ marginTop: 0 }}>
-              Enter lot / exp for {vaccineDisplayName(modal.row.displayName)} dose {modal.row.doseNumber}
+              Enter lot / exp for {macroProductDisplayLabel(modal.row.displayName, modal.row.age)} dose {modal.row.doseNumber}
             </h2>
             {modal.copyResult && !modal.copyResult.copied && <CopyFallback code={modal.copyResult.code} />}
             <form onSubmit={handleModalSubmit}>

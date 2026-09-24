@@ -16,6 +16,15 @@
  * prefix. Idempotent: a name that already starts with "Pfizer" or
  * "Moderna" (any case) is returned unchanged rather than double-prefixed.
  * Every non-COVID name passes through untouched.
+ *
+ * ROUND 2 (macro codes follow-up, Will 2026-09-24 verbatim: "vaccine
+ * macro codes: follow up to brand covnetion. Make it look liek this:
+ * Pfizer 12+ (Comirnaty 2026-27)"): exports covidVaccineMaker below,
+ * the maker-lookup half of vaccineDisplayName's logic, so
+ * lib/macro-codes.ts's covidMacroLabel can reuse the exact same
+ * COVID-product detection/maker mapping instead of duplicating it.
+ * vaccineDisplayName itself is unchanged (still used verbatim
+ * everywhere else in the app).
  */
 
 const COVID_PREFIXES: { test: RegExp; prefix: string }[] = [
@@ -26,12 +35,23 @@ const COVID_PREFIXES: { test: RegExp; prefix: string }[] = [
 
 const ALREADY_PREFIXED = /^(pfizer|moderna)\b/i;
 
+/** Returns "Pfizer"/"Moderna" for a Comirnaty/Spikevax/mNEXSPIKE name
+ * (case-insensitive, and tolerant of a name that's already
+ * maker-prefixed — see ALREADY_PREFIXED above), or null for any
+ * non-COVID name. The shared maker lookup behind vaccineDisplayName
+ * below and lib/macro-codes.ts's covidMacroLabel. */
+export function covidVaccineMaker(name: string): string | null {
+  const unprefixedMatch = ALREADY_PREFIXED.exec(name);
+  const nameToTest = unprefixedMatch ? name.slice(unprefixedMatch[0].length).trim() : name;
+  for (const { test, prefix } of COVID_PREFIXES) {
+    if (test.test(nameToTest)) return prefix;
+  }
+  return null;
+}
+
 export function vaccineDisplayName(name: string): string {
   if (ALREADY_PREFIXED.test(name)) return name;
 
-  for (const { test, prefix } of COVID_PREFIXES) {
-    if (test.test(name)) return `${prefix} ${name}`;
-  }
-
-  return name;
+  const maker = covidVaccineMaker(name);
+  return maker ? `${maker} ${name}` : name;
 }

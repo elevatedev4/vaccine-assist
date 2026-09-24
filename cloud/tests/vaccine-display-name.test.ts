@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { vaccineDisplayName } from "@/lib/vaccine-display-name";
+import { covidVaccineMaker, vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 describe("vaccineDisplayName", () => {
   it("prefixes Comirnaty with Pfizer", () => {
@@ -44,5 +44,25 @@ describe("vaccineDisplayName", () => {
 
   it("leaves an unrelated name untouched", () => {
     expect(vaccineDisplayName("Prevnar 20")).toBe("Prevnar 20");
+  });
+});
+
+describe("covidVaccineMaker (V-T-macro-round15: the maker lookup lib/macro-codes.ts's covidMacroLabel reuses)", () => {
+  it("returns Pfizer for Comirnaty, case-insensitively", () => {
+    expect(covidVaccineMaker("Comirnaty 2026-27 12+")).toBe("Pfizer");
+    expect(covidVaccineMaker("comirnaty")).toBe("Pfizer");
+  });
+
+  it("returns Moderna for Spikevax and mNEXSPIKE", () => {
+    expect(covidVaccineMaker("Spikevax")).toBe("Moderna");
+    expect(covidVaccineMaker("mNEXSPIKE 2026-27")).toBe("Moderna");
+  });
+
+  it("returns null for a non-COVID name", () => {
+    expect(covidVaccineMaker("Shingrix")).toBeNull();
+  });
+
+  it("still resolves a name that's already maker-prefixed", () => {
+    expect(covidVaccineMaker("Pfizer Comirnaty")).toBe("Pfizer");
   });
 });
