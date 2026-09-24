@@ -38,9 +38,12 @@ public class FaxRunSchedulerTests : IDisposable
     {
         StaTestRunner.RunStaAsync(async () =>
         {
+            // Headers match FaxColumnMap's DEFAULT (Pioneer's real export,
+            // V-T53 401/column-map follow-up) since this test's FaxSettings
+            // doesn't override ColumnMap below.
             File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
-                "Patient First Name,Patient Last Name,Vaccine,Date Administered,Prescriber Name,Prescriber Fax\n" +
-                "Test,Patient,Flu,2026-09-01,Dr. Synthetic,5555550200\n");
+                "Patient Full Name Last then First,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
+                "\"Patient, Test\",Flu,2026-09-01,Dr. Synthetic,5555550200\n");
 
             var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
             var reportImporter = new ReportImporter(importLedger);

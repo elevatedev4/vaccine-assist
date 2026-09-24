@@ -144,8 +144,15 @@ public sealed class FaxSettingsViewModel : ObservableObject
 
         ColumnMap.Clear();
         var map = fax.ColumnMap;
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient first name", Required = true, Header = map.PatientFirstNameHeader });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient last name", Required = true, Header = map.PatientLastNameHeader });
+        // Pioneer's report (V-T53 401/column-map follow-up) has ONE
+        // combined "Last, First" name column rather than separate first/
+        // last columns — this row takes priority when filled in (see
+        // FaxColumnMap.PatientFullNameHeader's own doc comment); the two
+        // separate-column rows below stay in the grid as a fallback for a
+        // workstation whose export uses them instead.
+        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient full name (Last, First)", Required = true, Header = map.PatientFullNameHeader ?? "" });
+        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient first name", Header = map.PatientFirstNameHeader });
+        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient last name", Header = map.PatientLastNameHeader });
         ColumnMap.Add(new FaxColumnMapRow { Field = "Vaccine name", Required = true, Header = map.VaccineNameHeader });
         ColumnMap.Add(new FaxColumnMapRow { Field = "Administered date", Required = true, Header = map.AdministeredDateHeader });
         ColumnMap.Add(new FaxColumnMapRow { Field = "DOB", Header = map.DobHeader ?? "" });
@@ -278,6 +285,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
 
         return new FaxColumnMap
         {
+            PatientFullNameHeader = OptionalHeader("Patient full name (Last, First)"),
             PatientFirstNameHeader = Header("Patient first name"),
             PatientLastNameHeader = Header("Patient last name"),
             VaccineNameHeader = Header("Vaccine name"),

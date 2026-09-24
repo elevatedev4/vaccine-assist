@@ -199,7 +199,10 @@ public sealed class FaxRunOrchestrator
                     PatientInitials = group.PatientInitials,
                     PrescriberName = group.PrescriberName ?? "(unknown prescriber)",
                     Status = nameof(FaxLedgerStatus.NeedsFaxNumber),
-                    Error = "No fax number on file for this prescriber.",
+                    // V-T53 column-map follow-up (Will's brief): "reject
+                    // rows with no usable fax (report them in the summary
+                    // as 'no fax on file')".
+                    Error = "No fax on file for this prescriber.",
                 });
                 // NOT fingerprinted — see ReportImporter's doc comment on
                 // why: these rows must still be pick-up-able once Will

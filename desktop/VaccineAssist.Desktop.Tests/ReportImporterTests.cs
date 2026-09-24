@@ -16,7 +16,21 @@ namespace VaccineAssist.Desktop.Tests;
 public class ReportImporterTests : IDisposable
 {
     private readonly string _tempDir;
-    private readonly FaxColumnMap _map = new();
+
+    // Separate first/last-name columns — decoupled from FaxColumnMap's own
+    // default (Pioneer's combined "Last, First" column, see
+    // PioneerColumnMapTests) so these generic importer-mechanics tests
+    // (dedupe/rejection/move) keep working regardless of what the default
+    // column map looks like.
+    private readonly FaxColumnMap _map = new()
+    {
+        PatientFullNameHeader = null,
+        PatientFirstNameHeader = "Patient First Name",
+        PatientLastNameHeader = "Patient Last Name",
+        VaccineNameHeader = "Vaccine",
+        AdministeredDateHeader = "Date Administered",
+        LotHeader = "Lot Number",
+    };
 
     public ReportImporterTests()
     {

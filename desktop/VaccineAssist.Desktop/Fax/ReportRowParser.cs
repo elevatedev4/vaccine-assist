@@ -20,8 +20,21 @@ public static class ReportRowParser
     /// </summary>
     public static (ImmunizationRecord? Record, string? SkipReason) Parse(ReportRow row, FaxColumnMap map, string? sourceFile)
     {
-        var firstName = row.Get(map.PatientFirstNameHeader);
-        var lastName = row.Get(map.PatientLastNameHeader);
+        string? firstName;
+        string? lastName;
+        if (!string.IsNullOrWhiteSpace(map.PatientFullNameHeader))
+        {
+            // Pioneer's report (V-T53 follow-up): one "Last, First" column
+            // rather than separate first/last columns.
+            var fullName = row.Get(map.PatientFullNameHeader);
+            (lastName, firstName) = SplitLastCommaFirst(fullName);
+        }
+        else
+        {
+            firstName = row.Get(map.PatientFirstNameHeader);
+            lastName = row.Get(map.PatientLastNameHeader);
+        }
+
         var vaccine = row.Get(map.VaccineNameHeader);
         var administeredDateRaw = row.Get(map.AdministeredDateHeader);
 
@@ -61,6 +74,21 @@ public static class ReportRowParser
             SourceFile = sourceFile,
         };
         return (record, null);
+    }
+
+    /// <summary>Splits Pioneer's "Last, First" combined name column into
+    /// (last, first) — trims each side. No comma at all means the whole
+    /// value is treated as a last name with a blank first name (the
+    /// caller's missing-patient-name check then skips the row with a
+    /// named reason rather than guessing).</summary>
+    private static (string? Last, string? First) SplitLastCommaFirst(string? fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName)) return (null, null);
+
+        var parts = fullName.Split(',', 2);
+        return parts.Length == 2
+            ? (parts[0].Trim(), parts[1].Trim())
+            : (fullName.Trim(), null);
     }
 
     private static bool TryParseDate(string? raw, out DateOnly value)
