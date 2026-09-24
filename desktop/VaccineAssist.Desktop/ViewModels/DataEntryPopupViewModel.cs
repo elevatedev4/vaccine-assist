@@ -85,6 +85,23 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     private string _newLotNumber = "";
     private DateTime _newLotExpiration = DateTime.Today.AddYears(1);
     private string? _newLotNote;
+    private bool _isStepMode;
+    private string? _stepModeProgress;
+
+    /// <summary>V-T41 item 5 ("Step mode" toggle): the SAME
+    /// PioneerEntryStepContext across successive "Run next step" clicks —
+    /// built once (RunNextStepAsync's first call for a given vaccine
+    /// selection) and reused so context.AttachedWindow (set by
+    /// FocusPioneerWindowStep, read by every step after it) carries
+    /// forward between clicks instead of a fresh FocusPioneerWindowStep
+    /// re-attach every time. Null whenever Step mode hasn't started a run
+    /// yet, or just finished/failed one — see ResetStepMode.</summary>
+    private PioneerEntryStepContext? _stepModeContext;
+
+    /// <summary>Index into _sequence.Steps of the NEXT step "Run next step"
+    /// will execute — 0 until the first click, incremented after each
+    /// successful step, reset by ResetStepMode.</summary>
+    private int _stepModeStepIndex;
 
     /// <summary>
     /// MSG893 item 3 fix: monotonic guard against out-of-order lot-status
@@ -170,6 +187,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         BackCommand = new RelayCommand(GoBack, () => !IsBusy && CurrentStage != Stage.Age);
         ValidateCommand = new AsyncRelayCommand(ValidateAsync, () => !IsBusy && SelectedVaccine is not null && PatientAgeYears is not null);
         EnterIntoPioneerCommand = new AsyncRelayCommand(EnterIntoPioneerAsync, () => !IsBusy && Gate.CanEnterIntoPioneer && (!IsLotExpiredOrMissing || SkipLotAndExpiration || CanUpdateCurrentLotToThis));
+        RunNextStepCommand = new AsyncRelayCommand(RunNextStepAsync, () => !IsBusy && Gate.CanEnterIntoPioneer && (!IsLotExpiredOrMissing || SkipLotAndExpiration || CanUpdateCurrentLotToThis));
         CopyToClipboardCommand = new AsyncRelayCommand(CopyToClipboardAsync, () => !IsBusy && SelectedVaccine is not null);
         CopyLogsCommand = new RelayCommand(CopyLogsToClipboard);
         DumpUiaTreeCommand = new AsyncRelayCommand(DumpUiaTreeAsync, () => !IsBusy);
@@ -251,6 +269,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             {
                 EligibilityResult = null;
                 StepLog.Clear();
+                ResetStepMode();
                 SkipLotAndExpiration = false;
                 UpdateCurrentLotToThis = false;
                 NewLotNumber = "";
@@ -522,10 +541,48 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         set => SetProperty(ref _newLotNote, value);
     }
 
+    /// <summary>
+    /// V-T41 item 5 (Will's 2026-09-22 brief, verbatim): "Add a 'Step
+    /// mode' toggle in the Ctrl+Keypad 7 popup: runs one macro step per
+    /// click with the log line shown inline, so Will can tell exactly
+    /// where it diverges from the macro." When on, "Enter into Pioneer"
+    /// (see DataEntryPopupWindow.xaml) is replaced by "Run next step"
+    /// (RunNextStepCommand) — each click runs exactly ONE
+    /// PlaceholderVaccineEntrySequence step (see
+    /// PioneerEntrySequenceRunner.RunSingleStepAsync) instead of the whole
+    /// sequence back to back. Toggling this (either direction) resets any
+    /// in-progress step-mode run — see ResetStepMode — so a stale
+    /// half-finished context is never silently reused.
+    /// </summary>
+    public bool IsStepMode
+    {
+        get => _isStepMode;
+        set
+        {
+            if (SetProperty(ref _isStepMode, value))
+            {
+                ResetStepMode();
+            }
+        }
+    }
+
+    /// <summary>"Step 3/8: Select prescriber — OK" (or FAILED) — shown next
+    /// to the Step mode toggle so Will doesn't have to scroll the step log
+    /// to see which step just ran. Null before the first "Run next step"
+    /// click (or after ResetStepMode).</summary>
+    public string? StepModeProgress
+    {
+        get => _stepModeProgress;
+        private set => SetProperty(ref _stepModeProgress, value);
+    }
+
     public ICommand ContinueFromAgeCommand { get; }
     public ICommand BackCommand { get; }
     public ICommand ValidateCommand { get; }
     public ICommand EnterIntoPioneerCommand { get; }
+
+    /// <summary>V-T41 item 5 — see IsStepMode's own doc comment.</summary>
+    public ICommand RunNextStepCommand { get; }
     public ICommand CopyToClipboardCommand { get; }
     public ICommand AddLotCommand { get; }
     public ICommand SkipLotAndExpirationCommand { get; }
@@ -997,6 +1054,21 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         AppFileLog.Log($"[DataEntry] {message}");
     }
 
+    /// <summary>V-T41 item 3: "log what was typed" when a blank per-vaccine
+    /// quantity/directions was backfilled from the cloud catalog default
+    /// rather than what's on file for THIS vaccine row — see
+    /// Models/VaccineEntryDefaults.cs. No-op when the resolved value came
+    /// from the vaccine's own record (the normal case) or when there was
+    /// nothing to fall back to either (InputQuantityStep/InputDirectionsStep
+    /// log their own blank-value prompt in that case).</summary>
+    private void LogDefaultUsage(string fieldLabel, VaccineEntryDefaults.Resolution resolution)
+    {
+        if (resolution.UsedDefault)
+        {
+            LogStepMessage($"[Prep] No {fieldLabel} on file for {SelectedVaccine?.Name} — using catalog default \"{resolution.Value}\".");
+        }
+    }
+
     private async Task AddLotAsync()
     {
         if (SelectedVaccine is null || string.IsNullOrWhiteSpace(NewLotNumber)) return;
@@ -1113,61 +1185,12 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         IsBusy = true;
         ErrorMessage = null;
         StepLog.Clear();
+        ResetStepMode();
         try
         {
-            // V-..., 2026-09-11 ("start faster"): fires the physician+lot
-            // lookups NOW, right at the click, so they run CONCURRENTLY
-            // with the "Update current lots to this lot"/VAR-confirm work
-            // right below (the VAR-confirm modal specifically waits on the
-            // pharmacist) instead of only starting once BuildLivePayloadAsync
-            // itself runs — see EnsurePioneerEntryPrefetchStarted's own doc
-            // comment for why this isn't started any earlier (at vaccine
-            // selection/Review stage). Inside the try block (not before
-            // IsBusy is set) so a synchronous failure here still resets
-            // IsBusy/reports through this method's existing catch, same as
-            // every other failure path below.
-            EnsurePioneerEntryPrefetchStarted();
+            var context = await PrepareEntryContextAsync();
+            if (context is null) return; // PrepareEntryContextAsync already set ErrorMessage
 
-            // V-T21 item 5: "Update current lots to this lot" is applied
-            // FIRST, before anything else — once this succeeds,
-            // SelectedVaccineActiveLot reflects the fresh lot, so the VAR
-            // gate right below naturally won't fire for a lot that was
-            // JUST fixed (only for one that's still sitting
-            // expired/BUD-past because staff chose to skip it instead).
-            if (CanUpdateCurrentLotToThis)
-            {
-                var updated = await ApplyUpdateCurrentLotToThisAsync();
-                if (!updated) return; // ApplyUpdateCurrentLotToThisAsync already set ErrorMessage
-            }
-
-            // V-T21 item 6: modal VAR-update confirmation — see
-            // RequiresVarUpdateConfirmation/ConfirmVarUpdateRequested's own
-            // doc comments.
-            if (RequiresVarUpdateConfirmation)
-            {
-                var confirmed = ConfirmVarUpdateRequested?.Invoke(LotGateMessage) ?? false;
-                if (!confirmed)
-                {
-                    StatusMessage = null;
-                    ErrorMessage = "Entry cancelled — confirm the pharmacist has updated the VAR before proceeding.";
-                    return;
-                }
-            }
-
-            var payload = await BuildLivePayloadAsync();
-            if (payload is null) return; // BuildLivePayloadAsync already set ErrorMessage
-
-            var vaccineId = SelectedVaccine.Id;
-            var context = new PioneerEntryStepContext(payload, IsDryRun, LogStepMessage)
-            {
-                // V-..., 2026-09-10: forwards the View's blank-value prompt
-                // (RequestTextPromptRequested) and closes the "save it back"
-                // delegates over THIS run's vaccine id — see
-                // PioneerEntryStepContext's own doc comments on all three.
-                RequestTextPrompt = RequestTextPromptRequested,
-                SaveQuantityAsync = quantity => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineQuantityAsync(vaccineId, quantity)),
-                SaveDirectionsAsync = directions => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineDirectionsAsync(vaccineId, directions)),
-            };
             LogStepMessage($"[Prep] sequence started {clickToSequenceStartStopwatch.ElapsedMilliseconds}ms after click.");
             var result = await PioneerEntrySequenceRunner.RunAsync(_sequence, context);
 
@@ -1195,6 +1218,165 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    /// <summary>
+    /// V-T41 item 5 ("Step mode"): builds everything EnterIntoPioneerAsync
+    /// used to build inline — the physician/lot prefetch kickoff, the
+    /// "Update current lots to this lot"/VAR-confirm gates, and the live
+    /// payload+PioneerEntryStepContext — extracted so RunNextStepAsync's
+    /// first "Run next step" click for a given vaccine selection can reuse
+    /// the EXACT same prep path instead of a parallel, divergence-prone
+    /// copy. Returns null when any guard clause blocks entry or the
+    /// payload/physician resolution failed; ErrorMessage/StatusMessage are
+    /// already set by whichever check failed, same as before this
+    /// extraction — callers just need to stop (return) when this is null.
+    /// </summary>
+    private async Task<PioneerEntryStepContext?> PrepareEntryContextAsync()
+    {
+        if (SelectedVaccine is null) return null;
+
+        // V-..., 2026-09-11 ("start faster"): fires the physician+lot
+        // lookups NOW, right at the click, so they run CONCURRENTLY
+        // with the "Update current lots to this lot"/VAR-confirm work
+        // right below (the VAR-confirm modal specifically waits on the
+        // pharmacist) instead of only starting once BuildLivePayloadAsync
+        // itself runs — see EnsurePioneerEntryPrefetchStarted's own doc
+        // comment for why this isn't started any earlier (at vaccine
+        // selection/Review stage).
+        EnsurePioneerEntryPrefetchStarted();
+
+        // V-T21 item 5: "Update current lots to this lot" is applied
+        // FIRST, before anything else — once this succeeds,
+        // SelectedVaccineActiveLot reflects the fresh lot, so the VAR
+        // gate right below naturally won't fire for a lot that was
+        // JUST fixed (only for one that's still sitting
+        // expired/BUD-past because staff chose to skip it instead).
+        if (CanUpdateCurrentLotToThis)
+        {
+            var updated = await ApplyUpdateCurrentLotToThisAsync();
+            if (!updated) return null; // ApplyUpdateCurrentLotToThisAsync already set ErrorMessage
+        }
+
+        // V-T21 item 6: modal VAR-update confirmation — see
+        // RequiresVarUpdateConfirmation/ConfirmVarUpdateRequested's own
+        // doc comments.
+        if (RequiresVarUpdateConfirmation)
+        {
+            var confirmed = ConfirmVarUpdateRequested?.Invoke(LotGateMessage) ?? false;
+            if (!confirmed)
+            {
+                StatusMessage = null;
+                ErrorMessage = "Entry cancelled — confirm the pharmacist has updated the VAR before proceeding.";
+                return null;
+            }
+        }
+
+        var payload = await BuildLivePayloadAsync();
+        if (payload is null) return null; // BuildLivePayloadAsync already set ErrorMessage
+
+        var vaccineId = SelectedVaccine.Id;
+        return new PioneerEntryStepContext(payload, IsDryRun, LogStepMessage)
+        {
+            // V-..., 2026-09-10: forwards the View's blank-value prompt
+            // (RequestTextPromptRequested) and closes the "save it back"
+            // delegates over THIS run's vaccine id — see
+            // PioneerEntryStepContext's own doc comments on all three.
+            RequestTextPrompt = RequestTextPromptRequested,
+            SaveQuantityAsync = quantity => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineQuantityAsync(vaccineId, quantity)),
+            SaveDirectionsAsync = directions => SaveVaccineFieldAsync(() => _apiService.UpdateVaccineDirectionsAsync(vaccineId, directions)),
+        };
+    }
+
+    /// <summary>
+    /// V-T41 item 5 (Will's 2026-09-22 brief, verbatim): "Add a 'Step
+    /// mode' toggle... runs one macro step per click with the log line
+    /// shown inline, so Will can tell exactly where it diverges from the
+    /// macro." Bound to RunNextStepCommand, shown instead of
+    /// EnterIntoPioneerCommand's button when IsStepMode is on (see
+    /// DataEntryPopupWindow.xaml).
+    ///
+    /// FIRST click for a given vaccine selection (_stepModeContext is
+    /// null): clears the step log and runs the exact same
+    /// PrepareEntryContextAsync prep EnterIntoPioneerAsync uses, caching
+    /// the resulting context so context.AttachedWindow (set by
+    /// FocusPioneerWindowStep, the sequence's own step 1) carries forward
+    /// to later clicks instead of a fresh attach every time. EVERY click
+    /// after that runs exactly one more step via
+    /// PioneerEntrySequenceRunner.RunSingleStepAsync — a failed step, or
+    /// the last step finishing, calls ResetStepMode so the NEXT click
+    /// (a different vaccine, or "try again") starts a genuinely fresh run
+    /// rather than resuming a stale one.
+    /// </summary>
+    private async Task RunNextStepAsync()
+    {
+        if (!Gate.CanEnterIntoPioneer || SelectedVaccine is null) return;
+        if (IsLotExpiredOrMissing && !SkipLotAndExpiration && !CanUpdateCurrentLotToThis) return;
+
+        IsBusy = true;
+        ErrorMessage = null;
+        try
+        {
+            if (_stepModeContext is null)
+            {
+                StepLog.Clear();
+                StepModeProgress = null;
+                _stepModeContext = await PrepareEntryContextAsync();
+                _stepModeStepIndex = 0;
+                if (_stepModeContext is null) return; // PrepareEntryContextAsync already set ErrorMessage
+            }
+
+            var single = await PioneerEntrySequenceRunner.RunSingleStepAsync(_sequence, _stepModeContext, _stepModeStepIndex);
+            StepModeProgress = $"Step {single.StepIndex + 1}/{single.TotalSteps}: {single.Result.StepName} — {(single.Result.Success ? "OK" : "FAILED")}";
+
+            if (!single.Result.Success)
+            {
+                StatusMessage = $"Step mode stopped at \"{single.Result.StepName}\" — see step log below.";
+                ResetStepMode();
+                return;
+            }
+
+            _stepModeStepIndex++;
+
+            if (single.IsLastStep)
+            {
+                StatusMessage = IsDryRun ? "Dry run complete — no PioneerRx changes made." : "Entered into PioneerRx.";
+                ResetStepMode();
+            }
+            else
+            {
+                StatusMessage = $"Ran step {single.StepIndex + 1} of {single.TotalSteps} — click \"Run next step\" to continue.";
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Couldn't run the next step: {ex.Message}";
+            // Same reasoning as EnterIntoPioneerAsync's own catch — an
+            // exception here most likely means a cached prefetch task
+            // faulted; clear it so the next click (a fresh
+            // PrepareEntryContextAsync call, since ResetStepMode also runs
+            // below) starts genuinely fresh rather than replaying a
+            // permanently-stuck failure.
+            ClearPioneerEntryPrefetchCache();
+            ResetStepMode();
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>Clears Step mode's in-progress state — called whenever a
+    /// step-mode run finishes (success or failure), IsStepMode is toggled
+    /// either direction, or SelectedVaccine changes (a stale context for a
+    /// DIFFERENT vaccine's payload must never be reused). The next "Run
+    /// next step" click after this always starts a fresh
+    /// PrepareEntryContextAsync + step-index-0 run.</summary>
+    private void ResetStepMode()
+    {
+        _stepModeContext = null;
+        _stepModeStepIndex = 0;
+        StepModeProgress = null;
     }
 
     private async Task CopyToClipboardAsync()
@@ -1335,8 +1517,21 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         }
 
         var ndc = SelectedVaccine.Ndc ?? "";
-        var quantity = SelectedVaccine.Quantity;
-        var directions = SelectedVaccine.Directions;
+
+        // V-T41 item 3 (Will, verbatim: "never skip silently... use the
+        // macro's defaults for that vaccine type... and log what was
+        // typed") — falls back to the cloud-computed per-product-type
+        // default (Vaccine.QuantityDefault/DirectionsDefault, from GET
+        // /api/eligibility/for-age's own annotateVaccinesWithDefaults call)
+        // when this specific vaccine row has nothing on file, instead of
+        // going straight to InputQuantityStep/InputDirectionsStep's
+        // blank-value prompt. See Models/VaccineEntryDefaults.cs.
+        var quantityResolution = VaccineEntryDefaults.ResolveQuantity(SelectedVaccine);
+        var directionsResolution = VaccineEntryDefaults.ResolveDirections(SelectedVaccine);
+        LogDefaultUsage("quantity", quantityResolution);
+        LogDefaultUsage("directions", directionsResolution);
+        var quantity = quantityResolution.Value;
+        var directions = directionsResolution.Value;
         // MSG893 item 3: routed through the same orphan-duplicate-aware
         // lookup RefreshSelectedVaccineActiveLotAsync uses (see
         // FindActiveLotForVaccineAsync's doc comment) so a live entry

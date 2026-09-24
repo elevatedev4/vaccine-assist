@@ -110,4 +110,46 @@ describe("GET /api/eligibility/for-age", () => {
     expect(body.vaccines).toEqual([]);
     expect(from).not.toHaveBeenCalledWith("eligibility_rule");
   });
+
+  // V-T41 (2026-09-22, item 3): this route feeds
+  // DataEntryPopupViewModel.ContinueFromAgeAsync/GetEligibleVaccinesForAgeAsync
+  // — the desktop's Ctrl+Keypad7 guided data-entry flow — so it's the one
+  // that needs to carry the SAME directions_default/quantity_default
+  // annotation GET /api/vaccines already had (lib/entry-defaults.ts's
+  // annotateVaccinesWithDefaults), or the desktop can never fall back to
+  // a catalog default instead of prompting staff.
+  it("annotates an eligible row with directions_default when its own directions is blank", async () => {
+    const vaccines = [{ id: "v-mmr", name: "MMR-II", active: true, dose: "1", directions: null }];
+    mockSupabase(vaccines, []);
+
+    const response = await GET(authedRequest("/api/eligibility/for-age?age=40"));
+    const body = await response.json();
+
+    expect(body.vaccines[0].directions_default).toBe("For administration by healthcare provider in pharmacy.");
+  });
+
+  it("annotates an eligible row with quantity_default when its short_code has a catalog entry and quantity is blank", async () => {
+    const vaccines = [{ id: "v-comirnaty", name: "Comirnaty", active: true, dose: "1", short_code: "comirnaty12", quantity: null }];
+    mockSupabase(vaccines, []);
+
+    const response = await GET(authedRequest("/api/eligibility/for-age?age=40"));
+    const body = await response.json();
+
+    expect(body.vaccines[0].quantity_default).toBe("0.3");
+  });
+
+  it("never overwrites (or annotates) quantity/directions already on file", async () => {
+    const vaccines = [
+      { id: "v-mmr", name: "MMR-II", active: true, dose: "1", quantity: "1 mL", directions: "Custom sig" },
+    ];
+    mockSupabase(vaccines, []);
+
+    const response = await GET(authedRequest("/api/eligibility/for-age?age=40"));
+    const body = await response.json();
+
+    expect(body.vaccines[0].quantity).toBe("1 mL");
+    expect(body.vaccines[0].directions).toBe("Custom sig");
+    expect(body.vaccines[0].quantity_default).toBeUndefined();
+    expect(body.vaccines[0].directions_default).toBeUndefined();
+  });
 });

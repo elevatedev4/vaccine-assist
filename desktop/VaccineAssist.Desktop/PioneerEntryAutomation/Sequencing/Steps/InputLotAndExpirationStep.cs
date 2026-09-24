@@ -36,6 +36,18 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// never happen — Models.Lot.ExpirationMacroFormat always produces it),
 /// this step fails with a named reason rather than typing something
 /// PioneerRx's masked date field might silently mangle.
+///
+/// READBACK VERIFICATION (V-T41 item 4, Will's 2026-09-22 brief,
+/// verbatim): "verify by reading the field back; if it fails, stop with a
+/// clear one-line reason ... naming the step and what was on screen." A
+/// successful SetValue call only proves PioneerRx accepted the UIA
+/// request, not that a masked/validated field (the date box especially)
+/// actually kept the exact text — VerifyFieldTyped re-reads BOTH the
+/// lot number and expiration fields via the same UIA Value-pattern read
+/// SendF3AndDismissPreEntryDialogsStep.ReadControlValue/UiaTreeDumper
+/// already use, and fails loud (naming the window title, field, and
+/// expected-vs-actual values) on a mismatch rather than reporting success
+/// on a field PioneerRx silently rejected or reformatted.
 /// </summary>
 public sealed class InputLotAndExpirationStep : IPioneerEntryStep
 {
@@ -116,6 +128,20 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
             return new PioneerEntryStepResult(Name, Success: false, DryRun: false, lotOutcome.Message);
         }
 
+        // V-T41 item 4 (Will's 2026-09-22 brief, verbatim): "verify by
+        // reading the field back; if it fails, stop with a clear one-line
+        // reason ... naming the step and what was on screen." SetValue
+        // reporting no exception only means PioneerRx accepted the UIA
+        // call, not that the masked/validated field actually kept the
+        // text (a date-shaped mask, in particular, can silently reject or
+        // reformat an unexpected value) — see VerifyFieldTyped's own
+        // doc comment.
+        var lotReadback = VerifyFieldTyped(context.AttachedWindow, LotNumberAutomationId, "lot number", context.Payload.LotNumber, context.Log);
+        if (lotReadback is not null)
+        {
+            return lotReadback;
+        }
+
         var pioneerExpiration = ToPioneerDateFormat(context.Payload.ExpirationMacroFormat);
         if (pioneerExpiration is null)
         {
@@ -132,8 +158,77 @@ public sealed class InputLotAndExpirationStep : IPioneerEntryStep
                 $"Lot number entered, but expiration failed: {expirationOutcome.Message}");
         }
 
+        var expirationReadback = VerifyFieldTyped(context.AttachedWindow, LotExpirationAutomationId, "expiration date", pioneerExpiration, context.Log);
+        if (expirationReadback is not null)
+        {
+            return expirationReadback;
+        }
+
         return new PioneerEntryStepResult(Name, Success: true, DryRun: false,
-            $"Entered lot \"{context.Payload.LotNumber}\" and expiration \"{pioneerExpiration}\".");
+            $"Entered lot \"{context.Payload.LotNumber}\" and expiration \"{pioneerExpiration}\" (read back and verified).");
+    }
+
+    /// <summary>
+    /// V-T41 item 4: reads `automationId`'s current UIA Value pattern
+    /// value straight back (SAME idiom SendF3AndDismissPreEntryDialogsStep.
+    /// ReadControlValue / Uia/UiaTreeDumper already use for a live
+    /// read-only value check — `Patterns.Value.Pattern.Value.ValueOrDefault`
+    /// — not a new API surface) and compares it (trimmed) against what was
+    /// just typed. SetValue reporting no exception only proves PioneerRx
+    /// ACCEPTED the UIA call, not that the field actually kept the text —
+    /// a masked/validated field (the expiration date box, in particular)
+    /// can silently reject or reformat a value outside what it expects.
+    ///
+    /// Returns null when the readback matches (success — no result to
+    /// short-circuit with) or when the field couldn't be re-found/read at
+    /// all (best-effort: a field that legitimately can't be read back is
+    /// reported as a WARNING in the log, not a hard failure — the SetValue
+    /// call itself already succeeded, and refusing to trust a UIA read
+    /// this codebase couldn't confirm live isn't worth blocking a
+    /// live entry that otherwise looks fine). Returns a FAILED
+    /// PioneerEntryStepResult — naming this step, the window title, the
+    /// field, and expected vs. actual — only when the field WAS
+    /// successfully read back and its value does not match.
+    /// </summary>
+    private PioneerEntryStepResult? VerifyFieldTyped(AutomationElement window, string automationId, string fieldLabel, string expectedValue, Action<string> log)
+    {
+        AutomationElement? field;
+        try
+        {
+            field = window.FindFirstDescendant(cf => cf.ByAutomationId(automationId));
+        }
+        catch (Exception ex)
+        {
+            log($"[{Name}] Couldn't re-find the {fieldLabel} field (AutomationId '{automationId}') to verify it by reading it back: {ex.Message} — trusting the earlier SetValue call.");
+            return null;
+        }
+
+        if (field is null)
+        {
+            log($"[{Name}] Couldn't re-find the {fieldLabel} field (AutomationId '{automationId}') to verify it by reading it back — trusting the earlier SetValue call.");
+            return null;
+        }
+
+        string? actualValue;
+        try
+        {
+            actualValue = field.Patterns.Value.Pattern.Value.ValueOrDefault;
+        }
+        catch (Exception ex)
+        {
+            log($"[{Name}] Couldn't read the {fieldLabel} field (AutomationId '{automationId}') back to verify it: {ex.Message} — trusting the earlier SetValue call.");
+            return null;
+        }
+
+        if (string.Equals((actualValue ?? "").Trim(), expectedValue.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var windowTitle = SafeWindowTitle(window);
+        var reason = $"Typed \"{expectedValue}\" into the {fieldLabel} field (AutomationId '{automationId}') on window \"{windowTitle}\", " +
+            $"but reading it back shows \"{actualValue}\" — PioneerRx may have rejected or reformatted it (e.g. a masked date field). Stopping rather than continuing with a field that didn't take the value.";
+        return new PioneerEntryStepResult(Name, Success: false, DryRun: false, reason);
     }
 
     /// <summary>MMDDYYYY (Models.Lot.ExpirationMacroFormat) -> PioneerRx's

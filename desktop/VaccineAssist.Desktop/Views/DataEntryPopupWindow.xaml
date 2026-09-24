@@ -224,7 +224,7 @@
             </Border>
         </StackPanel>
 
-        <StackPanel Grid.Row="7" Orientation="Horizontal" Margin="0,10,0,0">
+        <StackPanel Grid.Row="7" Margin="0,10,0,0">
             <StackPanel.Style>
                 <Style TargetType="StackPanel">
                     <Setter Property="Visibility" Value="Collapsed"/>
@@ -235,8 +235,54 @@
                     </Style.Triggers>
                 </Style>
             </StackPanel.Style>
-            <Button x:Name="EnterIntoPioneerButton" Content="Enter into Pioneer" Command="{Binding EnterIntoPioneerCommand}" Padding="8,2" Margin="0,0,8,0"/>
-            <Button Content="Copy to clipboard" Command="{Binding CopyToClipboardCommand}" Padding="8,2"/>
+
+            <!-- V-T41 item 5 (Will's 2026-09-22 brief): "Step mode" toggle
+                 — runs one macro step per click (RunNextStepCommand)
+                 instead of the whole sequence, so a live-run divergence
+                 from desktop/docs/data-entry-macro.md shows up one step at
+                 a time. StepModeProgress ("Step 3/8: ... — OK/FAILED")
+                 shows next to the checkbox so Will doesn't have to scroll
+                 the step log below to see the latest step. -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                <CheckBox Content="Step mode" IsChecked="{Binding IsStepMode}" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding StepModeProgress}" FontFamily="Consolas" FontSize="11"
+                           Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal">
+                <!-- Normal mode: whole-sequence "Enter into Pioneer" +
+                     "Copy to clipboard", unchanged from before Step mode. -->
+                <StackPanel Orientation="Horizontal">
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Setter Property="Visibility" Value="Visible"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsStepMode}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+                    <Button x:Name="EnterIntoPioneerButton" Content="Enter into Pioneer" Command="{Binding EnterIntoPioneerCommand}" Padding="8,2" Margin="0,0,8,0"/>
+                    <Button Content="Copy to clipboard" Command="{Binding CopyToClipboardCommand}" Padding="8,2"/>
+                </StackPanel>
+
+                <!-- Step mode: one "Run next step" button, re-clicked once
+                     per macro step (see DataEntryPopupViewModel.RunNextStepAsync). -->
+                <StackPanel Orientation="Horizontal">
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsStepMode}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+                    <Button Content="Run next step" Command="{Binding RunNextStepCommand}" Padding="8,2"/>
+                </StackPanel>
+            </StackPanel>
         </StackPanel>
 
         <TextBlock Grid.Row="8" Text="Step log" FontWeight="Bold" Margin="0,8,0,0"/>

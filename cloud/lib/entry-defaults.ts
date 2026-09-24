@@ -1,4 +1,7 @@
 import { macroBaseShortCode } from "@/lib/macro-catalog";
+import { buildProductViews } from "@/lib/product-view";
+import { doseCountByVaccineId } from "@/lib/dose-family";
+import { doseNumberOf } from "@/lib/entry-values";
 
 /**
  * Pure defaults for the /entry-values tab (V-entry-values, Will's brief
@@ -164,4 +167,77 @@ export function planFillDefaults(
   }
 
   return patches;
+}
+
+/** Minimal shape `annotateVaccinesWithDefaults` needs from a vaccine row —
+ * a structural subset of both GET /api/vaccines' and GET
+ * /api/eligibility/for-age's own row shapes, so either route can pass its
+ * rows straight through with no extra mapping. */
+export type VaccineDefaultsRow = {
+  id: string;
+  name: string;
+  ndc?: string | null;
+  active?: boolean | null;
+  dose?: string | null;
+  short_code?: string | null;
+  quantity?: string | null;
+  directions?: string | null;
+  [key: string]: unknown;
+};
+
+/**
+ * V-T41 (Will's 2026-09-22 brief, item 3): "if Models.Vaccine has no
+ * quantity/directions, use the macro's defaults for that vaccine type...
+ * pull them via the existing cloud API the desktop already uses." Shared
+ * annotation logic — originally GET /api/vaccines' own private
+ * `withDefaults` (V-entry-values/ROUND 2), extracted here so
+ * `/api/eligibility/for-age` (the endpoint that actually feeds the
+ * desktop's Ctrl+Keypad7 guided data-entry flow — see
+ * DataEntryPopupViewModel.ContinueFromAgeAsync/GetEligibleVaccinesForAgeAsync)
+ * can annotate the SAME `directions_default`/`quantity_default` fields
+ * without duplicating the doseCount/product-grouping logic. Never mutates
+ * `directions`/`quantity` themselves; a row with either already on file
+ * never gets the corresponding `_default` field at all (see
+ * defaultDirections/defaultQuantity above).
+ *
+ * Groups the WHOLE list passed in via lib/product-view.ts's
+ * buildProductViews (the same grouping every other tab uses) purely to
+ * compute each product's doseCount via lib/dose-family.ts's
+ * doseCountByVaccineId — see GET /api/vaccines' own doc comment for why
+ * that specific helper (not buildProductViews' own per-product
+ * vaccineIds.length) is needed for a family like Shingrix whose dose rows
+ * carry mismatched NDCs.
+ */
+export function annotateVaccinesWithDefaults<T extends VaccineDefaultsRow>(rows: readonly T[]): (T & {
+  directions_default?: string;
+  quantity_default?: string;
+})[] {
+  const products = buildProductViews(
+    rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      ndc: row.ndc ?? null,
+      active: Boolean(row.active),
+    }))
+  );
+  const doseCountById = doseCountByVaccineId(products);
+
+  return rows.map((row) => {
+    let result: T & { directions_default?: string; quantity_default?: string } = row;
+
+    const directions = row.directions;
+    if (!directions || directions.trim().length === 0) {
+      const doseNumber = doseNumberOf(row.dose ?? null);
+      const doseCount = doseCountById.get(row.id) ?? 1;
+      result = { ...result, directions_default: defaultDirections({ doseNumber, doseCount }) };
+    }
+
+    const quantity = row.quantity;
+    if (!quantity || quantity.trim().length === 0) {
+      const quantityDefault = defaultQuantity(row.short_code ?? null);
+      if (quantityDefault) result = { ...result, quantity_default: quantityDefault };
+    }
+
+    return result;
+  });
 }
