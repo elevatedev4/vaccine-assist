@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildMacroCode,
   buildMacroRows,
+  covidMacroLabel,
   doseButtonShortLabel,
   expToMacroDate,
   filterMacroTopGroups,
@@ -9,6 +10,7 @@ import {
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
   MACRO_VIEW_MODE,
+  macroProductDisplayLabel,
   macroProductNameWithAge,
   macroSectionDisplayName,
   type MacroLotLike,
@@ -546,14 +548,16 @@ describe("groupMacroRowsBySection", () => {
 
       const covid = groupMacroRowsBySection(rows).find((s) => s.section === "COVID")!;
       const labelsByName = Object.fromEntries(covid.products.map((p) => [p.displayName, p.doses.map((d) => d.label)]));
-      // V-T (Will 2026-09-24): dose button labels run the product's
-      // displayName through lib/vaccine-display-name.ts's
-      // vaccineDisplayName, which prefixes every COVID vaccine with its
-      // manufacturer — MacroProductGroup.displayName itself (the map's
-      // OWN keys here) is untouched, matching-only.
-      expect(labelsByName["Comirnaty"]).toEqual(["Pfizer Comirnaty (12+)"]);
-      expect(labelsByName["mNEXSPIKE"]).toEqual(["Moderna mNEXSPIKE (12+)"]);
-      expect(labelsByName["Spikevax"]).toEqual(["Moderna Spikevax (3–11)"]);
+      // V-T-macro-round15 (Will 2026-09-24, "make it look like this:
+      // Pfizer 12+ (Comirnaty 2026-27)"): dose button labels run the
+      // product's displayName through lib/macro-codes.ts's
+      // covidMacroLabel, "<Maker> <age> (<DrugName>)" here since none
+      // of these fixture names carry a season — MacroProductGroup.
+      // displayName itself (the map's OWN keys here) is untouched,
+      // matching-only.
+      expect(labelsByName["Comirnaty"]).toEqual(["Pfizer 12+ (Comirnaty)"]);
+      expect(labelsByName["mNEXSPIKE"]).toEqual(["Moderna 12+ (mNEXSPIKE)"]);
+      expect(labelsByName["Spikevax"]).toEqual(["Moderna 3–11 (Spikevax)"]);
     });
 
     it("multi-dose non-COVID product: display name plus '(Dose N)', plus the age in parens (flattening the age's own parens to a comma)", () => {
@@ -683,6 +687,67 @@ describe("macroProductNameWithAge", () => {
 
   it("omits the suffix entirely for a product with no catalog age", () => {
     expect(macroProductNameWithAge({ displayName: "Mystery Vaccine", age: "" })).toBe("Mystery Vaccine");
+  });
+});
+
+describe("covidMacroLabel (V-T-macro-round15: 'Pfizer 12+ (Comirnaty 2026-27)')", () => {
+  it("Comirnaty with a bare 4-digit-end season normalizes to YYYY-YY", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-2027", age: "12+" })).toBe("Pfizer 12+ (Comirnaty 2026-27)");
+  });
+
+  it("Comirnaty with an already-short season is unchanged", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-27", age: "12+" })).toBe("Pfizer 12+ (Comirnaty 2026-27)");
+  });
+
+  it("Comirnaty with an embedded age token strips it (age comes from the age param, not the name)", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty 2025-26 12+", age: "12+" })).toBe("Pfizer 12+ (Comirnaty 2025-26)");
+  });
+
+  it("Comirnaty with no season in the name omits the season clause", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty", age: "12+" })).toBe("Pfizer 12+ (Comirnaty)");
+  });
+
+  it("strips a standalone 'Formula' word", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-2027 Formula", age: "12+" })).toBe("Pfizer 12+ (Comirnaty 2026-27)");
+  });
+
+  it("Spikevax 3-11", () => {
+    expect(covidMacroLabel({ displayName: "Spikevax", age: "3–11" })).toBe("Moderna 3–11 (Spikevax)");
+  });
+
+  it("mNEXSPIKE with a parenthesized season strips the parens and keeps the drug-name casing", () => {
+    expect(covidMacroLabel({ displayName: "mNEXSPIKE (2026-27)", age: "12+" })).toBe("Moderna 12+ (mNEXSPIKE 2026-27)");
+  });
+
+  it("empty age omits the age clause entirely", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty", age: "" })).toBe("Pfizer (Comirnaty)");
+  });
+
+  it("multi-dose (defensive): '(Dose N)' lands after maker+age, before the parenthesized drug name", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-27", age: "12+", doseNumber: 1, doseCount: 2 })).toBe(
+      "Pfizer 12+ (Dose 1) (Comirnaty 2026-27)"
+    );
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-27", age: "12+", doseNumber: 2, doseCount: 2 })).toBe(
+      "Pfizer 12+ (Dose 2) (Comirnaty 2026-27)"
+    );
+  });
+
+  it("a single-dose product (doseCount 1) never gets a Dose clause even if doseNumber is passed", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-27", age: "12+", doseNumber: 1, doseCount: 1 })).toBe(
+      "Pfizer 12+ (Comirnaty 2026-27)"
+    );
+  });
+});
+
+describe("macroProductDisplayLabel", () => {
+  it("COVID products get the covidMacroLabel composite", () => {
+    expect(macroProductDisplayLabel("Comirnaty 2026-27", "12+")).toBe("Pfizer 12+ (Comirnaty 2026-27)");
+    expect(macroProductDisplayLabel("Spikevax", "3–11")).toBe("Moderna 3–11 (Spikevax)");
+  });
+
+  it("non-COVID products are untouched (today's plain display name)", () => {
+    expect(macroProductDisplayLabel("Shingrix", "50+ (19+ IC)")).toBe("Shingrix");
+    expect(macroProductDisplayLabel("Boostrix", "10+")).toBe("Boostrix");
   });
 });
 
