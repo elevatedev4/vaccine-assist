@@ -3,10 +3,7 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
 import { formatNdcForStorage } from "@/lib/ndc";
-import { buildProductViews } from "@/lib/product-view";
-import { defaultDirections, defaultQuantity } from "@/lib/entry-defaults";
-import { doseNumberOf } from "@/lib/entry-values";
-import { doseCountByVaccineId } from "@/lib/dose-family";
+import { annotateVaccinesWithDefaults } from "@/lib/entry-defaults";
 
 /**
  * REST endpoint for the desktop app's Vaccines screen (what we offer).
@@ -66,46 +63,16 @@ type VaccineRow = Record<string, unknown> & {
  * Annotates each row with `directions_default` when its `directions` is
  * null/blank, and `quantity_default` when its `quantity` is null/blank
  * AND the row's short_code has an entry in the static table (see this
- * file's header comment). Groups the WHOLE list passed in via
- * lib/product-view.ts's buildProductViews (the same grouping every
- * other tab uses) purely to compute each product's doseCount — every
- * row's own `dose` column still drives its own doseNumber. doseCount
- * itself goes through lib/dose-family.ts's doseCountByVaccineId, which
- * regroups by cleaned display name so a product whose dose rows carry
- * mismatched NDCs (e.g. Shingrix) — split into separate ProductViews by
- * buildProductViews — still reports the real family size on every row
- * instead of 1 for each half (same class of bug commit 1b41fb5 fixed
- * for /macro-codes). Never mutates `directions`/`quantity` themselves.
+ * file's header comment). V-T41 (2026-09-22): this used to be the real
+ * implementation here — extracted to lib/entry-defaults.ts's
+ * `annotateVaccinesWithDefaults` so GET /api/eligibility/for-age (the
+ * endpoint that actually feeds the desktop's Ctrl+Keypad7 guided
+ * data-entry flow) can reuse the exact same doseCount/product-grouping
+ * logic instead of duplicating it. Never mutates `directions`/`quantity`
+ * themselves.
  */
 function withDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
-  const products = buildProductViews(
-    rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      ndc: (row.ndc as string | null) ?? null,
-      active: Boolean(row.active),
-    }))
-  );
-  const doseCountById = doseCountByVaccineId(products);
-
-  return rows.map((row) => {
-    let result = row;
-
-    const directions = row.directions;
-    if (!directions || directions.trim().length === 0) {
-      const doseNumber = doseNumberOf((row.dose as string | null) ?? null);
-      const doseCount = doseCountById.get(row.id) ?? 1;
-      result = { ...result, directions_default: defaultDirections({ doseNumber, doseCount }) };
-    }
-
-    const quantity = row.quantity as string | null | undefined;
-    if (!quantity || quantity.trim().length === 0) {
-      const quantityDefault = defaultQuantity((row.short_code as string | null | undefined) ?? null);
-      if (quantityDefault) result = { ...result, quantity_default: quantityDefault };
-    }
-
-    return result;
-  });
+  return annotateVaccinesWithDefaults(rows);
 }
 
 export async function GET(request: Request) {

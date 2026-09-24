@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { evaluateEligibilityRules, type EligibilityRule } from "@/lib/eligibility";
 import { requireAuthenticatedUser } from "@/lib/auth";
+import { annotateVaccinesWithDefaults, type VaccineDefaultsRow } from "@/lib/entry-defaults";
 
 /**
  * GET ?age=N -> every ACTIVE vaccine whose eligibility rules don't BLOCK
@@ -19,6 +20,22 @@ import { requireAuthenticatedUser } from "@/lib/auth";
  * without N round trips from the desktop app for a ~30-vaccine formulary —
  * this route does the same per-vaccine evaluateEligibilityRules call
  * evaluate/route.ts does, just for every vaccine at once, server-side.
+ *
+ * V-T41 (2026-09-22, item 3): also annotates each row with
+ * `directions_default`/`quantity_default` (lib/entry-defaults.ts's
+ * `annotateVaccinesWithDefaults` — the SAME helper GET /api/vaccines
+ * uses) when its own `quantity`/`directions` is null/blank. This is the
+ * endpoint DataEntryPopupViewModel.ContinueFromAgeAsync actually calls
+ * (GetEligibleVaccinesForAgeAsync) to populate SelectedVaccine for a live
+ * entry, so it's the one that needs to carry the defaults — GET
+ * /api/vaccines' own copy of this annotation is for the /entry-values and
+ * Active-vaccines tabs, a separate consumer. select("*") already includes
+ * `quantity`/`directions`/`short_code`/`dose` when the
+ * 0009_lots_bud_vaccine_defaults migration has run, and simply omits them
+ * (undefined, not an error) when it hasn't — annotateVaccinesWithDefaults
+ * treats a missing field the same as a blank one, so this route needs no
+ * separate quantityDirectionsSupported schema-degradation dance the way
+ * GET /api/vaccines' named-column select does.
  */
 export async function GET(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -72,10 +89,12 @@ export async function GET(request: Request) {
       rulesByVaccineId.set(rule.vaccineId, existing);
     }
 
-    const eligibleVaccines = (vaccines ?? [])
+    const vaccinesWithDefaults = annotateVaccinesWithDefaults((vaccines ?? []) as VaccineDefaultsRow[]);
+
+    const eligibleVaccines = vaccinesWithDefaults
       .map((vaccine) => ({
         vaccine,
-        eligibility: evaluateEligibilityRules(rulesByVaccineId.get(vaccine.id) ?? [], { ageYears: age }),
+        eligibility: evaluateEligibilityRules(rulesByVaccineId.get(vaccine.id as string) ?? [], { ageYears: age }),
       }))
       .filter(({ eligibility }) => eligibility.status !== "blocked")
       .map(({ vaccine, eligibility }) => ({ ...vaccine, eligibility }));
