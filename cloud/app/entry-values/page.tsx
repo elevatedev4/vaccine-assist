@@ -9,6 +9,7 @@ import { formatNdcDashed } from "@/lib/ndc";
 import { createDebouncedRunner, type DebouncedRunner } from "@/lib/lots-autosave";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 /**
  * /entry-values tab (V-entry-values, Will's brief verbatim): "it seems
@@ -253,7 +254,7 @@ export default function EntryValuesPage() {
     autosaveInFlightRef.current[id] = true;
 
     const row = rowById.get(id);
-    const label = row ? `${row.displayName} dose ${row.doseNumber}` : "this row";
+    const label = row ? `${vaccineDisplayName(row.displayName)} dose ${row.doseNumber}` : "this row";
 
     try {
       const response = await fetch(`/api/vaccines/${id}`, {
@@ -338,7 +339,7 @@ export default function EntryValuesPage() {
           const data = await response.json().catch(() => ({}));
           if (!response.ok) {
             const row = rowById.get(patch.id);
-            pushError(`Couldn't fill defaults for ${row?.displayName ?? "a row"} — ${data.error ?? "Failed to save vaccine."}`);
+            pushError(`Couldn't fill defaults for ${row ? vaccineDisplayName(row.displayName) : "a row"} — ${data.error ?? "Failed to save vaccine."}`);
             continue;
           }
           if (patch.quantity !== undefined) quantitiesFilled += 1;
@@ -351,7 +352,7 @@ export default function EntryValuesPage() {
           });
         } catch (err) {
           const row = rowById.get(patch.id);
-          pushError(`Couldn't fill defaults for ${row?.displayName ?? "a row"} — ${err instanceof Error ? err.message : "Failed to save vaccine."}`);
+          pushError(`Couldn't fill defaults for ${row ? vaccineDisplayName(row.displayName) : "a row"} — ${err instanceof Error ? err.message : "Failed to save vaccine."}`);
         }
       }
     } finally {
@@ -414,13 +415,13 @@ export default function EntryValuesPage() {
     return (
       <tr key={row.id}>
         <td style={{ ...styles.td, ...styles.type, ...groupBorder }}>{row.catalogType}</td>
-        <td style={{ ...styles.td, ...groupBorder }}>{row.displayName}</td>
+        <td style={{ ...styles.td, ...groupBorder }}>{vaccineDisplayName(row.displayName)}</td>
         <td style={{ ...styles.td, ...groupBorder }}>{formatNdcDashed(row.ndc)}</td>
         <td style={{ ...styles.td, ...groupBorder }}>{doseColumnLabel(row.doseNumber)}</td>
         <td style={{ ...styles.td, ...groupBorder, background: quantityBlank ? BLANK_QUANTITY_HIGHLIGHT : undefined }}>
           <input
             type="text"
-            aria-label={`${row.displayName} dose ${row.doseNumber} quantity`}
+            aria-label={`${vaccineDisplayName(row.displayName)} dose ${row.doseNumber} quantity`}
             style={styles.quantityInput}
             value={draft.quantity}
             onChange={(e) => {
@@ -433,7 +434,7 @@ export default function EntryValuesPage() {
         <td style={{ ...styles.td, ...groupBorder }}>
           <input
             type="text"
-            aria-label={`${row.displayName} dose ${row.doseNumber} directions`}
+            aria-label={`${vaccineDisplayName(row.displayName)} dose ${row.doseNumber} directions`}
             style={styles.directionsInput}
             value={draft.directions}
             onChange={(e) => {

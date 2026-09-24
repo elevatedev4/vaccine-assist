@@ -7,6 +7,7 @@ import { subscribeToSessionState, toSessionState, type SessionState } from "@/li
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import { CONDITION_ITEMS, SCREENER_RULES } from "@/lib/screener-rules";
 import { describeRules, type DescribedTier, type DescribedVaccine } from "@/lib/screener-info";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 /**
  * Screener info page (companion to app/screener/page.tsx — Will
@@ -197,7 +198,7 @@ export default function ScreenerInfoPage() {
       <div className="screener-info-grid">
         {DESCRIBED_VACCINES.map((vaccine) => (
           <article key={vaccine.id} style={styles.card}>
-            <h2 style={styles.cardName}>{vaccine.name}</h2>
+            <h2 style={styles.cardName}>{vaccineDisplayName(vaccine.name)}</h2>
 
             {SECTIONS.map(({ key, label }) => {
               const tiers = vaccine[key];

@@ -33,6 +33,7 @@ import {
 } from "@/lib/macro-codes-cache";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import {
   CopyFallback,
   SECTION_COLORS,
@@ -641,7 +642,7 @@ function MacroCodesPageContent() {
         // close. A FAILED copy falls through to the copy-failure
         // fallback below instead, same in embed mode as out of it.
         if (embed) {
-          postToHost({ type: "vaccine-assist:macro-copied", code: row.macro, label, product: row.displayName });
+          postToHost({ type: "vaccine-assist:macro-copied", code: row.macro, label, product: vaccineDisplayName(row.displayName) });
           window.close();
         }
       } else {
@@ -732,7 +733,7 @@ function MacroCodesPageContent() {
       // reached via the lot/exp modal instead — finalCode is non-null
       // here since `copied` can only be true when it was.
       if (embed && finalCode) {
-        postToHost({ type: "vaccine-assist:macro-copied", code: finalCode, label: modal.label, product: modal.row.displayName });
+        postToHost({ type: "vaccine-assist:macro-copied", code: finalCode, label: modal.label, product: vaccineDisplayName(modal.row.displayName) });
         window.close();
       }
     } else {
@@ -852,7 +853,7 @@ function MacroCodesPageContent() {
 
     return (
       <details className="macro-settings-menu" style={styles.menuDetails} onToggle={handleSettingsMenuToggle}>
-        <summary style={styles.menuSummary} aria-label={`${product.displayName} details`}>
+        <summary style={styles.menuSummary} aria-label={`${vaccineDisplayName(product.displayName)} details`}>
           ⚙
         </summary>
         <div style={styles.menuPanel}>
@@ -988,7 +989,7 @@ function MacroCodesPageContent() {
           return (
             <div key={product.productKey} className="macro-row macro-row-c" style={rowStyle}>
               <div className="macro-product-name-cell-c">
-                <div className="macro-product-name-c" style={nameStyle}>{product.displayName}</div>
+                <div className="macro-product-name-c" style={nameStyle}>{vaccineDisplayName(product.displayName)}</div>
                 <div className="macro-product-meta-c" style={metaStyle}>
                   {metaText}
                   {product.note && (
@@ -1018,7 +1019,7 @@ function MacroCodesPageContent() {
                     // own first row, above the existing dose row (2) and
                     // schedule row (3, where present) — see this file's
                     // ROUND 14 doc comment.
-                    topLabel: product.displayName,
+                    topLabel: vaccineDisplayName(product.displayName),
                     visibleLabel: doseButtonShortLabel(dose.row, doseCount),
                     subLabel: dose.row.doseInterval,
                     large: true,
@@ -1155,7 +1156,7 @@ function MacroCodesPageContent() {
         >
           <div style={styles.modalCard}>
             <h2 style={{ marginTop: 0 }}>
-              Enter lot / exp for {modal.row.displayName} dose {modal.row.doseNumber}
+              Enter lot / exp for {vaccineDisplayName(modal.row.displayName)} dose {modal.row.doseNumber}
             </h2>
             {modal.copyResult && !modal.copyResult.copied && <CopyFallback code={modal.copyResult.code} />}
             <form onSubmit={handleModalSubmit}>

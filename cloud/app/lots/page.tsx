@@ -19,6 +19,7 @@ import {
   type DebouncedRunner,
 } from "@/lib/lots-autosave";
 import { plusDaysIso } from "@/lib/lots-bud-shortcut";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
@@ -896,7 +897,7 @@ export default function LotsPage() {
       if (!response.ok) {
         const message = data.error ?? "Failed to save lot.";
         setRowErrors((prev) => ({ ...prev, [key]: message }));
-        pushError(`Couldn't save lot info for ${view.displayName} — ${message}`);
+        pushError(`Couldn't save lot info for ${vaccineDisplayName(view.displayName)} — ${message}`);
         return;
       }
 
@@ -936,7 +937,7 @@ export default function LotsPage() {
       if (autosaveSeqRef.current[key] !== seq) return;
       const message = err instanceof Error ? err.message : "Failed to save lot.";
       setRowErrors((prev) => ({ ...prev, [key]: message }));
-      pushError(`Couldn't save lot info for ${view.displayName} — ${message}`);
+      pushError(`Couldn't save lot info for ${vaccineDisplayName(view.displayName)} — ${message}`);
     } finally {
       autosaveInFlightRef.current[key] = false;
       if (autosaveSeqRef.current[key] === seq) {
@@ -987,7 +988,7 @@ export default function LotsPage() {
       if (!response.ok) {
         const message = data.error ?? "Failed to clear lot.";
         setRowErrors((prev) => ({ ...prev, [key]: message }));
-        pushError(`Couldn't clear lot for ${view.displayName} — ${message}`);
+        pushError(`Couldn't clear lot for ${vaccineDisplayName(view.displayName)} — ${message}`);
         return;
       }
 
@@ -1012,7 +1013,7 @@ export default function LotsPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to clear lot.";
       setRowErrors((prev) => ({ ...prev, [key]: message }));
-      pushError(`Couldn't clear lot for ${view.displayName} — ${message}`);
+      pushError(`Couldn't clear lot for ${vaccineDisplayName(view.displayName)} — ${message}`);
     } finally {
       setSavingByKey((prev) => ({ ...prev, [key]: false }));
     }
@@ -1050,7 +1051,7 @@ export default function LotsPage() {
       if (failed) {
         const message = failed.data.error ?? "Failed to update.";
         setActiveErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
-        pushError(`Couldn't update active status for ${view.displayName} — ${message}`);
+        pushError(`Couldn't update active status for ${vaccineDisplayName(view.displayName)} — ${message}`);
         return;
       }
       const groupVaccineIds = new Set(view.vaccineIds);
@@ -1058,7 +1059,7 @@ export default function LotsPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to update.";
       setActiveErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
-      pushError(`Couldn't update active status for ${view.displayName} — ${message}`);
+      pushError(`Couldn't update active status for ${vaccineDisplayName(view.displayName)} — ${message}`);
     } finally {
       setActiveBusyKey(null);
     }
@@ -1084,7 +1085,7 @@ export default function LotsPage() {
       if (!response.ok) {
         const message = data.error ?? "Failed to update.";
         setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
-        pushError(`Couldn't update beyond-use date setting for ${view.displayName} — ${message}`);
+        pushError(`Couldn't update beyond-use date setting for ${vaccineDisplayName(view.displayName)} — ${message}`);
         return;
       }
       const confirmedKeys = new Set<string>(data.budEnabledProductKeys ?? nextKeys);
@@ -1093,7 +1094,7 @@ export default function LotsPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to update.";
       setBudErrorByKey((prev) => ({ ...prev, [view.productKey]: message }));
-      pushError(`Couldn't update beyond-use date setting for ${view.displayName} — ${message}`);
+      pushError(`Couldn't update beyond-use date setting for ${vaccineDisplayName(view.displayName)} — ${message}`);
     } finally {
       setBudBusyKey(null);
     }
@@ -1199,14 +1200,14 @@ export default function LotsPage() {
 
     return (
       <tr key={view.productKey} style={rowStyle}>
-        <td style={styles.td}>{view.displayName}</td>
+        <td style={styles.td}>{vaccineDisplayName(view.displayName)}</td>
         <td style={styles.td}>{formatNdcDashed(view.ndc) || "—"}</td>
         <td style={styles.tdRight}>{view.packageSize ?? "—"}</td>
         <td style={styles.td}>
           <input
             style={styles.lotInput}
             type="text"
-            aria-label={`${view.displayName} lot number`}
+            aria-label={`${vaccineDisplayName(view.displayName)} lot number`}
             value={draft.lotNumber}
             onChange={(e) => {
               updateDraft(view.productKey, { lotNumber: e.target.value });
@@ -1218,7 +1219,7 @@ export default function LotsPage() {
         <td style={styles.td}>
           <DateTextInput
             value={draft.expiration}
-            ariaLabel={`${view.displayName} expiration`}
+            ariaLabel={`${vaccineDisplayName(view.displayName)} expiration`}
             onChange={(value) => {
               updateDraft(view.productKey, { expiration: value });
               scheduleAutosave(view);
@@ -1226,7 +1227,7 @@ export default function LotsPage() {
             onRawTextChange={(text) => updateRawDateText(view.productKey, { expiration: text })}
             onBlur={() => flushAutosaveNow(view)}
             onInvalidBlur={(message) =>
-              pushError(`Invalid data entry — Expiration for ${view.displayName}: ${message}`)
+              pushError(`Invalid data entry — Expiration for ${vaccineDisplayName(view.displayName)}: ${message}`)
             }
             style={styles.dateInput}
           />
@@ -1237,7 +1238,7 @@ export default function LotsPage() {
               <span style={styles.budDateWrap}>
                 <DateTextInput
                   value={draft.beyondUseDate}
-                  ariaLabel={`${view.displayName} beyond-use date`}
+                  ariaLabel={`${vaccineDisplayName(view.displayName)} beyond-use date`}
                   onChange={(value) => {
                     updateDraft(view.productKey, { beyondUseDate: value });
                     scheduleAutosave(view);
@@ -1245,7 +1246,7 @@ export default function LotsPage() {
                   onRawTextChange={(text) => updateRawDateText(view.productKey, { beyondUseDate: text })}
                   onBlur={() => flushAutosaveNow(view)}
                   onInvalidBlur={(message) =>
-                    pushError(`Invalid data entry — Beyond-use date for ${view.displayName}: ${message}`)
+                    pushError(`Invalid data entry — Beyond-use date for ${vaccineDisplayName(view.displayName)}: ${message}`)
                   }
                   style={styles.dateInput}
                 />
@@ -1265,14 +1266,14 @@ export default function LotsPage() {
         )}
         <td style={styles.td}>
           <details className="lots-cog-menu" style={styles.menuDetails} onToggle={handleCogMenuToggle}>
-            <summary style={styles.menuSummary} aria-label={`${view.displayName} settings`}>
+            <summary style={styles.menuSummary} aria-label={`${vaccineDisplayName(view.displayName)} settings`}>
               ⚙
             </summary>
             <div style={styles.menuPanel}>
               <label style={styles.menuItem}>
                 <input
                   type="checkbox"
-                  aria-label={`${view.displayName} active`}
+                  aria-label={`${vaccineDisplayName(view.displayName)} active`}
                   checked={view.active}
                   disabled={activeBusy}
                   onChange={(e) => void handleToggleActive(view, e.target.checked)}
@@ -1283,7 +1284,7 @@ export default function LotsPage() {
                 <label style={styles.menuItem}>
                   <input
                     type="checkbox"
-                    aria-label={`${view.displayName} show beyond-use date`}
+                    aria-label={`${vaccineDisplayName(view.displayName)} show beyond-use date`}
                     checked={budEnabledForThisProduct}
                     disabled={budBusy}
                     onChange={(e) => void handleToggleBud(view, e.target.checked)}

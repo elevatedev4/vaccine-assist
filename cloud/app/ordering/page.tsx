@@ -12,6 +12,7 @@ import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 import { buildToOrderRows } from "@/lib/ordering-to-order";
 import { SaveStatusIndicator, TargetInput, type SaveStatus } from "@/app/ordering/target-input";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -1007,14 +1008,14 @@ export default function OrderingPage() {
               const target = targetByKey.get(row.key) ?? null;
               return (
                 <tr key={row.key}>
-                  <td style={styles.toOrderTd}>{row.displayName}</td>
+                  <td style={styles.toOrderTd}>{vaccineDisplayName(row.displayName)}</td>
                   <td style={styles.toOrderTd}>
                     <button
                       type="button"
                       disabled={!canCopy}
                       onClick={() => void handleCopyOrderNdc(row)}
-                      title={canCopy ? `Copy ${row.displayName} NDC` : "no NDC on file for this product"}
-                      aria-label={canCopy ? `Copy ${row.displayName} NDC ${ndcText}` : undefined}
+                      title={canCopy ? `Copy ${vaccineDisplayName(row.displayName)} NDC` : "no NDC on file for this product"}
+                      aria-label={canCopy ? `Copy ${vaccineDisplayName(row.displayName)} NDC ${ndcText}` : undefined}
                       style={{
                         ...(canCopy ? styles.ndcCopyButton : styles.ndcCopyButtonDisabled),
                         minWidth: `${Math.max(ndcText.length, NDC_COPIED_FLAG.length)}ch`,
@@ -1119,7 +1120,7 @@ export default function OrderingPage() {
                   const surplus = surplusCell(row);
                   return (
                     <tr key={row.key} style={row.order > 0 ? styles.trOrderDue : undefined}>
-                      <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{row.displayName}</td>
+                      <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{vaccineDisplayName(row.displayName)}</td>
                       <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
@@ -1177,7 +1178,7 @@ export default function OrderingPage() {
                   const surplus = surplusCell(row);
                   return (
                     <tr key={row.key}>
-                      <td style={styles.td}>{row.displayName}</td>
+                      <td style={styles.td}>{vaccineDisplayName(row.displayName)}</td>
                       <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
