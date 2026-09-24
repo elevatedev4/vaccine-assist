@@ -18,6 +18,7 @@ import {
   rowStatusLabel,
   type DebouncedRunner,
 } from "@/lib/lots-autosave";
+import { plusDaysIso } from "@/lib/lots-bud-shortcut";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
@@ -97,6 +98,18 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  *     <details>) that repeats the exact same <colgroup> as the first
  *     table — see renderLotsColgroup below — so its columns stay
  *     pixel-identical to the table above it.
+ *   - V-lots-bud-30d-shortcut (Will 2026-09-24 4:24pm verbatim: "for
+ *     beyond use date, add a 30d little link next to the right side of
+ *     the box that sets the BUD to 30 days from today"): a small
+ *     de-emphasized "30d" link sits beside a row's beyond-use-date box,
+ *     shown only when that box itself is (i.e. only when the product's
+ *     BUD setting is enabled — see budEnabledForThisProduct). Clicking it
+ *     sets the row's beyond-use date to 30 days from the browser's local
+ *     date (lib/lots-bud-shortcut.ts's plusDaysIso) and flushes it
+ *     through the SAME runAutosave path a typed date goes through — see
+ *     handleBudShortcut below for why it writes draftsRef/rawDateTextRef
+ *     directly instead of only going through updateDraft/
+ *     updateRawDateText's usual setState form.
  *
  * Saving/deleting a product row's lot still fans out server-side to
  * every dose vaccine_id in the group (POST/PATCH/DELETE /api/lots,
@@ -204,6 +217,24 @@ const styles = {
   // number is free text but rarely runs past a dozen-odd characters.
   lotInput: { width: "14ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
   dateInput: { width: "13ch", padding: "1px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb", fontSize: "13px" },
+  // V-lots-bud-30d-shortcut: wraps the beyond-use-date box + its "30d"
+  // link so they lay out side by side, with no reflow when the link is
+  // clicked (the box's own width/border don't change, only its value).
+  budDateWrap: { display: "inline-flex", alignItems: "center", gap: "0.3rem", whiteSpace: "nowrap" as const },
+  // De-emphasized link-style button, not a bordered/background button
+  // like styles.button, so it reads as a shortcut rather than a primary
+  // action next to the date box.
+  budShortcutLink: {
+    background: "none",
+    border: "none",
+    padding: 0,
+    margin: 0,
+    color: "#555",
+    fontSize: "0.75rem",
+    textDecoration: "underline",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
   // V-lots-row-status (Will 2026-09-14 verbatim: "If a lot is missing,
   // highlight the row in yellow. If it's expired, highlight it in red.")
   // — background only; text stays the default color for readability.
@@ -1068,6 +1099,45 @@ export default function LotsPage() {
     }
   }
 
+  /** "30d" shortcut next to a row's beyond-use-date box (Will 2026-09-24
+   * verbatim: "add a 30d little link ... that sets the BUD to 30 days
+   * from today") — sets that row's beyond-use date to 30 days from the
+   * browser's local date and pushes it through the SAME autosave path a
+   * typed date goes through, so it persists identically.
+   *
+   * Writes draftsRef/rawDateTextRef directly (a plain synchronous
+   * assignment) rather than only going through updateDraft/
+   * updateRawDateText's setState-updater form, then calls
+   * flushAutosaveNow in the SAME tick: runAutosave (via
+   * createDebouncedRunner's flushNow, see lib/lots-autosave.ts) reads
+   * those refs synchronously before its first await, and a setState
+   * updater function isn't guaranteed to have run by then. Every other
+   * caller of updateDraft/updateRawDateText schedules or flushes from a
+   * later, separate browser event (a debounce timer firing, or a
+   * subsequent blur), so React has always committed by the time those
+   * read the refs — this is the one caller that reads them back in the
+   * same synchronous call stack that just wrote them, so it can't rely on
+   * that same timing.
+   */
+  function handleBudShortcut(view: ProductView) {
+    const key = view.productKey;
+    const iso = plusDaysIso(new Date(), 30);
+    const masked = isoToMaskedDate(iso);
+
+    const nextDrafts = { ...draftsRef.current, [key]: { ...draftsRef.current[key], beyondUseDate: iso } };
+    draftsRef.current = nextDrafts;
+    setDrafts(nextDrafts);
+
+    const nextRawDateText = {
+      ...rawDateTextRef.current,
+      [key]: { ...rawDateTextRef.current[key], beyondUseDate: masked },
+    };
+    rawDateTextRef.current = nextRawDateText;
+    setRawDateText(nextRawDateText);
+
+    flushAutosaveNow(view);
+  }
+
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -1164,20 +1234,30 @@ export default function LotsPage() {
         {beyondUseDateSupported && (
           <td style={styles.td}>
             {budEnabledForThisProduct ? (
-              <DateTextInput
-                value={draft.beyondUseDate}
-                ariaLabel={`${view.displayName} beyond-use date`}
-                onChange={(value) => {
-                  updateDraft(view.productKey, { beyondUseDate: value });
-                  scheduleAutosave(view);
-                }}
-                onRawTextChange={(text) => updateRawDateText(view.productKey, { beyondUseDate: text })}
-                onBlur={() => flushAutosaveNow(view)}
-                onInvalidBlur={(message) =>
-                  pushError(`Invalid data entry — Beyond-use date for ${view.displayName}: ${message}`)
-                }
-                style={styles.dateInput}
-              />
+              <span style={styles.budDateWrap}>
+                <DateTextInput
+                  value={draft.beyondUseDate}
+                  ariaLabel={`${view.displayName} beyond-use date`}
+                  onChange={(value) => {
+                    updateDraft(view.productKey, { beyondUseDate: value });
+                    scheduleAutosave(view);
+                  }}
+                  onRawTextChange={(text) => updateRawDateText(view.productKey, { beyondUseDate: text })}
+                  onBlur={() => flushAutosaveNow(view)}
+                  onInvalidBlur={(message) =>
+                    pushError(`Invalid data entry — Beyond-use date for ${view.displayName}: ${message}`)
+                  }
+                  style={styles.dateInput}
+                />
+                <button
+                  type="button"
+                  style={styles.budShortcutLink}
+                  aria-label="Set beyond-use date to 30 days from today"
+                  onClick={() => handleBudShortcut(view)}
+                >
+                  30d
+                </button>
+              </span>
             ) : (
               <span style={styles.muted}>—</span>
             )}
@@ -1253,7 +1333,9 @@ export default function LotsPage() {
         <col style={{ width: "5.5rem" }} />
         <col style={{ width: "9rem" }} />
         <col style={{ width: "8.5rem" }} />
-        {beyondUseDateSupported && <col style={{ width: "8.5rem" }} />}
+        {/* V-lots-bud-30d-shortcut: widened from 8.5rem so the "30d" link
+            fits beside the date box without wrapping to a second line. */}
+        {beyondUseDateSupported && <col style={{ width: "11rem" }} />}
         <col style={{ width: "3rem" }} />
         <col style={{ width: "7rem" }} />
       </colgroup>
