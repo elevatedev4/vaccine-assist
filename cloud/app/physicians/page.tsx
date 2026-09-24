@@ -5,6 +5,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { availablePhysiciansGroupsFor, getPhysiciansGroup, persistedGroupForPhysiciansGroup } from "@/lib/vaccine-group-catalog";
 import { parseRuleTargetValue } from "@/lib/physician-rule-target";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**
@@ -482,7 +483,7 @@ export default function PhysiciansPage() {
                       .filter((v) => getPhysiciansGroup(v.name) === group)
                       .map((v) => (
                         <option key={v.id} value={`id:${v.id}`}>
-                          {v.name}
+                          {vaccineDisplayName(v.name)}
                         </option>
                       ))}
                   </optgroup>
@@ -577,7 +578,7 @@ export default function PhysiciansPage() {
                 <td style={styles.td}>{physicianNameById.get(rule.physician_id) ?? "(unknown physician)"}</td>
                 <td style={styles.td}>
                   {rule.vaccine_id !== null
-                    ? vaccineNameById.get(rule.vaccine_id) ?? "(unknown vaccine)"
+                    ? vaccineDisplayName(vaccineNameById.get(rule.vaccine_id) ?? "(unknown vaccine)")
                     : rule.vaccine_group
                       ? `All ${rule.vaccine_group} vaccines`
                       : "Any vaccine"}

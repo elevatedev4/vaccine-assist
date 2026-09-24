@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { formatCashPrice } from "@/lib/vaccine-entry-payload";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**
@@ -181,7 +182,7 @@ export default function VaccinesPage() {
         throw new Error(data.error ?? "Failed to update vaccine.");
       }
     } catch (err) {
-      setToggleError(`Couldn't update ${row.name}: ${err instanceof Error ? err.message : "unknown error"}`);
+      setToggleError(`Couldn't update ${vaccineDisplayName(row.name)}: ${err instanceof Error ? err.message : "unknown error"}`);
       // Revert.
       setVaccines((prev) => sortVaccines(prev.map((v) => (v.id === row.id ? { ...v, active: row.active } : v))));
     }
@@ -277,7 +278,7 @@ export default function VaccinesPage() {
         <tbody>
           {vaccines.map((vaccine) => (
             <tr key={vaccine.id} style={vaccine.active ? undefined : styles.inactiveRow}>
-              <td style={styles.td}>{vaccine.name}</td>
+              <td style={styles.td}>{vaccineDisplayName(vaccine.name)}</td>
               <td style={styles.td}>{vaccine.short_code}</td>
               <td style={styles.td}>{vaccine.dose ?? "—"}</td>
               <td style={styles.td}>{vaccine.ndc ?? "—"}</td>
@@ -297,7 +298,7 @@ export default function VaccinesPage() {
                   <input
                     style={styles.fieldInput}
                     type="text"
-                    aria-label={`${vaccine.name} quantity`}
+                    aria-label={`${vaccineDisplayName(vaccine.name)} quantity`}
                     value={fieldDrafts[vaccine.id]?.quantity ?? ""}
                     onChange={(e) => updateFieldDraft(vaccine.id, { quantity: e.target.value })}
                   />
@@ -308,7 +309,7 @@ export default function VaccinesPage() {
                   <input
                     style={styles.fieldInput}
                     type="text"
-                    aria-label={`${vaccine.name} directions`}
+                    aria-label={`${vaccineDisplayName(vaccine.name)} directions`}
                     value={fieldDrafts[vaccine.id]?.directions ?? ""}
                     onChange={(e) => updateFieldDraft(vaccine.id, { directions: e.target.value })}
                   />

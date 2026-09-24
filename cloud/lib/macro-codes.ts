@@ -12,6 +12,7 @@ import {
   type MacroTopGroup,
 } from "@/lib/macro-catalog";
 import type { ProductView } from "@/lib/product-view";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
 
@@ -513,7 +514,7 @@ function flattenAgeForLabel(age: string): string {
  * unrecognized short code) gets no age suffix at all.
  */
 function doseButtonLabel(row: MacroRow, doseCount: number): string {
-  let label = row.displayName;
+  let label = vaccineDisplayName(row.displayName);
   if (doseCount > 1) label += ` (Dose ${row.doseNumber})`;
   if (row.age) label += ` (${flattenAgeForLabel(row.age)})`;
   return label;

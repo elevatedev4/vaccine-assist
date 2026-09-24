@@ -18,6 +18,7 @@ import {
   type DosesGivenPivot,
   type QuickPickId,
 } from "@/lib/doses-given";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 /**
  * Doses given explorer (V-doses-given, Will 2026-09-12 verbatim: "On the
@@ -259,7 +260,7 @@ type LeafHeaderCell = { key: string; label: string; group: string };
 function buildProductHeaderRows(orderedProducts: string[]): { groups: GroupHeaderCell[]; leaves: LeafHeaderCell[] } {
   const leaves: LeafHeaderCell[] = orderedProducts.map((product) => ({
     key: product,
-    label: product,
+    label: vaccineDisplayName(product),
     group: getOrderingGroup(product),
   }));
 
@@ -691,7 +692,7 @@ export default function DosesGivenPage() {
                 <tbody>
                   {productTotals.map(({ product, total }) => (
                     <tr key={product}>
-                      <td style={styles.tdType}>{product}</td>
+                      <td style={styles.tdType}>{vaccineDisplayName(product)}</td>
                       <td style={styles.totalCell}>{total}</td>
                     </tr>
                   ))}

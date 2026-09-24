@@ -546,9 +546,14 @@ describe("groupMacroRowsBySection", () => {
 
       const covid = groupMacroRowsBySection(rows).find((s) => s.section === "COVID")!;
       const labelsByName = Object.fromEntries(covid.products.map((p) => [p.displayName, p.doses.map((d) => d.label)]));
-      expect(labelsByName["Comirnaty"]).toEqual(["Comirnaty (12+)"]);
-      expect(labelsByName["mNEXSPIKE"]).toEqual(["mNEXSPIKE (12+)"]);
-      expect(labelsByName["Spikevax"]).toEqual(["Spikevax (3–11)"]);
+      // V-T (Will 2026-09-24): dose button labels run the product's
+      // displayName through lib/vaccine-display-name.ts's
+      // vaccineDisplayName, which prefixes every COVID vaccine with its
+      // manufacturer — MacroProductGroup.displayName itself (the map's
+      // OWN keys here) is untouched, matching-only.
+      expect(labelsByName["Comirnaty"]).toEqual(["Pfizer Comirnaty (12+)"]);
+      expect(labelsByName["mNEXSPIKE"]).toEqual(["Moderna mNEXSPIKE (12+)"]);
+      expect(labelsByName["Spikevax"]).toEqual(["Moderna Spikevax (3–11)"]);
     });
 
     it("multi-dose non-COVID product: display name plus '(Dose N)', plus the age in parens (flattening the age's own parens to a comma)", () => {
