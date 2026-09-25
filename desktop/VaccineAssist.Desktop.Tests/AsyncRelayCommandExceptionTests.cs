@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using VaccineAssist.Desktop.Common;
 using Xunit;
@@ -41,8 +42,14 @@ public class AsyncRelayCommandExceptionTests
 
         command.Execute(null);
         // Execute is async void; give its (synchronously-throwing) path a
-        // turn to finish running before asserting.
-        await Task.Delay(10);
+        // turn to finish running before asserting. Polls instead of a
+        // fixed delay (flaky on the GitHub Windows runner — a fixed 10ms
+        // isn't always enough there) up to ~2s before giving up.
+        var sw = Stopwatch.StartNew();
+        while (!command.CanExecute(null) && sw.ElapsedMilliseconds < 2000)
+        {
+            await Task.Delay(10);
+        }
 
         Assert.True(command.CanExecute(null));
     }
@@ -57,7 +64,15 @@ public class AsyncRelayCommandExceptionTests
         });
 
         command.Execute(null);
-        await Task.Delay(50);
+        // Polls instead of a fixed delay — ExecuteDoesNotThrowWhenTheAwaitedTaskFaults
+        // failed twice on the GitHub Windows runner (main 21:31, an
+        // unrelated branch 22:28) because a fixed 50ms wasn't always
+        // enough there before asserting CanExecute.
+        var sw = Stopwatch.StartNew();
+        while (!command.CanExecute(null) && sw.ElapsedMilliseconds < 2000)
+        {
+            await Task.Delay(10);
+        }
 
         Assert.True(command.CanExecute(null));
     }

@@ -145,8 +145,15 @@ public sealed class SrFaxClient : IFaxClient
             var status = root.TryGetProperty("Status", out var statusEl) ? statusEl.GetString() : null;
             var resultText = root.TryGetProperty("Result", out var resultEl) ? StringifyElement(resultEl) : null;
 
+            // FaxAccountInfo.Summary's contract (both IFaxClient
+            // implementations, so FaxSettingsViewModel.TestConnectionAsync
+            // can display it verbatim without prepending its own
+            // "Connected. " — that used to double up on Notifyre's
+            // already-prefixed Summary): on success it ALWAYS already
+            // starts with "Connected." — see NotifyreFaxClient's own
+            // ParseAccountInfo for the other implementation.
             return string.Equals(status, "Success", StringComparison.OrdinalIgnoreCase)
-                ? new FaxAccountInfo(true, resultText ?? "Connected.", null)
+                ? new FaxAccountInfo(true, string.IsNullOrWhiteSpace(resultText) ? "Connected." : $"Connected. {resultText}", null)
                 : new FaxAccountInfo(false, null, resultText ?? "SRFax reported failure with no message.");
         }
         catch (Exception ex)
