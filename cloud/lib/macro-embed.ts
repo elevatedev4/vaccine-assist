@@ -37,7 +37,25 @@ export type MacroCopiedMessage = {
  * anything. */
 export type MacroCancelMessage = { type: "vaccine-assist:macro-cancel" };
 
-export type MacroEmbedMessage = MacroCopiedMessage | MacroCancelMessage;
+/**
+ * Macro-popup round 3 (Will's verbatim ask, 2026-09-25): "make the
+ * height fit only what it needs to be able to show everything, not
+ * extra space at the bottom." Sent after this page's first paint and
+ * again on every subsequent content-size change (a ResizeObserver on
+ * `document.documentElement` — see app/macro-codes/page.tsx) so
+ * MacroCodesWindow can size its window to the content instead of a
+ * fixed guess. `width`/`height` are CSS px — `document.documentElement.
+ * scrollHeight` for height — which WebView2 reports (and the desktop
+ * host applies) as WPF DIPs directly, since the page renders at the
+ * host's default zoom.
+ */
+export type ContentSizeMessage = {
+  type: "vaccine-assist:content-size";
+  width: number;
+  height: number;
+};
+
+export type MacroEmbedMessage = MacroCopiedMessage | MacroCancelMessage | ContentSizeMessage;
 
 /** Minimal shape of the WebView2 bridge object the host page injects as
  * `window.chrome.webview` — not part of the standard DOM lib types, so
@@ -59,4 +77,11 @@ export function postToHost(message: MacroEmbedMessage): void {
   if (window.parent && window.parent !== window) {
     window.parent.postMessage(message, "*");
   }
+}
+
+/** Convenience wrapper around postToHost for a ContentSizeMessage —
+ * callers just pass the two numbers instead of building the message
+ * shape by hand. */
+export function postContentSize(width: number, height: number): void {
+  postToHost({ type: "vaccine-assist:content-size", width, height });
 }
