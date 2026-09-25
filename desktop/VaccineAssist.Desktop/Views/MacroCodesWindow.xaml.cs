@@ -30,19 +30,22 @@ namespace VaccineAssist.Desktop.Views;
 /// Will's brief: "closes the page so they can go resume data entry
 /// themselves."
 ///
-/// 2026-09-25 (Ctrl+Keypad 4 age-macro flow, Will's brief): also reused,
-/// unchanged, by MainWindow.ShowAgeMacroPrompt — that flow shows an
-/// AgePromptWindow first, then opens THIS SAME window class at an
-/// age-filtered URL (see the overrideUrl constructor parameter and
-/// AgeMacroCodesUrlBuilder) so the copy path is identical either way.
-/// The only behavioral difference is sendCtrlNumPad2OnClose: when true,
-/// CoreWebView2_OnWebMessageReceived's existing copy-then-Close is
-/// followed, after this window has actually closed and focus is back on
-/// the previous foreground window, by a synthetic Ctrl+NumPad2 keypress
-/// (see MacroCodesWindow_OnClosed) — "pushes Ctrl+Keypad 2, which will
-/// activate our on-computer macro. The macro will take care of the
-/// rest." The plain Ctrl+Keypad 8 popup (sendCtrlNumPad2OnClose: false,
-/// the default) behaves exactly as before.
+/// 2026-09-25 (age-macro flow, Will's brief): also reused, unchanged, by
+/// MainWindow.ShowAgeMacroPrompt — that flow shows an AgePromptWindow
+/// first, then opens THIS SAME window class at an age-filtered URL (see
+/// the overrideUrl constructor parameter and AgeMacroCodesUrlBuilder) so
+/// the copy path is identical either way. The only behavioral difference
+/// is sendCtrlNumPad5OnClose: when true, CoreWebView2_OnWebMessageReceived's
+/// existing copy-then-Close is followed, after this window has actually
+/// closed and focus is back on the previous foreground window, by a
+/// synthetic Ctrl+NumPad5 keypress (see MacroCodesWindow_OnClosed) —
+/// originally briefed as "pushes Ctrl+Keypad 2, which will activate our
+/// on-computer macro," then re-keyed same-day (Will, verbatim, round 2):
+/// "it runs the macro at the end with ctrl + keypad 5" — the hotkey that
+/// opens this flow moved to Ctrl+Keypad 2 itself (see MainWindow's
+/// _ageMacroHotKey), so the closing keypress moved to Ctrl+Keypad 5 to
+/// avoid colliding with it. The plain Ctrl+Keypad 8 popup
+/// (sendCtrlNumPad5OnClose: false, the default) behaves exactly as before.
 /// </summary>
 public partial class MacroCodesWindow : Window
 {
@@ -52,14 +55,14 @@ public partial class MacroCodesWindow : Window
     private readonly string _macroCodesUrl;
     private readonly IClipboardService _clipboardService;
     private readonly IntPtr _previousForegroundWindow;
-    private readonly bool _sendCtrlNumPad2OnClose;
+    private readonly bool _sendCtrlNumPad5OnClose;
 
     /// <summary>Set true only inside CoreWebView2_OnWebMessageReceived's
     /// "vaccine-assist:macro-copied" case, and only when
-    /// _sendCtrlNumPad2OnClose is true — i.e. a code actually got copied
+    /// _sendCtrlNumPad5OnClose is true — i.e. a code actually got copied
     /// in the age-macro flow. MacroCodesWindow_OnClosed checks THIS field
-    /// (not _sendCtrlNumPad2OnClose directly) before sending the
-    /// synthetic Ctrl+NumPad2, so cancelling (Escape, the page's own
+    /// (not _sendCtrlNumPad5OnClose directly) before sending the
+    /// synthetic Ctrl+NumPad5, so cancelling (Escape, the page's own
     /// "vaccine-assist:macro-cancel", or the window chrome) never fires
     /// the on-computer macro against a clipboard that was never actually
     /// updated by this window.</summary>
@@ -68,20 +71,30 @@ public partial class MacroCodesWindow : Window
     /// <param name="cloudApiBaseUrl">AppSettings.CloudApiBaseUrl, e.g. https://vaccine-assist.vercel.app — same base URL VaccineApiService calls against. Ignored (but still required) when <paramref name="overrideUrl"/> is given.</param>
     /// <param name="clipboardService">Same IClipboardService the rest of the app uses (App.xaml.cs's composition root) — belt-and-braces clipboard copy alongside the page's own copy (see CoreWebView2_OnWebMessageReceived).</param>
     /// <param name="previousForegroundWindow">The foreground window handle at the moment MainWindow decided to show this popup (captured via GetForegroundWindow() before Show() — for the age-macro flow, before AgePromptWindow, per Will's brief) — restored via SetForegroundWindow when this popup closes, so focus lands back where the pharmacist was, not on this app's MainWindow. IntPtr.Zero is tolerated (just skips the restore) rather than throwing.</param>
-    /// <param name="overrideUrl">2026-09-25: the age-macro flow's own AgeMacroCodesUrlBuilder.BuildUrl result (…/macro-codes?embed=1&amp;age=&lt;years&gt;[&amp;ageMonths=&lt;n&gt;]) in place of the plain BuildMacroCodesUrl(cloudApiBaseUrl) below. Null (the default) keeps the existing Ctrl+Keypad 8 behavior unchanged.</param>
-    /// <param name="sendCtrlNumPad2OnClose">2026-09-25: true only for the age-macro flow (see the class doc comment above) — sends a synthetic Ctrl+NumPad2 once this window has closed and focus is restored. False (the default) for the plain Ctrl+Keypad 8 popup.</param>
+    /// <param name="overrideUrl">2026-09-25: the age-macro flow's own AgeMacroCodesUrlBuilder.BuildUrl result (…/macro-codes?embed=1&amp;age=&lt;years&gt;) in place of the plain BuildMacroCodesUrl(cloudApiBaseUrl) below. Null (the default) keeps the existing Ctrl+Keypad 8 behavior unchanged.</param>
+    /// <param name="sendCtrlNumPad5OnClose">2026-09-25 round 2: true only for the age-macro flow (see the class doc comment above) — sends a synthetic Ctrl+NumPad5 once this window has closed and focus is restored. False (the default) for the plain Ctrl+Keypad 8 popup.</param>
     public MacroCodesWindow(
         string cloudApiBaseUrl,
         IClipboardService clipboardService,
         IntPtr previousForegroundWindow,
         string? overrideUrl = null,
-        bool sendCtrlNumPad2OnClose = false)
+        bool sendCtrlNumPad5OnClose = false)
     {
         InitializeComponent();
         _clipboardService = clipboardService ?? throw new ArgumentNullException(nameof(clipboardService));
         _previousForegroundWindow = previousForegroundWindow;
         _macroCodesUrl = overrideUrl ?? BuildMacroCodesUrl(cloudApiBaseUrl);
-        _sendCtrlNumPad2OnClose = sendCtrlNumPad2OnClose;
+        _sendCtrlNumPad5OnClose = sendCtrlNumPad5OnClose;
+
+        // 2026-09-25 round 2 (Will, verbatim): "Make the maro code popup
+        // be a litle bigger." The xaml's Width/Height (1375x1025, ~25%
+        // over the previous 1100x820) are clamped here — before Show/
+        // ShowDialog, so WindowStartupLocation="CenterScreen" still
+        // centers against the clamped size — to never exceed a smaller
+        // monitor's visible work area, same margin-of-40px posture as
+        // the brief's own example.
+        Width = Math.Min(Width, SystemParameters.WorkArea.Width - 40);
+        Height = Math.Min(Height, SystemParameters.WorkArea.Height - 40);
 
         Loaded += MacroCodesWindow_OnLoaded;
         Closed += MacroCodesWindow_OnClosed;
@@ -194,7 +207,7 @@ public partial class MacroCodesWindow : Window
                         codeElement.GetString() is { Length: > 0 } code)
                     {
                         _clipboardService.SetText(code);
-                        if (_sendCtrlNumPad2OnClose)
+                        if (_sendCtrlNumPad5OnClose)
                         {
                             _codeCopiedInAgeMacroFlow = true;
                             AppFileLog.Log($"[AgeMacro] copied {code}");
@@ -238,17 +251,26 @@ public partial class MacroCodesWindow : Window
     /// that works regardless of thread, so the delay is the only reason
     /// this needs to be async) so the previous foreground app has actually
     /// finished becoming the foreground window before the synthetic
-    /// keypress lands, then sends Ctrl+NumPad2 via FlaUI's
+    /// keypress lands, then sends Ctrl+NumPad5 via FlaUI's
     /// Keyboard.TypeSimultaneously — the same SendInput-backed helper
     /// PioneerEntryAutomation's steps already use for other key
     /// combinations (e.g. SendF3AndDismissPreEntryDialogsStep's Alt+Down/
-    /// Alt+O), rather than a second hand-rolled SendInput wrapper. Ctrl+
-    /// NumPad2 is deliberately NOT one of this app's own registered
-    /// global hotkeys (see GlobalHotKey.VK_NUMPAD4's doc comment — that
-    /// combination was moved to Ctrl+NumPad7 back in MSG893 specifically
-    /// because it collided with something else on the pharmacy's
-    /// workstations), so sending it here cannot be swallowed by this
-    /// app's own WndProc hook.</summary>
+    /// Alt+O), rather than a second hand-rolled SendInput wrapper.
+    ///
+    /// Originally briefed (and shipped internally, same day) as Ctrl+
+    /// NumPad2 — deliberately NOT one of this app's own registered global
+    /// hotkeys at the time (that combination was moved to Ctrl+NumPad7
+    /// back in MSG893 specifically because it collided with something
+    /// else on the pharmacy's workstations), so sending it couldn't be
+    /// swallowed by this app's own WndProc hook. Round 2, same day (Will,
+    /// verbatim): "it runs the macro at the end with ctrl + keypad 5" —
+    /// changed to Ctrl+NumPad5 because the hotkey that OPENS this flow
+    /// moved to Ctrl+NumPad2 itself (see GlobalHotKey.VK_NUMPAD2's doc
+    /// comment and MainWindow's _ageMacroHotKey), so sending Ctrl+NumPad2
+    /// here would now collide with this app's own WndProc hook for that
+    /// hotkey. VirtualKeyShort.NUMPAD5 confirmed present in FlaUI.Core
+    /// 4.0.0 the same way NUMPAD2 was confirmed for the original
+    /// brief.</summary>
     private async void MacroCodesWindow_OnClosed(object? sender, EventArgs e)
     {
         if (WebView.CoreWebView2 is not null)
@@ -278,12 +300,12 @@ public partial class MacroCodesWindow : Window
             // a `using FlaUI.Core.Input;` here would be an ambiguous-
             // reference compile error, so this calls it fully-qualified
             // instead rather than adding that using.
-            FlaUI.Core.Input.Keyboard.TypeSimultaneously(new[] { VirtualKeyShort.LCONTROL, VirtualKeyShort.NUMPAD2 });
-            AppFileLog.Log("[AgeMacro] sent Ctrl+Num2");
+            FlaUI.Core.Input.Keyboard.TypeSimultaneously(new[] { VirtualKeyShort.LCONTROL, VirtualKeyShort.NUMPAD5 });
+            AppFileLog.Log("[AgeMacro] sent Ctrl+Num5");
         }
         catch (Exception ex)
         {
-            AppFileLog.LogException("MacroCodesWindow.SendCtrlNumPad2", ex);
+            AppFileLog.LogException("MacroCodesWindow.SendCtrlNumPad5", ex);
         }
     }
 

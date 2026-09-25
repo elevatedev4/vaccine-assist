@@ -24,7 +24,7 @@ namespace VaccineAssist.Desktop;
 /// no native TabControl). This class still owns everything that must
 /// live for the WHOLE signed-in session regardless of which cloud route
 /// is currently showing: the three global hotkeys (Ctrl+NumPad7 data
-/// entry, Ctrl+Keypad 8 macro codes, Ctrl+Keypad 4 age-filtered macro
+/// entry, Ctrl+Keypad 8 macro codes, Ctrl+Keypad 2 age-filtered macro
 /// codes), the tray icon, the data-entry/macro-codes popups, and (new,
 /// Part 4) the Pioneer overlay icon.
 ///
@@ -39,11 +39,21 @@ namespace VaccineAssist.Desktop;
 /// instances are otherwise unrelated (distinct ids, distinct vk, distinct
 /// popups) and neither's registration/lifecycle affects the other's.
 ///
-/// 2026-09-25: also owns a third, independent global hotkey — Ctrl+Keypad 4 —
-/// for the age-filtered macro-codes flow (Will's brief, verbatim: "Add
-/// new hotkey Ctrl+Keypad 4 that shows a screen to enter patient age,
-/// then shows the macro codes page filtered..."). Same reasoning/
-/// independence as the other two; see ShowAgeMacroPrompt.
+/// 2026-09-25: also owns a third, independent global hotkey — originally
+/// Ctrl+Keypad 4 — for the age-filtered macro-codes flow (Will's brief,
+/// verbatim: "Add new hotkey Ctrl+Keypad 4 that shows a screen to enter
+/// patient age, then shows the macro codes page filtered..."). Same
+/// reasoning/independence as the other two; see ShowAgeMacroPrompt.
+///
+/// 2026-09-25 round 2 (Will, verbatim): "Fro the new ctrl+keypad 4 item,
+/// make it ctrl+keypad 2 to start it and then it runs the macro at the
+/// end with ctrl + keypad 5." Re-keyed same-day: this third hotkey is now
+/// Ctrl+Keypad 2 (VK_NUMPAD2) instead of Ctrl+Keypad 4, and the synthetic
+/// keypress it sends once a code is copied is now Ctrl+Keypad 5 instead
+/// of Ctrl+Keypad 2 — see GlobalHotKey.VK_NUMPAD2's doc comment for why
+/// Ctrl+NumPad2 is safe to register as a hotkey again despite the MSG893
+/// history, and MacroCodesWindow's sendCtrlNumPad5OnClose for the
+/// synthetic-keypress side.
 ///
 /// 2026-09-13 (tray): also owns a TrayIconController for the whole
 /// signed-in session, same "one instance, lives as long as this window
@@ -149,7 +159,8 @@ public partial class MainWindow : Window
     /// 2026-09-25: the currently-open age-macro popup, if any — same
     /// "at most one at a time, re-activate rather than stack" rule as
     /// _openMacroCodesPopup above, but tracked separately (not sharing
-    /// that field) so this new Ctrl+Keypad 4 flow can't interfere with
+    /// that field) so this new Ctrl+Keypad 2 flow (originally Ctrl+Keypad
+    /// 4 — see the class doc comment's round-2 note) can't interfere with
     /// the existing Ctrl+Keypad 8 popup's own single-instance bookkeeping.
     /// Both fields can be non-null at the same time (a pharmacist could,
     /// in principle, have one of each open); MainWindow_OnClosed closes
@@ -162,7 +173,7 @@ public partial class MainWindow : Window
     /// True only while AgePromptWindow.ShowAndGetResult's modal ShowDialog
     /// is up (see ShowAgeMacroPrompt). ShowDialog runs its own nested
     /// message loop, which still dispatches this app's WM_HOTKEY messages
-    /// — so a repeat Ctrl+Keypad 4 press WHILE the age prompt is already
+    /// — so a repeat Ctrl+Keypad 2 press WHILE the age prompt is already
     /// showing would otherwise re-enter ShowAgeMacroPrompt and stack a
     /// second AgePromptWindow on top of the first (_openAgeMacroPopup is
     /// still null at that point; it's only set once a code-copy flow
@@ -176,7 +187,7 @@ public partial class MainWindow : Window
     /// <summary>Process-unique id for the Ctrl+Keypad 8 macro-codes hotkey's RegisterHotKey call — must differ from DataEntryHotKeyId (the only other id this process registers).</summary>
     private const int MacroCodesHotKeyId = 2;
 
-    /// <summary>Process-unique id for the Ctrl+Keypad 4 age-macro hotkey's RegisterHotKey call — must differ from DataEntryHotKeyId/MacroCodesHotKeyId (the only other ids this process registers).</summary>
+    /// <summary>Process-unique id for the Ctrl+Keypad 2 age-macro hotkey's RegisterHotKey call (originally Ctrl+Keypad 4 — re-keyed 2026-09-25 round 2) — must differ from DataEntryHotKeyId/MacroCodesHotKeyId (the only other ids this process registers).</summary>
     private const int AgeMacroHotKeyId = 3;
 
     /// <param name="cloudPageView">
@@ -360,10 +371,15 @@ public partial class MainWindow : Window
                 MessageBoxImage.Warning);
         }
 
-        // 2026-09-25: Ctrl+Keypad 4 age-macro flow — a third, independent
-        // GlobalHotKey instance (distinct id, distinct vk), same
-        // registration/failure-handling pattern as the two above.
-        _ageMacroHotKey = new GlobalHotKey(this, AgeMacroHotKeyId, GlobalHotKey.VK_NUMPAD4);
+        // 2026-09-25: age-macro flow — a third, independent GlobalHotKey
+        // instance (distinct id, distinct vk), same registration/
+        // failure-handling pattern as the two above. Round 2 (Will,
+        // verbatim, same day): "Fro the new ctrl+keypad 4 item, make it
+        // ctrl+keypad 2 to start it" — re-keyed from VK_NUMPAD4 to
+        // VK_NUMPAD2 before this ever shipped; see GlobalHotKey.VK_NUMPAD2's
+        // doc comment for why Ctrl+NumPad2 is safe to register again
+        // despite the MSG893 history.
+        _ageMacroHotKey = new GlobalHotKey(this, AgeMacroHotKeyId, GlobalHotKey.VK_NUMPAD2);
         _ageMacroHotKey.Pressed += (_, _) => ShowAgeMacroPrompt();
 
         var ageMacroRegistered = _ageMacroHotKey.Register();
@@ -371,7 +387,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                "Couldn't register the Ctrl+Keypad 4 age-macro hotkey — it may already be in use by another application.",
+                "Couldn't register the Ctrl+Keypad 2 age-macro hotkey — it may already be in use by another application.",
                 "Vaccine Assist",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -593,15 +609,24 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Ctrl+Keypad 4 (Will, 2026-09-25, verbatim): "Add new hotkey
-    /// Ctrl+Keypad 4 that shows a screen to enter patient age, then shows
-    /// the macro codes page filtered to only show vaccines suitable for
-    /// their age range, then when someone clicks the macro code, it
+    /// Originally Ctrl+Keypad 4 (Will, 2026-09-25, verbatim): "Add new
+    /// hotkey Ctrl+Keypad 4 that shows a screen to enter patient age, then
+    /// shows the macro codes page filtered to only show vaccines suitable
+    /// for their age range, then when someone clicks the macro code, it
     /// copies the code, closes that screen, and pushes Ctrl+Keypad 2,
     /// which will activate our on-computer macro. The macro will take
     /// care of the rest." Same "at most one instance, re-activate instead
     /// of stacking" rule as ShowMacroCodesPopup above — see
     /// _openAgeMacroPopup's doc comment.
+    ///
+    /// Round 2, same day (Will, verbatim): "Fro the new ctrl+keypad 4
+    /// item, make it ctrl+keypad 2 to start it and then it runs the macro
+    /// at the end with ctrl + keypad 5." So the hotkey that reaches this
+    /// method is now Ctrl+Keypad 2 (see MainWindow's _ageMacroHotKey), and
+    /// the synthetic keypress MacroCodesWindow sends once a code is
+    /// copied is now Ctrl+Keypad 5 (see sendCtrlNumPad5OnClose below) —
+    /// not the Ctrl+Keypad 2 the original brief described, which would
+    /// now collide with this very hotkey.
     ///
     /// Captures the foreground window BEFORE showing the age prompt (not
     /// after, and not right before opening the macro-codes window) so
@@ -649,17 +674,15 @@ public partial class MainWindow : Window
             return;
         }
 
-        AppFileLog.Log(result.Months is int months
-            ? $"[AgeMacro] age {result.Years}y {months}mo"
-            : $"[AgeMacro] age {result.Years}");
+        AppFileLog.Log($"[AgeMacro] age {result.Years}");
 
-        var url = AgeMacroCodesUrlBuilder.BuildUrl(_settings.CloudApiBaseUrl, result.Years, result.Months);
+        var url = AgeMacroCodesUrlBuilder.BuildUrl(_settings.CloudApiBaseUrl, result.Years);
         var popup = new MacroCodesWindow(
             _settings.CloudApiBaseUrl,
             _clipboardService,
             previousForegroundWindow,
             overrideUrl: url,
-            sendCtrlNumPad2OnClose: true);
+            sendCtrlNumPad5OnClose: true);
 
         popup.Closed += (_, _) =>
         {

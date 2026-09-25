@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="Macro codes"
-        Width="1100" Height="820"
+        Width="1375" Height="1025"
         WindowStyle="ToolWindow"
         Topmost="True"
         ShowInTaskbar="False"
@@ -35,6 +35,14 @@
         height budget. Bumped from 980x760 to 1100x820 here anyway, purely
         for extra headroom around that estimate; the cloud CSS still
         targets 980x760, so this leaves margin rather than requiring it.
+
+        2026-09-25 round 2 (Will, verbatim): "Make the maro code popup be
+        a litle bigger." Bumped again, ~25%, from 1100x820 to 1375x1025 —
+        see MacroCodesWindow.xaml.cs's constructor for the
+        SystemParameters.WorkArea clamp that keeps this from exceeding the
+        visible desktop on a smaller monitor while staying centered. Same
+        popup class/size for both the Ctrl+Keypad 8 flow and the age-macro
+        flow (they share this window).
 
         The page copies the code itself and posts
         window.chrome.webview.postMessage({ type: "vaccine-assist:macro-copied",

@@ -57,21 +57,29 @@ public sealed class GlobalHotKey : IDisposable
     /// hotkeys never collide with each other.</summary>
     public const uint VK_NUMPAD8 = 0x68;
 
-    /// <summary>VK_NUMPAD4 — see Win32 virtual-key codes. 2026-09-25 (Will,
-    /// verbatim): "Add new hotkey Ctrl+Keypad 4 that shows a screen to
-    /// enter patient age..." — a third, independent GlobalHotKey instance
-    /// registered the exact same way as the two above (see MainWindow's
-    /// _ageMacroHotKey). Distinct from VK_NUMPAD7 and VK_NUMPAD8 so none of
-    /// the three hotkeys ever collide with each other. Note this is a
-    /// different key than VK_NUMPAD2 — the app deliberately does NOT
-    /// register Ctrl+NumPad2 as a hotkey (see the MSG893 note above: that
-    /// combination was moved to VK_NUMPAD7 because it collided with
-    /// something else on the pharmacy's workstations), which is exactly
-    /// why this feature can safely SEND a synthetic Ctrl+NumPad2 at the
-    /// end of its flow (see MacroCodesWindow's sendCtrlNumPad2OnClose) —
-    /// there's no RegisterHotKey claim on that combination in this process
-    /// to swallow it.</summary>
-    public const uint VK_NUMPAD4 = 0x64;
+    /// <summary>VK_NUMPAD2 — see Win32 virtual-key codes. 2026-09-25 (Will,
+    /// verbatim, first pass): "Add new hotkey Ctrl+Keypad 4 that shows a
+    /// screen to enter patient age..." — a third, independent GlobalHotKey
+    /// instance was added for this at VK_NUMPAD4, registered the exact
+    /// same way as the two above (see MainWindow's _ageMacroHotKey).
+    ///
+    /// Same day, round 2 (Will, verbatim): "Fro the new ctrl+keypad 4
+    /// item, make it ctrl+keypad 2 to start it and then it runs the macro
+    /// at the end with ctrl + keypad 5." Re-keyed before this ever
+    /// shipped — VK_NUMPAD4 was removed (nothing else used it) and this
+    /// constant took its place. Note the MSG893 history above: Ctrl+
+    /// NumPad2 was moved OFF the data-entry hotkey back then because it
+    /// collided with something else on the pharmacy's workstations, and
+    /// this app deliberately avoided re-registering it for years as a
+    /// result (see MacroCodesWindow's now-renamed sendCtrlNumPad5OnClose,
+    /// which used to rely on exactly that gap to safely SEND a synthetic
+    /// Ctrl+NumPad2). Will has now explicitly asked for Ctrl+NumPad2 to be
+    /// registered again for this different, new flow — if it turns out to
+    /// still collide with whatever MSG893 was avoiding, that will surface
+    /// the same way it did originally. Distinct from VK_NUMPAD7 and
+    /// VK_NUMPAD8 so none of the three hotkeys ever collide with each
+    /// other.</summary>
+    public const uint VK_NUMPAD2 = 0x62;
 
     private readonly Window _window;
     private readonly int _id;
