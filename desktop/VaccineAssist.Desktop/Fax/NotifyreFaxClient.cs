@@ -82,9 +82,18 @@ public sealed class NotifyreFaxClient : IFaxClient
         _backoffProvider = backoffProvider ?? (attempt => TimeSpan.FromMilliseconds(300 * attempt));
     }
 
+    /// <summary>The token this client will actually send, after the same
+    /// paste-artifact cleanup applied on save (V-T53 follow-up) — see
+    /// FaxApiTokenNormalizer's own doc comment. Computed fresh from
+    /// _credentials.ApiToken on every use rather than cached, so it still
+    /// cleans up a token that was SAVED before this normalization
+    /// existed (an already-corrupted credentials.json entry) without
+    /// requiring Will to re-save it.</summary>
+    private string NormalizedApiToken => FaxApiTokenNormalizer.Normalize(_credentials.ApiToken);
+
     public async Task<FaxQueueResult> QueueAsync(FaxRequest request, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_credentials.ApiToken))
+        if (string.IsNullOrWhiteSpace(NormalizedApiToken))
         {
             return new FaxQueueResult(false, null, "Notifyre API token not configured — set it in Fax settings.");
         }
@@ -123,7 +132,7 @@ public sealed class NotifyreFaxClient : IFaxClient
 
     public async Task<FaxStatusResult> GetStatusAsync(string faxId, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_credentials.ApiToken))
+        if (string.IsNullOrWhiteSpace(NormalizedApiToken))
         {
             return new FaxStatusResult(false, FaxSendStatus.Failed, "Notifyre API token not configured.", null);
         }
@@ -143,7 +152,7 @@ public sealed class NotifyreFaxClient : IFaxClient
 
     public async Task<FaxAccountInfo> TestConnectionAsync(CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_credentials.ApiToken))
+        if (string.IsNullOrWhiteSpace(NormalizedApiToken))
         {
             return new FaxAccountInfo(false, null, "Enter a Notifyre API token first.");
         }
@@ -153,12 +162,17 @@ public sealed class NotifyreFaxClient : IFaxClient
         // so a paste error (wrong token, extra characters, a scheme
         // prefix pasted along with it) is visible in the log even though
         // the token's actual bytes never appear there.
-        AppFileLog.Log($"[NotifyreFaxClient] Test connection — token fingerprint {MaskToken(_credentials.ApiToken)}");
+        AppFileLog.Log($"[NotifyreFaxClient] Test connection — token fingerprint {MaskToken(NormalizedApiToken)}");
+
+        const string testConnectionMethod = "GET";
+        const string testConnectionPath = "/fax/numbers";
+        var testConnectionUrl = BaseUrl + testConnectionPath;
 
         string body;
         try
         {
-            body = await SendWithRetryAsync(() => BuildRequest(HttpMethod.Get, "/fax/numbers", null), ct);
+            body = await SendWithRetryAsync(() => BuildRequest(HttpMethod.Get, testConnectionPath, null), ct);
+            LogTestConnectionDiagnostic(testConnectionMethod, testConnectionUrl, NormalizedApiToken, body);
         }
         catch (NotifyreHttpException ex)
         {
@@ -167,6 +181,7 @@ public sealed class NotifyreFaxClient : IFaxClient
             // '401')" — ex.Message already carries both (see
             // NotifyreHttpException below).
             AppFileLog.Log($"[NotifyreFaxClient] Test connection failed — {ex.Message}");
+            LogTestConnectionDiagnostic(testConnectionMethod, testConnectionUrl, NormalizedApiToken, ex.Body);
             return new FaxAccountInfo(false, null, ex.Message);
         }
         catch (Exception ex)
@@ -282,18 +297,38 @@ public sealed class NotifyreFaxClient : IFaxClient
             : $"{trimmed[..4]}...{trimmed[^4..]} (len={trimmed.Length})";
     }
 
+    /// <summary>Will's brief (V-T53 follow-up, 2026-09-25): every Test
+    /// connection attempt logs enough to tell "we sent the token you
+    /// think you pasted" from "we sent something else" without EVER
+    /// writing the token itself — method/URL/header NAMES (never
+    /// values), the (already-normalized — see NormalizedApiToken) token's
+    /// length and first-3/last-2 characters, and Notifyre's raw response
+    /// body (truncated), so a byte-identical-401 mystery is diagnosable
+    /// from %AppData%\VaccineAssist\logs\app.log alone.</summary>
+    private static void LogTestConnectionDiagnostic(string method, string url, string normalizedToken, string responseBody)
+    {
+        var truncatedBody = responseBody.Length > 1000 ? responseBody[..1000] + "…" : responseBody;
+        var tokenEdges = normalizedToken.Length < 5
+            ? "(too short to show edges)"
+            : $"{normalizedToken[..3]}...{normalizedToken[^2..]}";
+        AppFileLog.Log(
+            "[NotifyreFaxClient] Test connection diagnostic — " +
+            $"method={method} url={url} headers=[x-api-token] " +
+            $"tokenLength={normalizedToken.Length} tokenFirst3Last2={tokenEdges} " +
+            $"responseBody={truncatedBody}");
+    }
+
     private HttpRequestMessage BuildRequest(HttpMethod method, string pathAndQuery, object? jsonBody)
     {
         var request = new HttpRequestMessage(method, BaseUrl + pathAndQuery);
-        // Defense-in-depth trim (V-T53 401 follow-up): the Settings
-        // ViewModel already trims before Save/Test (see
-        // FaxSettingsViewModel), but this client must never trust an
-        // untrimmed credential either — a token with a trailing
-        // newline/space pasted in from some other source is a valid
-        // header BYTE-wise (so it's sent, not rejected/thrown) but won't
-        // match Notifyre's stored token, which reads as a plain 401 with
-        // no other symptom.
-        request.Headers.TryAddWithoutValidation("x-api-token", _credentials.ApiToken.Trim());
+        // V-T53 401 follow-up (Will, 2026-09-25): a plain .Trim() (the
+        // original defense-in-depth here) only strips whitespace — it
+        // does NOT strip zero-width/invisible characters, a pasted
+        // "Bearer " prefix, or surrounding quotes, any of which is a
+        // valid header BYTE-wise (so it's sent, not rejected/thrown) but
+        // won't match Notifyre's stored token, which reads as a plain
+        // 401 with no other symptom. See FaxApiTokenNormalizer.
+        request.Headers.TryAddWithoutValidation("x-api-token", NormalizedApiToken);
         if (jsonBody is not null)
         {
             request.Content = new StringContent(JsonSerializer.Serialize(jsonBody, RequestJsonOptions), Encoding.UTF8, "application/json");
@@ -387,9 +422,16 @@ public sealed class NotifyreFaxClient : IFaxClient
     /// in the dialog and log (not just '401')".</summary>
     private sealed class NotifyreHttpException : Exception
     {
+        /// <summary>The RAW (untruncated) response body — kept separately
+        /// from Message (which truncates to 500 chars for the user-facing
+        /// dialog) so LogTestConnectionDiagnostic can log its own
+        /// (differently truncated) copy of the actual body.</summary>
+        public string Body { get; }
+
         public NotifyreHttpException(int statusCode, string body)
             : base($"Notifyre HTTP {statusCode}: {Truncate(body)}")
         {
+            Body = body;
         }
 
         private static string Truncate(string body) => body.Length > 500 ? body[..500] + "…" : body;
