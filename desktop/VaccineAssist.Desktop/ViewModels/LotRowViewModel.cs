@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Models;
+using VaccineAssist.Desktop.Services;
 
 namespace VaccineAssist.Desktop.ViewModels;
 
@@ -83,7 +84,10 @@ public sealed class LotRowViewModel : ObservableObject
     {
         Id = lot.Id;
         VaccineId = lot.VaccineId;
-        VaccineName = vaccineName;
+        // Display-only (VaccineId is what's used for the PATCH) — V-T55,
+        // Will 2026-09-25: maker prefix shows in the grid without
+        // touching the underlying catalog name.
+        VaccineName = VaccineDisplayName.For(vaccineName);
         VaccineNdc = vaccineNdc;
         Status = lot.Status;
         IsVaccineActive = isVaccineActive;

@@ -1,6 +1,7 @@
 using System;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Models;
+using VaccineAssist.Desktop.Services;
 
 namespace VaccineAssist.Desktop.ViewModels;
 
@@ -17,6 +18,10 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// subscribes and does the actual API call, calling RevertActive if the
 /// PATCH fails so the UI never drifts silently out of sync with the
 /// server.
+///
+/// Name is display-only here (Id is what's used for the PATCH) so it runs
+/// through VaccineDisplayName.For (V-T55, Will 2026-09-25) — the maker
+/// prefix shows in the grid without touching the underlying catalog name.
 /// </summary>
 public sealed class VaccineRowViewModel : ObservableObject
 {
@@ -26,7 +31,7 @@ public sealed class VaccineRowViewModel : ObservableObject
     public VaccineRowViewModel(Vaccine vaccine)
     {
         Id = vaccine.Id;
-        Name = vaccine.Name;
+        Name = VaccineDisplayName.For(vaccine.Name);
         ShortCode = vaccine.ShortCode;
         Dose = vaccine.Dose;
         Ndc = vaccine.Ndc;

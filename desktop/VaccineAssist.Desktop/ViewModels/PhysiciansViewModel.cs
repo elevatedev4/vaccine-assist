@@ -255,7 +255,10 @@ public sealed class PhysiciansViewModel : ObservableObject
             }
             foreach (var vaccine in byGroup[group])
             {
-                VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = vaccine.Name, Vaccine = vaccine });
+                // V-T55 (Will, 2026-09-25): DisplayText is exactly that —
+                // display-only (Vaccine.Id is what AddRuleAsync persists) —
+                // so it runs through the maker-prefix rule.
+                VaccineOptions.Add(new PhysicianRuleVaccineOption { Group = group, DisplayText = VaccineDisplayName.For(vaccine.Name), Vaccine = vaccine });
             }
         }
     }
@@ -446,7 +449,8 @@ public sealed class PhysiciansViewModel : ObservableObject
     {
         if (rule.VaccineId is Guid vaccineId)
         {
-            return Vaccines.FirstOrDefault(v => v.Id == vaccineId)?.Name ?? "(unknown vaccine)";
+            var name = Vaccines.FirstOrDefault(v => v.Id == vaccineId)?.Name;
+            return name is null ? "(unknown vaccine)" : VaccineDisplayName.For(name);
         }
         return rule.VaccineGroup is string group ? $"All {group} vaccines" : "Any vaccine";
     }

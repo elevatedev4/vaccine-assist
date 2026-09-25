@@ -35,7 +35,10 @@ public class PhysiciansViewModelVaccineGroupOptionTests
         var covidOptions = viewModel.VaccineOptions.Where(o => o.Group == "COVID vaccines").ToArray();
         Assert.Equal("All COVID vaccines", covidOptions[0].DisplayText);
         Assert.True(covidOptions[0].IsGroupWildcard);
-        Assert.Equal(new[] { "Comirnaty 2025-26 12+", "Spikevax" }, covidOptions.Skip(1).Select(o => o.DisplayText));
+        // V-T55 (Will, 2026-09-25): DisplayText is display-only (VaccineId
+        // is what AddRuleAsync persists) and runs through the maker-prefix
+        // rule — see VaccineDisplayNameTests.
+        Assert.Equal(new[] { "Pfizer Comirnaty 2025-26 12+", "Moderna Spikevax" }, covidOptions.Skip(1).Select(o => o.DisplayText));
         Assert.All(covidOptions.Skip(1), o => Assert.False(o.IsGroupWildcard));
 
         // V-T21 item 7: exactly 3 physicians-tab groups now (Flu/COVID/
