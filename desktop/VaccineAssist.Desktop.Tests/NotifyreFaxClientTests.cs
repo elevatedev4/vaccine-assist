@@ -190,6 +190,31 @@ public class NotifyreFaxClientTests
         Assert.Equal("test-token", tokenValues!.Single());
     }
 
+    [Theory]
+    [InlineData("​test-token")] // zero-width space
+    [InlineData("﻿test-token")] // BOM / zero-width no-break space
+    [InlineData("\"test-token\"")] // surrounding quotes
+    [InlineData("Bearer test-token")] // scheme prefix
+    [InlineData("  test-token  ")] // ordinary whitespace
+    public async Task BuildRequestSendsTheNormalizedTokenForEveryKnownPasteArtifact(string rawToken)
+    {
+        // V-T53 follow-up (Will, 2026-09-25): none of these should ever
+        // reach Notifyre as anything other than the bare "test-token" —
+        // each one used to produce the exact 401 "Access denied" Notifyre
+        // also returns for a MISSING token, making it indistinguishable
+        // from "the token itself is wrong."
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, "{\"Success\":true,\"Payload\":{\"Numbers\":[]}}");
+        var client = new NotifyreFaxClient(new HttpClient(handler), new FaxCredentials { ApiToken = rawToken }, backoffProvider: _ => TimeSpan.Zero);
+
+        await client.TestConnectionAsync();
+
+        Assert.Single(handler.Requests);
+        var sent = handler.Requests[0];
+        Assert.True(sent.Headers.TryGetValues("x-api-token", out var tokenValues));
+        Assert.Equal("test-token", tokenValues!.Single());
+    }
+
     [Fact]
     public async Task TestConnectionAsyncOn401SurfacesTheHttpStatusAndNotifyresErrorBody()
     {
