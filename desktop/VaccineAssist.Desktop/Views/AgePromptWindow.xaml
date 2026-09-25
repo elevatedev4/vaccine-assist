@@ -1,0 +1,58 @@
+<Window x:Class="VaccineAssist.Desktop.Views.AgePromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Patient age"
+        Width="340" SizeToContent="Height"
+        WindowStyle="ToolWindow"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        Loaded="AgePromptWindow_OnLoaded"
+        PreviewKeyDown="AgePromptWindow_OnPreviewKeyDown">
+    <!--
+        Ctrl+Keypad 4 (Will, 2026-09-25, verbatim): "Add new hotkey
+        Ctrl+Keypad 4 that shows a screen to enter patient age, then shows
+        the macro codes page filtered to only show vaccines suitable for
+        their age range..." This is that screen.
+
+        No Owner (unlike TextEntryPromptWindow/VarUpdateConfirmationWindow's
+        Owner=owner convention) — same "no guaranteed visible owner"
+        reasoning as MacroCodesWindow: this is reached straight from a
+        global hotkey, and MainWindow is very often hidden to the tray at
+        that point (see MainWindow's own class doc comment), so
+        WindowStartupLocation="CenterScreen"/Topmost/ShowInTaskbar="False"
+        match MacroCodesWindow.xaml's shell instead.
+
+        Years is required (0-120, same range DataEntryPopupViewModel's own
+        age stage validates); Months is optional, for a finer under-2
+        filter (0-23) - most patients just leave it blank. See
+        AgePromptInput (pure parse/validate, shared with the OK button's
+        enabled state below) and MainWindow.ShowAgeMacroPrompt for how the
+        result feeds AgeMacroCodesUrlBuilder + MacroCodesWindow.
+    -->
+    <StackPanel Margin="16">
+        <TextBlock Text="Patient age" FontWeight="Bold"/>
+        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+            <StackPanel>
+                <TextBlock Text="Years"/>
+                <TextBox x:Name="YearsTextBox" Width="70"
+                         PreviewTextInput="AgeTextBox_OnPreviewTextInput"
+                         TextChanged="AgeTextBox_OnTextChanged"
+                         KeyDown="AgeTextBox_OnKeyDown"/>
+            </StackPanel>
+            <StackPanel Margin="16,0,0,0">
+                <TextBlock Text="Months (if under 2)"/>
+                <TextBox x:Name="MonthsTextBox" Width="70"
+                         PreviewTextInput="AgeTextBox_OnPreviewTextInput"
+                         TextChanged="AgeTextBox_OnTextChanged"
+                         KeyDown="AgeTextBox_OnKeyDown"/>
+            </StackPanel>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="OkButton" Content="OK" Padding="12,4" Margin="0,0,8,0"
+                    IsEnabled="False" IsDefault="True" Click="OkButton_OnClick"/>
+            <Button Content="Cancel" Padding="12,4" IsCancel="True" Click="CancelButton_OnClick"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

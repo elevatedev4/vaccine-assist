@@ -23,9 +23,10 @@ namespace VaccineAssist.Desktop;
 /// comment for the V-T-single-nav change (one CloudPageView, full window,
 /// no native TabControl). This class still owns everything that must
 /// live for the WHOLE signed-in session regardless of which cloud route
-/// is currently showing: the two global hotkeys (Ctrl+NumPad7 data entry,
-/// Ctrl+Keypad 8 macro codes), the tray icon, the data-entry/macro-codes
-/// popups, and (new, Part 4) the Pioneer overlay icon.
+/// is currently showing: the three global hotkeys (Ctrl+NumPad7 data
+/// entry, Ctrl+Keypad 8 macro codes, Ctrl+Keypad 4 age-filtered macro
+/// codes), the tray icon, the data-entry/macro-codes popups, and (new,
+/// Part 4) the Pioneer overlay icon.
 ///
 /// Also owns the V-T3 global hotkey (Ctrl+NumPad7): registered here
 /// (not a standalone window) since MainWindow is the one window that
@@ -37,6 +38,12 @@ namespace VaccineAssist.Desktop;
 /// MainWindow as the data-entry hotkey above; the two GlobalHotKey
 /// instances are otherwise unrelated (distinct ids, distinct vk, distinct
 /// popups) and neither's registration/lifecycle affects the other's.
+///
+/// 2026-09-25: also owns a third, independent global hotkey — Ctrl+Keypad 4 —
+/// for the age-filtered macro-codes flow (Will's brief, verbatim: "Add
+/// new hotkey Ctrl+Keypad 4 that shows a screen to enter patient age,
+/// then shows the macro codes page filtered..."). Same reasoning/
+/// independence as the other two; see ShowAgeMacroPrompt.
 ///
 /// 2026-09-13 (tray): also owns a TrayIconController for the whole
 /// signed-in session, same "one instance, lives as long as this window
@@ -102,6 +109,7 @@ public partial class MainWindow : Window
 
     private GlobalHotKey? _dataEntryHotKey;
     private GlobalHotKey? _macroCodesHotKey;
+    private GlobalHotKey? _ageMacroHotKey;
 
     /// <summary>
     /// Set right before a REAL close is wanted (the tray menu's Exit, or
@@ -137,11 +145,39 @@ public partial class MainWindow : Window
     /// </summary>
     private MacroCodesWindow? _openMacroCodesPopup;
 
+    /// <summary>
+    /// 2026-09-25: the currently-open age-macro popup, if any — same
+    /// "at most one at a time, re-activate rather than stack" rule as
+    /// _openMacroCodesPopup above, but tracked separately (not sharing
+    /// that field) so this new Ctrl+Keypad 4 flow can't interfere with
+    /// the existing Ctrl+Keypad 8 popup's own single-instance bookkeeping.
+    /// Both fields can be non-null at the same time (a pharmacist could,
+    /// in principle, have one of each open); MainWindow_OnClosed closes
+    /// both explicitly on sign-out/window-close for the same reason
+    /// _openMacroCodesPopup's doc comment gives.
+    /// </summary>
+    private MacroCodesWindow? _openAgeMacroPopup;
+
+    /// <summary>
+    /// True only while AgePromptWindow.ShowAndGetResult's modal ShowDialog
+    /// is up (see ShowAgeMacroPrompt). ShowDialog runs its own nested
+    /// message loop, which still dispatches this app's WM_HOTKEY messages
+    /// — so a repeat Ctrl+Keypad 4 press WHILE the age prompt is already
+    /// showing would otherwise re-enter ShowAgeMacroPrompt and stack a
+    /// second AgePromptWindow on top of the first (_openAgeMacroPopup is
+    /// still null at that point; it's only set once a code-copy flow
+    /// actually opens a MacroCodesWindow). This flag closes that gap.
+    /// </summary>
+    private bool _ageMacroPromptShowing;
+
     /// <summary>Process-unique id for RegisterHotKey — arbitrary but must not collide with another hotkey id this process registers.</summary>
     private const int DataEntryHotKeyId = 1;
 
     /// <summary>Process-unique id for the Ctrl+Keypad 8 macro-codes hotkey's RegisterHotKey call — must differ from DataEntryHotKeyId (the only other id this process registers).</summary>
     private const int MacroCodesHotKeyId = 2;
+
+    /// <summary>Process-unique id for the Ctrl+Keypad 4 age-macro hotkey's RegisterHotKey call — must differ from DataEntryHotKeyId/MacroCodesHotKeyId (the only other ids this process registers).</summary>
+    private const int AgeMacroHotKeyId = 3;
 
     /// <param name="cloudPageView">
     /// A freshly-constructed, NOT-yet-initialized CloudPageView (see its
@@ -323,6 +359,23 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
+
+        // 2026-09-25: Ctrl+Keypad 4 age-macro flow — a third, independent
+        // GlobalHotKey instance (distinct id, distinct vk), same
+        // registration/failure-handling pattern as the two above.
+        _ageMacroHotKey = new GlobalHotKey(this, AgeMacroHotKeyId, GlobalHotKey.VK_NUMPAD4);
+        _ageMacroHotKey.Pressed += (_, _) => ShowAgeMacroPrompt();
+
+        var ageMacroRegistered = _ageMacroHotKey.Register();
+        if (!ageMacroRegistered)
+        {
+            MessageBox.Show(
+                this,
+                "Couldn't register the Ctrl+Keypad 4 age-macro hotkey — it may already be in use by another application.",
+                "Vaccine Assist",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     /// <summary>
@@ -425,6 +478,9 @@ public partial class MainWindow : Window
         _macroCodesHotKey?.Dispose();
         _macroCodesHotKey = null;
 
+        _ageMacroHotKey?.Dispose();
+        _ageMacroHotKey = null;
+
         _trayIconController?.Dispose();
         _pioneerOverlayController?.Dispose();
         _faxRunScheduler.Dispose();
@@ -444,6 +500,9 @@ public partial class MainWindow : Window
 
         _openMacroCodesPopup?.Close();
         _openMacroCodesPopup = null;
+
+        _openAgeMacroPopup?.Close();
+        _openAgeMacroPopup = null;
     }
 
     /// <summary>
@@ -530,6 +589,88 @@ public partial class MainWindow : Window
         };
         _openMacroCodesPopup = popup;
 
+        popup.Show();
+    }
+
+    /// <summary>
+    /// Ctrl+Keypad 4 (Will, 2026-09-25, verbatim): "Add new hotkey
+    /// Ctrl+Keypad 4 that shows a screen to enter patient age, then shows
+    /// the macro codes page filtered to only show vaccines suitable for
+    /// their age range, then when someone clicks the macro code, it
+    /// copies the code, closes that screen, and pushes Ctrl+Keypad 2,
+    /// which will activate our on-computer macro. The macro will take
+    /// care of the rest." Same "at most one instance, re-activate instead
+    /// of stacking" rule as ShowMacroCodesPopup above — see
+    /// _openAgeMacroPopup's doc comment.
+    ///
+    /// Captures the foreground window BEFORE showing the age prompt (not
+    /// after, and not right before opening the macro-codes window) so
+    /// whatever the pharmacist was doing (typically PioneerRx) — not this
+    /// app's own AgePromptWindow — is what gets restored once a code is
+    /// copied; see MacroCodesWindow's previousForegroundWindow parameter
+    /// and MacroCodesWindow_OnClosed.
+    ///
+    /// AgePromptWindow.ShowAndGetResult is modal (ShowDialog) — reached
+    /// directly from the hotkey's Pressed event (itself raised
+    /// synchronously from GlobalHotKey.WndProc), same posture as the
+    /// other two hotkey handlers above, which also do their popup
+    /// creation/showing synchronously on this callback.
+    /// </summary>
+    private void ShowAgeMacroPrompt()
+    {
+        if (_openAgeMacroPopup is not null)
+        {
+            _openAgeMacroPopup.BringToFront();
+            return;
+        }
+
+        if (_ageMacroPromptShowing)
+        {
+            return;
+        }
+
+        AppFileLog.Log("[AgeMacro] prompt");
+
+        var previousForegroundWindow = GetForegroundWindow();
+        AgePromptResult result;
+        _ageMacroPromptShowing = true;
+        try
+        {
+            result = AgePromptWindow.ShowAndGetResult();
+        }
+        finally
+        {
+            _ageMacroPromptShowing = false;
+        }
+
+        if (!result.Confirmed)
+        {
+            AppFileLog.Log("[AgeMacro] cancelled");
+            return;
+        }
+
+        AppFileLog.Log(result.Months is int months
+            ? $"[AgeMacro] age {result.Years}y {months}mo"
+            : $"[AgeMacro] age {result.Years}");
+
+        var url = AgeMacroCodesUrlBuilder.BuildUrl(_settings.CloudApiBaseUrl, result.Years, result.Months);
+        var popup = new MacroCodesWindow(
+            _settings.CloudApiBaseUrl,
+            _clipboardService,
+            previousForegroundWindow,
+            overrideUrl: url,
+            sendCtrlNumPad2OnClose: true);
+
+        popup.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_openAgeMacroPopup, popup))
+            {
+                _openAgeMacroPopup = null;
+            }
+        };
+        _openAgeMacroPopup = popup;
+
+        AppFileLog.Log("[AgeMacro] opened");
         popup.Show();
     }
 
