@@ -13,6 +13,7 @@ import {
 } from "@/lib/macro-catalog";
 import type { ProductView } from "@/lib/product-view";
 import { covidVaccineMaker, stripCovidMakerPrefix, vaccineDisplayName } from "@/lib/vaccine-display-name";
+import { parseAgeRange, ageRangeIncludes } from "@/lib/age-range";
 
 export type { MacroSection, MacroTopGroup } from "@/lib/macro-catalog";
 
@@ -819,6 +820,53 @@ export function filterMacroTopGroups(topGroups: readonly MacroTopGroupBlock[], q
       const sectionNameMatches =
         section.section.toLowerCase().includes(needle) || macroSectionDisplayName(section.section).toLowerCase().includes(needle);
       const products = sectionNameMatches ? section.products : section.products.filter(productMatches);
+      if (products.length > 0) filteredSections.push({ ...section, products });
+    }
+    if (filteredSections.length > 0) filteredGroups.push({ ...block, sections: filteredSections });
+  }
+  return filteredGroups;
+}
+
+/**
+ * V-macro-age-filter (Will's verbatim ask, 2026-09-25): backs the
+ * desktop's new Ctrl+Numpad4 flow — it asks a patient's age, then opens
+ * /macro-codes?embed=1&age=N filtered to only the vaccines that age is
+ * eligible for. Same shape/posture as filterMacroTopGroups above
+ * (narrows groupSectionsByTopGroup's output, omits an empty section/
+ * group entirely) but matches by lib/age-range.ts's ageRangeIncludes
+ * against each product's catalog `age` label instead of a text query.
+ *
+ * `ageYears === null` (no age filter active) returns `topGroups`
+ * UNCHANGED, by reference — same "no-op on nothing to filter by" as
+ * filterMacroTopGroups' empty-query case.
+ *
+ * A product whose age label doesn't parse at all (parseAgeRange
+ * returns `[]` — "" for an unrecognized short code, or any other
+ * unparseable text) is never excluded (ageRangeIncludes's own
+ * documented behavior) but per Will's brief is not a CONFIRMED match
+ * either, so it's sorted after every product that genuinely matched,
+ * within its section — a tech filtering by age sees the vaccines known
+ * to fit first, with anything unrecognized still visible but out of
+ * the way at the bottom rather than mixed in at its normal age-sorted
+ * position.
+ */
+export function filterMacroProductsByAge(topGroups: readonly MacroTopGroupBlock[], ageYears: number | null): MacroTopGroupBlock[] {
+  if (ageYears === null) return topGroups as MacroTopGroupBlock[];
+
+  const filteredGroups: MacroTopGroupBlock[] = [];
+  for (const block of topGroups) {
+    const filteredSections: MacroSectionGroup[] = [];
+    for (const section of block.sections) {
+      const matched: MacroProductGroup[] = [];
+      const unknown: MacroProductGroup[] = [];
+      for (const product of section.products) {
+        if (parseAgeRange(product.age).length === 0) {
+          unknown.push(product);
+        } else if (ageRangeIncludes(product.age, ageYears)) {
+          matched.push(product);
+        }
+      }
+      const products = [...matched, ...unknown];
       if (products.length > 0) filteredSections.push({ ...section, products });
     }
     if (filteredSections.length > 0) filteredGroups.push({ ...block, sections: filteredSections });

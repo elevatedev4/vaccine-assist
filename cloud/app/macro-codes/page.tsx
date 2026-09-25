@@ -9,6 +9,7 @@ import {
   buildMacroCode,
   buildMacroRows,
   doseButtonShortLabel,
+  filterMacroProductsByAge,
   filterMacroTopGroups,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
@@ -329,6 +330,13 @@ const styles = {
     borderRadius: 5,
     boxSizing: "border-box" as const,
   },
+  // V-macro-age-filter: the "Showing vaccines for age N / Show all" note
+  // the desktop's Ctrl+Numpad4 flow relies on — visible in embed mode
+  // too (unlike styles.heading above, which embed hides), just smaller
+  // so it fits the popup's tight vertical budget.
+  ageFilterNote: { margin: "0 0 0.5rem", fontSize: "0.85rem", color: "#333" },
+  ageFilterNoteEmbed: { margin: "0 0 4px", fontSize: 11, color: "#333" },
+  ageFilterClearLink: { marginLeft: "0.5rem", color: "#0b63c5" },
 } as const;
 
 // Round 11: CopyFallback/copyToClipboard/missingNote/SECTION_COLORS now
@@ -360,6 +368,42 @@ export default function MacroCodesPage() {
 function MacroCodesPageContent() {
   const searchParams = useSearchParams();
   const embed = searchParams.get("embed") === "1";
+
+  // V-macro-age-filter (Will's verbatim ask, 2026-09-25): the desktop's
+  // new Ctrl+Numpad4 flow opens this page as
+  // `/macro-codes?embed=1&age=N` (years, decimal allowed, e.g. "0.5")
+  // or, for an infant, `&ageMonths=N` (integer months) — ageMonths
+  // WINS over age when both are present, since it's the more precise
+  // unit for that case. An invalid/unparseable value (non-numeric,
+  // negative, a non-integer ageMonths) is treated the same as the
+  // param being absent: no filter, no note shown — this page never
+  // errors out of a malformed query string.
+  const ageParam = searchParams.get("age");
+  const ageMonthsParam = searchParams.get("ageMonths");
+  const requestedAgeYears = useMemo(() => {
+    if (ageMonthsParam !== null) {
+      const months = Number(ageMonthsParam);
+      return Number.isInteger(months) && months >= 0 ? months / 12 : null;
+    }
+    if (ageParam !== null) {
+      const years = Number(ageParam);
+      return Number.isFinite(years) && years >= 0 ? years : null;
+    }
+    return null;
+  }, [ageParam, ageMonthsParam]);
+
+  // "Show all" (rendered below, next to the age-filter note) clears the
+  // filter for the rest of this page view without touching the URL —
+  // simpler than a router.replace, and the desktop host doesn't need to
+  // see the clear happen. Resets if the URL's age params themselves
+  // change (a fresh popup open should never inherit the last one's
+  // "cleared" state).
+  const [ageFilterCleared, setAgeFilterCleared] = useState(false);
+  useEffect(() => {
+    setAgeFilterCleared(false);
+  }, [ageParam, ageMonthsParam]);
+  const activeAgeYears = ageFilterCleared ? null : requestedAgeYears;
+  const ageFilterLabel = ageMonthsParam !== null && requestedAgeYears !== null ? `${ageMonthsParam} month${ageMonthsParam === "1" ? "" : "s"}` : ageParam ?? "";
 
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -590,9 +634,19 @@ function MacroCodesPageContent() {
   const sections = useMemo(() => groupMacroRowsBySection(rows), [rows]);
   const topGroups = useMemo(() => groupSectionsByTopGroup(sections), [sections]);
 
+  // V-macro-age-filter: the Ctrl+Numpad4 popup's age filter runs FIRST
+  // (narrowing to age-eligible products, unknowns last within each
+  // section — see lib/macro-codes.ts's filterMacroProductsByAge), then
+  // version C's live text filter narrows that further — the two are
+  // independent and compose in either order the tech uses them.
+  const ageFilteredTopGroups = useMemo(() => filterMacroProductsByAge(topGroups, activeAgeYears), [topGroups, activeAgeYears]);
+
   // Version C's live filter — the page's only layout now, so this
   // always applies.
-  const visibleTopGroups = useMemo(() => filterMacroTopGroups(topGroups, filterQuery), [topGroups, filterQuery]);
+  const visibleTopGroups = useMemo(
+    () => filterMacroTopGroups(ageFilteredTopGroups, filterQuery),
+    [ageFilteredTopGroups, filterQuery]
+  );
 
   const rowKey = macroRowKey;
 
@@ -1101,6 +1155,26 @@ function MacroCodesPageContent() {
   return (
     <main style={embed ? { ...styles.main, padding: "8px" } : styles.main}>
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
+
+      {/* V-macro-age-filter: shown whenever an age filter is active,
+       * regardless of embed — this note is the whole point of the
+       * Ctrl+Numpad4 flow, so it can't be hidden by embed mode's
+       * no-heading rule the way the plain "Macro codes" <h1> above is. */}
+      {activeAgeYears !== null && (
+        <p style={embed ? styles.ageFilterNoteEmbed : styles.ageFilterNote}>
+          Showing vaccines for age {ageFilterLabel}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              setAgeFilterCleared(true);
+            }}
+            style={styles.ageFilterClearLink}
+          >
+            Show all
+          </a>
+        </p>
+      )}
 
       {/* Embed compact (2026-09-13, Ctrl+8 popup target 980x760, see the
        * <style> tag's EMBED COMPACT block below for the full height
