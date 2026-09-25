@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Models;
+using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.ViewModels;
 
 namespace VaccineAssist.Desktop.Views;
@@ -48,7 +49,12 @@ public partial class SchedulingView : UserControl
         {
             ScheduleGrid.Columns.Add(new DataGridTextColumn
             {
-                Header = vaccineName,
+                // V-T55 (Will, 2026-09-25): the column HEADER is
+                // display-only, so it gets the maker prefix; ConverterParameter
+                // stays the raw name — it's the dictionary key
+                // ScheduleDisplayRow.CountsByVaccine is actually keyed by
+                // (see VaccineCountConverter), so it must not change.
+                Header = VaccineDisplayName.For(vaccineName),
                 Binding = new Binding(nameof(ScheduleDisplayRow.CountsByVaccine))
                 {
                     Converter = CountConverter,

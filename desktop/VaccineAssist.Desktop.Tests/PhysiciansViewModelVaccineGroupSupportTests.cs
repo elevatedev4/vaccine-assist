@@ -63,7 +63,8 @@ public class PhysiciansViewModelVaccineGroupSupportTests
         Assert.DoesNotContain(viewModel.VaccineOptions, o => o.IsGroupWildcard);
         // Specific vaccines must still be selectable — only the group
         // ("All ... vaccines") option is gated, not the whole feature.
-        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID vaccines" && o.DisplayText == "Comirnaty 2025-26 12+");
+        // V-T55 (Will, 2026-09-25): DisplayText carries the maker prefix.
+        Assert.Contains(viewModel.VaccineOptions, o => o.Group == "COVID vaccines" && o.DisplayText == "Pfizer Comirnaty 2025-26 12+");
         // V-T21 item 7: Boostrix (fine-grained "Tetanus/whooping cough")
         // buckets into the physicians-tab catch-all "Other vaccines".
         Assert.Contains(viewModel.VaccineOptions, o => o.Group == "Other vaccines" && o.DisplayText == "Boostrix");

@@ -1065,7 +1065,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
     {
         if (resolution.UsedDefault)
         {
-            LogStepMessage($"[Prep] No {fieldLabel} on file for {SelectedVaccine?.Name} — using catalog default \"{resolution.Value}\".");
+            LogStepMessage($"[Prep] No {fieldLabel} on file for {VaccineDisplayName.For(SelectedVaccine?.Name)} — using catalog default \"{resolution.Value}\".");
         }
     }
 
@@ -1090,7 +1090,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
             await RefreshSelectedVaccineActiveLotAsync();
             NewLotNumber = "";
             NewLotNote = null;
-            StatusMessage = $"Added lot {created.LotNumber} for {SelectedVaccine.Name}.";
+            StatusMessage = $"Added lot {created.LotNumber} for {VaccineDisplayName.For(SelectedVaccine.Name)}.";
         }
         catch (Exception ex)
         {
@@ -1540,17 +1540,20 @@ public sealed class DataEntryPopupViewModel : ObservableObject
 
         if (lot is not null)
         {
+            // V-T55 (Will, 2026-09-25): VaccineEntryPayload.VaccineName is
+            // display-only (never typed into Pioneer — see that record's
+            // own doc comment), so the maker prefix applies here too.
             return new VaccineEntryPayload(SelectedVaccine.ShortCode, lot.LotNumber, lot.ExpirationMacroFormat, AdminSite.ToDisplayText(),
-                Ndc: ndc, Quantity: quantity, Directions: directions, VaccineName: SelectedVaccine.Name);
+                Ndc: ndc, Quantity: quantity, Directions: directions, VaccineName: VaccineDisplayName.For(SelectedVaccine.Name));
         }
 
         if (SkipLotAndExpiration)
         {
             return new VaccineEntryPayload(SelectedVaccine.ShortCode, "", "", AdminSite.ToDisplayText(),
-                Ndc: ndc, SkipLotAndExpiration: true, Quantity: quantity, Directions: directions, VaccineName: SelectedVaccine.Name);
+                Ndc: ndc, SkipLotAndExpiration: true, Quantity: quantity, Directions: directions, VaccineName: VaccineDisplayName.For(SelectedVaccine.Name));
         }
 
-        ErrorMessage = $"No unexpired lot on file for {SelectedVaccine.Name} — add one below, or choose \"Leave lot/expiration blank\" to continue without one.";
+        ErrorMessage = $"No unexpired lot on file for {VaccineDisplayName.For(SelectedVaccine.Name)} — add one below, or choose \"Leave lot/expiration blank\" to continue without one.";
         return null;
     }
 
@@ -1607,7 +1610,7 @@ public sealed class DataEntryPopupViewModel : ObservableObject
         var physician = physicianTask.Result;
         if (physician is null)
         {
-            ErrorMessage = $"No protocol physician configured for {SelectedVaccine.Name} at age {age} — " +
+            ErrorMessage = $"No protocol physician configured for {VaccineDisplayName.For(SelectedVaccine.Name)} at age {age} — " +
                 "add one (or a matching rule) in the Physicians settings tab, then try again.";
             // REVIEWER FIX (request-changes round, 2026-09-11): this is a
             // SUCCESSFULLY completed task that just resolved to "no
