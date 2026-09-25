@@ -261,14 +261,23 @@ import {
  *   written for — see the next bullet.
  * - Height: this page no longer tries to fit a fixed guessed window
  *   size at all. It reports its own rendered size to the desktop host —
- *   lib/macro-embed.ts's postContentSize(width, height), using
- *   `document.documentElement.scrollHeight` — once after first paint
- *   and again on every subsequent size change (a ResizeObserver on
- *   `document.documentElement`, debounced ~50ms) below, and
+ *   lib/macro-embed.ts's postContentSize(width, height) — once after
+ *   first paint and again on every subsequent size change (a
+ *   ResizeObserver on `<main>` itself, debounced ~50ms) below, and
  *   MacroCodesWindow.xaml.cs resizes the actual WPF window to match
- *   (see that file's own round-3 note). `overflow: hidden` on `body`
- *   (this file's embed-only global CSS rule) is dropped for the same
- *   reason: the window can still end up shorter than the content on a
+ *   (see that file's own round-3 note). The measurement target is
+ *   `<main>` (embedContentEl, set via a callback ref), NOT
+ *   `document.documentElement` — the root element's scrollHeight is
+ *   `max(viewport height, content height)` per the CSSOM View spec, so
+ *   once the WebView2 viewport was ever as tall as the window's current
+ *   height, it could never report SHORTER again: the window would grow
+ *   for a long list but never shrink back for a short filtered one,
+ *   which is exactly the "extra space at the bottom" the brief called
+ *   out. `<main>`'s own getBoundingClientRect() has no such floor. This
+ *   file's embed-only global CSS rule also zeroes `body`'s default ~8px
+ *   margin, so nothing outside `<main>`'s own measured box adds
+ *   unaccounted-for height — and drops `overflow: hidden` on `body`
+ *   entirely: the window can still end up shorter than the content on a
  *   small monitor (clamped to the work area), and when it does the
  *   WebView2 control needs to scroll internally rather than clip.
  */
@@ -496,6 +505,15 @@ function MacroCodesPageContent() {
   // case: `embed` still exists for the popup's compact styling, but
   // doesn't need to "force" a layout anymore since there's only one.
   const [filterQuery, setFilterQuery] = useState("");
+
+  // MACRO-POPUP ROUND 3 FIX: the `<main>` DOM node, captured via a
+  // callback ref (`<main ref={setEmbedContentEl}>` below) rather than a
+  // plain useRef so the content-size-reporting effect further down can
+  // depend on it and correctly re-run once `<main>` actually mounts —
+  // see that effect's own doc comment for why a ref alone isn't enough
+  // here (this page shows AuthLoading/SignInGate, with no `<main>` at
+  // all, before session/authChecked resolve).
+  const [embedContentEl, setEmbedContentEl] = useState<HTMLElement | null>(null);
 
   function resetAfterSignOut() {
     setVaccines([]);
@@ -884,39 +902,74 @@ function MacroCodesPageContent() {
     };
   }, [embed, modal, anyMenuOpen]);
 
-  // MACRO-POPUP ROUND 3 (Will's verbatim ask, 2026-09-25): reports this
-  // page's rendered size to the desktop host — lib/macro-embed.ts's
-  // postContentSize, using `document.documentElement.scrollHeight` for
-  // height (see that file's own doc comment for why this is the right
-  // number for MacroCodesWindow.xaml.cs to size against) — once after
-  // first paint, then again on every subsequent size change (the live
-  // filter narrowing the grid, an age filter applying, a ⚙ menu or the
-  // lot/exp modal opening, a window/font load). A ResizeObserver on
-  // `document.documentElement` catches all of those without this page
-  // needing to know which state changes affect layout; debounced ~50ms
-  // since a ResizeObserver can fire in a tight burst for one visual
-  // change (e.g. a font finishing its load).
+  // MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): the first cut of
+  // this effect measured `document.documentElement.scrollHeight`, but
+  // per the CSSOM View spec the ROOT element's scrollHeight is
+  // `max(viewport height, content height)` — once the WebView2 viewport
+  // is as tall as the window's current height, scrollHeight can never
+  // report SMALLER than that again, so the window could grow for a long
+  // list but never shrink back down for a short filtered one — exactly
+  // Will's "extra space at the bottom" complaint this whole round
+  // exists to fix. Measuring `<main>` itself instead (embedContentEl,
+  // set via the `<main ref={setEmbedContentEl}>` callback ref below)
+  // sidesteps that entirely: an element's own rendered box has no
+  // viewport-based floor, whatever the viewport happens to be sized to
+  // right now. `body { margin: 0 }` (this file's embed-only global CSS
+  // rule) makes the number exact — the ~8px UA-default body margin
+  // would otherwise add a stray gap around `<main>` that never shows up
+  // in `<main>`'s own measured height, silently under-reporting.
+  //
+  // A plain useRef doesn't work here: `<main>` doesn't exist yet on the
+  // renders where this page shows AuthLoading/SignInGate (before
+  // authChecked/session), and this effect has no reason to re-run once
+  // `embed` itself stops changing. A CALLBACK ref stored in state fixes
+  // that — React calls it (and this component re-renders) the moment
+  // `<main>` actually mounts, so the effect below (which depends on
+  // `embedContentEl`) reruns and finds a real element instead of
+  // permanently no-op'ing on a still-null ref.
+  //
+  // Reports after first paint, then again on every subsequent size
+  // change (the live filter narrowing the grid, an age filter applying,
+  // a ⚙ menu or the lot/exp modal opening, a window/font load). A
+  // ResizeObserver on `embedContentEl` catches all of those without this
+  // page needing to know which state changes affect layout; debounced
+  // ~50ms since a ResizeObserver can fire in a tight burst for one
+  // visual change (e.g. a font finishing its load). `ResizeObserver`
+  // itself is guarded — some WebView2 builds may lack it — falling back
+  // to just the one first-paint report with no ongoing observation.
   useEffect(() => {
-    if (!embed) return;
+    if (!embed || !embedContentEl) return;
+    // Captured into a plain local so the nested report() closure below
+    // has a non-null type — TS's null-narrowing on `embedContentEl`
+    // above doesn't carry into a nested function declaration, since its
+    // call time (inside a timeout/observer callback) isn't visible to
+    // control-flow analysis.
+    const element = embedContentEl;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     function report() {
-      postContentSize(document.documentElement.scrollWidth, document.documentElement.scrollHeight);
+      const rect = element.getBoundingClientRect();
+      postContentSize(rect.width, rect.height);
     }
     function scheduleReport() {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(report, 50);
     }
     // First paint: rAF so this runs after the browser has actually laid
-    // out the frame the mount produced, not synchronously during it.
+    // out the frame the mount produced, not synchronously during it —
+    // also the entire size-reporting path when ResizeObserver is
+    // unavailable (see the guard below): one report, no further updates.
     const firstPaintFrame = requestAnimationFrame(scheduleReport);
-    const observer = new ResizeObserver(scheduleReport);
-    observer.observe(document.documentElement);
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(scheduleReport);
+      observer.observe(element);
+    }
     return () => {
       cancelAnimationFrame(firstPaintFrame);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
-      observer.disconnect();
+      observer?.disconnect();
     };
-  }, [embed]);
+  }, [embed, embedContentEl]);
 
   if (!authChecked) {
     return <AuthLoading />;
@@ -1232,7 +1285,10 @@ function MacroCodesPageContent() {
   }
 
   return (
-    <main style={embed ? { ...styles.main, padding: "12px 24px" } : styles.main}>
+    <main
+      ref={setEmbedContentEl}
+      style={embed ? { ...styles.main, padding: "12px 24px" } : styles.main}
+    >
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
 
       {/* V-macro-age-filter: shown whenever an age filter is active,
@@ -1438,7 +1494,7 @@ function MacroCodesPageContent() {
        * below is unrelated to any of this and unchanged — it's the
        * phone-width fallback for the page's normal, non-embed use too. */}
       <style>{`
-        ${embed ? "nav[data-top-nav] { display: none !important; } body { background: #fff !important; }" : ""}
+        ${embed ? "nav[data-top-nav] { display: none !important; } body { background: #fff !important; margin: 0 !important; }" : ""}
         .macro-groups {
           flex-wrap: wrap;
         }

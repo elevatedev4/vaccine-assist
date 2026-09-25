@@ -42,10 +42,15 @@ export type MacroCancelMessage = { type: "vaccine-assist:macro-cancel" };
  * height fit only what it needs to be able to show everything, not
  * extra space at the bottom." Sent after this page's first paint and
  * again on every subsequent content-size change (a ResizeObserver on
- * `document.documentElement` — see app/macro-codes/page.tsx) so
+ * the page's own top-level `<main>` content element — NOT
+ * `document.documentElement`; that root element's scrollHeight is
+ * `max(viewport height, content height)` per the CSSOM View spec, so it
+ * can never report smaller than whatever the window is already sized
+ * to and would defeat the whole point of this message — see
+ * app/macro-codes/page.tsx's own doc comment on this) so
  * MacroCodesWindow can size its window to the content instead of a
- * fixed guess. `width`/`height` are CSS px — `document.documentElement.
- * scrollHeight` for height — which WebView2 reports (and the desktop
+ * fixed guess. `width`/`height` are CSS px — `<main>`'s own
+ * getBoundingClientRect() — which WebView2 reports (and the desktop
  * host applies) as WPF DIPs directly, since the page renders at the
  * host's default zoom.
  */
