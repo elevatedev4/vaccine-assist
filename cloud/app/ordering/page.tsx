@@ -10,9 +10,10 @@ import { deriveProductViewFields } from "@/lib/product-view";
 import { computeHeadingTotals } from "@/lib/ordering-heading-totals";
 import { formatNdcDashed } from "@/lib/ndc";
 import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
-import { buildToOrderRows } from "@/lib/ordering-to-order";
-import { SaveStatusIndicator, TargetInput, type SaveStatus } from "@/app/ordering/target-input";
+import { buildToOrderRows, type ToOrderRow } from "@/lib/ordering-to-order";
+import { SaveStatusIndicator, TargetInput, OrderedTodayInput, type SaveStatus } from "@/app/ordering/target-input";
 import { vaccineDisplayName } from "@/lib/vaccine-display-name";
+import { remainingPackages, splitByOrderedToday } from "@/lib/ordering-ordered-today";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -52,6 +53,36 @@ import { vaccineDisplayName } from "@/lib/vaccine-display-name";
  *     with tighter row padding
  *   - "All vaccines — on hand, schedule, last 7 days given" heading now
  *     separates the To-order table from the full table below it
+ *
+ * V-ordering-ordered-today (Will 2026-09-25, verbatim): "Add a field to
+ * the table/recommended order where I can enter the # packages I have
+ * ordered for today, they way I can keep track of what I've ordered and
+ * know if I need to order more. If something has met the total amount
+ * we were supposed to order, you can mark it as 'already ordered full
+ * amount' and separate it to the bottom of the recommended order." —
+ * "the table/recommended order" is the "To order" table above (NOT the
+ * "All vaccines" BOH table below it, which is untouched):
+ *   - a new "Ordered today" (pkg) input per row (app/ordering/
+ *     target-input.tsx's OrderedTodayInput), autosaving via PUT
+ *     /api/ordering/ordered-today, persisted per product per America/
+ *     Chicago calendar day (see that route + lib/ordering-ordered-today.ts)
+ *   - the Order qty (pkg) cell grows a muted "(N left)" suffix once
+ *     something's been entered today, e.g. "3 (1 left)" — chosen over a
+ *     separate "Remaining" column specifically so every row stays ONE
+ *     LINE (this page's long-standing layout rule — see V-T51's doc
+ *     comment in target-input.tsx)
+ *   - lib/ordering-ordered-today.ts's splitByOrderedToday STABLE-
+ *     partitions the already-sorted toOrderRows into "still to order"
+ *     and "fully ordered" WITHOUT re-sorting either group (Will: "Sorting
+ *     inside each group stays as today") — rendered as two separate
+ *     tables (same column shape) rather than one table with an inline
+ *     divider row, matching this file's existing "All vaccines" vs
+ *     "Inactive vaccines" pattern of separate tables rather than a
+ *     shared one. The second table's Order qty cell reads "Already
+ *     ordered full amount" (muted) instead of a number — Will's own
+ *     wording, marking the row directly rather than relying solely on
+ *     the heading above it — while "Ordered today" stays a live input
+ *     so lowering it moves the row back to the main list.
  */
 
 type RecommendationRow = {
@@ -93,6 +124,19 @@ type RecommendationRow = {
    * or whichever of scheduledDemand/trendDemand was larger. */
   targetSource: "override" | "scheduled" | "trend";
   order: number;
+  /** Packages entered as ordered TODAY (America/Chicago calendar day) —
+   * V-ordering-ordered-today. 0 before any PUT /api/ordering/ordered-today
+   * for this key today. */
+  orderedToday: number;
+  /** max(0, this row's Order (pkg) - orderedToday), or null when the
+   * static catalog doesn't know this product's package size yet (same
+   * "—" case Order (pkg) already renders) — computed server-side too
+   * (same lib/ordering-ordered-today.ts helper), but this page recomputes
+   * it locally from its own already-client-computed orderPackages (see
+   * enrichRow/buildToOrderRows) rather than trusting this field, so the
+   * two can never disagree on THIS page even if a future catalog change
+   * only reaches one side first. */
+  remaining: number | null;
 };
 
 type RecommendationResponse = {
@@ -108,6 +152,10 @@ type RecommendationResponse = {
   // muted note under the table so staff know the trend column is stale/
   // unavailable rather than genuinely zero.
   trendUnavailable: boolean;
+  // V-ordering-ordered-today: true when ordering_ordered_today doesn't
+  // exist yet (0015 pending) — every row's orderedToday is 0 for this
+  // response (not yet persistable), never an error.
+  orderedTodayPending: boolean;
   // Still returned by the API (GET/PUT /api/ordering/targets and
   // lib/ordering-targets.ts are left intact per Will's brief), but this
   // page no longer reads or renders it — group-scoped overrides are
@@ -192,6 +240,22 @@ const styles = {
   // spacing") by the "All vaccines" table's <th>s below, so both tables'
   // headers render identically.
   toOrderThSub: { display: "block", fontSize: "11px", color: "#888", fontWeight: 400 as const },
+  // "(N left)" suffix on the Order qty (pkg) cell (V-ordering-ordered-
+  // today) — appended inline rather than a separate column, per Will's
+  // brief ("pick the option that keeps every row one line"). Same small-
+  // muted-hint posture as toOrderThSub above.
+  toOrderRemainingHint: { fontSize: "11px", color: "#888" },
+  // Small divider/heading between the still-to-order table and the
+  // "Already ordered full amount" one below it (V-ordering-ordered-
+  // today) — deliberately lighter-weight than the page's <h2>s (this
+  // isn't a new top-level section, just a sub-grouping within "To
+  // order").
+  toOrderFullyOrderedHeading: { marginTop: "1.25rem", marginBottom: "0.25rem", fontWeight: 600, color: "#555", fontSize: "0.85rem" },
+  // Muted row style for the "Already ordered full amount" table's rows
+  // — color inherited by every plain-text child cell (the NDC button and
+  // the Ordered-today input keep their own explicit colors/borders, so
+  // they read normally even inside a muted row).
+  toOrderFullyOrderedRow: { color: "#888" },
   // NDC copy button (V-to-order-table-emphasis: "Make NDC a button that
   // they can click to copy it like we've used on macro codes") — same
   // colored-bordered-button posture as app/macro-codes/page.tsx's dose
@@ -685,6 +749,29 @@ export default function OrderingPage() {
     [session, loadRecommendation]
   );
 
+  // "Ordered today" autosave (V-ordering-ordered-today) — same
+  // "PUT then reload" shape as saveTarget above, so a save that flips a
+  // row's fully-ordered status (and therefore which of the two "To
+  // order" tables it belongs in) is reflected immediately.
+  const saveOrderedToday = useCallback(
+    async (key: string, orderedToday: number): Promise<boolean> => {
+      if (!session) return false;
+      try {
+        const response = await fetch("/api/ordering/ordered-today", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+          body: JSON.stringify({ key, orderedToday }),
+        });
+        if (!response.ok) return false;
+        await loadRecommendation(session.accessToken);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [session, loadRecommendation]
+  );
+
   // V-T26 item 2: "Copy recommended → Your target" — sets every ACTIVE
   // product row's NDC-scoped override to its own recommendedTarget via
   // the existing PUT targets API (no batch endpoint exists, so this is
@@ -831,6 +918,40 @@ export default function OrderingPage() {
   // reasoning as onHandByKey above.
   const targetByKey = useMemo(() => new Map((data?.rows ?? []).map((row) => [row.key, row.effectiveTarget] as const)), [data]);
 
+  // V-ordering-ordered-today: the To-order table's "Ordered today"
+  // column — looked up by row key, same "other coders' territory"
+  // reasoning as onHandByKey/targetByKey above (lib/ordering-to-order.ts's
+  // ToOrderRow shape isn't touched).
+  const orderedTodayByKey = useMemo(
+    () => new Map((data?.rows ?? []).map((row) => [row.key, row.orderedToday] as const)),
+    [data]
+  );
+
+  // Each toOrderRow + its live orderedToday/remaining — remaining is
+  // recomputed HERE from this page's own orderPackages (buildToOrderRows'
+  // client-side catalog lookup) rather than trusting data.rows[].remaining
+  // (the API's own copy, computed server-side from the SAME catalog) —
+  // see ToOrderRowWithOrdering's doc comment above for why.
+  type ToOrderRowWithOrdering = ToOrderRow & { orderedToday: number; remaining: number | null };
+  const toOrderRowsWithOrdering: ToOrderRowWithOrdering[] = useMemo(
+    () =>
+      toOrderRows.map((row) => {
+        const orderedToday = orderedTodayByKey.get(row.key) ?? 0;
+        return { ...row, orderedToday, remaining: remainingPackages(row.orderPackages, orderedToday) };
+      }),
+    [toOrderRows, orderedTodayByKey]
+  );
+
+  // Will's brief: rows that have met/exceeded their recommended package
+  // count today separate to the bottom, under their own heading, WITHOUT
+  // re-sorting either group — lib/ordering-ordered-today.ts's
+  // splitByOrderedToday is a stable partition, so toOrderRows' existing
+  // group/order-desc/name-asc sort survives in both halves.
+  const { remaining: toOrderRemainingRows, fullyOrdered: toOrderFullyOrderedRows } = useMemo(
+    () => splitByOrderedToday(toOrderRowsWithOrdering),
+    [toOrderRowsWithOrdering]
+  );
+
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -851,6 +972,7 @@ export default function OrderingPage() {
   }
 
   const targetsPending = data?.targetsPending ?? false;
+  const orderedTodayPending = data?.orderedTodayPending ?? false;
   const address = addressStatus && !("pending" in addressStatus && addressStatus.pending) ? addressStatus.address : null;
   const showEmailSetupLink =
     !!addressStatus && !("pending" in addressStatus && addressStatus.pending) && addressStatus.lastReceivedAt === null;
@@ -862,6 +984,65 @@ export default function OrderingPage() {
   const statusParts: string[] = [];
   if (data) statusParts.push(onHandStatusMessage(data.onHandLastReceivedAt));
   if (data?.trendUnavailable) statusParts.push("Last-7-days-given trend unavailable — using scheduled estimate only.");
+
+  // One <tr> for either "To order" table (still-to-order, or "Already
+  // ordered full amount" below it) — V-ordering-ordered-today. Kept as
+  // one render function so the NDC-copy-button/Order-qty-cell markup
+  // isn't duplicated between the two tables; `fullyOrdered` only changes
+  // the row's muted style and the Order qty cell's content (a number vs
+  // Will's own "Already ordered full amount" wording), never the
+  // column set — both tables stay the exact same shape/width.
+  function renderToOrderRow(row: ToOrderRowWithOrdering, fullyOrdered: boolean) {
+    const ndcText = formatNdcDashed(row.ndc) || "—";
+    const isCopied = copiedNdcKey === row.key;
+    const canCopy = !!row.ndc;
+    const ndcButtonText = isCopied ? NDC_COPIED_FLAG : ndcText;
+    const target = targetByKey.get(row.key) ?? null;
+
+    return (
+      <tr key={row.key} style={fullyOrdered ? styles.toOrderFullyOrderedRow : undefined}>
+        <td style={styles.toOrderTd}>{vaccineDisplayName(row.displayName)}</td>
+        <td style={styles.toOrderTd}>
+          <button
+            type="button"
+            disabled={!canCopy}
+            onClick={() => void handleCopyOrderNdc(row)}
+            title={canCopy ? `Copy ${vaccineDisplayName(row.displayName)} NDC` : "no NDC on file for this product"}
+            aria-label={canCopy ? `Copy ${vaccineDisplayName(row.displayName)} NDC ${ndcText}` : undefined}
+            style={{
+              ...(canCopy ? styles.ndcCopyButton : styles.ndcCopyButtonDisabled),
+              minWidth: `${Math.max(ndcText.length, NDC_COPIED_FLAG.length)}ch`,
+              textAlign: "center",
+            }}
+          >
+            {ndcButtonText}
+          </button>
+        </td>
+        <td style={styles.toOrderTdRight}>{onHandDisplay(onHandByKey.get(row.key) ?? null)}</td>
+        <td style={styles.toOrderTdRight}>{target ?? "—"}</td>
+        <td style={styles.toOrderTdOrderQty}>
+          {fullyOrdered ? (
+            "Already ordered full amount"
+          ) : (
+            <>
+              {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
+              {row.orderedToday > 0 && row.remaining !== null && (
+                <span style={styles.toOrderRemainingHint}> ({row.remaining} left)</span>
+              )}
+            </>
+          )}
+        </td>
+        <td style={styles.toOrderTd}>
+          <OrderedTodayInput
+            value={row.orderedToday}
+            disabled={orderedTodayPending}
+            disabledTitle={orderedTodayPending ? "activates after the database step" : undefined}
+            onSave={(value) => saveOrderedToday(row.key, value)}
+          />
+        </td>
+      </tr>
+    );
+  }
 
   const uploadControl = (
     <>
@@ -980,61 +1161,72 @@ export default function OrderingPage() {
       {toOrderRows.length === 0 ? (
         <p style={styles.muted}>Nothing to order</p>
       ) : (
-        <table style={{ ...styles.toOrderTable, marginTop: "0.5rem" }} className="to-order-table">
-          <thead>
-            <tr>
-              <th style={styles.toOrderTh}>Product</th>
-              <th style={styles.toOrderTh}>NDC</th>
-              <th style={styles.toOrderThRight}>
-                BOH
-                <span style={styles.toOrderThSub}>(doses)</span>
-              </th>
-              <th style={styles.toOrderThRight}>
-                Target
-                <span style={styles.toOrderThSub}>(doses)</span>
-              </th>
-              <th style={styles.toOrderThRight}>
-                Order qty
-                <span style={styles.toOrderThSub}>(pkg)</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {toOrderRows.map((row) => {
-              const ndcText = formatNdcDashed(row.ndc) || "—";
-              const isCopied = copiedNdcKey === row.key;
-              const canCopy = !!row.ndc;
-              const ndcButtonText = isCopied ? NDC_COPIED_FLAG : ndcText;
-              const target = targetByKey.get(row.key) ?? null;
-              return (
-                <tr key={row.key}>
-                  <td style={styles.toOrderTd}>{vaccineDisplayName(row.displayName)}</td>
-                  <td style={styles.toOrderTd}>
-                    <button
-                      type="button"
-                      disabled={!canCopy}
-                      onClick={() => void handleCopyOrderNdc(row)}
-                      title={canCopy ? `Copy ${vaccineDisplayName(row.displayName)} NDC` : "no NDC on file for this product"}
-                      aria-label={canCopy ? `Copy ${vaccineDisplayName(row.displayName)} NDC ${ndcText}` : undefined}
-                      style={{
-                        ...(canCopy ? styles.ndcCopyButton : styles.ndcCopyButtonDisabled),
-                        minWidth: `${Math.max(ndcText.length, NDC_COPIED_FLAG.length)}ch`,
-                        textAlign: "center",
-                      }}
-                    >
-                      {ndcButtonText}
-                    </button>
-                  </td>
-                  <td style={styles.toOrderTdRight}>{onHandDisplay(onHandByKey.get(row.key) ?? null)}</td>
-                  <td style={styles.toOrderTdRight}>{target ?? "—"}</td>
-                  <td style={styles.toOrderTdOrderQty}>
-                    {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
-                  </td>
+        <>
+          {toOrderRemainingRows.length === 0 ? (
+            <p style={styles.muted}>Nothing left to order today.</p>
+          ) : (
+            <table style={{ ...styles.toOrderTable, marginTop: "0.5rem" }} className="to-order-table">
+              <thead>
+                <tr>
+                  <th style={styles.toOrderTh}>Product</th>
+                  <th style={styles.toOrderTh}>NDC</th>
+                  <th style={styles.toOrderThRight}>
+                    BOH
+                    <span style={styles.toOrderThSub}>(doses)</span>
+                  </th>
+                  <th style={styles.toOrderThRight}>
+                    Target
+                    <span style={styles.toOrderThSub}>(doses)</span>
+                  </th>
+                  <th style={styles.toOrderThRight}>
+                    Order qty
+                    <span style={styles.toOrderThSub}>(pkg)</span>
+                  </th>
+                  <th style={styles.toOrderTh}>
+                    Ordered today
+                    <span style={styles.toOrderThSub}>(pkg)</span>
+                  </th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>{toOrderRemainingRows.map((row) => renderToOrderRow(row, false))}</tbody>
+            </table>
+          )}
+
+          {/* V-ordering-ordered-today: rows that have met/exceeded their
+           * recommended package count today, separated to the bottom
+           * under their own heading (Will's brief) rather than mixed
+           * into the table above. */}
+          {toOrderFullyOrderedRows.length > 0 && (
+            <>
+              <p style={styles.toOrderFullyOrderedHeading}>Already ordered full amount</p>
+              <table style={{ ...styles.toOrderTable, marginTop: "0.25rem" }} className="to-order-table">
+                <thead>
+                  <tr>
+                    <th style={styles.toOrderTh}>Product</th>
+                    <th style={styles.toOrderTh}>NDC</th>
+                    <th style={styles.toOrderThRight}>
+                      BOH
+                      <span style={styles.toOrderThSub}>(doses)</span>
+                    </th>
+                    <th style={styles.toOrderThRight}>
+                      Target
+                      <span style={styles.toOrderThSub}>(doses)</span>
+                    </th>
+                    <th style={styles.toOrderThRight}>
+                      Order qty
+                      <span style={styles.toOrderThSub}>(pkg)</span>
+                    </th>
+                    <th style={styles.toOrderTh}>
+                      Ordered today
+                      <span style={styles.toOrderThSub}>(pkg)</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>{toOrderFullyOrderedRows.map((row) => renderToOrderRow(row, true))}</tbody>
+              </table>
+            </>
+          )}
+        </>
       )}
 
       <h2 style={styles.sectionHeading}>All vaccines</h2>

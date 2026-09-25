@@ -63,6 +63,7 @@ function authedRequest() {
 
 type FakeAddress = { id: string; user_id: string; token: string; enabled: boolean; created_at: string; last_received_at: string | null };
 type FakeTargetRow = { scope: string; key: string; target_on_hand: number };
+type FakeOrderedTodayRow = { key: string; packages_ordered: number };
 
 // `address` defaults to "missing-table", which makes the real
 // getOrCreateAddressForUser (this route file does NOT mock
@@ -87,12 +88,21 @@ type FakeTargetRow = { scope: string; key: string; target_on_hand: number };
 // existing test below keeps passing unchanged; pass a number to
 // exercise a saved walk-up % setting, or "error" for a genuine
 // (non-missing-table) Supabase failure.
+//
+// `orderedTodayRows` (V-ordering-ordered-today) defaults to [] (0015
+// already applied, nothing ordered yet today) so every existing test
+// below keeps passing unchanged with orderedToday=0 for every row; pass
+// a FakeOrderedTodayRow[] to exercise a saved count, `null` to simulate
+// ordering_ordered_today not existing yet (0015 pending — the route must
+// degrade to orderedTodayPending:true, not error), or "error" for a
+// genuine (non-missing-table) Supabase failure.
 function fakeSupabase(
   onHandRows: unknown[] = [],
   catalog: unknown[] = CATALOG,
   address: FakeAddress | "missing-table" | "error" = "missing-table",
   targetRows: FakeTargetRow[] | null = [],
-  walkInPct: number | "missing-table" | "error" = "missing-table"
+  walkInPct: number | "missing-table" | "error" = "missing-table",
+  orderedTodayRows: FakeOrderedTodayRow[] | null | "error" = []
 ) {
   return {
     from: (table: string) => {
@@ -157,6 +167,22 @@ function fakeSupabase(
           };
         }
         return { select: async () => ({ data: targetRows, error: null }) };
+      }
+      if (table === "ordering_ordered_today") {
+        if (orderedTodayRows === null) {
+          return {
+            select: () => ({
+              eq: async () => ({
+                data: null,
+                error: { code: "42P01", message: 'relation "ordering_ordered_today" does not exist' },
+              }),
+            }),
+          };
+        }
+        if (orderedTodayRows === "error") {
+          return { select: () => ({ eq: async () => ({ data: null, error: new Error("connection reset") }) }) };
+        }
+        return { select: () => ({ eq: async () => ({ data: orderedTodayRows, error: null }) }) };
       }
       if (table === "app_setting") {
         return {
@@ -1237,6 +1263,94 @@ describe("GET /api/ordering/recommendation", () => {
       expect(fluRow.given7d).toBe(0);
       expect(fluRow.trendDemand).toBe(0);
       expect(fluRow.targetSource).toBe("scheduled");
+    });
+  });
+
+  // --- V-ordering-ordered-today additions (Will 2026-09-25) -----------
+
+  describe("ordered-today packages + remaining", () => {
+    // Boostrix (lib/vaccine-product-catalog.ts): dosesPerPackage=10 —
+    // used throughout so orderPackages is a known, non-null number.
+    const boostrixCatalog = [
+      { id: "v-boostrix", name: "Boostrix", short_code: "boostrix", ndc: "58160-0842-52", active: true },
+    ];
+    // target 25, onHand 5 -> order (doses) = 20 -> orderPackages = ceil(20/10) = 2.
+    const targetRows: FakeTargetRow[] = [{ scope: "ndc", key: "58160084252", target_on_hand: 25 }];
+    const onHandRows = [{ vaccine_id: "v-boostrix", ndc: "58160084252", quantity: 5, received_at: "2026-09-25T13:00:00.000Z" }];
+
+    it("defaults orderedToday to 0 and remaining to the full order-package count when nothing has been ordered yet today", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabase(onHandRows, boostrixCatalog, "missing-table", targetRows, "missing-table", []) as never
+      );
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "58160084252");
+      expect(row).toMatchObject({ order: 20, orderedToday: 0, remaining: 2 });
+      expect(body.orderedTodayPending).toBe(false);
+    });
+
+    it("subtracts a saved ordered-today packages count from the recommended package count", async () => {
+      const orderedTodayRows: FakeOrderedTodayRow[] = [{ key: "58160084252", packages_ordered: 1 }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabase(onHandRows, boostrixCatalog, "missing-table", targetRows, "missing-table", orderedTodayRows) as never
+      );
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "58160084252");
+      expect(row).toMatchObject({ order: 20, orderedToday: 1, remaining: 1 });
+    });
+
+    it("floors remaining at 0 when ordered-today packages meets or exceeds the recommended package count", async () => {
+      const orderedTodayRows: FakeOrderedTodayRow[] = [{ key: "58160084252", packages_ordered: 5 }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabase(onHandRows, boostrixCatalog, "missing-table", targetRows, "missing-table", orderedTodayRows) as never
+      );
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "58160084252");
+      expect(row).toMatchObject({ orderedToday: 5, remaining: 0 });
+    });
+
+    it("returns remaining:null when the static catalog doesn't know this product's package size yet (same 'unknown' case Order (pkg) already renders)", async () => {
+      // "Discontinued Shot" (used elsewhere in this file) isn't in
+      // lib/vaccine-product-catalog.ts, so its package size is unknown.
+      const catalog = [{ id: "v-unknown", name: "Discontinued Shot", short_code: "discontinued", ndc: null, active: true }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { key: string }) => r.key === "vaccine:v-unknown");
+      expect(row.remaining).toBeNull();
+    });
+
+    it("returns orderedTodayPending:true (never an error) and orderedToday=0 for every row before 0015 has been applied", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabase(onHandRows, boostrixCatalog, "missing-table", targetRows, "missing-table", null) as never
+      );
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+      const body = await response.json();
+
+      expect(body.orderedTodayPending).toBe(true);
+      const row = body.rows.find((r: { key: string }) => r.key === "58160084252");
+      expect(row).toMatchObject({ orderedToday: 0, remaining: 2 });
+    });
+
+    it("returns 500 for a non-missing-table ordered-today Supabase error (never silently swallowed)", async () => {
+      vi.mocked(getSupabaseServerClient).mockReturnValue(
+        fakeSupabase(onHandRows, boostrixCatalog, "missing-table", targetRows, "missing-table", "error") as never
+      );
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(500);
     });
   });
 });

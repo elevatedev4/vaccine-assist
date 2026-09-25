@@ -247,3 +247,97 @@ export function TargetInput({
     </span>
   );
 }
+
+// "Ordered today" input's own style (V-ordering-ordered-today, Will
+// 2026-09-25) — narrower than targetInputStyle (48 vs 64) since a
+// packages-ordered count is realistically 1-2 digits, keeping the "To
+// order" table's new column no wider than it needs to be.
+const orderedTodayInputStyle: CSSProperties = {
+  width: 48,
+  padding: "1px 4px",
+  boxSizing: "border-box",
+  border: "1px solid #bbb",
+  fontSize: "13px",
+};
+
+/**
+ * The "To order" table's per-row "Ordered today" cell (V-ordering-
+ * ordered-today, Will 2026-09-25 verbatim: "Add a field to the
+ * table/recommended order where I can enter the # packages I have
+ * ordered for today") — a packages count, always a non-negative
+ * integer, autosaving on blur/Enter via PUT /api/ordering/ordered-today
+ * (app/ordering/page.tsx's saveOrderedToday). Same local-editable-text +
+ * SaveStatusIndicator shape as TargetInput above, simplified: there's no
+ * "clear to fall back to a recommendation" concept here (contrast
+ * TargetInput's targetOnHand override) — an empty field just commits as
+ * 0, the same value a brand-new Chicago day implicitly starts at.
+ *
+ * `highlighted` mirrors TargetInput's own flag: true for a row still in
+ * the main "To order" list (pale-yellow-free here, since the To order
+ * table has no trOrderDue-style row highlight of its own — always
+ * passed false by page.tsx's callers, kept as a parameter only so this
+ * reuses the exact same targetSaveStatusStyle(highlighted) pill-
+ * background logic TargetInput already established rather than
+ * duplicating it with a hard-coded background).
+ */
+export function OrderedTodayInput({
+  value,
+  disabled,
+  disabledTitle,
+  onSave,
+  highlighted = false,
+}: {
+  value: number;
+  disabled?: boolean;
+  disabledTitle?: string;
+  onSave: (value: number) => Promise<boolean>;
+  highlighted?: boolean;
+}) {
+  const [text, setText] = useState(String(value));
+  const [status, setStatus] = useState<SaveStatus>("idle");
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  async function commit() {
+    const trimmed = text.trim();
+    const parsed = trimmed === "" ? 0 : Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      setStatus("error");
+      return;
+    }
+    if (parsed === value) {
+      setStatus("idle");
+      return;
+    }
+    setStatus("saving");
+    const ok = await onSave(parsed);
+    setStatus(ok ? "saved" : "error");
+    if (ok) setTimeout(() => setStatus((current) => (current === "saved" ? "idle" : current)), 2000);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+    }
+  }
+
+  return (
+    <span style={targetInputWrapperStyle}>
+      <input
+        type="number"
+        min={0}
+        step={1}
+        style={orderedTodayInputStyle}
+        value={text}
+        disabled={disabled}
+        title={disabled ? disabledTitle : undefined}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={handleKeyDown}
+      />
+      <SaveStatusIndicator status={status} style={targetSaveStatusStyle(highlighted)} />
+    </span>
+  );
+}

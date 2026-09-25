@@ -23,6 +23,9 @@ import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
 import { extractUnitFromRawLine } from "@/lib/on-hand/quantity-cell";
 import { computeDemandTarget } from "@/lib/ordering-recommendation";
 import { administeredSummary } from "@/lib/administered/store";
+import { deriveProductViewFields } from "@/lib/product-view";
+import { computeOrderPackages } from "@/lib/vaccine-product-catalog";
+import { remainingPackages } from "@/lib/ordering-ordered-today";
 
 /**
  * Ordering tab recommendation endpoint (V-ordering, 2026-08-19/20;
@@ -123,10 +126,18 @@ import { administeredSummary } from "@/lib/administered/store";
  *         "targetOnHand": null,           // this row's own NDC override, or null
  *         "effectiveTarget": 15,
  *         "targetSource": "scheduled",    // "override" | "scheduled" | "trend"
- *         "order": 7
+ *         "order": 7,
+ *         "orderedToday": 2,              // packages staff have already ordered TODAY (America/Chicago day) — V-ordering-ordered-today, 0 before any PUT /api/ordering/ordered-today for this key today
+ *         "remaining": 3                  // max(0, this row's Order (pkg) - orderedToday), or null when the static catalog doesn't know this product's package size yet (same "—" case Order (pkg) already renders)
  *       }
  *     ]
  *   }
+ *
+ * `orderedTodayPending` (V-ordering-ordered-today, sibling to
+ * targetsPending/walkInPctPending above): true when
+ * `ordering_ordered_today` doesn't exist yet (0015 pending) — every
+ * row's orderedToday stays 0 and remaining is computed as if nothing had
+ * been ordered yet, never an error.
  */
 
 /**
@@ -612,6 +623,33 @@ export async function GET(request: Request) {
       }
     }
 
+    // Ordered-today packages (V-ordering-ordered-today, Will 2026-09-25):
+    // how many packages staff have already ordered TODAY (America/
+    // Chicago calendar day — lib/chicago-date.ts's todayInChicago) for
+    // each product row — supabase/migrations/0015_ordering_ordered_today.sql,
+    // MIGRATION FILE ONLY. Degrades to every row's orderedToday=0 (never
+    // an error) before that migration has run, same posture as
+    // targetsPending/walkInPctPending.
+    const orderedTodayDate = todayInChicago();
+    const orderedTodayByKey: Record<string, number> = {};
+    let orderedTodayPending = false;
+    const { data: orderedTodayRows, error: orderedTodayError } = await supabase
+      .from("ordering_ordered_today")
+      .select("key, packages_ordered")
+      .eq("order_date", orderedTodayDate);
+    if (orderedTodayError) {
+      if (isMissingTableError(orderedTodayError)) {
+        orderedTodayPending = true;
+      } else {
+        console.error("GET /api/ordering/recommendation: failed to load ordered-today counts", orderedTodayError);
+        return NextResponse.json({ error: "Failed to load ordered-today counts." }, { status: 500 });
+      }
+    } else {
+      for (const row of (orderedTodayRows as Array<{ key: string; packages_ordered: number }>) ?? []) {
+        orderedTodayByKey[row.key] = row.packages_ordered;
+      }
+    }
+
     // Walk-up % (V-T26 item 1, Will 2026-09-09): the effective rate
     // every scheduledDemand call below uses, replacing the previously
     // hard-coded 25% — degrades to DEFAULT_WALK_IN_PCT (25) with
@@ -685,6 +723,18 @@ export async function GET(request: Request) {
       const effectiveTarget = ndcOverride ?? demand.demandTarget;
       const targetSource: "override" | "scheduled" | "trend" =
         ndcOverride !== undefined ? "override" : demand.targetSource;
+      const order = Math.max(0, effectiveTarget - (row.onHand ?? 0));
+
+      // Ordered-today packages + remaining (V-ordering-ordered-today):
+      // the SAME catalog package-size lookup app/ordering/page.tsx's
+      // enrichRow/buildToOrderRows use client-side
+      // (lib/product-view.ts's deriveProductViewFields ->
+      // lib/vaccine-product-catalog.ts's computeOrderPackages), so
+      // orderedToday/remaining line up exactly with what the "To order"
+      // table's Order (pkg) column shows for this same row.
+      const packageSize = deriveProductViewFields(row.vaccineName, row.ndc).packageSize;
+      const orderPackages = computeOrderPackages(order, packageSize);
+      const orderedToday = orderedTodayByKey[row.key] ?? 0;
 
       return {
         key: row.key,
@@ -703,7 +753,9 @@ export async function GET(request: Request) {
         targetOnHand: ndcOverride ?? null,
         effectiveTarget,
         targetSource,
-        order: Math.max(0, effectiveTarget - (row.onHand ?? 0)),
+        order,
+        orderedToday,
+        remaining: remainingPackages(orderPackages, orderedToday),
       };
     });
 
@@ -713,6 +765,7 @@ export async function GET(request: Request) {
       walkInPct,
       walkInPctPending,
       trendUnavailable,
+      orderedTodayPending,
       groupTargets: groupOverrides,
       rows,
     });
