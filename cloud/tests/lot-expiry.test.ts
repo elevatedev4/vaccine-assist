@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLotBlocked, lotExpiryState } from "@/lib/lot-expiry";
+import { isLotBlocked, lotExpiryState, modalDatesBlocked } from "@/lib/lot-expiry";
 
 const TODAY = "2026-09-25";
 
@@ -60,5 +60,74 @@ describe("isLotBlocked", () => {
 
   it("is false when both dates are null", () => {
     expect(isLotBlocked({ expiration: null, beyond_use_date: null }, TODAY)).toBe(false);
+  });
+});
+
+// Review follow-up (coordinator, 2026-09-25 evening): the macro-codes
+// "update the lot" modal must re-check whatever's currently TYPED into
+// its own form, not just the row snapshot it opened with — see
+// modalDatesBlocked's doc comment.
+describe("modalDatesBlocked", () => {
+  it("is blocked when the (stale, prefilled) expiration is still in the past", () => {
+    expect(
+      modalDatesBlocked(
+        { expirationIso: "2026-09-01", beyondUseDateIso: "", budFieldVisible: false, isDefaultBudProduct: false },
+        TODAY
+      )
+    ).toBe(true);
+  });
+
+  it("is blocked when the (stale, prefilled) beyond-use date is still in the past, even with a future expiration", () => {
+    expect(
+      modalDatesBlocked(
+        { expirationIso: "2027-01-01", beyondUseDateIso: "2026-09-01", budFieldVisible: true, isDefaultBudProduct: false },
+        TODAY
+      )
+    ).toBe(true);
+  });
+
+  it("is ok once both expiration and beyond-use date are edited to future dates", () => {
+    expect(
+      modalDatesBlocked(
+        { expirationIso: "2027-01-01", beyondUseDateIso: "2027-02-01", budFieldVisible: true, isDefaultBudProduct: false },
+        TODAY
+      )
+    ).toBe(false);
+  });
+
+  it("is blocked for a default-BUD product (mNEXSPIKE/Spikevax) whose beyond-use date was cleared to empty", () => {
+    expect(
+      modalDatesBlocked(
+        { expirationIso: "2027-01-01", beyondUseDateIso: "", budFieldVisible: true, isDefaultBudProduct: true },
+        TODAY
+      )
+    ).toBe(true);
+  });
+
+  it("is ok for a NON-default-BUD product with an empty beyond-use date (BUD is optional for it)", () => {
+    expect(
+      modalDatesBlocked(
+        { expirationIso: "2027-01-01", beyondUseDateIso: "", budFieldVisible: true, isDefaultBudProduct: false },
+        TODAY
+      )
+    ).toBe(false);
+  });
+
+  it("ignores the beyond-use date entirely when budFieldVisible is false, even if it's stale", () => {
+    expect(
+      modalDatesBlocked(
+        { expirationIso: "2027-01-01", beyondUseDateIso: "2020-01-01", budFieldVisible: false, isDefaultBudProduct: false },
+        TODAY
+      )
+    ).toBe(false);
+  });
+
+  it("is ok for a default-BUD product once a future beyond-use date is entered", () => {
+    expect(
+      modalDatesBlocked(
+        { expirationIso: "2027-01-01", beyondUseDateIso: "2027-06-01", budFieldVisible: true, isDefaultBudProduct: true },
+        TODAY
+      )
+    ).toBe(false);
   });
 });

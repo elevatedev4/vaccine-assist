@@ -26,7 +26,7 @@ import {
 } from "@/lib/macro-codes";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { todayInChicago } from "@/lib/chicago-date";
-import { isLotBlocked } from "@/lib/lot-expiry";
+import { modalDatesBlocked } from "@/lib/lot-expiry";
 import { defaultBudEnabledProductKeys, isBudFieldVisible } from "@/lib/lots-bud-defaults";
 import { postToHost } from "@/lib/macro-embed";
 import {
@@ -277,6 +277,28 @@ function modalOpenReasonText(row: MacroRow): string | null {
   if (expiry === "expired") return "This lot has expired.";
   if (expiry === "beyond-use date passed") return "This lot's beyond-use date has passed.";
   return null;
+}
+
+/**
+ * Review follow-up (coordinator, 2026-09-25 evening): the modal was
+ * pre-filled with the SAME stale dates that triggered the block, and
+ * nothing re-checked them at submit time — staff could hit Submit with
+ * zero edits and still get the code copied. This is the inline message
+ * shown (and the reason Submit stays disabled) while the dates
+ * CURRENTLY TYPED into the modal would still leave the lot blocked —
+ * see lib/lot-expiry.ts's modalDatesBlocked, which this wraps. null
+ * once the typed dates actually clear the block.
+ */
+function modalBlockedDatesMessage(
+  modalDates: { expirationIso: string; beyondUseDateIso: string; budFieldVisible: boolean },
+  isDefaultBudProduct: boolean,
+  today: string
+): string | null {
+  if (!modalDatesBlocked({ ...modalDates, isDefaultBudProduct }, today)) return null;
+  const missingRequiredBud = modalDates.budFieldVisible && isDefaultBudProduct && !modalDates.beyondUseDateIso.trim();
+  return missingRequiredBud
+    ? "This product requires a beyond-use date — enter one to continue."
+    : "Expiration/beyond-use date is still in the past — enter the new lot's dates.";
 }
 
 const styles = {
@@ -801,7 +823,16 @@ function MacroCodesPageContent() {
       expirationIso: row.expirationIso ?? "",
       beyondUseDateIso: row.beyondUseDateIso ?? "",
       budFieldVisible: isBudFieldVisible(defaultBudProductKeys.has(row.productKey), row.beyondUseDateIso),
-      saveToSystem: row.packageSize !== 1,
+      // Review follow-up (coordinator, 2026-09-25 evening): when the
+      // modal opened because the row is BLOCKED (expired/bud-expired,
+      // not just missing), staff MUST save the corrected lot — Will's
+      // brief: "stop them from copying the code or continuing data
+      // entry without updating it." Forced true here and the checkbox
+      // itself is hidden for this case (see the modal JSX) so there's
+      // no control that could ever set it back to false. The missing-
+      // lot case (row.lotExpiry === "ok") keeps the original packageSize
+      // default/toggle unchanged.
+      saveToSystem: row.lotExpiry !== "ok" ? true : row.packageSize !== 1,
       submitting: false,
       error: null,
       copyResult: null,
@@ -814,6 +845,17 @@ function MacroCodesPageContent() {
     if (!modal || !session) return;
     const trimmedLot = modal.lotNumber.trim();
     if (!trimmedLot || !modal.expirationIso) return;
+
+    // Review follow-up (coordinator, 2026-09-25 evening): re-check the
+    // dates CURRENTLY TYPED into the modal (not just the row snapshot
+    // it opened with) — the Submit button's `disabled` (below, in the
+    // JSX) already covers the normal click path and shows the SAME
+    // message inline via modalBlockedMessage, so this is a silent
+    // no-op safety net for a submit that reaches here some other way
+    // (e.g. an Enter keypress a browser lets through despite a
+    // disabled submit button) rather than a second message to show.
+    const isDefaultBudProduct = defaultBudProductKeys.has(modal.row.productKey);
+    if (modalBlockedDatesMessage(modal, isDefaultBudProduct, today)) return;
 
     const finalCode = modal.row.shortCode
       ? buildMacroCode({
@@ -1251,6 +1293,17 @@ function MacroCodesPageContent() {
     );
   }
 
+  // Review follow-up (coordinator, 2026-09-25 evening) — computed once
+  // per render, from whatever's CURRENTLY TYPED into the modal, and
+  // shared by the Submit button's `disabled` and the inline warning
+  // below so the two can never say different things. `modalWasBlocked`
+  // (the ROW's snapshot at open time, not the live-edited fields) is
+  // what decides whether the "Save this lot/exp" checkbox is even shown
+  // — see the checkbox's own comment.
+  const modalIsDefaultBudProduct = modal ? defaultBudProductKeys.has(modal.row.productKey) : false;
+  const modalBlockedMessage = modal ? modalBlockedDatesMessage(modal, modalIsDefaultBudProduct, today) : null;
+  const modalWasBlocked = modal ? modal.row.lotExpiry !== "ok" : false;
+
   return (
     <main style={embed ? { ...styles.main, padding: "8px" } : styles.main}>
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
@@ -1386,22 +1439,35 @@ function MacroCodesPageContent() {
                 </>
               )}
 
-              <label style={styles.checkboxRow}>
-                <input
-                  type="checkbox"
-                  checked={modal.saveToSystem}
-                  onChange={(e) => setModal({ ...modal, saveToSystem: e.target.checked })}
-                />
-                <span>
-                  Save this lot/exp to the system
-                  {modal.row.packageSize === 1 && (
-                    <>
-                      <br />
-                      <span style={styles.muted}>Not recommended for single-dose packages (pkg size 1).</span>
-                    </>
-                  )}
-                </span>
-              </label>
+              {modalWasBlocked ? (
+                // Review follow-up (coordinator, 2026-09-25 evening):
+                // this row was blocked (expired/bud-expired, not just
+                // missing) — saving the corrected lot is MANDATORY
+                // ("stop them from copying the code... without updating
+                // it"), so there's no checkbox to uncheck; saveToSystem
+                // was already forced true when this modal opened (see
+                // handleCopy).
+                <p style={styles.muted}>This lot will be updated when you submit.</p>
+              ) : (
+                <label style={styles.checkboxRow}>
+                  <input
+                    type="checkbox"
+                    checked={modal.saveToSystem}
+                    onChange={(e) => setModal({ ...modal, saveToSystem: e.target.checked })}
+                  />
+                  <span>
+                    Save this lot/exp to the system
+                    {modal.row.packageSize === 1 && (
+                      <>
+                        <br />
+                        <span style={styles.muted}>Not recommended for single-dose packages (pkg size 1).</span>
+                      </>
+                    )}
+                  </span>
+                </label>
+              )}
+
+              {modalBlockedMessage && <p style={styles.error}>{modalBlockedMessage}</p>}
 
               {modal.error && (
                 <p style={styles.error}>
@@ -1417,7 +1483,7 @@ function MacroCodesPageContent() {
                 <button
                   type="submit"
                   style={styles.button}
-                  disabled={modal.submitting || !modal.lotNumber.trim() || !modal.expirationIso}
+                  disabled={modal.submitting || !modal.lotNumber.trim() || !modal.expirationIso || !!modalBlockedMessage}
                 >
                   {modal.submitting ? "Saving…" : "Submit"}
                 </button>

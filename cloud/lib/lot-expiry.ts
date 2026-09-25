@@ -70,3 +70,48 @@ export function lotExpiryState(lot: LotExpiryLike, today: string): LotExpiryStat
 export function isLotBlocked(lot: LotExpiryLike, today: string): boolean {
   return lotExpiryState(lot, today) !== "ok";
 }
+
+export type ModalDatesInput = {
+  /** The modal's current Expiration field, "" or "YYYY-MM-DD". */
+  expirationIso: string;
+  /** The modal's current beyond-use-date field, "" or "YYYY-MM-DD" —
+   * ignored entirely (never checked) when `budFieldVisible` is false. */
+  beyondUseDateIso: string;
+  /** Whether the modal even shows a beyond-use-date field for this row
+   * (lib/lots-bud-defaults.ts's isBudFieldVisible) — false means BUD is
+   * not this product's concern at all here, same as a row with no BUD
+   * column. */
+  budFieldVisible: boolean;
+  /** Whether this product is in the DEFAULT BUD-enabled set (mNEXSPIKE/
+   * Spikevax — lib/lots-bud-defaults.ts's defaultBudEnabledProductKeys).
+   * Those products are REQUIRED to carry a beyond-use date — clearing
+   * the field must not silently pass this check the way it would for
+   * any other product (which may legitimately have no BUD at all). */
+  isDefaultBudProduct: boolean;
+};
+
+/**
+ * Review follow-up (Will, via coordinator, 2026-09-25 evening): the
+ * macro-codes "update the lot" modal opened for an expired/bud-expired
+ * row was pre-filled with the SAME stale dates and let staff hit Submit
+ * with zero edits, still copying the code — isLotBlocked was imported
+ * but never actually re-checked against what's IN THE MODAL FORM at
+ * submit time. This is that check: true when the dates currently typed
+ * into the modal would STILL leave the lot blocked (lib/lot-expiry.ts's
+ * isLotBlocked), OR (Will's "stop them from... continuing without
+ * updating it" extended to a specific gap) the product is a default-
+ * BUD one and its beyond-use-date field is empty — mNEXSPIKE/Spikevax
+ * must always carry a real BUD, so clearing it can't read as "not
+ * applicable" the way an empty BUD does for every other product.
+ *
+ * app/macro-codes/page.tsx uses this for BOTH the Submit button's
+ * `disabled` and handleModalSubmit's own guard, so the two can never
+ * drift (a disabled-but-still-submittable button, or vice versa).
+ */
+export function modalDatesBlocked(input: ModalDatesInput, today: string): boolean {
+  const { expirationIso, beyondUseDateIso, budFieldVisible, isDefaultBudProduct } = input;
+  const trimmedBud = beyondUseDateIso.trim();
+  if (budFieldVisible && isDefaultBudProduct && trimmedBud.length === 0) return true;
+  const effectiveBud = budFieldVisible && trimmedBud.length > 0 ? trimmedBud : null;
+  return isLotBlocked({ expiration: expirationIso || null, beyond_use_date: effectiveBud }, today);
+}
