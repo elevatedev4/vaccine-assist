@@ -67,4 +67,65 @@ public class WindowSizingTests
 
         Assert.Equal(1240, clamped); // 1280 - 40
     }
+
+    // Reviewer fix (2026-09-25): MinWidth/MinHeight are hard floors in
+    // WPF — ClampToWorkArea alone (above) only adjusts the default Width/
+    // Height, so a window whose XAML sets MinWidth="1100" MinHeight="700"
+    // (MainWindow's actual values) still gets forced past a smaller work
+    // area unless the minimums are ALSO clamped down to the already-
+    // clamped default size. These facts mirror MainWindow's real
+    // 1600x900 desired size / 1100x700 minimums against the RDP/Citrix
+    // work areas the blocker named.
+
+    [Fact]
+    public void On1024x768TheMinWidthIsPulledDownToTheClampedWidth()
+    {
+        // clampedWidth = 1024 - 40 = 984; MinWidth 1100 would otherwise
+        // render 116px past the visible desktop.
+        var (minWidth, minHeight) = WindowSizing.ClampMinimums(
+            minWidth: 1100, minHeight: 700,
+            clampedWidth: 984, clampedHeight: 728);
+
+        Assert.Equal(984, minWidth);
+        Assert.Equal(700, minHeight); // 700 already fits under 728 — unchanged
+    }
+
+    [Fact]
+    public void On1280x720TheMinHeightIsPulledDownToTheClampedHeight()
+    {
+        // clampedHeight = 720 - 40 = 680; MinHeight 700 would otherwise
+        // force the window 20px past the visible desktop.
+        var (minWidth, minHeight) = WindowSizing.ClampMinimums(
+            minWidth: 1100, minHeight: 700,
+            clampedWidth: 1240, clampedHeight: 680);
+
+        Assert.Equal(1100, minWidth); // 1100 already fits under 1240 — unchanged
+        Assert.Equal(680, minHeight);
+    }
+
+    [Fact]
+    public void On1920x1080TheMinimumsAreUnchanged()
+    {
+        var (minWidth, minHeight) = WindowSizing.ClampMinimums(
+            minWidth: 1100, minHeight: 700,
+            clampedWidth: 1880, clampedHeight: 1040);
+
+        Assert.Equal(1100, minWidth);
+        Assert.Equal(700, minHeight);
+    }
+
+    [Fact]
+    public void MinimumsNeverDropBelowTheAbsoluteUsabilityFloor()
+    {
+        // An unrealistically tiny work area (smaller than even the
+        // absolute floor) — the floor wins rather than shrinking the
+        // window below a usable size.
+        var (minWidth, minHeight) = WindowSizing.ClampMinimums(
+            minWidth: 1100, minHeight: 700,
+            clampedWidth: 750, clampedHeight: 450,
+            floorWidth: 800, floorHeight: 500);
+
+        Assert.Equal(800, minWidth);
+        Assert.Equal(500, minHeight);
+    }
 }

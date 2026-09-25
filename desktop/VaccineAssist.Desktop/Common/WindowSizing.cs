@@ -25,6 +25,12 @@ public static class WindowSizing
     /// <summary>Margin (in DIP) left free on each dimension between the clamped window size and the monitor's visible work area — matches MacroCodesWindow.xaml.cs's existing convention.</summary>
     public const double DefaultWorkAreaMargin = 40;
 
+    /// <summary>Absolute floor for a clamped MinWidth (see <see cref="ClampMinimums"/>) — small enough to fit any real RDP/Citrix work area, but never so small the window becomes unusable.</summary>
+    public const double DefaultMinWidthFloor = 800;
+
+    /// <summary>Absolute floor for a clamped MinHeight — see <see cref="DefaultMinWidthFloor"/>.</summary>
+    public const double DefaultMinHeightFloor = 500;
+
     /// <summary>Clamps a single desired dimension (Width or Height) to at most <paramref name="workAreaDimension"/> minus <paramref name="margin"/>, so the window never exceeds a smaller monitor's visible work area. Never clamps UPWARD — a desired size smaller than the work area is returned unchanged.</summary>
     public static double ClampDimension(double desired, double workAreaDimension, double margin = DefaultWorkAreaMargin)
         => Math.Min(desired, workAreaDimension - margin);
@@ -39,4 +45,28 @@ public static class WindowSizing
         => (
             ClampDimension(desiredWidth, workAreaWidth, margin),
             ClampDimension(desiredHeight, workAreaHeight, margin));
+
+    /// <summary>
+    /// Clamps a window's own MinWidth/MinHeight down to (at most) the
+    /// already-clamped default size, so WPF never enforces a hard floor
+    /// bigger than the work area it was just clamped to (reviewer fix,
+    /// 2026-09-25: ClampToWorkArea alone adjusts Width/Height, but WPF
+    /// still treats MinWidth/MinHeight as hard floors — on a 1024x768
+    /// work area a MinWidth of 1100 renders the window 116px past the
+    /// visible desktop, e.g. over RDP/Citrix). Falls back to
+    /// <paramref name="floorWidth"/>/<paramref name="floorHeight"/> (never
+    /// clamping the minimum BELOW that absolute floor) so the window
+    /// still stays usable rather than shrinking to fit an extreme,
+    /// unrealistically tiny work area.
+    /// </summary>
+    public static (double MinWidth, double MinHeight) ClampMinimums(
+        double minWidth,
+        double minHeight,
+        double clampedWidth,
+        double clampedHeight,
+        double floorWidth = DefaultMinWidthFloor,
+        double floorHeight = DefaultMinHeightFloor)
+        => (
+            Math.Max(Math.Min(minWidth, clampedWidth), floorWidth),
+            Math.Max(Math.Min(minHeight, clampedHeight), floorHeight));
 }
