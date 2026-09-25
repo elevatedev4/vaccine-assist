@@ -39,6 +39,7 @@
  */
 
 import { addDaysToChicagoDate, todayInChicago } from "@/lib/chicago-date";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import { getOrderingGroup, ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 
 /** Default lookback when nothing has been ingested yet (allRange below
@@ -169,9 +170,16 @@ function csvField(value: string): string {
 }
 
 /** CSV for the day x product table — one row per date plus a trailing
- * "Total" row, one column per product plus a trailing "Total" column. */
+ * "Total" row, one column per product plus a trailing "Total" column.
+ *
+ * V-names-everywhere (Will 2026-09-25): the header's product names run
+ * through vaccineDisplayName for display — CSV exports are no longer
+ * left raw (yesterday's exclusion). `row`/`pivot.totalsByProduct` are
+ * still indexed by the RAW product string (pivot.products, unchanged),
+ * so every data cell's lookup stays correct; only the printed column
+ * NAME is display-formatted. */
 export function dosesGivenPivotToCsv(pivot: DosesGivenPivot): string {
-  const lines = [["Date", ...pivot.products, "Total"].map(csvField).join(",")];
+  const lines = [["Date", ...pivot.products.map(vaccineDisplayName), "Total"].map(csvField).join(",")];
   for (const date of pivot.dates) {
     const row = pivot.countsByDateProduct[date];
     lines.push(
@@ -189,11 +197,16 @@ export function dosesGivenPivotToCsv(pivot: DosesGivenPivot): string {
 }
 
 /** CSV for the "grouped by product" view — one row per product, sorted
- * by total descending, plus a trailing grand-total row. */
+ * by total descending, plus a trailing grand-total row.
+ *
+ * V-names-everywhere: the "Product" cell is display-formatted
+ * (vaccineDisplayName) — the sort order above (productTotalsDescending)
+ * is computed on the RAW name before this ever runs, so the prefix never
+ * affects ordering. */
 export function productTotalsToCsv(pivot: DosesGivenPivot): string {
   const lines = [["Product", "Total"].map(csvField).join(",")];
   for (const { product, total } of productTotalsDescending(pivot)) {
-    lines.push([product, String(total)].map(csvField).join(","));
+    lines.push([vaccineDisplayName(product), String(total)].map(csvField).join(","));
   }
   lines.push(["Total", String(pivot.grandTotal)].map(csvField).join(","));
   return lines.join("\n");

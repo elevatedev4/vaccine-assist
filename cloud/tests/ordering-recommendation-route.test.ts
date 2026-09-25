@@ -820,6 +820,38 @@ describe("GET /api/ordering/recommendation", () => {
     });
   });
 
+  // V-names-everywhere (Will 2026-09-25): additive `displayName` on every
+  // row, for the desktop app (which doesn't run the web page's own
+  // client-side display formatting) — `vaccineName` stays raw for the
+  // matching/collapsing/write-path code this whole route already relies
+  // on.
+  describe("displayName (V-names-everywhere desktop API support)", () => {
+    it("adds a maker-prefixed displayName for a COVID product row, leaving vaccineName raw", async () => {
+      const catalog = [
+        { id: "v-comirnaty", name: "Comirnaty 2025-26 12+", short_code: "comirnaty12", ndc: null, active: true },
+      ];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { vaccineName: string }) => r.vaccineName === "Comirnaty 2025-26 12+");
+      expect(row.vaccineName).toBe("Comirnaty 2025-26 12+");
+      expect(row.displayName).toBe("Pfizer Comirnaty 2025-26 12+");
+    });
+
+    it("leaves displayName unchanged (a no-op) for a non-COVID product row", async () => {
+      const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true }];
+      vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+
+      const response = await GET(authedRequest());
+      const body = await response.json();
+
+      const row = body.rows.find((r: { vaccineName: string }) => r.vaccineName === "Flu Quad 2025-26");
+      expect(row.displayName).toBe("Flu Quad 2025-26");
+    });
+  });
+
   // --- V-T-flu-map additions (Will 2026-09-09) -----------------------
 
   describe("flu age-band product mapping", () => {

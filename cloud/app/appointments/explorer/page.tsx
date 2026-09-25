@@ -6,6 +6,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import { todayInChicago } from "@/lib/chicago-date";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import {
   activeFilterChips,
   addMonthsToDate,
@@ -524,17 +525,27 @@ function TextFilterPopoverBody({
 
 /** Enumerated-column filter popover body — a search-within-options box, an
  * "All"/"None" link pair, and a checklist (Will: "for enumerated columns a
- * checklist with a search box, 'All' / 'None' links"). */
+ * checklist with a search box, 'All' / 'None' links").
+ *
+ * `renderLabel` (V-names-everywhere, optional, defaults to the raw
+ * option text) formats an option for DISPLAY ONLY — `options`/`selected`/
+ * `onChange` all keep passing the raw value around (the checkbox's own
+ * `checked`/onChange comparisons, and the filter this ultimately drives,
+ * never see the formatted text) so filtering stays correct even for a
+ * column, like "vaccine", whose raw values are free-text names that need
+ * the maker-prefix treatment on screen. */
 function ChecklistFilterPopoverBody({
   options,
   selected,
   onChange,
   onClose,
+  renderLabel,
 }: {
   options: string[];
   selected: string[];
   onChange: (next: string[]) => void;
   onClose: () => void;
+  renderLabel?: (option: string) => string;
 }) {
   const [search, setSearch] = useState("");
   const filteredOptions = options.filter((option) => option.toLowerCase().includes(search.trim().toLowerCase()));
@@ -574,7 +585,7 @@ function ChecklistFilterPopoverBody({
               checked={selected.includes(option)}
               onChange={(event) => toggle(option, event.target.checked)}
             />
-            {option}
+            {renderLabel ? renderLabel(option) : option}
           </label>
         ))}
       </div>
@@ -1218,7 +1229,8 @@ export default function AppointmentExplorerPage() {
             groupedTables.map((groupTable) => (
               <div key={groupTable.group} style={styles.groupSection}>
                 <h2 style={styles.groupHeading}>
-                  {groupTable.group} — {groupTable.rows.length} appointment{groupTable.rows.length === 1 ? "" : "s"}
+                  {vaccineDisplayName(groupTable.group)} — {groupTable.rows.length} appointment
+                  {groupTable.rows.length === 1 ? "" : "s"}
                 </h2>
                 {renderRowsTable(groupTable.rows, groupTable.group)}
               </div>
@@ -1249,6 +1261,7 @@ export default function AppointmentExplorerPage() {
                       selected={filters[filterKind.field]}
                       onChange={(next) => setFilters((f) => ({ ...f, [filterKind.field]: next }))}
                       onClose={closeFilterPopover}
+                      renderLabel={filterKind.field === "vaccine" ? vaccineDisplayName : undefined}
                     />
                   )}
                   {column && (

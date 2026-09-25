@@ -48,8 +48,16 @@ describe("GET /api/vaccines", () => {
     const body = await response.json();
     // V-entry-values: a row with no `directions` on file also gets a
     // computed `directions_default` (lib/entry-defaults.ts) alongside it.
+    // V-names-everywhere: also additive `displayName` (a no-op here —
+    // "Flu" isn't a COVID name).
     expect(body.vaccines).toEqual([
-      { id: "v1", name: "Flu", active: true, directions_default: "For administration by healthcare provider in pharmacy." },
+      {
+        id: "v1",
+        name: "Flu",
+        active: true,
+        directions_default: "For administration by healthcare provider in pharmacy.",
+        displayName: "Flu",
+      },
     ]);
     // Regression guard: the default path must still filter on active=true
     // and must never touch the `lot` table (that join only runs for
@@ -57,6 +65,22 @@ describe("GET /api/vaccines", () => {
     expect(eq).toHaveBeenCalledWith("active", true);
     expect(from).not.toHaveBeenCalledWith("lot");
     expect(body.vaccines[0].hasActiveLot).toBeUndefined();
+  });
+
+  it("V-names-everywhere: adds a maker-prefixed displayName for a COVID product, leaving `name` raw", async () => {
+    const order = vi.fn(async () => ({
+      data: [{ id: "v1", name: "Comirnaty 2026-27 12+", active: true }],
+      error: null,
+    }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await GET(authedRequest("/api/vaccines"));
+    const body = await response.json();
+    expect(body.vaccines[0].name).toBe("Comirnaty 2026-27 12+");
+    expect(body.vaccines[0].displayName).toBe("Pfizer Comirnaty 2026-27 12+");
   });
 
   it("ROUND 2: annotates a blank-quantity row with quantity_default when its short_code has a table entry", async () => {
@@ -141,11 +165,13 @@ describe("GET /api/vaccines", () => {
     const body = await response.json();
     // V-entry-values: every row with no `directions` on file also gets a
     // computed `directions_default` (lib/entry-defaults.ts) alongside it.
+    // V-names-everywhere: also additive `displayName` on every row (a
+    // no-op for all 3 — none of these is a COVID product name).
     const directionsDefault = "For administration by healthcare provider in pharmacy.";
     expect(body.vaccines).toEqual([
-      { id: "v1", name: "Flu", active: true, hasActiveLot: true, directions_default: directionsDefault },
-      { id: "v2", name: "COVID", active: false, hasActiveLot: false, directions_default: directionsDefault },
-      { id: "v3", name: "Shingles", active: true, hasActiveLot: true, directions_default: directionsDefault },
+      { id: "v1", name: "Flu", active: true, hasActiveLot: true, directions_default: directionsDefault, displayName: "Flu" },
+      { id: "v2", name: "COVID", active: false, hasActiveLot: false, directions_default: directionsDefault, displayName: "COVID" },
+      { id: "v3", name: "Shingles", active: true, hasActiveLot: true, directions_default: directionsDefault, displayName: "Shingles" },
     ]);
   });
 
@@ -193,7 +219,8 @@ describe("PATCH /api/vaccines/[id]", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.vaccine).toEqual({ id: "v1", name: "Flu", active: false });
+    // V-names-everywhere: additive `displayName` (no-op — "Flu" isn't COVID).
+    expect(body.vaccine).toEqual({ id: "v1", name: "Flu", active: false, displayName: "Flu" });
     expect(update).toHaveBeenCalledWith({ active: false });
     expect(eq).toHaveBeenCalledWith("id", "v1");
   });
@@ -249,9 +276,41 @@ describe("PATCH /api/vaccines/[id]", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.vaccine).toEqual({ id: "v1", name: "Flu", quantity: "0.5 mL", directions: "1 dose IM x1" });
+    // V-names-everywhere: additive `displayName` (no-op — "Flu" isn't COVID).
+    expect(body.vaccine).toEqual({
+      id: "v1",
+      name: "Flu",
+      quantity: "0.5 mL",
+      directions: "1 dose IM x1",
+      displayName: "Flu",
+    });
     expect(body.quantityDirectionsSupported).toBe(true);
     expect(update).toHaveBeenCalledWith({ quantity: "0.5 mL", directions: "1 dose IM x1" });
+  });
+
+  it("V-names-everywhere: PATCH response's displayName is maker-prefixed for a COVID product", async () => {
+    const single = vi.fn(async () => ({
+      data: { id: "v1", name: "Spikevax 2026-27", active: true },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: true }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    const body = await response.json();
+    expect(body.vaccine.name).toBe("Spikevax 2026-27");
+    expect(body.vaccine.displayName).toBe("Moderna Spikevax 2026-27");
   });
 
   it("rejects a non-string, non-null quantity", async () => {
@@ -465,8 +524,44 @@ describe("POST /api/vaccines", () => {
 
     expect(response.status).toBe(201);
     const body = await response.json();
-    expect(body.vaccine).toEqual({ id: "v1", name: "Abrysvo (1 ct)", ndc: null, active: true, short_code: "abrysvo-1-ct" });
+    // V-names-everywhere: additive `displayName` (no-op — "Abrysvo" isn't COVID).
+    expect(body.vaccine).toEqual({
+      id: "v1",
+      name: "Abrysvo (1 ct)",
+      ndc: null,
+      active: true,
+      short_code: "abrysvo-1-ct",
+      displayName: "Abrysvo (1 ct)",
+    });
     expect(insert).toHaveBeenCalledWith({ name: "Abrysvo (1 ct)", ndc: null, active: true, short_code: "abrysvo-1-ct" });
+  });
+
+  it("V-names-everywhere: POST response's displayName is maker-prefixed for a COVID product", async () => {
+    const single = vi.fn(async () => ({
+      data: { id: "v2", name: "mNEXSPIKE 2026-27", ndc: null, active: true, short_code: "mnexspike-2026-27" },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const insert = vi.fn(() => ({ select }));
+    let call = 0;
+    const from = vi.fn(() => {
+      call += 1;
+      if (call <= 2) return noExistingMatchesFrom();
+      return { insert };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(
+      authedRequest("/api/vaccines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "mNEXSPIKE 2026-27" }),
+      })
+    );
+
+    const body = await response.json();
+    expect(body.vaccine.name).toBe("mNEXSPIKE 2026-27");
+    expect(body.vaccine.displayName).toBe("Moderna mNEXSPIKE 2026-27");
   });
 
   it("trims the name and formats a valid ndc via lib/ndc.ts's formatNdcForStorage", async () => {
@@ -675,6 +770,8 @@ describe("GET /api/vaccines — quantityDirectionsSupported degradation", () => 
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.quantityDirectionsSupported).toBe(false);
-    expect(body.vaccines).toEqual([{ id: "v1", name: "Flu" }]);
+    // V-names-everywhere: additive `displayName` even on the degraded
+    // (quantity/directions-unsupported) column set.
+    expect(body.vaccines).toEqual([{ id: "v1", name: "Flu", displayName: "Flu" }]);
   });
 });
