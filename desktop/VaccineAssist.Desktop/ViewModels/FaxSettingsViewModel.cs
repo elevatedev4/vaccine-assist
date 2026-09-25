@@ -283,7 +283,11 @@ public sealed class FaxSettingsViewModel : ObservableObject
             var client = FaxClientFactory.Create(SelectedProvider, _httpClient, credentials);
             var result = await client.TestConnectionAsync();
 
-            StatusMessage = result.Success ? $"Connected. {result.Summary}" : null;
+            // result.Summary already starts with "Connected. " (see
+            // NotifyreFaxClient/SrFaxClient's own TestConnectionAsync) —
+            // prepending it again here used to show "Connected.
+            // Connected. ..." in the dialog.
+            StatusMessage = result.Success ? result.Summary : null;
             ErrorMessage = result.Success ? null : result.ErrorMessage ?? "Couldn't connect.";
 
             // V-T53 401 follow-up (Will, 2026-09-25): NotifyreFaxClient's
