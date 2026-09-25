@@ -2,9 +2,27 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Vaccine Assist"
-        Width="1000" Height="650"
+        Width="1600" Height="900"
+        MinWidth="1100" MinHeight="700"
         WindowStartupLocation="CenterScreen">
     <!--
+        2026-09-25 (Will, verbatim: "make sure the widths of all the
+        screens are enough to make them look good with the content, like
+        I just looked at the lots page and it wasn't wide enough. It was
+        maing the tables all cramped and have multiple rows."): default
+        size raised from 1000x650 to 1600x900 — MainWindow hosts the
+        cloud app's own pages (see the single-nav comment below) full-
+        window, and a narrow host window squeezes the cloud page's own
+        responsive tables (Lots included) into wrapped/cramped rows the
+        same way any browser window would. MinWidth/MinHeight (1100x700)
+        keep a user from resizing back down into that same cramped
+        territory. The constructor (MainWindow.xaml.cs) clamps this
+        default DOWN to the actual monitor's work area minus a 40px
+        margin (see Common/WindowSizing.cs — same convention
+        Views/MacroCodesWindow.xaml.cs already uses) so this doesn't
+        force an oversized window on a smaller screen; still resizable,
+        nothing about session size is remembered/restored.
+
         V-T-single-nav (Will, 2026-09-14, verbatim: "I also asked for all
         the tabs in the app to match exactly what is in the cloud too,
         currently they dont. You have an extra row of tabs that are all

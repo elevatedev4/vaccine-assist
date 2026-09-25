@@ -2,7 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Vaccine Assist — Fax run summary"
-        Width="720" Height="560"
+        Width="960" Height="620"
+        MinWidth="720" MinHeight="440"
         WindowStartupLocation="CenterScreen">
     <!--
         Will's brief: "show FaxRunSummaryWindow (counts: imported rows,
@@ -11,6 +12,13 @@
         FaxRunSummaryViewModel.cs's RetryCommand — CanExecute only for
         Status == "Failed", so it's the ONLY way a retry ever happens —
         explicit click, never automatic).
+
+        2026-09-25 (Will's screen-widths brief): widened from 720x560 to
+        960x620 — the grid's 3*-weighted Error column (free-text failure
+        reasons) was cramped at 720. Constructor (FaxRunSummaryWindow.xaml.cs)
+        clamps this down to the monitor's work area minus 40px, same
+        convention as Views/MacroCodesWindow.xaml.cs, via
+        Common/WindowSizing.cs.
     -->
     <Grid Margin="16">
         <Grid.RowDefinitions>

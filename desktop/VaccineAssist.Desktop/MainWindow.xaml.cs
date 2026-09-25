@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Windows;
+using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Fax;
 using VaccineAssist.Desktop.Hotkeys;
 using VaccineAssist.Desktop.Logging;
@@ -231,6 +232,36 @@ public partial class MainWindow : Window
         _faxHttpClient = faxHttpClient;
 
         InitializeComponent();
+
+        // 2026-09-25 (Will, verbatim: "make sure the widths of all the
+        // screens are enough ... it wasn't wide enough. It was maing the
+        // tables all cramped"): clamp the XAML's larger 1600x900 default
+        // DOWN to this monitor's actual work area (minus a 40px margin,
+        // same convention as Views/MacroCodesWindow.xaml.cs) so a smaller
+        // screen never gets an oversized, off-screen window. Must run
+        // before Show() — App.xaml.cs's ShowMainWindowAndInitializeAsync
+        // calls Show() right after constructing this window — so
+        // WindowStartupLocation="CenterScreen" still centers against the
+        // clamped size. SystemParameters.WorkArea is always the PRIMARY
+        // monitor's work area (same existing limitation MacroCodesWindow
+        // already has) — fine here since this is the app's one main
+        // window, always opened on the primary display.
+        var clampedSize = WindowSizing.ClampToWorkArea(
+            Width, Height,
+            SystemParameters.WorkArea.Width, SystemParameters.WorkArea.Height);
+        Width = clampedSize.Width;
+        Height = clampedSize.Height;
+
+        // Reviewer fix (2026-09-25): MinWidth/MinHeight are hard floors in
+        // WPF — ClampToWorkArea above only touches the default Width/
+        // Height, so without this a MinWidth of 1100 would still force the
+        // window past a smaller work area (e.g. 1024x768 over RDP/Citrix:
+        // clampedSize.Width is 984, but MinWidth stayed 1100 and won). Pin
+        // the minimums down to the clamped size too, never below
+        // WindowSizing's absolute usability floor.
+        var clampedMinSize = WindowSizing.ClampMinimums(MinWidth, MinHeight, clampedSize.Width, clampedSize.Height);
+        MinWidth = clampedMinSize.MinWidth;
+        MinHeight = clampedMinSize.MinHeight;
 
         MainContent.Content = _cloudPageView;
 
