@@ -5,6 +5,7 @@ import {
   covidMacroLabel,
   doseButtonShortLabel,
   expToMacroDate,
+  filterMacroProductsByAge,
   filterMacroTopGroups,
   getMacroViewMode,
   groupMacroRowsBySection,
@@ -830,6 +831,73 @@ describe("filterMacroTopGroups", () => {
     const filtered = filterMacroTopGroups(topGroups, "immunocompromised");
     const names = filtered.flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)));
     expect(names).toEqual(["Shingrix"]);
+  });
+});
+
+describe("filterMacroProductsByAge", () => {
+  function topGroupsFor(codes: { code: string; name: string }[]) {
+    const products: ProductView[] = codes.map(({ code, name }) => view({ productKey: `name:${code}`, displayName: name, vaccineIds: [code] }));
+    const vaccines: MacroRowVaccine[] = codes.map(({ code, name }) => vaccine({ id: code, name, short_code: code }));
+    const rows = buildMacroRows(products, vaccines, {});
+    return groupSectionsByTopGroup(groupMacroRowsBySection(rows));
+  }
+
+  const fixtureCodes = [
+    { code: "flucelvaxmdv", name: "Flucelvax MDV" }, // Flu, "6 mo+"
+    { code: "comirnaty12", name: "Comirnaty" }, // COVID, "12+"
+    { code: "spikevax6mo11", name: "Spikevax" }, // COVID, "3–11"
+    { code: "boostrix", name: "Boostrix" }, // Tetanus/Tdap, "10+"
+    { code: "gardasil1", name: "Gardasil" }, // HPV, "9–45"
+    { code: "shingrix1", name: "Shingrix" }, // Shingles, "50+ (19+ IC)"
+  ];
+
+  it("returns the input unchanged (by reference) when no age filter is active", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    expect(filterMacroProductsByAge(topGroups, null)).toBe(topGroups);
+  });
+
+  it("keeps only products whose catalog age range includes the given age", () => {
+    const topGroups = topGroupsFor(fixtureCodes);
+    const names = filterMacroProductsByAge(topGroups, 7)
+      .flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)))
+      .sort();
+    // Age 7: Flucelvax MDV (6 mo+) and Spikevax (3–11) fit; Comirnaty
+    // (12+), Boostrix (10+), Gardasil (9–45), Shingrix (50+ (19+ IC))
+    // don't.
+    expect(names).toEqual(["Flucelvax MDV", "Spikevax"].sort());
+  });
+
+  it("omits a section/group entirely when nothing in it matches the age", () => {
+    const topGroups = topGroupsFor([{ code: "boostrix", name: "Boostrix" }]); // 10+
+    expect(filterMacroProductsByAge(topGroups, 5)).toEqual([]);
+  });
+
+  it("never excludes a product with an unrecognized/unparseable age label, even when no real range fits", () => {
+    const topGroups = topGroupsFor([
+      { code: "boostrix", name: "Boostrix" }, // 10+, excluded at age 5
+      { code: "not-a-real-code", name: "Mystery Vaccine" }, // unrecognized short code -> age "", never excluded
+    ]);
+    const names = filterMacroProductsByAge(topGroups, 5).flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)));
+    expect(names).toEqual(["Mystery Vaccine"]);
+  });
+
+  it("sorts a genuinely age-matched product before an unknown-age one within the same section", () => {
+    // Built directly against the MacroTopGroupBlock/MacroProductGroup
+    // shape (bypassing buildMacroRows/the catalog) since no real
+    // catalog entry shares a section with the unrecognized-code
+    // fallback (MACRO_CATALOG_OTHER is always section "Other" alone) —
+    // this exercises filterMacroProductsByAge's own reordering directly.
+    const matched = { productKey: "p1", displayName: "Known Match", age: "12+", ageBase: "12+", cashPriceCents: null, doses: [] };
+    const unknown = { productKey: "p2", displayName: "Unknown Age", age: "", ageBase: "", cashPriceCents: null, doses: [] };
+    const topGroups = [
+      {
+        group: "Other" as const,
+        sections: [{ section: "Other" as const, products: [unknown, matched] }],
+      },
+    ];
+
+    const filtered = filterMacroProductsByAge(topGroups, 30);
+    expect(filtered[0].sections[0].products.map((p) => p.displayName)).toEqual(["Known Match", "Unknown Age"]);
   });
 });
 
