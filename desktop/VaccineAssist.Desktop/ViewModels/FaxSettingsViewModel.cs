@@ -42,6 +42,16 @@ public sealed class FaxSettingsViewModel : ObservableObject
     private string? _statusMessage;
     private string? _errorMessage;
 
+    /// <summary>Which header form Notifyre last proved it accepts this
+    /// token in — loaded from the credential store on window open,
+    /// updated (and immediately re-persisted, see TestConnectionAsync
+    /// below) the moment a Test connection probe finds a non-documented
+    /// form works, and carried into SaveAsync's credentials write so a
+    /// later Save never silently reverts a discovered mode back to the
+    /// documented default. See FaxCredentials.NotifyreAuthMode's own doc
+    /// comment (V-T53 401 follow-up, 2026-09-25).</summary>
+    private NotifyreAuthMode _notifyreAuthMode = NotifyreAuthMode.XApiToken;
+
     public FaxSettingsViewModel(
         AppSettings settings,
         ILocalSettingsService localSettingsService,
@@ -141,6 +151,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
         AccessId = credentials?.AccessId ?? "";
         AccessPassword = credentials?.AccessPassword ?? "";
         ApiToken = credentials?.ApiToken ?? "";
+        _notifyreAuthMode = credentials?.NotifyreAuthMode ?? NotifyreAuthMode.XApiToken;
 
         ColumnMap.Clear();
         var map = fax.ColumnMap;
@@ -228,7 +239,12 @@ public sealed class FaxSettingsViewModel : ObservableObject
 
             _localSettingsService.Save(_settings);
 
-            _credentialStore.Save(new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = normalizedApiToken });
+            // Carries forward whatever NotifyreAuthMode Test connection
+            // last discovered (_notifyreAuthMode) — otherwise Save would
+            // silently overwrite a discovered non-documented mode back
+            // to the documented default every time Will edits anything
+            // else in this window.
+            _credentialStore.Save(new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = normalizedApiToken, NotifyreAuthMode = _notifyreAuthMode });
 
             _prescriberDirectory.Save(Prescribers
                 .Where(r => !string.IsNullOrWhiteSpace(r.Name) || !string.IsNullOrWhiteSpace(r.Npi))
@@ -267,8 +283,29 @@ public sealed class FaxSettingsViewModel : ObservableObject
             var client = FaxClientFactory.Create(SelectedProvider, _httpClient, credentials);
             var result = await client.TestConnectionAsync();
 
-            StatusMessage = result.Success ? $"Connected. {result.Summary}" : null;
+            // result.Summary already starts with "Connected. " (see
+            // NotifyreFaxClient/SrFaxClient's own TestConnectionAsync) —
+            // prepending it again here used to show "Connected.
+            // Connected. ..." in the dialog.
+            StatusMessage = result.Success ? result.Summary : null;
             ErrorMessage = result.Success ? null : result.ErrorMessage ?? "Couldn't connect.";
+
+            // V-T53 401 follow-up (Will, 2026-09-25): NotifyreFaxClient's
+            // probe mutates THIS SAME credentials object's
+            // NotifyreAuthMode the moment it finds a non-documented form
+            // that works (see NotifyreFaxClient.ProbeAlternateAuthFormsAsync)
+            // — re-persist right away (merged onto whatever else is
+            // already on disk) so a real send picks it up on the app's
+            // next run without Will having to also click Save, and so
+            // Save itself (see _notifyreAuthMode above) doesn't revert it.
+            if (result.Success && SelectedProvider == FaxProvider.Notifyre && credentials.NotifyreAuthMode != _notifyreAuthMode)
+            {
+                _notifyreAuthMode = credentials.NotifyreAuthMode;
+                var stored = _credentialStore.Load() ?? new FaxCredentials();
+                stored.ApiToken = credentials.ApiToken;
+                stored.NotifyreAuthMode = credentials.NotifyreAuthMode;
+                _credentialStore.Save(stored);
+            }
         }
         catch (Exception ex)
         {

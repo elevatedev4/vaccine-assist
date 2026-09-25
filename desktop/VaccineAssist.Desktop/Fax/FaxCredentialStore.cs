@@ -67,7 +67,16 @@ public sealed class FaxCredentialStore : IFaxCredentialStore
                 return null;
             }
 
-            return new FaxCredentials { AccessId = accessId, AccessPassword = accessPassword, ApiToken = apiToken };
+            // Not a secret (it names a header form, never a credential
+            // value) so it's stored plain rather than DPAPI-protected —
+            // an unrecognized/absent value (an older credentials.json
+            // written before this field existed) falls back to the
+            // documented default rather than failing the whole load.
+            var authMode = Enum.TryParse<NotifyreAuthMode>(dto.NotifyreAuthMode, out var parsedAuthMode)
+                ? parsedAuthMode
+                : NotifyreAuthMode.XApiToken;
+
+            return new FaxCredentials { AccessId = accessId, AccessPassword = accessPassword, ApiToken = apiToken, NotifyreAuthMode = authMode };
         }
         catch
         {
@@ -88,6 +97,7 @@ public sealed class FaxCredentialStore : IFaxCredentialStore
             AccessIdProtected = Protect(credentials.AccessId),
             AccessPasswordProtected = Protect(credentials.AccessPassword),
             ApiTokenProtected = Protect(credentials.ApiToken),
+            NotifyreAuthMode = credentials.NotifyreAuthMode.ToString(),
         };
 
         var json = JsonSerializer.Serialize(dto, JsonOptions);
@@ -141,5 +151,10 @@ public sealed class FaxCredentialStore : IFaxCredentialStore
         public string AccessIdProtected { get; set; } = "";
         public string AccessPasswordProtected { get; set; } = "";
         public string ApiTokenProtected { get; set; } = "";
+
+        /// <summary>NotifyreAuthMode enum name, plain text — absent
+        /// (null) on any credentials.json written before this field
+        /// existed.</summary>
+        public string? NotifyreAuthMode { get; set; }
     }
 }

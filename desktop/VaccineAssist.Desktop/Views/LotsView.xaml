@@ -3,6 +3,23 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:common="clr-namespace:VaccineAssist.Desktop.Common"
              Loaded="LotsView_OnLoaded">
+    <!--
+        NOT CURRENTLY HOSTED ANYWHERE (found 2026-09-25 while fixing
+        Will's "the lots page wasn't wide enough" report): since
+        V-T-single-nav (2026-09-14) removed the old five-tab TabControl,
+        MainWindow hosts exactly one CloudPageView and navigates it to the
+        cloud app's own routes (Navigation/AppNavigationItems.cs — "Lots"
+        -> "/lots") — this UserControl (and VaccinesView/OrderingView/
+        SchedulingView/PhysiciansView, its siblings from that same old
+        tab set) is not constructed from any reachable code path anymore.
+        Will's actual Lots page is the cloud app's page rendered inside
+        that WebView2; the real fix for it is MainWindow's own default
+        size/clamp (see MainWindow.xaml's 2026-09-25 comment) plus,
+        eventually, that cloud page's own responsive table CSS. The
+        column-width fixes below are still applied (per brief) in case
+        this view is ever reconnected, but they have no effect on what
+        Will sees today.
+    -->
     <UserControl.Resources>
         <!-- V-T55 (Will, 2026-09-25): "add a lot" picker binds straight to
              the shared Vaccine model (Vaccines/NewLotVaccine — the raw
@@ -146,11 +163,15 @@
                      shows LotRowViewModel.SaveError inline, per row, in
                      red — empty/collapsed whenever the row's last save (or
                      load) was fine. -->
-                <DataGridTextColumn Header="Save status" Binding="{Binding SaveError}" Width="1.2*" IsReadOnly="True">
+                <!-- 2026-09-25 (Will's screen-widths brief): was 1.2* +
+                     TextWrapping="Wrap", which forced this free-text error
+                     column onto multiple visual lines per row at typical
+                     widths. Widened to 1.8* and no longer wraps — one row
+                     per record, per the brief. -->
+                <DataGridTextColumn Header="Save status" Binding="{Binding SaveError}" Width="1.8*" IsReadOnly="True">
                     <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock">
                             <Setter Property="Foreground" Value="Red"/>
-                            <Setter Property="TextWrapping" Value="Wrap"/>
                         </Style>
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>
@@ -193,11 +214,10 @@
                     </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="0.6*" IsReadOnly="True"/>
                     <DataGridTextColumn Header="Note" Binding="{Binding Note, UpdateSourceTrigger=LostFocus}" Width="1.5*"/>
-                    <DataGridTextColumn Header="Save status" Binding="{Binding SaveError}" Width="1.2*" IsReadOnly="True">
+                    <DataGridTextColumn Header="Save status" Binding="{Binding SaveError}" Width="1.8*" IsReadOnly="True">
                         <DataGridTextColumn.ElementStyle>
                             <Style TargetType="TextBlock">
                                 <Setter Property="Foreground" Value="Red"/>
-                                <Setter Property="TextWrapping" Value="Wrap"/>
                             </Style>
                         </DataGridTextColumn.ElementStyle>
                     </DataGridTextColumn>
