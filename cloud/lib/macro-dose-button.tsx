@@ -157,6 +157,26 @@ export function missingNote(row: MacroRow): string | null {
   return null;
 }
 
+/**
+ * V-lots-bud-spikevax follow-up (Will 2026-09-25 4:58pm verbatim: "add
+ * the notification on the macro codes as if it were expired fully...
+ * just like if it were expired"). row.lotExpiry is precomputed by
+ * lib/macro-codes.ts's buildMacroRows (lib/lot-expiry.ts's
+ * lotExpiryState) — only checked when the row isn't ALREADY showing a
+ * missing-lot/exp note (missingNote takes precedence, same "a lot with
+ * a real problem doesn't also need a second, less-actionable note"
+ * posture lib/lots-row-status.ts's lotRowStatus uses for its own
+ * missing-vs-expired precedence). Distinct wording per state
+ * ("expired" vs. "beyond-use date passed") — the BLOCKING behavior
+ * (see app/macro-codes/page.tsx's handleCopy) is identical either way.
+ */
+export function lotExpiryNote(row: MacroRow): string | null {
+  if (missingNote(row) !== null || row.shortCode === null) return null;
+  if (row.lotExpiry === "expired") return "expired";
+  if (row.lotExpiry === "bud-expired") return "beyond-use date passed";
+  return null;
+}
+
 export interface RenderMacroDoseButtonOptions {
   /** ROUND 14 (V-T48, Will's verbatim brief, 2026-09-16): "Add the
    * vaccine name to the buttons as well. The vaccine name is row 1,
@@ -321,7 +341,7 @@ export function renderMacroDoseButton(
     topLabel,
   } = params;
   const visibleText = isCopied ? COPIED_FLAG : params.visibleLabel ?? label;
-  const note = missingNote(row);
+  const note = missingNote(row) ?? lotExpiryNote(row);
   // Hidden while showing "Copied ✓" — that flag already says everything
   // the button needs to say for that 1.5s.
   const subLabel = !isCopied ? params.subLabel : undefined;

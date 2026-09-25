@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buttonBaseMinHeightPx,
   buttonPaddingRem,
+  lotExpiryNote,
   mainLabelFontSizePx,
+  missingNote,
   PRODUCT_COLORS,
   renderMacroDoseButton,
   resolveDoseButtonColors,
@@ -25,8 +27,10 @@ function makeRow(overrides: Partial<MacroRow> = {}): MacroRow {
     shortCode: "testcode",
     lotNumber: null,
     expirationIso: null,
+    beyondUseDateIso: null,
     macro: null,
     complete: false,
+    lotExpiry: "ok",
     catalogType: "Other",
     sheetOrder: 0,
     section: "Other",
@@ -62,6 +66,38 @@ function collectText(node: unknown, out: string[], depth = 0): void {
   const el = node as { props?: { children?: unknown } };
   if (el.props && "children" in el.props) collectText(el.props.children, out, depth + 1);
 }
+
+// V-lots-bud-spikevax follow-up (Will 2026-09-25 4:58pm): "add the
+// notification on the macro codes as if it were expired fully".
+describe("missingNote / lotExpiryNote", () => {
+  it("missingNote reports lot/exp gaps and returns null once complete", () => {
+    expect(missingNote(makeRow({ complete: false, lotNumber: null, expirationIso: null }))).toBe("lot + exp missing");
+    expect(missingNote(makeRow({ complete: false, lotNumber: "L1", expirationIso: null }))).toBe("exp missing");
+    expect(missingNote(makeRow({ complete: false, lotNumber: null, expirationIso: "2028-01-01" }))).toBe("lot missing");
+    expect(missingNote(makeRow({ complete: true, lotNumber: "L1", expirationIso: "2028-01-01" }))).toBeNull();
+  });
+
+  it("missingNote/lotExpiryNote are both null for a no-short-code row", () => {
+    expect(missingNote(makeRow({ shortCode: null, complete: false }))).toBeNull();
+    expect(lotExpiryNote(makeRow({ shortCode: null, lotExpiry: "expired" }))).toBeNull();
+  });
+
+  it("lotExpiryNote reports 'expired' or 'beyond-use date passed' per row.lotExpiry", () => {
+    expect(lotExpiryNote(makeRow({ complete: true, lotExpiry: "expired" }))).toBe("expired");
+    expect(lotExpiryNote(makeRow({ complete: true, lotExpiry: "bud-expired" }))).toBe("beyond-use date passed");
+    expect(lotExpiryNote(makeRow({ complete: true, lotExpiry: "ok" }))).toBeNull();
+  });
+
+  it("lotExpiryNote defers to missingNote — a lot with no number never ALSO shows an expiry note", () => {
+    // lotExpiry can, in principle, be non-'ok' even with no current lot
+    // number on file (buildMacroRows never produces this combination
+    // itself, but this function's own precedence must not depend on
+    // that) — missingNote's "lot missing" wins.
+    const row = makeRow({ complete: false, lotNumber: null, expirationIso: "2028-01-01", lotExpiry: "expired" });
+    expect(missingNote(row)).toBe("lot missing");
+    expect(lotExpiryNote(row)).toBeNull();
+  });
+});
 
 describe("resolveDoseButtonColors (V-T50: per-product flu button colors)", () => {
   it("returns the PRODUCT_COLORS override for flucelvax, flumist, and mflusiva", () => {

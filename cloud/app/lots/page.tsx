@@ -19,6 +19,7 @@ import {
   type DebouncedRunner,
 } from "@/lib/lots-autosave";
 import { plusDaysIso } from "@/lib/lots-bud-shortcut";
+import { defaultBudEnabledProductKeys, isBudFieldVisible } from "@/lib/lots-bud-defaults";
 import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
@@ -57,8 +58,14 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  *     beyond-use date" toggle.
  *   - Beyond-use-date enablement is a per-PRODUCT setting persisted
  *     server-side (GET/PUT /api/lots/settings, app_setting key
- *     `lots.bud_enabled_products`) — defaults to mNEXSPIKE only when
- *     nothing's been saved yet (lib/lots-settings.ts).
+ *     `lots.bud_enabled_products`) — defaults to mNEXSPIKE AND Moderna
+ *     Spikevax when nothing's been saved yet, or a settings load fails
+ *     (lib/lots-bud-defaults.ts's defaultBudEnabledProductKeys, matched
+ *     on both product names — V-lots-bud-spikevax, Will 2026-09-25
+ *     4:58pm: "Moderna Spikevax 2026-27... keeps hiding itself"). A row
+ *     whose lot already has a beyond-use date on file always shows the
+ *     field too, regardless of the setting (lib/lots-bud-defaults.ts's
+ *     isBudFieldVisible) — see budFieldVisible in renderProductRow.
  *   - Inactive products stay listed under their group, greyed, sorted to
  *     the bottom of that group's rows (no separate collapsed section
  *     anymore).
@@ -103,8 +110,9 @@ import ErrorToast, { useErrorToasts } from "@/app/error-toast";
  *     beyond use date, add a 30d little link next to the right side of
  *     the box that sets the BUD to 30 days from today"): a small
  *     de-emphasized "30d" link sits beside a row's beyond-use-date box,
- *     shown only when that box itself is (i.e. only when the product's
- *     BUD setting is enabled — see budEnabledForThisProduct). Clicking it
+ *     shown only when that box itself is (i.e. only when the row's BUD
+ *     field is visible — see budFieldVisible/isBudFieldVisible).
+ *     Clicking it
  *     sets the row's beyond-use date to 30 days from the browser's local
  *     date (lib/lots-bud-shortcut.ts's plusDaysIso) and flushes it
  *     through the SAME runAutosave path a typed date goes through — see
@@ -648,16 +656,23 @@ export default function LotsPage() {
       setBeyondUseDateSupported(lotsData.beyondUseDateSupported !== false);
 
       // BUD enablement is a secondary setting — a failure here doesn't
-      // block the page from showing lots/vaccines, it just falls back to
-      // "nothing enabled" (no BUD field editable) until the next reload.
+      // block the page from showing lots/vaccines. V-lots-bud-spikevax
+      // (Will 2026-09-25 4:58pm: "Moderna Spikevax 2026-27... keeps
+      // hiding itself"): a failed load used to fall back to "nothing
+      // enabled," hiding BOTH mNEXSPIKE's and Spikevax's BUD fields
+      // until the next successful reload. Falls back to the SAME
+      // default set the server itself would compute (mNEXSPIKE +
+      // Spikevax — lib/lots-bud-defaults.ts) instead, so those two
+      // products' BUD fields stay visible even when this request fails.
       if (settingsRes.ok) {
         const settingsData = await settingsRes.json();
         const loadedBudKeys = new Set<string>(settingsData.budEnabledProductKeys ?? []);
         setBudEnabledKeys(loadedBudKeys);
         budEnabledKeysRef.current = loadedBudKeys;
       } else {
-        setBudEnabledKeys(new Set());
-        budEnabledKeysRef.current = new Set();
+        const fallbackBudKeys = new Set<string>(defaultBudEnabledProductKeys(loadedVaccines));
+        setBudEnabledKeys(fallbackBudKeys);
+        budEnabledKeysRef.current = fallbackBudKeys;
       }
 
       setRowErrors({});
@@ -824,8 +839,12 @@ export default function LotsPage() {
 
     const lotDecision = decideLotNumberAutosave(draft.lotNumber, saved.lotNumber);
     const expirationDecision = decideDateAutosave(rawText.expiration, isoToMaskedDate(saved.expiration));
-    const budEnabledForThisProduct = budEnabledKeysRef.current.has(key);
-    const beyondUseDecision = budEnabledForThisProduct
+    // isBudFieldVisible, not a plain budEnabledKeysRef.has(key) check —
+    // a row whose lot already carries a beyond-use date must keep
+    // saving edits to it even if the product's BUD setting is off (see
+    // lib/lots-bud-defaults.ts's isBudFieldVisible doc comment).
+    const budFieldVisibleForThisRow = isBudFieldVisible(budEnabledKeysRef.current.has(key), saved.beyondUseDate);
+    const beyondUseDecision = budFieldVisibleForThisRow
       ? decideDateAutosave(rawText.beyondUseDate, isoToMaskedDate(saved.beyondUseDate))
       : "unchanged";
 
@@ -1168,7 +1187,15 @@ export default function LotsPage() {
     const activeBusy = activeBusyKey === view.productKey;
     const budError = budErrorByKey[view.productKey];
     const budBusy = budBusyKey === view.productKey;
-    const budEnabledForThisProduct = budEnabledKeys.has(view.productKey);
+    // The product's actual persisted setting (drives the ⚙ checkbox) —
+    // kept separate from budFieldVisible below, which can be true even
+    // when this is false (an existing beyond-use date on file).
+    const budSettingEnabled = budEnabledKeys.has(view.productKey);
+    // Whether the cell itself renders/is editable — always true for
+    // mNEXSPIKE/Spikevax via the default set (lib/lots-bud-defaults.ts),
+    // and for any other row that already has a beyond-use date on file
+    // regardless of the setting (V-lots-bud-spikevax, Will 2026-09-25).
+    const budFieldVisible = isBudFieldVisible(budSettingEnabled, draft.beyondUseDate);
     const savedFlash = savedFlashByKey[view.productKey];
 
     // V-lots-row-status: inactive products never get the missing/expired
@@ -1234,7 +1261,7 @@ export default function LotsPage() {
         </td>
         {beyondUseDateSupported && (
           <td style={styles.td}>
-            {budEnabledForThisProduct ? (
+            {budFieldVisible ? (
               <span style={styles.budDateWrap}>
                 <DateTextInput
                   value={draft.beyondUseDate}
@@ -1285,7 +1312,7 @@ export default function LotsPage() {
                   <input
                     type="checkbox"
                     aria-label={`${vaccineDisplayName(view.displayName)} show beyond-use date`}
-                    checked={budEnabledForThisProduct}
+                    checked={budSettingEnabled}
                     disabled={budBusy}
                     onChange={(e) => void handleToggleBud(view, e.target.checked)}
                   />{" "}

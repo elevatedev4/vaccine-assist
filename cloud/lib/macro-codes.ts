@@ -1,4 +1,5 @@
 import { pickCurrentActiveLot, type LotStatusLike } from "@/lib/lots-table";
+import { lotExpiryState, type LotExpiryState } from "@/lib/lot-expiry";
 import { partitionProductsForLotsPage } from "@/lib/lots-grouping";
 import { ORDERING_GROUP_DISPLAY_ORDER } from "@/lib/ordering-group";
 import {
@@ -239,7 +240,16 @@ export type MacroRowVaccine = {
   cash_price_cents?: number | null;
 };
 
-export type MacroLotLike = LotStatusLike & { lot_number: string };
+// V-lots-bud-spikevax follow-up (Will 2026-09-25 4:58pm): "if a beyond
+// use date is expired... stop them from copying the code... just like
+// if it were expired" — macro-codes' lot map needs beyond_use_date too,
+// not just expiration, so buildMacroRows can compute lotExpiry below via
+// lib/lot-expiry.ts's lotExpiryState (the SAME expired/bud-expired rule
+// the desktop data-entry gate now uses). Optional, not required, since
+// the underlying `lot` table column itself is additive/degradable (see
+// app/api/lots/route.ts's beyond_use_date doc comment) — a caller on an
+// old schema can still omit it entirely.
+export type MacroLotLike = LotStatusLike & { lot_number: string; beyond_use_date?: string | null };
 
 export type MacroRow = {
   productKey: string;
@@ -251,8 +261,21 @@ export type MacroRow = {
   shortCode: string | null;
   lotNumber: string | null;
   expirationIso: string | null;
+  /** The current lot's beyond-use date, or null when unset/no lot — see
+   * MacroLotLike's doc comment. Independent of whether the product's
+   * BUD setting is "on" (lib/lots-bud-defaults.ts) — this is just
+   * whatever's on file, which app/macro-codes/page.tsx's "update the
+   * lot" modal uses to decide whether to show a BUD field for THIS row. */
+  beyondUseDateIso: string | null;
   macro: string | null;
   complete: boolean;
+  /** V-lots-bud-spikevax follow-up (Will 2026-09-25 4:58pm): 'expired'
+   * or 'bud-expired' (lib/lot-expiry.ts's lotExpiryState) blocks a copy
+   * exactly like a missing lot/exp does — see app/macro-codes/page.tsx's
+   * handleCopy and lib/macro-dose-button.tsx's lotExpiryNote for the two
+   * consumers. Computed once here (needs `today`, which buildMacroRows
+   * now takes) rather than re-derived per-render. */
+  lotExpiry: LotExpiryState;
   /** Sheet "Type" column value (lib/macro-catalog.ts), e.g. "Shingles". */
   catalogType: string;
   /** Sort key matching the sheet's original row order — see
@@ -369,11 +392,16 @@ function pickBetterDuplicate(
  * (any status) — this function applies lib/lots-table.ts's
  * pickCurrentActiveLot itself, the SAME rule the /lots page and the
  * desktop app use, so a macro's lot/exp always matches what those show.
+ *
+ * `today` ("YYYY-MM-DD", pass lib/chicago-date.ts's todayInChicago()) is
+ * used to compute each row's MacroRow.lotExpiry via lib/lot-expiry.ts's
+ * lotExpiryState (V-lots-bud-spikevax follow-up, Will 2026-09-25).
  */
 export function buildMacroRows(
   products: readonly ProductView[],
   vaccines: readonly MacroRowVaccine[],
-  activeLotsByVaccineId: Readonly<Record<string, readonly MacroLotLike[]>>
+  activeLotsByVaccineId: Readonly<Record<string, readonly MacroLotLike[]>>,
+  today: string
 ): MacroRow[] {
   const vaccineById = new Map(vaccines.map((v) => [v.id, v]));
   const { sections } = partitionProductsForLotsPage(products, ORDERING_GROUP_DISPLAY_ORDER);
@@ -398,8 +426,10 @@ export function buildMacroRows(
         shortCode: null,
         lotNumber: null,
         expirationIso: null,
+        beyondUseDateIso: null,
         macro: null,
         complete: false,
+        lotExpiry: "ok",
         catalogType: MACRO_CATALOG_OTHER.type,
         sheetOrder: MACRO_CATALOG_OTHER.sheetOrder,
         section: MACRO_CATALOG_OTHER.section,
@@ -433,6 +463,8 @@ export function buildMacroRows(
       const currentLot = pickCurrentActiveLot(lots);
       const lotNumber = currentLot?.lot_number ?? null;
       const expirationIso = currentLot?.expiration ?? null;
+      const beyondUseDateIso = currentLot?.beyond_use_date ?? null;
+      const lotExpiry = lotExpiryState({ expiration: expirationIso, beyond_use_date: beyondUseDateIso }, today);
       const macroResult = buildMacroCode({ shortCode, doseNumber, doseCount: 1, lotNumber, expirationIso });
       const catalogEntry = lookupMacroCatalog(shortCode, realVaccine.name);
       // ROUND 10: only a dose past the first, of a genuinely multi-dose
@@ -450,8 +482,10 @@ export function buildMacroRows(
         shortCode,
         lotNumber,
         expirationIso,
+        beyondUseDateIso,
         macro: macroResult.text,
         complete: macroResult.complete,
+        lotExpiry,
         catalogType: catalogEntry.type,
         sheetOrder: catalogEntry.sheetOrder,
         section: catalogEntry.section,

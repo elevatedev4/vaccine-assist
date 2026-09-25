@@ -1,7 +1,16 @@
 import "server-only";
 import { isMissingTableError } from "@/lib/schema-degradation";
 import type { getSupabaseServerClient } from "@/lib/supabase/server";
-import { buildProductViews, type ProductViewVaccine } from "@/lib/product-view";
+import type { ProductViewVaccine } from "@/lib/product-view";
+import { defaultBudEnabledProductKeys } from "@/lib/lots-bud-defaults";
+
+// Re-exported for backwards compatibility — callers (this file's own
+// tests included) import defaultBudEnabledProductKeys from here. The
+// actual logic now lives in lib/lots-bud-defaults.ts (no `server-only`
+// import) so app/lots/page.tsx, a "use client" component, can compute
+// the SAME default set on a settings-load failure — see that file's
+// header comment for why and the 2026-09-25 Spikevax fix.
+export { defaultBudEnabledProductKeys };
 
 /**
  * Shared read/validate helpers for GET/PUT /api/lots/settings — which
@@ -18,24 +27,6 @@ import { buildProductViews, type ProductViewVaccine } from "@/lib/product-view";
  */
 
 export const BUD_ENABLED_PRODUCTS_SETTING_KEY = "lots.bud_enabled_products";
-
-/**
- * The DEFAULT lots.bud_enabled_products value when nothing has ever been
- * saved: mNEXSPIKE's productKey (Will's brief: "seed the default so
- * mNEXSPIKE's productKey is enabled when the setting is absent"). NOT a
- * hardcoded string — computed from the LIVE vaccine catalog via
- * lib/product-view.ts's buildProductViews, so it keeps matching
- * mNEXSPIKE's real lib/lots-grouping.ts key (today a `name:` key, since
- * mNEXSPIKE has no NDC on file — see supabase/seed/vaccines.sql — but an
- * `ndc:` key the moment it gets one) rather than a value that could
- * silently stop matching if that ever changes. Returns [] if no product
- * view's display name mentions mNEXSPIKE at all (an empty/unusual
- * catalog — defensive, not expected in practice).
- */
-export function defaultBudEnabledProductKeys(vaccines: readonly ProductViewVaccine[]): string[] {
-  const match = buildProductViews(vaccines).find((view) => view.displayName.toLowerCase().includes("mnexspike"));
-  return match ? [match.productKey] : [];
-}
 
 export function isValidProductKeyList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length >= 0 && value.every((v) => typeof v === "string" && v.length > 0);
