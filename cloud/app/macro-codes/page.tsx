@@ -515,6 +515,18 @@ function MacroCodesPageContent() {
   // all, before session/authChecked resolve).
   const [embedContentEl, setEmbedContentEl] = useState<HTMLElement | null>(null);
 
+  // MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): the lot/exp
+  // modal card (styles.modalCard) below is rendered inside `<main>` in
+  // the JSX tree, but its OVERLAY wrapper is `position: fixed` — a
+  // fixed-position element is taken out of normal flow entirely and
+  // never contributes to its parent's own rendered height, so
+  // `embedContentEl`'s measured box (above) stays exactly what it was
+  // with the modal closed even while the modal is open. Same callback-
+  // ref pattern as embedContentEl, captured separately so the
+  // content-size effect can measure the card directly and fold its
+  // footprint into the reported height while it's mounted.
+  const [modalCardEl, setModalCardEl] = useState<HTMLElement | null>(null);
+
   function resetAfterSignOut() {
     setVaccines([]);
     setLots([]);
@@ -937,18 +949,39 @@ function MacroCodesPageContent() {
   // visual change (e.g. a font finishing its load). `ResizeObserver`
   // itself is guarded — some WebView2 builds may lack it — falling back
   // to just the one first-paint report with no ongoing observation.
+  //
+  // MODAL FIX (code review, 2026-09-25): `embedContentEl`'s own
+  // getBoundingClientRect() never grows for the lot/exp modal (see
+  // modalCardEl's own doc comment for why — its overlay is `position:
+  // fixed`), so a narrow filtered list (near MinHeight) plus an open
+  // modal could clip the modal's Save/Cancel row against the actual
+  // host window. While `modalCardEl` is mounted, this effect also
+  // observes IT with the same ResizeObserver, and report() sends
+  // `Math.max(main height, modal card height + 48)` instead of just the
+  // main height — the +48 covers the overlay's own padding around the
+  // card (styles.modalOverlay's `padding: "1rem"` on every side). The
+  // effect depends on `modalCardEl` too, so opening/closing the modal
+  // (the ref callback firing with a real element, then null) re-runs
+  // this effect and reports again immediately via the rAF first-paint
+  // report below — closing the modal drops straight back to just
+  // `embedContentEl`'s own height.
   useEffect(() => {
     if (!embed || !embedContentEl) return;
-    // Captured into a plain local so the nested report() closure below
-    // has a non-null type — TS's null-narrowing on `embedContentEl`
+    // Captured into plain locals so the nested report() closure below
+    // has non-null types — TS's null-narrowing on `embedContentEl`
     // above doesn't carry into a nested function declaration, since its
     // call time (inside a timeout/observer callback) isn't visible to
     // control-flow analysis.
     const element = embedContentEl;
+    const modalCard = modalCardEl;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     function report() {
-      const rect = element.getBoundingClientRect();
-      postContentSize(rect.width, rect.height);
+      const mainRect = element.getBoundingClientRect();
+      let height = mainRect.height;
+      if (modalCard) {
+        height = Math.max(height, modalCard.getBoundingClientRect().height + 48);
+      }
+      postContentSize(mainRect.width, height);
     }
     function scheduleReport() {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
@@ -963,13 +996,14 @@ function MacroCodesPageContent() {
     if (typeof ResizeObserver !== "undefined") {
       observer = new ResizeObserver(scheduleReport);
       observer.observe(element);
+      if (modalCard) observer.observe(modalCard);
     }
     return () => {
       cancelAnimationFrame(firstPaintFrame);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       observer?.disconnect();
     };
-  }, [embed, embedContentEl]);
+  }, [embed, embedContentEl, modalCardEl]);
 
   if (!authChecked) {
     return <AuthLoading />;
@@ -1367,6 +1401,16 @@ function MacroCodesPageContent() {
         </div>
       )}
 
+      {/* MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): with no
+       * fallback text here, a name filter narrowed to 0 rows rendered
+       * NOTHING below the filter box — `<main>`'s own measured height
+       * (the content-size effect above) would collapse toward the
+       * MinHeight floor on the desktop side, and an unlucky lot/exp
+       * modal open in that state had very little headroom before this
+       * round's own modal-height fix (modalCardEl above) existed. Keeps
+       * `<main>` from ever collapsing that far regardless. */}
+      {!loading && visibleTopGroups.length === 0 && <p style={styles.muted}>No codes match.</p>}
+
       {modal && (
         <div
           style={styles.modalOverlay}
@@ -1379,7 +1423,7 @@ function MacroCodesPageContent() {
             if (e.target === e.currentTarget) requestCloseModal();
           }}
         >
-          <div style={styles.modalCard}>
+          <div ref={setModalCardEl} style={styles.modalCard}>
             <h2 style={{ marginTop: 0 }}>
               Enter lot / exp for {macroProductDisplayLabel(modal.row.displayName, modal.row.age)} dose {modal.row.doseNumber}
             </h2>
