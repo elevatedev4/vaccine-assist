@@ -98,13 +98,34 @@ export const saveStatusStyle: CSSProperties = {
 //
 // The background must follow the row, not a fixed white: "All vaccines"
 // rows don't share one background (default rows are unstyled/white;
-// order-due rows are pale yellow "#fff8d6" — styles.trOrderDue), and
-// since the Target/BOH <td>s have no background of their own, both show
-// whatever the <tr> painted (page.tsx:247-251's own note that a td's own
-// background always wins over its tr's — these cells have none, so the
-// tr's does). `highlighted` is TargetInput's own row.order > 0 flag,
-// threaded straight through from its caller in page.tsx.
-export function targetSaveStatusStyle(highlighted: boolean): CSSProperties {
+// order-due rows are pale yellow "#fff8d6" — styles.trOrderDue; and, as
+// of V-ordering-ordered-colors round 2, an ordered-today row can also be
+// partial-yellow "#fff8d6" or complete-green "#e6f4ea" — page.tsx's
+// styles.orderedTodayPartial/Complete), and since the Target/BOH <td>s
+// have no background of their own, both show whatever the <tr> painted
+// (page.tsx:247-251's own note that a td's own background always wins
+// over its tr's — these cells have none, so the tr's does).
+//
+// `background` names which of those row states this pill sits in —
+// "none" (plain row), "due" (trOrderDue's yellow, TargetInput's own
+// row.order > 0 case), "partial" or "complete" (the ordered-today
+// states, round 2). "due" and "partial" resolve to the same yellow
+// today (both are page.tsx's "#fff8d6"), but are kept as distinct cases
+// rather than collapsed into one boolean, since they're independent
+// row conditions with independent callers — collapsing them was round
+// 1's bug (a green "complete" row rendered this pill yellow-on-green
+// for the ~2s a save status shows, since the old boolean signature only
+// knew white vs. yellow).
+export type SaveStatusPillBackground = "none" | "due" | "partial" | "complete";
+
+const SAVE_STATUS_PILL_BACKGROUND: Record<SaveStatusPillBackground, string> = {
+  none: "#fff",
+  due: "#fff8d6",
+  partial: "#fff8d6",
+  complete: "#e6f4ea",
+};
+
+export function targetSaveStatusStyle(background: SaveStatusPillBackground): CSSProperties {
   return {
     position: "absolute",
     left: "100%",
@@ -114,7 +135,7 @@ export function targetSaveStatusStyle(highlighted: boolean): CSSProperties {
     fontSize: "0.7rem",
     whiteSpace: "nowrap",
     pointerEvents: "none",
-    background: highlighted ? "#fff8d6" : "#fff",
+    background: SAVE_STATUS_PILL_BACKGROUND[background],
     padding: "0 4px",
     borderRadius: 3,
     zIndex: 1,
@@ -243,7 +264,7 @@ export function TargetInput({
         onBlur={() => void commit()}
         onKeyDown={handleKeyDown}
       />
-      <SaveStatusIndicator status={status} style={targetSaveStatusStyle(highlighted)} />
+      <SaveStatusIndicator status={status} style={targetSaveStatusStyle(highlighted ? "due" : "none")} />
     </span>
   );
 }
@@ -272,26 +293,30 @@ const orderedTodayInputStyle: CSSProperties = {
  * TargetInput's targetOnHand override) — an empty field just commits as
  * 0, the same value a brand-new Chicago day implicitly starts at.
  *
- * `highlighted` mirrors TargetInput's own flag: true for a row still in
- * the main "To order" list (pale-yellow-free here, since the To order
- * table has no trOrderDue-style row highlight of its own — always
- * passed false by page.tsx's callers, kept as a parameter only so this
- * reuses the exact same targetSaveStatusStyle(highlighted) pill-
- * background logic TargetInput already established rather than
- * duplicating it with a hard-coded background).
+ * `pillBackground` (V-ordering-ordered-colors round 2 — replaces the
+ * original boolean `highlighted`, which only distinguished white vs.
+ * yellow and so mismatched a green "complete" row) names which of the
+ * caller's own row states this cell's save-status pill should match:
+ * "none" (plain row), "due" (the "All vaccines" table's trOrderDue
+ * yellow, for a row with nothing entered today but still order-due),
+ * "partial", or "complete" (the ordered-today states themselves). The
+ * "To order" table only ever passes "none"/"partial"/"complete" (it has
+ * no trOrderDue-style row of its own); the "All vaccines" table also
+ * falls back to "due" once orderedTodayState is "none" but row.order is
+ * still > 0.
  */
 export function OrderedTodayInput({
   value,
   disabled,
   disabledTitle,
   onSave,
-  highlighted = false,
+  pillBackground = "none",
 }: {
   value: number;
   disabled?: boolean;
   disabledTitle?: string;
   onSave: (value: number) => Promise<boolean>;
-  highlighted?: boolean;
+  pillBackground?: SaveStatusPillBackground;
 }) {
   const [text, setText] = useState(String(value));
   const [status, setStatus] = useState<SaveStatus>("idle");
@@ -337,7 +362,7 @@ export function OrderedTodayInput({
         onBlur={() => void commit()}
         onKeyDown={handleKeyDown}
       />
-      <SaveStatusIndicator status={status} style={targetSaveStatusStyle(highlighted)} />
+      <SaveStatusIndicator status={status} style={targetSaveStatusStyle(pillBackground)} />
     </span>
   );
 }

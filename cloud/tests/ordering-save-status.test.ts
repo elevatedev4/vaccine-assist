@@ -49,6 +49,18 @@ import { SaveStatusIndicator, TargetInput, targetSaveStatusStyle, type SaveStatu
  * `highlighted` prop (page.tsx passes row.order > 0), so the pill matches
  * whichever background the row it sits in actually has.
  *
+ * V-ordering-ordered-colors round 2 follow-up: targetSaveStatusStyle's
+ * boolean-only signature only ever knew white vs. that one yellow, so an
+ * ordered-today "complete" row (page.tsx's styles.orderedTodayComplete,
+ * "#e6f4ea" green) still rendered this pill yellow-on-green for the ~2s
+ * a "saved" message shows. It now takes a SaveStatusPillBackground
+ * ("none" | "due" | "partial" | "complete") instead of a boolean —
+ * TargetInput maps its own highlighted boolean to "due"/"none"
+ * internally, and OrderedTodayInput takes the background directly as
+ * its own `pillBackground` prop (page.tsx passes its row's
+ * orderedTodayState, falling back to "due" on the "All vaccines" table
+ * when that state is "none" but the row is still order-due).
+ *
  * No jsdom/testing-library in this project (vitest.config.ts runs the
  * "node" environment — see tests/layout-nav.test.ts's own note on this).
  * SaveStatusIndicator has no hooks, so — like that file's RootLayout
@@ -76,8 +88,8 @@ describe("SaveStatusIndicator", () => {
     expect(el.props["aria-live"]).toBe("polite");
   });
 
-  it("is present (never unmounted) at every save status, and only 'visibility' toggles with status, for both the default and the absolute style", () => {
-    for (const style of [undefined, targetSaveStatusStyle(false), targetSaveStatusStyle(true)]) {
+  it("is present (never unmounted) at every save status, and only 'visibility' toggles with status, for both the default and every absolute-pill background", () => {
+    for (const style of [undefined, targetSaveStatusStyle("none"), targetSaveStatusStyle("due"), targetSaveStatusStyle("partial"), targetSaveStatusStyle("complete")]) {
       for (const status of ALL_STATUSES) {
         const el = SaveStatusIndicator(style ? { status, style } : { status }) as unknown as Rendered;
         expect(el.type).toBe("span");
@@ -88,7 +100,7 @@ describe("SaveStatusIndicator", () => {
   });
 
   it("with targetSaveStatusStyle(...) (TargetInput's usage), is positioned absolute and reserves no width in flow", () => {
-    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle(false) }) as unknown as Rendered;
+    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle("none") }) as unknown as Rendered;
     const style = el.props.style as Record<string, unknown>;
     expect(style.position).toBe("absolute");
     expect(style.left).toBe("100%");
@@ -97,7 +109,7 @@ describe("SaveStatusIndicator", () => {
   });
 
   it("with targetSaveStatusStyle(...), paints as an opaque pill (background + padding + borderRadius + zIndex) so it covers the BOH cell text beneath it instead of overlapping it", () => {
-    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle(false) }) as unknown as Rendered;
+    const el = SaveStatusIndicator({ status: "saving", style: targetSaveStatusStyle("none") }) as unknown as Rendered;
     const style = el.props.style as Record<string, unknown>;
     expect(style.background).toBeTruthy();
     expect(style.padding).toBeTruthy();
@@ -105,9 +117,11 @@ describe("SaveStatusIndicator", () => {
     expect(style.zIndex).toBe(1);
   });
 
-  it("targetSaveStatusStyle(highlighted) matches the pill background to the row it sits in — white on default rows, order-due yellow on highlighted ones", () => {
-    expect(targetSaveStatusStyle(false).background).toBe("#fff");
-    expect(targetSaveStatusStyle(true).background).toBe("#fff8d6");
+  it("targetSaveStatusStyle(background) matches the pill background to the row it sits in — white when none, yellow for due/partial, green for complete", () => {
+    expect(targetSaveStatusStyle("none").background).toBe("#fff");
+    expect(targetSaveStatusStyle("due").background).toBe("#fff8d6");
+    expect(targetSaveStatusStyle("partial").background).toBe("#fff8d6");
+    expect(targetSaveStatusStyle("complete").background).toBe("#e6f4ea");
   });
 
   it("reserves the same width for every message under the default style, including the longest ('saving…') and the error state, so switching between them can't shift anything", () => {

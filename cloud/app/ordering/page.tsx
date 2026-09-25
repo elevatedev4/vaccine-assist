@@ -1078,7 +1078,7 @@ export default function OrderingPage() {
             disabled={orderedTodayPending}
             disabledTitle={orderedTodayPending ? "activates after the database step" : undefined}
             onSave={(value) => saveOrderedToday(row.key, value)}
-            highlighted={state !== "none"}
+            pillBackground={state}
           />
           {state !== "none" && (
             <span style={state === "complete" ? styles.orderedTodayBadgeComplete : styles.orderedTodayBadgePartial}>
@@ -1358,7 +1358,7 @@ export default function OrderingPage() {
                           disabled={orderedTodayPending}
                           disabledTitle={orderedTodayPending ? "activates after the database step" : undefined}
                           onSave={(value) => saveOrderedToday(row.key, value)}
-                          highlighted={state !== "none" || row.order > 0}
+                          pillBackground={state !== "none" ? state : row.order > 0 ? "due" : "none"}
                         />
                         {state !== "none" && (
                           <span style={state === "complete" ? styles.orderedTodayBadgeComplete : styles.orderedTodayBadgePartial}>
