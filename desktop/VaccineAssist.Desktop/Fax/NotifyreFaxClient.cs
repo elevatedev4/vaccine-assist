@@ -150,6 +150,17 @@ public sealed class NotifyreFaxClient : IFaxClient
         return ParseStatusResponse(body, faxId);
     }
 
+    /// <summary>Header label used for each NotifyreAuthMode in log lines
+    /// and in the Summary/ErrorMessage text shown to Will — kept in one
+    /// place so the probe loop, its diagnostic logging, and the
+    /// user-facing "which header worked" sentence never drift apart.</summary>
+    private static string AuthModeLabel(NotifyreAuthMode mode) => mode switch
+    {
+        NotifyreAuthMode.Bearer => "Authorization: Bearer <token>",
+        NotifyreAuthMode.RawAuthorization => "Authorization: <token> (no scheme)",
+        _ => "x-api-token (documented)",
+    };
+
     public async Task<FaxAccountInfo> TestConnectionAsync(CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(NormalizedApiToken))
@@ -168,18 +179,42 @@ public sealed class NotifyreFaxClient : IFaxClient
         const string testConnectionPath = "/fax/numbers";
         var testConnectionUrl = BaseUrl + testConnectionPath;
 
+        // Documented form first — docs.notifyre.com/api/authentication
+        // says "x-api-token: <token>", base https://api.notifyre.com.
         string body;
         try
         {
-            body = await SendWithRetryAsync(() => BuildRequest(HttpMethod.Get, testConnectionPath, null), ct);
+            body = await SendWithRetryAsync(() => BuildRequest(HttpMethod.Get, testConnectionPath, null, NotifyreAuthMode.XApiToken), ct);
             LogTestConnectionDiagnostic(testConnectionMethod, testConnectionUrl, NormalizedApiToken, body);
         }
-        catch (NotifyreHttpException ex)
+        catch (NotifyreHttpException ex) when (ex.StatusCode == 401)
         {
             // Will's brief: "Make Test connection show the HTTP status +
             // Notifyre's error body text in the dialog and log (not just
             // '401')" — ex.Message already carries both (see
             // NotifyreHttpException below).
+            AppFileLog.Log($"[NotifyreFaxClient] Test connection failed — {ex.Message}");
+            LogTestConnectionDiagnostic(testConnectionMethod, testConnectionUrl, NormalizedApiToken, ex.Body);
+
+            // V-T53 401 follow-up (Will, 2026-09-25, verbatim: "I know
+            // the token is correct. I got it myself... Fix the app."):
+            // Notifyre returns the SAME 401 "Access denied" body for a
+            // missing token and a garbage one, so a bare 401 on the
+            // documented header doesn't by itself prove the token is
+            // wrong — it only proves THIS header form didn't work.
+            // FaxApiTokenNormalizer already guaranteed the attempt above
+            // sent the cleaned token, so re-trying x-api-token again
+            // would be redundant; go straight to the other forms
+            // docs.notifyre.com's own examples show elsewhere. No other
+            // Notifyre endpoint is confirmed cheap+authenticated in this
+            // repo's cached docs, so there's no third endpoint to try —
+            // only these two alternate header forms, each attempted
+            // exactly once, bounded to ~4s apiece so a hung probe can't
+            // make Test connection hang.
+            return await ProbeAlternateAuthFormsAsync(testConnectionMethod, testConnectionUrl, testConnectionPath, ct);
+        }
+        catch (NotifyreHttpException ex)
+        {
             AppFileLog.Log($"[NotifyreFaxClient] Test connection failed — {ex.Message}");
             LogTestConnectionDiagnostic(testConnectionMethod, testConnectionUrl, NormalizedApiToken, ex.Body);
             return new FaxAccountInfo(false, null, ex.Message);
@@ -190,6 +225,74 @@ public sealed class NotifyreFaxClient : IFaxClient
             return new FaxAccountInfo(false, null, $"Couldn't reach Notifyre: {ex.Message}");
         }
 
+        return ParseAccountInfo(body, NotifyreAuthMode.XApiToken);
+    }
+
+    /// <summary>Runs after the documented x-api-token form 401s — tries
+    /// each alternate auth form Notifyre's own docs show for OTHER
+    /// endpoints, in order, stopping at the first 2xx. Updates
+    /// _credentials.NotifyreAuthMode (the SAME object this client was
+    /// constructed with) the moment a form succeeds, so every later
+    /// QueueAsync/GetStatusAsync call on this client uses it too — see
+    /// FaxCredentials.NotifyreAuthMode's own doc comment. Persisting that
+    /// choice to disk (so a FUTURE app run also uses it) is
+    /// FaxSettingsViewModel's job, not this client's.</summary>
+    private async Task<FaxAccountInfo> ProbeAlternateAuthFormsAsync(string method, string url, string path, CancellationToken ct)
+    {
+        var alternates = new[] { NotifyreAuthMode.Bearer, NotifyreAuthMode.RawAuthorization };
+
+        foreach (var mode in alternates)
+        {
+            var (success, statusCode, probeBody) = await SendProbeAsync(HttpMethod.Get, path, mode, ct);
+            LogProbeDiagnostic(method, url, HeaderNameFor(mode), statusCode, probeBody);
+
+            if (success)
+            {
+                _credentials.NotifyreAuthMode = mode;
+                return ParseAccountInfo(probeBody, mode);
+            }
+        }
+
+        return new FaxAccountInfo(false, null,
+            "Notifyre rejected the token in every form (x-api-token, Bearer, raw). The token itself is not recognized — regenerate it in Notifyre → Settings → Developer → API tokens, check the account is verified/out of test mode, and paste the new one.");
+    }
+
+    /// <summary>One bounded, non-retried probe attempt for the given auth
+    /// form — unlike SendWithRetryAsync (used for real sends/status
+    /// checks/the documented Test connection attempt), a probe never
+    /// retries on 5xx/transport error: it's only trying to answer "does
+    /// Notifyre accept THIS header form at all," and a single ~4s-capped
+    /// attempt per form keeps the whole Test connection call fast even
+    /// when every form fails.</summary>
+    private async Task<(bool Success, int StatusCode, string Body)> SendProbeAsync(HttpMethod method, string pathAndQuery, NotifyreAuthMode mode, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(4));
+
+        try
+        {
+            using var response = await _httpClient.SendAsync(BuildRequest(method, pathAndQuery, null, mode), timeoutCts.Token);
+            var body = await ReadBodySafeAsync(response, ct);
+            return (response.IsSuccessStatusCode, (int)response.StatusCode, body);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return (false, 0, "(probe timed out)");
+        }
+        catch (Exception ex)
+        {
+            return (false, 0, $"(probe couldn't reach Notifyre: {ex.Message})");
+        }
+    }
+
+    private static string HeaderNameFor(NotifyreAuthMode mode) => mode switch
+    {
+        NotifyreAuthMode.XApiToken => "x-api-token",
+        _ => "Authorization",
+    };
+
+    private FaxAccountInfo ParseAccountInfo(string body, NotifyreAuthMode mode)
+    {
         try
         {
             var envelope = JsonSerializer.Deserialize<NotifyreEnvelope<NumbersPayload>>(body, ResponseJsonOptions);
@@ -204,9 +307,19 @@ public sealed class NotifyreFaxClient : IFaxClient
             // used here as a lightweight authenticated call to prove the
             // token works (Will verified his account currently returns
             // {"payload":{"numbers":[]},"success":true,"statusCode":200}).
-            var summary = count == 0
+            var baseSummary = count == 0
                 ? "Connected. No fax numbers on this account (fine for outbound-only sending)."
                 : $"Connected. {count} fax number(s) on this account.";
+
+            // V-T53 401 follow-up: on the documented form this is the
+            // whole message; on a form the probe found instead, say
+            // exactly which one so it's obvious in the UI (and in the
+            // saved settings) that real sends are now using something
+            // other than what docs.notifyre.com documents.
+            var summary = mode == NotifyreAuthMode.XApiToken
+                ? baseSummary
+                : $"{baseSummary} Notifyre only accepted the token as {AuthModeLabel(mode)} — using that for real sends too.";
+
             return new FaxAccountInfo(true, summary, null);
         }
         catch (Exception ex)
@@ -318,23 +431,69 @@ public sealed class NotifyreFaxClient : IFaxClient
             $"responseBody={truncatedBody}");
     }
 
-    private HttpRequestMessage BuildRequest(HttpMethod method, string pathAndQuery, object? jsonBody)
+    /// <summary>Same purpose as LogTestConnectionDiagnostic but for one
+    /// alternate-auth-form probe attempt — method/URL/header NAME only
+    /// (never the header VALUE, so the token is never logged, masked or
+    /// otherwise, from this path) plus the status code and Notifyre's
+    /// response body truncated to 200 chars (a probe's body is only ever
+    /// "Access denied" or similar, so 200 chars is ample without the
+    /// diagnostic line growing unbounded).</summary>
+    private static void LogProbeDiagnostic(string method, string url, string headerName, int statusCode, string responseBody)
+    {
+        var truncatedBody = responseBody.Length > 200 ? responseBody[..200] + "…" : responseBody;
+        AppFileLog.Log(
+            "[NotifyreFaxClient] Test connection probe — " +
+            $"method={method} url={url} header={headerName} status={statusCode} responseBody={truncatedBody}");
+    }
+
+    /// <summary>Builds one Notifyre HTTP request, applying the auth
+    /// header for whichever <see cref="NotifyreAuthMode"/> is in
+    /// effect.</summary>
+    /// <param name="authModeOverride">Force a specific auth header form
+    /// for THIS one request (used only by TestConnectionAsync's probe —
+    /// it needs to try forms other than whatever is currently stored).
+    /// Every other caller (QueueAsync, GetStatusAsync, the documented
+    /// Test connection attempt) omits this and gets
+    /// _credentials.NotifyreAuthMode — the form last proven to work for
+    /// this account, defaulting to the documented x-api-token form for
+    /// an account that's never needed probing. See
+    /// FaxCredentials.NotifyreAuthMode's own doc comment.</param>
+    private HttpRequestMessage BuildRequest(HttpMethod method, string pathAndQuery, object? jsonBody, NotifyreAuthMode? authModeOverride = null)
     {
         var request = new HttpRequestMessage(method, BaseUrl + pathAndQuery);
-        // V-T53 401 follow-up (Will, 2026-09-25): a plain .Trim() (the
-        // original defense-in-depth here) only strips whitespace — it
-        // does NOT strip zero-width/invisible characters, a pasted
-        // "Bearer " prefix, or surrounding quotes, any of which is a
-        // valid header BYTE-wise (so it's sent, not rejected/thrown) but
-        // won't match Notifyre's stored token, which reads as a plain
-        // 401 with no other symptom. See FaxApiTokenNormalizer.
-        request.Headers.TryAddWithoutValidation("x-api-token", NormalizedApiToken);
+        ApplyAuthHeader(request, authModeOverride ?? _credentials.NotifyreAuthMode);
         if (jsonBody is not null)
         {
             request.Content = new StringContent(JsonSerializer.Serialize(jsonBody, RequestJsonOptions), Encoding.UTF8, "application/json");
         }
 
         return request;
+    }
+
+    /// <summary>Puts the (already-normalized — see NormalizedApiToken)
+    /// token on the request in whichever header form <paramref
+    /// name="mode"/> names. TryAddWithoutValidation throughout (not
+    /// Headers.Add) for the same reason the original x-api-token-only
+    /// code used it: a plain .Trim() only strips whitespace, never a
+    /// zero-width/invisible character or stray control character — those
+    /// are still valid header bytes (so validated Add would accept them
+    /// too), but FaxApiTokenNormalizer already stripped them from
+    /// NormalizedApiToken, so this is defense-in-depth, not the reason
+    /// TryAddWithoutValidation is used here.</summary>
+    private void ApplyAuthHeader(HttpRequestMessage request, NotifyreAuthMode mode)
+    {
+        switch (mode)
+        {
+            case NotifyreAuthMode.Bearer:
+                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {NormalizedApiToken}");
+                break;
+            case NotifyreAuthMode.RawAuthorization:
+                request.Headers.TryAddWithoutValidation("Authorization", NormalizedApiToken);
+                break;
+            default:
+                request.Headers.TryAddWithoutValidation("x-api-token", NormalizedApiToken);
+                break;
+        }
     }
 
     private static FaxQueueResult ParseQueueResponse(string body)
@@ -428,9 +587,18 @@ public sealed class NotifyreFaxClient : IFaxClient
         /// (differently truncated) copy of the actual body.</summary>
         public string Body { get; }
 
+        /// <summary>The HTTP status code — TestConnectionAsync checks
+        /// this specifically for 401 (Notifyre's "credential not
+        /// recognized in this form" signal) to decide whether to run the
+        /// alternate-auth-form probe; any other 4xx (400/403/etc.) is a
+        /// different kind of failure and is surfaced as-is, with no
+        /// probe.</summary>
+        public int StatusCode { get; }
+
         public NotifyreHttpException(int statusCode, string body)
             : base($"Notifyre HTTP {statusCode}: {Truncate(body)}")
         {
+            StatusCode = statusCode;
             Body = body;
         }
 

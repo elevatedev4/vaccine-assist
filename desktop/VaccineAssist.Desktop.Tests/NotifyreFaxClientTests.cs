@@ -216,32 +216,163 @@ public class NotifyreFaxClientTests
     }
 
     [Fact]
-    public async Task TestConnectionAsyncOn401SurfacesTheHttpStatusAndNotifyresErrorBody()
+    public async Task TestConnectionAsyncOnANon401FailureSurfacesTheHttpStatusAndNotifyresErrorBodyWithNoProbe()
     {
         // Will's brief: "Make Test connection show the HTTP status +
         // Notifyre's error body text in the dialog and log (not just
-        // '401')."
+        // '401')." Only a 401 on the documented form triggers the
+        // alternate-auth-form probe (see the 401-specific tests below) —
+        // any OTHER 4xx (403 here) is a different kind of failure and is
+        // surfaced immediately, with no probe/extra requests.
         var handler = new FakeHttpMessageHandler();
-        handler.EnqueueJson(HttpStatusCode.Unauthorized, "{\"success\":false,\"message\":\"Invalid API token\"}");
+        handler.EnqueueJson(HttpStatusCode.Forbidden, "{\"success\":false,\"message\":\"Account suspended\"}");
         var client = MakeClient(handler);
 
         var result = await client.TestConnectionAsync();
 
         Assert.False(result.Success);
-        Assert.Contains("401", result.ErrorMessage);
-        Assert.Contains("Invalid API token", result.ErrorMessage);
+        Assert.Contains("403", result.ErrorMessage);
+        Assert.Contains("Account suspended", result.ErrorMessage);
+        Assert.Single(handler.Requests);
+    }
+
+    private const string NumbersSuccessJson = "{\"Success\":true,\"Payload\":{\"Numbers\":[]}}";
+    private const string UnauthorizedJson = "{\"success\":false,\"message\":\"Access denied\"}";
+
+    [Fact]
+    public async Task TestConnectionAsyncOn401ProbesBearerNextAndReportsWhichHeaderWorked()
+    {
+        // V-T53 401 follow-up (Will, 2026-09-25): Notifyre returns the
+        // SAME 401 body for a missing token and a garbage one, so on a
+        // 401 from the documented x-api-token header, Test connection
+        // must try Bearer next rather than giving up immediately.
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson); // x-api-token
+        handler.EnqueueJson(HttpStatusCode.OK, NumbersSuccessJson); // Authorization: Bearer
+        var credentials = new FaxCredentials { ApiToken = "test-token" };
+        var client = new NotifyreFaxClient(new HttpClient(handler), credentials, backoffProvider: _ => TimeSpan.Zero);
+
+        var result = await client.TestConnectionAsync();
+
+        Assert.True(result.Success);
+        Assert.Contains("Bearer", result.Summary);
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.True(handler.Requests[0].Headers.TryGetValues("x-api-token", out var documentedValues));
+        Assert.Equal("test-token", documentedValues!.Single());
+
+        Assert.True(handler.Requests[1].Headers.TryGetValues("Authorization", out var bearerValues));
+        Assert.Equal("Bearer test-token", bearerValues!.Single());
+        Assert.False(handler.Requests[1].Headers.Contains("x-api-token"));
+
+        // The discovered mode is stored on the SAME FaxCredentials object
+        // this client was constructed with, so send/status calls made
+        // with the same credentials use it too (requirement: "Send path
+        // honours the stored auth mode").
+        Assert.Equal(NotifyreAuthMode.Bearer, credentials.NotifyreAuthMode);
     }
 
     [Fact]
-    public async Task TestConnectionAsyncOn401IsNeverRetried()
+    public async Task TestConnectionAsyncOn401FallsBackToRawAuthorizationWhenBearerAlsoFails()
     {
         var handler = new FakeHttpMessageHandler();
-        handler.EnqueueJson(HttpStatusCode.Unauthorized, "{\"success\":false,\"message\":\"Invalid API token\"}");
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson); // x-api-token
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson); // Bearer
+        handler.EnqueueJson(HttpStatusCode.OK, NumbersSuccessJson); // raw Authorization
+        var credentials = new FaxCredentials { ApiToken = "test-token" };
+        var client = new NotifyreFaxClient(new HttpClient(handler), credentials, backoffProvider: _ => TimeSpan.Zero);
+
+        var result = await client.TestConnectionAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal(3, handler.Requests.Count);
+
+        Assert.True(handler.Requests[2].Headers.TryGetValues("Authorization", out var rawValues));
+        Assert.Equal("test-token", rawValues!.Single());
+        Assert.Equal(NotifyreAuthMode.RawAuthorization, credentials.NotifyreAuthMode);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsyncAllFormsRejectedReturnsAggregatedRegenerateTokenMessage()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson);
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson);
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson);
+        var client = MakeClient(handler);
+
+        var result = await client.TestConnectionAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("every form", result.ErrorMessage);
+        Assert.Contains("x-api-token", result.ErrorMessage);
+        Assert.Contains("Bearer", result.ErrorMessage);
+        Assert.Contains("raw", result.ErrorMessage);
+        Assert.Contains("regenerate", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        // Exactly one attempt per form (x-api-token, Bearer, raw
+        // Authorization) — never retried/backed-off within a form.
+        Assert.Equal(3, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsyncNeverPutsTheTokenInAnyRequestUrlAcrossAllProbedForms()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson);
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson);
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson);
         var client = MakeClient(handler);
 
         await client.TestConnectionAsync();
 
-        Assert.Single(handler.Requests);
+        Assert.Equal(3, handler.Requests.Count);
+        foreach (var sent in handler.Requests)
+        {
+            Assert.DoesNotContain("test-token", sent.RequestUri!.ToString());
+        }
+    }
+
+    [Fact]
+    public async Task SendPathUsesTheAuthModeDiscoveredDuringTestConnection()
+    {
+        // Requirement: "Send path ... honours the stored auth mode" —
+        // once Test connection discovers Bearer works, a later QueueAsync
+        // call on the SAME credentials object must use Bearer too, not
+        // fall back to the documented x-api-token header.
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.Unauthorized, UnauthorizedJson); // x-api-token probe
+        handler.EnqueueJson(HttpStatusCode.OK, NumbersSuccessJson); // Bearer probe succeeds
+        handler.EnqueueJson(HttpStatusCode.OK, SendSuccessJson); // the real send
+        var credentials = new FaxCredentials { ApiToken = "test-token" };
+        var client = new NotifyreFaxClient(new HttpClient(handler), credentials, backoffProvider: _ => TimeSpan.Zero);
+
+        await client.TestConnectionAsync();
+        await client.QueueAsync(new FaxRequest("5555550100", new byte[] { 1 }, "a.pdf", "5555550101", "s@example.com"));
+
+        var sendRequest = handler.Requests[2];
+        Assert.True(sendRequest.Headers.TryGetValues("Authorization", out var authValues));
+        Assert.Equal("Bearer test-token", authValues!.Single());
+        Assert.False(sendRequest.Headers.Contains("x-api-token"));
+    }
+
+    [Fact]
+    public async Task SendPathDefaultsToTheDocumentedXApiTokenHeaderWhenNoProbeHasEverRun()
+    {
+        // "default unchanged" — a FaxCredentials that's never been
+        // through Test connection's probe (the ordinary case for every
+        // account whose token just works) sends exactly what this client
+        // always sent before this feature existed.
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, SendSuccessJson);
+        var credentials = new FaxCredentials { ApiToken = "test-token" };
+        var client = new NotifyreFaxClient(new HttpClient(handler), credentials, backoffProvider: _ => TimeSpan.Zero);
+
+        await client.QueueAsync(new FaxRequest("5555550100", new byte[] { 1 }, "a.pdf", "5555550101", "s@example.com"));
+
+        var sent = handler.Requests[0];
+        Assert.True(sent.Headers.TryGetValues("x-api-token", out var tokenValues));
+        Assert.Equal("test-token", tokenValues!.Single());
+        Assert.False(sent.Headers.Contains("Authorization"));
     }
 
     [Theory]
