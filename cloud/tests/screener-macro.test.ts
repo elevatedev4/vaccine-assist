@@ -3,6 +3,10 @@ import { matchScreenerProducts } from "@/lib/screener-macro";
 import { buildMacroRows, type MacroLotLike, type MacroRowVaccine } from "@/lib/macro-codes";
 import type { ProductView } from "@/lib/product-view";
 
+// buildMacroRows' `today` param (V-lots-bud-spikevax follow-up) — a
+// fixed date safely before this file's fixture expiration (2028-09-29).
+const TODAY = "2026-01-01";
+
 function view(overrides: Partial<ProductView> & { productKey: string; vaccineIds: string[] }): ProductView {
   return {
     displayName: overrides.productKey,
@@ -40,7 +44,7 @@ describe("matchScreenerProducts", () => {
       s1: [{ status: "active", expiration: "2028-09-29", lot_number: "7C955" }],
       s2: [{ status: "active", expiration: "2028-09-29", lot_number: "7C955" }],
     };
-    const rows = buildMacroRows(products, vaccines, lots);
+    const rows = buildMacroRows(products, vaccines, lots, TODAY);
 
     const matches = matchScreenerProducts(rows, "shingrix");
     expect(matches).toHaveLength(1);
@@ -53,13 +57,13 @@ describe("matchScreenerProducts", () => {
       view({ productKey: "ndc:shingrix", displayName: "Shingrix", vaccineIds: ["s1"] }),
     ];
     const vaccines: MacroRowVaccine[] = [vaccine({ id: "s1", name: "Shingrix", short_code: "shingrix1" })];
-    const rows = buildMacroRows(products, vaccines, {});
+    const rows = buildMacroRows(products, vaccines, {}, TODAY);
 
     expect(matchScreenerProducts(rows, "capvaxive")).toEqual([]);
   });
 
   it("returns [] for an id with no SCREENER_RULE_MACRO_INFO entry", () => {
-    const rows = buildMacroRows([], [], {});
+    const rows = buildMacroRows([], [], {}, TODAY);
     expect(matchScreenerProducts(rows, "not-a-real-rule")).toEqual([]);
   });
 
@@ -74,7 +78,7 @@ describe("matchScreenerProducts", () => {
       vaccine({ id: "f2", name: "Flucelvax PFS", short_code: "flucelvaxpfs" }),
       vaccine({ id: "f3", name: "Fluad", short_code: "fluad" }),
     ];
-    const rows = buildMacroRows(products, vaccines, {});
+    const rows = buildMacroRows(products, vaccines, {}, TODAY);
 
     const flucelvaxMatches = matchScreenerProducts(rows, "flucelvax");
     expect(flucelvaxMatches.map((p) => p.displayName).sort()).toEqual(["Flucelvax MDV", "Flucelvax PFS"]);
@@ -93,7 +97,7 @@ describe("matchScreenerProducts", () => {
       vaccine({ id: "e2", name: "Engerix-B", dose: "2", short_code: "engerix2" }),
       vaccine({ id: "e3", name: "Engerix-B", dose: "3", short_code: "engerix3" }),
     ];
-    const rows = buildMacroRows(products, vaccines, {});
+    const rows = buildMacroRows(products, vaccines, {}, TODAY);
 
     const matches = matchScreenerProducts(rows, "engerix-b");
     expect(matches).toHaveLength(1);
