@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  buttonBaseMinHeightPx,
+  buttonPaddingRem,
   lotExpiryNote,
+  mainLabelFontSizePx,
   missingNote,
   PRODUCT_COLORS,
   renderMacroDoseButton,
   resolveDoseButtonColors,
   SECTION_COLORS,
   subLabelFontSizePx,
+  subLabelMaxWidthPx,
   subLabelSlotHeightPx,
   SUB_LABEL_LINE_HEIGHT,
 } from "@/lib/macro-dose-button";
@@ -135,7 +139,7 @@ describe("subLabelFontSizePx", () => {
     expect(subLabelFontSizePx(false, true)).toBe(subLabelFontSizePx(false, true));
   });
 
-  it("large (layout C / screener) is bigger than the plain size, compact (embed) is the smallest", () => {
+  it("large (layout C / screener) is bigger than the plain size, compact alone is the smallest", () => {
     const compact = subLabelFontSizePx(true, false);
     const plain = subLabelFontSizePx(false, false);
     const large = subLabelFontSizePx(false, true);
@@ -143,8 +147,88 @@ describe("subLabelFontSizePx", () => {
     expect(plain).toBeLessThan(large);
   });
 
-  it("compact wins over large when both are true (embed always renders layout C, i.e. large:true)", () => {
-    expect(subLabelFontSizePx(true, true)).toBe(subLabelFontSizePx(true, false));
+  // MACRO-POPUP ROUND 3 (Will's verbatim ask, 2026-09-25): embed always
+  // renders layout C (large: true) together with compact: true — before
+  // this round `compact` won outright over `large` in that combination,
+  // making the popup's own type SMALLER than every other tier, including
+  // plain. That regression is what this describe block now locks in the
+  // opposite of.
+  it("compact no longer collapses to the compact-alone size when large is also true", () => {
+    expect(subLabelFontSizePx(true, true)).not.toBe(subLabelFontSizePx(true, false));
+    expect(subLabelFontSizePx(true, true)).toBeGreaterThan(subLabelFontSizePx(true, false));
+  });
+
+  it("compact+large (the embed popup) is at least as big as plain large, never smaller", () => {
+    expect(subLabelFontSizePx(true, true)).toBeGreaterThanOrEqual(subLabelFontSizePx(false, true));
+  });
+
+  it("every OTHER combination (i.e. anything but compact+large together) is unchanged from before round 3", () => {
+    // Locks in that round 3 only ever touches the one specific
+    // compact&&large tier — the normal, non-embed page (compact: false)
+    // and the still-unused compact-alone combination must never move.
+    expect(subLabelFontSizePx(false, false)).toBe(10);
+    expect(subLabelFontSizePx(false, true)).toBe(11);
+    expect(subLabelFontSizePx(true, false)).toBe(9);
+  });
+});
+
+describe("mainLabelFontSizePx (round 3: the dose button's own first-line font size)", () => {
+  it("compact+large (the embed popup) is bigger than plain large — the round-3 fix", () => {
+    expect(mainLabelFontSizePx(true, true)).toBeGreaterThan(mainLabelFontSizePx(false, true));
+  });
+
+  it("compact+large is roughly 20-25% bigger than the old compact-alone (pre-round-3 embed) size", () => {
+    const compactAlone = mainLabelFontSizePx(true, false); // unchanged: 11
+    const popup = mainLabelFontSizePx(true, true);
+    const ratio = popup / compactAlone;
+    expect(ratio).toBeGreaterThanOrEqual(1.2);
+    expect(ratio).toBeLessThanOrEqual(1.3);
+  });
+
+  it("every other combination is unchanged from before round 3", () => {
+    expect(mainLabelFontSizePx(false, false)).toBe(12);
+    expect(mainLabelFontSizePx(false, true)).toBe(13);
+    expect(mainLabelFontSizePx(true, false)).toBe(11);
+  });
+});
+
+describe("buttonBaseMinHeightPx (round 3)", () => {
+  it("compact+large is roughly 20-25% bigger than the old compact-alone (pre-round-3 embed) height", () => {
+    const compactAlone = buttonBaseMinHeightPx(true, false); // unchanged: 28
+    const popup = buttonBaseMinHeightPx(true, true);
+    const ratio = popup / compactAlone;
+    expect(ratio).toBeGreaterThanOrEqual(1.2);
+    expect(ratio).toBeLessThanOrEqual(1.3);
+  });
+
+  it("every other combination is unchanged from before round 3", () => {
+    expect(buttonBaseMinHeightPx(false, false)).toBe(32);
+    expect(buttonBaseMinHeightPx(false, true)).toBe(38);
+    expect(buttonBaseMinHeightPx(true, false)).toBe(28);
+  });
+});
+
+describe("buttonPaddingRem (round 3)", () => {
+  it("compact+large is bigger than the old compact-alone padding", () => {
+    expect(buttonPaddingRem(true, true)).toBeGreaterThan(buttonPaddingRem(true, false));
+  });
+
+  it("every other combination is unchanged from before round 3", () => {
+    expect(buttonPaddingRem(false, false)).toBe(0.5);
+    expect(buttonPaddingRem(false, true)).toBe(0.75);
+    expect(buttonPaddingRem(true, false)).toBe(0.5);
+  });
+});
+
+describe("subLabelMaxWidthPx (round 3)", () => {
+  it("compact+large is wider than the old compact-alone cap", () => {
+    expect(subLabelMaxWidthPx(true, true)).toBeGreaterThan(subLabelMaxWidthPx(true, false));
+  });
+
+  it("every other combination is unchanged from before round 3", () => {
+    expect(subLabelMaxWidthPx(false, false)).toBe(112);
+    expect(subLabelMaxWidthPx(false, true)).toBe(130);
+    expect(subLabelMaxWidthPx(true, false)).toBe(96);
   });
 });
 

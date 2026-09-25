@@ -160,4 +160,36 @@ public class SrFaxClientTests
 
         Assert.True(result.Success);
     }
+
+    [Fact]
+    public async Task TestConnectionAsyncSuccessSummaryAlwaysStartsWithConnected()
+    {
+        // FaxAccountInfo.Summary's contract (shared with NotifyreFaxClient
+        // — see its own ParseAccountInfo): on success it always already
+        // starts with "Connected." so FaxSettingsViewModel can display it
+        // verbatim without prepending its own "Connected. " (that used to
+        // double up as "Connected. Connected. ..." for Notifyre).
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, "{\"Status\":\"Success\",\"Result\":\"5 faxes this month\"}");
+        var client = MakeClient(handler);
+
+        var result = await client.TestConnectionAsync();
+
+        Assert.True(result.Success);
+        Assert.StartsWith("Connected.", result.Summary);
+        Assert.Contains("5 faxes this month", result.Summary);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsyncSuccessSummaryFallsBackToPlainConnectedWhenResultIsBlank()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, "{\"Status\":\"Success\",\"Result\":\"\"}");
+        var client = MakeClient(handler);
+
+        var result = await client.TestConnectionAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal("Connected.", result.Summary);
+    }
 }

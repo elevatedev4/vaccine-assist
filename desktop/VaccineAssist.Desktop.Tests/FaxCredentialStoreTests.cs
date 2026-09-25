@@ -132,6 +132,60 @@ public class FaxCredentialStoreTests
     }
 
     [Fact]
+    public void SaveThenLoadRoundTripsANonDocumentedNotifyreAuthMode()
+    {
+        // V-T53 401 follow-up (2026-09-25): once NotifyreFaxClient's probe
+        // discovers a non-documented header form works, that choice must
+        // survive a save/load round trip so a later app run keeps using it.
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        try
+        {
+            var store = new FaxCredentialStore(path);
+            store.Save(new FaxCredentials { ApiToken = "test-token", NotifyreAuthMode = NotifyreAuthMode.Bearer });
+
+            var loaded = store.Load();
+
+            Assert.NotNull(loaded);
+            Assert.Equal(NotifyreAuthMode.Bearer, loaded!.NotifyreAuthMode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadDefaultsNotifyreAuthModeToXApiTokenWhenTheFieldIsAbsent()
+    {
+        // An older credentials.json written before NotifyreAuthMode
+        // existed — must fall back to the documented default rather than
+        // failing the whole load or throwing on Enum.Parse.
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        try
+        {
+            var store = new FaxCredentialStore(path);
+            store.Save(new FaxCredentials { ApiToken = "test-token" });
+
+            // Simulate an older credentials.json written before
+            // NotifyreAuthMode existed by removing the property entirely
+            // (via JsonNode, not string surgery) so the rest of the file
+            // stays valid JSON.
+            var node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            node.Remove("NotifyreAuthMode");
+            File.WriteAllText(path, node.ToJsonString());
+
+            var loaded = store.Load();
+
+            Assert.NotNull(loaded);
+            Assert.Equal(NotifyreAuthMode.XApiToken, loaded!.NotifyreAuthMode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void DeleteRemovesAPreviouslySavedCredentialsFile()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");

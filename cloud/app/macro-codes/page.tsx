@@ -28,7 +28,7 @@ import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { todayInChicago } from "@/lib/chicago-date";
 import { modalDatesBlocked } from "@/lib/lot-expiry";
 import { defaultBudEnabledProductKeys, isBudFieldVisible } from "@/lib/lots-bud-defaults";
-import { postToHost } from "@/lib/macro-embed";
+import { postToHost, postContentSize } from "@/lib/macro-embed";
 import {
   fetchMacroCodesPayload,
   getMacroCodesCacheStorage,
@@ -241,6 +241,49 @@ import {
  * used for the button's own visible text and the postToHost `label`
  * field) get the same new composite from lib/macro-codes.ts directly —
  * see that file's own ROUND 15 note.
+ *
+ * MACRO-POPUP ROUND 3 (Will's verbatim ask, 2026-09-25, on the Ctrl+8/
+ * Ctrl+Numpad2 popup, after round 2 just made the WPF window itself
+ * bigger): "The macro codes page looks silly. Make it wider so that it
+ * will display bigger, and make the height fit only what it needs to
+ * be able to show everything, not extra space at the bottom." EMBED
+ * MODE ONLY, same posture as every other embed-only change above — the
+ * normal, non-embed page is untouched:
+ * - Width: the grid's own `maxWidth` was already `"100%"` for embed
+ *   (see the .macro-groups-c wrapper's inline style below), so the fix
+ *   here is the type scale, not a width cap — dose buttons/product
+ *   names/dose labels are now ~20-25% bigger in embed than they were
+ *   (lib/macro-dose-button.tsx's mainLabelFontSizePx/
+ *   buttonBaseMinHeightPx/buttonPaddingRem/subLabelFontSizePx/
+ *   subLabelMaxWidthPx — see that file's own round-3 note for why
+ *   `compact` used to render SMALLER than the normal page despite embed
+ *   always passing `large: true` too), plus this page's own embed-only
+ *   band/name/meta/age-filter-note sizes below. Side padding on `<main>`
+ *   grew from a cramped 8px to a comfortable 24px; the old "EMBED
+ *   COMPACT" 980x760 height-budget arithmetic (this file's <style> tag)
+ *   is retired along with the fixed-target-height assumption it was
+ *   written for — see the next bullet.
+ * - Height: this page no longer tries to fit a fixed guessed window
+ *   size at all. It reports its own rendered size to the desktop host —
+ *   lib/macro-embed.ts's postContentSize(width, height) — once after
+ *   first paint and again on every subsequent size change (a
+ *   ResizeObserver on `<main>` itself, debounced ~50ms) below, and
+ *   MacroCodesWindow.xaml.cs resizes the actual WPF window to match
+ *   (see that file's own round-3 note). The measurement target is
+ *   `<main>` (embedContentEl, set via a callback ref), NOT
+ *   `document.documentElement` — the root element's scrollHeight is
+ *   `max(viewport height, content height)` per the CSSOM View spec, so
+ *   once the WebView2 viewport was ever as tall as the window's current
+ *   height, it could never report SHORTER again: the window would grow
+ *   for a long list but never shrink back for a short filtered one,
+ *   which is exactly the "extra space at the bottom" the brief called
+ *   out. `<main>`'s own getBoundingClientRect() has no such floor. This
+ *   file's embed-only global CSS rule also zeroes `body`'s default ~8px
+ *   margin, so nothing outside `<main>`'s own measured box adds
+ *   unaccounted-for height — and drops `overflow: hidden` on `body`
+ *   entirely: the window can still end up shorter than the content on a
+ *   small monitor (clamped to the work area), and when it does the
+ *   WebView2 control needs to scroll internally rather than clip.
  */
 
 type VaccineRow = MacroRowVaccine;
@@ -391,7 +434,11 @@ const styles = {
   // too (unlike styles.heading above, which embed hides), just smaller
   // so it fits the popup's tight vertical budget.
   ageFilterNote: { margin: "0 0 0.5rem", fontSize: "0.85rem", color: "#333" },
-  ageFilterNoteEmbed: { margin: "0 0 4px", fontSize: 11, color: "#333" },
+  // Macro-popup round 3: 11px -> 14px, same ~25% embed-only bump as the
+  // dose-button/product-name sizes below (see lib/macro-dose-button.tsx's
+  // round-3 note) — this note sits right above the same grid the buttons
+  // do, so it reads oddly small next to them at the old size.
+  ageFilterNoteEmbed: { margin: "0 0 6px", fontSize: 14, color: "#333" },
   ageFilterClearLink: { marginLeft: "0.5rem", color: "#0b63c5" },
 } as const;
 
@@ -523,6 +570,27 @@ function MacroCodesPageContent() {
   // case: `embed` still exists for the popup's compact styling, but
   // doesn't need to "force" a layout anymore since there's only one.
   const [filterQuery, setFilterQuery] = useState("");
+
+  // MACRO-POPUP ROUND 3 FIX: the `<main>` DOM node, captured via a
+  // callback ref (`<main ref={setEmbedContentEl}>` below) rather than a
+  // plain useRef so the content-size-reporting effect further down can
+  // depend on it and correctly re-run once `<main>` actually mounts —
+  // see that effect's own doc comment for why a ref alone isn't enough
+  // here (this page shows AuthLoading/SignInGate, with no `<main>` at
+  // all, before session/authChecked resolve).
+  const [embedContentEl, setEmbedContentEl] = useState<HTMLElement | null>(null);
+
+  // MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): the lot/exp
+  // modal card (styles.modalCard) below is rendered inside `<main>` in
+  // the JSX tree, but its OVERLAY wrapper is `position: fixed` — a
+  // fixed-position element is taken out of normal flow entirely and
+  // never contributes to its parent's own rendered height, so
+  // `embedContentEl`'s measured box (above) stays exactly what it was
+  // with the modal closed even while the modal is open. Same callback-
+  // ref pattern as embedContentEl, captured separately so the
+  // content-size effect can measure the card directly and fold its
+  // footprint into the reported height while it's mounted.
+  const [modalCardEl, setModalCardEl] = useState<HTMLElement | null>(null);
 
   function resetAfterSignOut() {
     setVaccines([]);
@@ -987,6 +1055,97 @@ function MacroCodesPageContent() {
     };
   }, [embed, modal, anyMenuOpen]);
 
+  // MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): the first cut of
+  // this effect measured `document.documentElement.scrollHeight`, but
+  // per the CSSOM View spec the ROOT element's scrollHeight is
+  // `max(viewport height, content height)` — once the WebView2 viewport
+  // is as tall as the window's current height, scrollHeight can never
+  // report SMALLER than that again, so the window could grow for a long
+  // list but never shrink back down for a short filtered one — exactly
+  // Will's "extra space at the bottom" complaint this whole round
+  // exists to fix. Measuring `<main>` itself instead (embedContentEl,
+  // set via the `<main ref={setEmbedContentEl}>` callback ref below)
+  // sidesteps that entirely: an element's own rendered box has no
+  // viewport-based floor, whatever the viewport happens to be sized to
+  // right now. `body { margin: 0 }` (this file's embed-only global CSS
+  // rule) makes the number exact — the ~8px UA-default body margin
+  // would otherwise add a stray gap around `<main>` that never shows up
+  // in `<main>`'s own measured height, silently under-reporting.
+  //
+  // A plain useRef doesn't work here: `<main>` doesn't exist yet on the
+  // renders where this page shows AuthLoading/SignInGate (before
+  // authChecked/session), and this effect has no reason to re-run once
+  // `embed` itself stops changing. A CALLBACK ref stored in state fixes
+  // that — React calls it (and this component re-renders) the moment
+  // `<main>` actually mounts, so the effect below (which depends on
+  // `embedContentEl`) reruns and finds a real element instead of
+  // permanently no-op'ing on a still-null ref.
+  //
+  // Reports after first paint, then again on every subsequent size
+  // change (the live filter narrowing the grid, an age filter applying,
+  // a ⚙ menu or the lot/exp modal opening, a window/font load). A
+  // ResizeObserver on `embedContentEl` catches all of those without this
+  // page needing to know which state changes affect layout; debounced
+  // ~50ms since a ResizeObserver can fire in a tight burst for one
+  // visual change (e.g. a font finishing its load). `ResizeObserver`
+  // itself is guarded — some WebView2 builds may lack it — falling back
+  // to just the one first-paint report with no ongoing observation.
+  //
+  // MODAL FIX (code review, 2026-09-25): `embedContentEl`'s own
+  // getBoundingClientRect() never grows for the lot/exp modal (see
+  // modalCardEl's own doc comment for why — its overlay is `position:
+  // fixed`), so a narrow filtered list (near MinHeight) plus an open
+  // modal could clip the modal's Save/Cancel row against the actual
+  // host window. While `modalCardEl` is mounted, this effect also
+  // observes IT with the same ResizeObserver, and report() sends
+  // `Math.max(main height, modal card height + 48)` instead of just the
+  // main height — the +48 covers the overlay's own padding around the
+  // card (styles.modalOverlay's `padding: "1rem"` on every side). The
+  // effect depends on `modalCardEl` too, so opening/closing the modal
+  // (the ref callback firing with a real element, then null) re-runs
+  // this effect and reports again immediately via the rAF first-paint
+  // report below — closing the modal drops straight back to just
+  // `embedContentEl`'s own height.
+  useEffect(() => {
+    if (!embed || !embedContentEl) return;
+    // Captured into plain locals so the nested report() closure below
+    // has non-null types — TS's null-narrowing on `embedContentEl`
+    // above doesn't carry into a nested function declaration, since its
+    // call time (inside a timeout/observer callback) isn't visible to
+    // control-flow analysis.
+    const element = embedContentEl;
+    const modalCard = modalCardEl;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    function report() {
+      const mainRect = element.getBoundingClientRect();
+      let height = mainRect.height;
+      if (modalCard) {
+        height = Math.max(height, modalCard.getBoundingClientRect().height + 48);
+      }
+      postContentSize(mainRect.width, height);
+    }
+    function scheduleReport() {
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(report, 50);
+    }
+    // First paint: rAF so this runs after the browser has actually laid
+    // out the frame the mount produced, not synchronously during it —
+    // also the entire size-reporting path when ResizeObserver is
+    // unavailable (see the guard below): one report, no further updates.
+    const firstPaintFrame = requestAnimationFrame(scheduleReport);
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(scheduleReport);
+      observer.observe(element);
+      if (modalCard) observer.observe(modalCard);
+    }
+    return () => {
+      cancelAnimationFrame(firstPaintFrame);
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      observer?.disconnect();
+    };
+  }, [embed, embedContentEl, modalCardEl]);
+
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -1178,16 +1337,23 @@ function MacroCodesPageContent() {
    */
   function renderSectionVersionC(section: MacroSectionGroup) {
     const colors = SECTION_COLORS[section.section];
-    // Embed compact (2026-09-13, target 980x760 — see the <style> tag's
-    // EMBED COMPACT block for the height budget this feeds into): every
-    // size below is inline (not a CSS class) so it only ever applies in
-    // embed mode and never touches the normal, non-embed layout-C page.
+    // Macro-popup round 3 (Will's verbatim ask, 2026-09-25): the old
+    // "EMBED COMPACT" sizes here (fontSize 11/13/10, padding "2px 6px",
+    // row padding "4px 0") targeted a fixed 980x760 window and shrank
+    // everything to fit inside it without scrolling — that fixed target
+    // is gone now that the host sizes its window TO this page's content
+    // (see this file's own round-3 doc comment near the top and
+    // MacroCodesWindow.xaml.cs), so every size below instead grew
+    // ~20-25%, same bump as the dose buttons themselves (lib/macro-
+    // dose-button.tsx's round-3 note) — every value below is still
+    // inline (not a CSS class) so it only ever applies in embed mode and
+    // never touches the normal, non-embed layout-C page.
     const bandStyle = embed
-      ? { background: colors.border, fontSize: 11, padding: "2px 6px", margin: "3px 0 1px" }
+      ? { background: colors.border, fontSize: 14, padding: "3px 8px", margin: "4px 0 2px" }
       : { background: colors.border };
-    const rowStyle = embed ? { padding: "4px 0" } : undefined;
-    const nameStyle = embed ? { fontSize: 13, lineHeight: 1.15 } : undefined;
-    const metaStyle = embed ? { fontSize: 10, marginTop: 0 } : undefined;
+    const rowStyle = embed ? { padding: "6px 0" } : undefined;
+    const nameStyle = embed ? { fontSize: 16, lineHeight: 1.15 } : undefined;
+    const metaStyle = embed ? { fontSize: 13, marginTop: 0 } : undefined;
     return (
       <section key={section.section} className="macro-section macro-section-c" style={embed ? { marginBottom: 4 } : undefined}>
         <h2 className="macro-section-band" style={bandStyle}>
@@ -1305,7 +1471,10 @@ function MacroCodesPageContent() {
   const modalWasBlocked = modal ? modal.row.lotExpiry !== "ok" : false;
 
   return (
-    <main style={embed ? { ...styles.main, padding: "8px" } : styles.main}>
+    <main
+      ref={setEmbedContentEl}
+      style={embed ? { ...styles.main, padding: "12px 24px" } : styles.main}
+    >
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
 
       {/* V-macro-age-filter: shown whenever an age filter is active,
@@ -1328,10 +1497,10 @@ function MacroCodesPageContent() {
         </p>
       )}
 
-      {/* Embed compact (2026-09-13, Ctrl+8 popup target 980x760, see the
-       * <style> tag's EMBED COMPACT block below for the full height
-       * budget): only the margin shrinks here — width/position/autoFocus
-       * are untouched so the box stays visible and focused at top. */}
+      {/* Embed (2026-09-13; sizing rationale updated by macro-popup round
+       * 3, 2026-09-25 — see this file's top-of-file doc comment): only
+       * the margin shrinks here — width/position/autoFocus are untouched
+       * so the box stays visible and focused at top. */}
       <div style={embed ? { ...styles.filterBox, margin: "0 0 6px" } : styles.filterBox}>
         <input
           type="text"
@@ -1384,6 +1553,16 @@ function MacroCodesPageContent() {
         </div>
       )}
 
+      {/* MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): with no
+       * fallback text here, a name filter narrowed to 0 rows rendered
+       * NOTHING below the filter box — `<main>`'s own measured height
+       * (the content-size effect above) would collapse toward the
+       * MinHeight floor on the desktop side, and an unlucky lot/exp
+       * modal open in that state had very little headroom before this
+       * round's own modal-height fix (modalCardEl above) existed. Keeps
+       * `<main>` from ever collapsing that far regardless. */}
+      {!loading && visibleTopGroups.length === 0 && <p style={styles.muted}>No codes match.</p>}
+
       {modal && (
         <div
           style={styles.modalOverlay}
@@ -1396,7 +1575,7 @@ function MacroCodesPageContent() {
             if (e.target === e.currentTarget) requestCloseModal();
           }}
         >
-          <div style={styles.modalCard}>
+          <div ref={setModalCardEl} style={styles.modalCard}>
             <h2 style={{ marginTop: 0 }}>
               Enter lot / exp for {macroProductDisplayLabel(modal.row.displayName, modal.row.age)} dose {modal.row.doseNumber}
             </h2>
@@ -1520,35 +1699,26 @@ function MacroCodesPageContent() {
        * rules scoped to embed mode by only being emitted at all when
        * `embed` is true.
        *
-       * EMBED COMPACT (2026-09-13, Will verbatim: "The page needs to be
-       * compact ... so that it will fit all on one popup and not require
-       * scrolling"). These values target the popup's 980x760 WebView2
-       * window (see MacroCodesWindow.xaml, resized to 1100x820 for extra
-       * headroom around this target — do not shrink further just because
-       * the window is now bigger). Most of the actual scrolling turned
-       * out to be the @media (max-width: 1100px) rule below stacking the
-       * three .macro-groups columns into one column at 980px wide, not
-       * font size — the `overflow: hidden` below only holds if that
-       * stacking is also defeated, which it is via the inline
-       * flex-direction/width overrides in the JSX above (page.tsx's
-       * renderTopGroup + the .macro-groups container), not here.
-       *
-       * Height budget for the tallest column ("Common": 5 families / 9
-       * product rows, per Will's brief, with Gardasil's (HPV) dose
-       * buttons wrapping to 2 lines):
-       *   main padding            8 + 8  =  16px
-       *   filter box (input+gap)         =  36px
-       *   5 family bands  @ ~21px        = 105px
-       *   8 normal rows   @ ~36px        = 288px
-       *   1 wrapped row (Gardasil) ~69px =  69px
-       *   5 section gaps  @   4px        =  20px
-       *   ------------------------------------------
-       *   estimated total                ≈ 534px
-       * against a 760px window (minus its own title bar/border chrome),
-       * so there's a comfortable margin — overflow: hidden is safe here
-       * rather than falling back to scroll. */}
+       * MACRO-POPUP ROUND 3 (Will's verbatim ask, 2026-09-25) RETIRES the
+       * old "EMBED COMPACT" fixed-980x760-target arithmetic that used to
+       * live in this comment: the popup no longer aims for a fixed size
+       * at all — the page reports its own real rendered height to the
+       * desktop host (postContentSize, in the effect above) and the host
+       * resizes its window to match (see MacroCodesWindow.xaml.cs). Two
+       * consequences for the CSS below: the `overflow: hidden` this
+       * embed body rule used to force is GONE — a window clamped to a
+       * small monitor's work area can still end up shorter than the
+       * content, and when it does the WebView2 control needs to scroll
+       * internally rather than clip content the pharmacist can't get to
+       * — and every embed-only size (bandStyle/rowStyle/nameStyle/
+       * metaStyle in renderSectionVersionC, ageFilterNoteEmbed, `<main>`'s
+       * embed padding) grew ~20-25% instead of shrinking to fit, per the
+       * brief ("make it look sleaker and easy to read and interact
+       * with"). The @media (max-width: 1100px) one-column stacking rule
+       * below is unrelated to any of this and unchanged — it's the
+       * phone-width fallback for the page's normal, non-embed use too. */}
       <style>{`
-        ${embed ? "nav[data-top-nav] { display: none !important; } body { background: #fff !important; overflow: hidden !important; }" : ""}
+        ${embed ? "nav[data-top-nav] { display: none !important; } body { background: #fff !important; margin: 0 !important; }" : ""}
         .macro-groups {
           flex-wrap: wrap;
         }

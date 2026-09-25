@@ -254,12 +254,55 @@ export interface RenderMacroDoseButtonOptions {
 // Exported (not just module-local) so this pure sizing math is plain-
 // vitest testable on its own, same posture as this file's other exports
 // — see tests/macro-dose-button.test.ts.
+//
+// MACRO-POPUP ROUND 3 (Will's verbatim ask, 2026-09-25, on the Ctrl+8/
+// Ctrl+Numpad2 popup): "Make it wider so that it will display bigger...
+// make it look sleaker and easy to read and interact with." Before this
+// round, `compact` (app/macro-codes/page.tsx's embed mode, the ONLY
+// caller that ever passes it) won outright whenever both `compact` and
+// `large` were true — and the embed page always passes `large: true`
+// too (it's the only layout there is now, round 14) — so the
+// touch-free, glance-and-click popup was rendering SMALLER text/buttons
+// than the ordinary full page it's popping up from, the opposite of
+// what a popup like this needs. `compact && large` is now its own
+// top tier, sized ~20-25% bigger than the OLD compact-alone values
+// below (not merely "as big as `large` alone") — every other
+// combination (including the still-unused `compact` without `large`)
+// is byte-for-byte unchanged from before this round, and the normal,
+// non-embed page (`compact: false`) is completely untouched either way.
 export function subLabelFontSizePx(compact: boolean, large: boolean): number {
+  if (compact && large) return 11; // was 9 pre-round-3 (compact alone still is)
   return compact ? 9 : large ? 11 : 10;
 }
 export const SUB_LABEL_LINE_HEIGHT = 1.15;
 export function subLabelSlotHeightPx(compact: boolean, large: boolean): number {
   return Math.ceil(subLabelFontSizePx(compact, large) * SUB_LABEL_LINE_HEIGHT * 2);
+}
+/** Dose button's main (first-line label) font size in px — same
+ * compact+large-is-its-own-tier shape as subLabelFontSizePx above, and
+ * for the same round-3 reason. */
+export function mainLabelFontSizePx(compact: boolean, large: boolean): number {
+  if (compact && large) return 14; // was 11 pre-round-3 (compact alone still is)
+  return compact ? 11 : large ? 13 : 12;
+}
+/** Dose button's base minHeight in px (the no-sub-label-slot case —
+ * see renderMacroDoseButton's minHeight computation for the
+ * sub-label-slot case, which derives its own height from
+ * mainLabelFontSizePx/subLabelSlotHeightPx instead of this constant). */
+export function buttonBaseMinHeightPx(compact: boolean, large: boolean): number {
+  if (compact && large) return 35; // was 28 pre-round-3 (compact alone still is)
+  return compact ? 28 : large ? 38 : 32;
+}
+/** Dose button's left/right padding, in rem. */
+export function buttonPaddingRem(compact: boolean, large: boolean): number {
+  if (compact && large) return 0.625; // was 0.5 pre-round-3 (compact alone still is)
+  return compact ? 0.5 : large ? 0.75 : 0.5;
+}
+/** Sub-label line's max-width in px (the ellipsis cap on the schedule-
+ * interval text under a dose button). */
+export function subLabelMaxWidthPx(compact: boolean, large: boolean): number {
+  if (compact && large) return 120; // was 96 pre-round-3 (compact alone still is)
+  return compact ? 96 : large ? 130 : 112;
 }
 
 /**
@@ -321,7 +364,7 @@ export function renderMacroDoseButton(
   // size the fixed two-line sub-label reservation below relative to it —
   // not applied anywhere else (the button's overall height still comes
   // from `minHeight` + natural content flow, same as before round 12).
-  const mainLineHeight = Math.round((compact ? 11 : large ? 13 : 12) * 1.2);
+  const mainLineHeight = Math.round(mainLabelFontSizePx(compact, large) * 1.2);
   const subLabelSlotHeight = subLabelSlotHeightPx(compact, large);
   // ROUND 14 (V-T48): one extra single line, reserved only when a
   // `topLabel` is actually shown — the button's minHeight below grows by
@@ -367,15 +410,15 @@ export function renderMacroDoseButton(
           // stacked lines) is added on top of whichever base height above
           // already applied — the only height change this round makes.
           minHeight:
-            (showSubLabelSlot ? mainLineHeight + 1 + subLabelSlotHeight + 8 : compact ? 28 : large ? 38 : 32) +
+            (showSubLabelSlot ? mainLineHeight + 1 + subLabelSlotHeight + 8 : buttonBaseMinHeightPx(compact, large)) +
             (showTopLabel ? topLabelLineHeight + 1 : 0),
-          padding: compact ? "0 0.5rem" : large ? "0 0.75rem" : "0 0.5rem",
+          padding: `0 ${buttonPaddingRem(compact, large)}rem`,
           display: "inline-flex",
           flexDirection: showSubLabelSlot || showTopLabel ? "column" : "row",
           alignItems: showSubLabelSlot || showTopLabel ? (block ? "flex-start" : "center") : "center",
           justifyContent: showSubLabelSlot || showTopLabel ? "center" : block ? "flex-start" : "center",
           gap: showSubLabelSlot || showTopLabel ? 1 : undefined,
-          fontSize: compact ? "11px" : large ? "13px" : "12px",
+          fontSize: `${mainLabelFontSizePx(compact, large)}px`,
           fontWeight: 600,
           whiteSpace: fitRow ? undefined : "nowrap",
           cursor: isNoShortCode ? "default" : "pointer",
@@ -420,7 +463,7 @@ export function renderMacroDoseButton(
               WebkitBoxOrient: "vertical",
               height: subLabelSlotHeight,
               lineHeight: `${SUB_LABEL_LINE_HEIGHT}em`,
-              maxWidth: compact ? 96 : large ? 130 : 112,
+              maxWidth: subLabelMaxWidthPx(compact, large),
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "normal",

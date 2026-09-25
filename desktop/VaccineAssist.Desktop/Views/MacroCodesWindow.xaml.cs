@@ -57,6 +57,17 @@ public partial class MacroCodesWindow : Window
     private readonly IntPtr _previousForegroundWindow;
     private readonly bool _sendCtrlNumPad5OnClose;
 
+    /// <summary>
+    /// MACRO-POPUP ROUND 3: this window's own non-WebView chrome height
+    /// (title bar + borders — see MacroCodesWindowSizing's doc comment
+    /// for why there's nothing else to measure here), captured once in
+    /// MacroCodesWindow_OnLoaded as `ActualHeight - WebView.ActualHeight`
+    /// rather than hard-coded, so it stays correct across Windows
+    /// versions/DPI/theme instead of guessing a constant. Added to every
+    /// content-size-driven resize in ApplyContentSize below.
+    /// </summary>
+    private double _chromeHeight;
+
     /// <summary>Set true only inside CoreWebView2_OnWebMessageReceived's
     /// "vaccine-assist:macro-copied" case, and only when
     /// _sendCtrlNumPad5OnClose is true — i.e. a code actually got copied
@@ -86,15 +97,19 @@ public partial class MacroCodesWindow : Window
         _macroCodesUrl = overrideUrl ?? BuildMacroCodesUrl(cloudApiBaseUrl);
         _sendCtrlNumPad5OnClose = sendCtrlNumPad5OnClose;
 
-        // 2026-09-25 round 2 (Will, verbatim): "Make the maro code popup
-        // be a litle bigger." The xaml's Width/Height (1375x1025, ~25%
-        // over the previous 1100x820) are clamped here — before Show/
-        // ShowDialog, so WindowStartupLocation="CenterScreen" still
-        // centers against the clamped size — to never exceed a smaller
-        // monitor's visible work area, same margin-of-40px posture as
-        // the brief's own example.
-        Width = Math.Min(Width, SystemParameters.WorkArea.Width - 40);
-        Height = Math.Min(Height, SystemParameters.WorkArea.Height - 40);
+        // MACRO-POPUP ROUND 3 (Will, verbatim, 2026-09-25): "Make it
+        // wider... and make the height fit only what it needs..." Width
+        // is now as wide as the work area allows (up to 1700px — see
+        // MacroCodesWindowSizing.ComputeWidth); Height starts modest
+        // (InitialHeight) rather than a large fixed guess, so the window
+        // doesn't flash tall then shrink once the page's first
+        // "vaccine-assist:content-size" message arrives and
+        // CoreWebView2_OnWebMessageReceived resizes it for real (see
+        // ApplyContentSize below) — both are still applied here, before
+        // Show/ShowDialog, so WindowStartupLocation="CenterScreen" centers
+        // against these values on first show.
+        Width = MacroCodesWindowSizing.ComputeWidth(SystemParameters.WorkArea.Width);
+        Height = Math.Min(MacroCodesWindowSizing.InitialHeight, SystemParameters.WorkArea.Height - MacroCodesWindowSizing.WorkAreaMarginPx);
 
         Loaded += MacroCodesWindow_OnLoaded;
         Closed += MacroCodesWindow_OnClosed;
@@ -150,6 +165,15 @@ public partial class MacroCodesWindow : Window
     /// </summary>
     private async void MacroCodesWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
+        // MACRO-POPUP ROUND 3: captured here (before the WebView2 init
+        // below, while WebView is still guaranteed visible/laid-out —
+        // see ShowInitFailure) rather than hard-coded, so ApplyContentSize
+        // can add back exactly this window's own title-bar/border height
+        // regardless of Windows version/DPI/theme. WebView fills the root
+        // Grid (no other sizing element competes with it), so this
+        // difference IS the window's non-content chrome.
+        _chromeHeight = Math.Max(0, ActualHeight - WebView.ActualHeight);
+
         try
         {
             // Shared across every WebView2 surface in the app (this popup
@@ -220,6 +244,20 @@ public partial class MacroCodesWindow : Window
                     Close();
                     break;
 
+                // MACRO-POPUP ROUND 3 (Will's verbatim ask, 2026-09-25):
+                // the page reports its own rendered size — see
+                // lib/macro-embed.ts's ContentSizeMessage — after first
+                // paint and on every subsequent layout change; this
+                // resizes the window to match instead of guessing a fixed
+                // size up front.
+                case "vaccine-assist:content-size":
+                    if (message.RootElement.TryGetProperty("height", out var heightElement) &&
+                        heightElement.TryGetDouble(out var contentHeight))
+                    {
+                        ApplyContentSize(contentHeight);
+                    }
+                    break;
+
                 default:
                     AppFileLog.Log($"[MacroCodesWindow] Ignored unrecognized web message type: {type ?? "(none)"}");
                     break;
@@ -229,6 +267,35 @@ public partial class MacroCodesWindow : Window
         {
             AppFileLog.LogException("MacroCodesWindow.WebMessageReceived", ex);
         }
+    }
+
+    /// <summary>
+    /// MACRO-POPUP ROUND 3: resizes this window to fit `contentHeightPx`
+    /// (the page's own document.documentElement.scrollHeight, CSS px ==
+    /// WPF DIPs here — see ContentSizeMessage's doc comment) plus this
+    /// window's own measured chrome, clamped to the work area
+    /// (MacroCodesWindowSizing.ComputeHeight), then re-centers the window
+    /// — CenterScreen only applies on the very first Show, and every
+    /// resize after that needs this done by hand since ResizeMode is
+    /// NoResize (nothing else ever moves/resizes this window). Width
+    /// itself never changes here — only Height/Left/Top — since the
+    /// brief's width fix is a one-time "as wide as the work area allows"
+    /// applied once in the constructor, not something that reacts to
+    /// content.
+    /// </summary>
+    private void ApplyContentSize(double contentHeightPx)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var workArea = SystemParameters.WorkArea;
+            var newHeight = MacroCodesWindowSizing.ComputeHeight(contentHeightPx, _chromeHeight, workArea.Height);
+            Height = newHeight;
+            var (left, top) = MacroCodesWindowSizing.ComputeCenteredPosition(
+                Width, newHeight, workArea.Left, workArea.Top, workArea.Width, workArea.Height);
+            Left = left;
+            Top = top;
+            AppFileLog.Log($"[MacroCodes] sized {Width}x{Height} from content {contentHeightPx}");
+        });
     }
 
     /// <summary>Brief step 3: "on ... the window's own Escape (PreviewKeyDown) just close." Handled at the window level (not inside the WebView2 page) so it works even before/if the page never loads (e.g. the failure panel is showing).</summary>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { postToHost, type MacroEmbedMessage } from "@/lib/macro-embed";
+import { postContentSize, postToHost, type ContentSizeMessage, type MacroEmbedMessage } from "@/lib/macro-embed";
 
 const COPIED_MESSAGE: MacroEmbedMessage = {
   type: "vaccine-assist:macro-copied",
@@ -67,5 +67,51 @@ describe("postToHost", () => {
     postToHost(CANCEL_MESSAGE);
 
     expect(parentPostMessage).toHaveBeenCalledWith(CANCEL_MESSAGE, "*");
+  });
+});
+
+// MACRO-POPUP ROUND 3 (Will's verbatim ask, 2026-09-25): postContentSize
+// is the shape/plumbing half of "make the height fit only what it
+// needs" — this page reports its own size, MacroCodesWindow.xaml.cs
+// resizes the window to match. postToHost's own dual-channel/no-throw
+// behavior is already fully covered above; these tests just confirm
+// postContentSize builds the right message shape and hands it to the
+// same postToHost path.
+describe("postContentSize", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts a vaccine-assist:content-size message with the given width/height", () => {
+    const webviewPostMessage = vi.fn();
+    const fakeWindow = { chrome: { webview: { postMessage: webviewPostMessage } }, parent: undefined as unknown };
+    fakeWindow.parent = fakeWindow;
+    vi.stubGlobal("window", fakeWindow);
+
+    postContentSize(1300, 842);
+
+    const expected: ContentSizeMessage = { type: "vaccine-assist:content-size", width: 1300, height: 842 };
+    expect(webviewPostMessage).toHaveBeenCalledTimes(1);
+    expect(webviewPostMessage).toHaveBeenCalledWith(expected);
+  });
+
+  it("reaches an iframe host via window.parent.postMessage(msg, '*') too", () => {
+    const parentPostMessage = vi.fn();
+    vi.stubGlobal("window", { parent: { postMessage: parentPostMessage } });
+
+    postContentSize(980, 600);
+
+    expect(parentPostMessage).toHaveBeenCalledWith(
+      { type: "vaccine-assist:content-size", width: 980, height: 600 },
+      "*"
+    );
+  });
+
+  it("is a silent no-op when neither host exists", () => {
+    const fakeWindow = { parent: undefined as unknown };
+    fakeWindow.parent = fakeWindow;
+    vi.stubGlobal("window", fakeWindow);
+
+    expect(() => postContentSize(1024, 768)).not.toThrow();
   });
 });
