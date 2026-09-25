@@ -37,25 +37,26 @@ public class GlobalHotKeyConstantsTests
         Assert.NotEqual(GlobalHotKey.VK_NUMPAD7, GlobalHotKey.VK_NUMPAD8);
     }
 
-    /// <summary>2026-09-25: pins VK_NUMPAD4 (the Ctrl+Keypad 4 age-macro
-    /// hotkey's virtual key — see MainWindow's _ageMacroHotKey) so a
-    /// future edit can't silently change it without a test noticing, same
-    /// as the VK_NUMPAD8 test above.</summary>
+    /// <summary>2026-09-25 round 2: pins VK_NUMPAD2 (the age-macro
+    /// hotkey's virtual key — see MainWindow's _ageMacroHotKey; originally
+    /// VK_NUMPAD4, re-keyed same day per Will's follow-up brief: "make it
+    /// ctrl+keypad 2 to start it") so a future edit can't silently change
+    /// it without a test noticing, same as the VK_NUMPAD8 test above.</summary>
     [Fact]
-    public void VkNumPad4IsTheNumpadFourVirtualKeyCode()
+    public void VkNumPad2IsTheNumpadTwoVirtualKeyCode()
     {
-        Assert.Equal(0x64u, GlobalHotKey.VK_NUMPAD4);
+        Assert.Equal(0x62u, GlobalHotKey.VK_NUMPAD2);
     }
 
     /// <summary>All three GlobalHotKey instances MainWindow registers
     /// (data-entry Ctrl+NumPad7, macro-codes Ctrl+Keypad 8, age-macro
-    /// Ctrl+Keypad 4) must use pairwise-distinct vk values — same
+    /// Ctrl+Keypad 2) must use pairwise-distinct vk values — same
     /// reasoning as MacroCodesHotkeyUsesADifferentVirtualKeyThanDataEntryHotkey
     /// above, extended to the third hotkey.</summary>
     [Fact]
     public void AgeMacroHotkeyUsesADifferentVirtualKeyThanTheOtherTwoHotkeys()
     {
-        Assert.NotEqual(GlobalHotKey.VK_NUMPAD4, GlobalHotKey.VK_NUMPAD7);
-        Assert.NotEqual(GlobalHotKey.VK_NUMPAD4, GlobalHotKey.VK_NUMPAD8);
+        Assert.NotEqual(GlobalHotKey.VK_NUMPAD2, GlobalHotKey.VK_NUMPAD7);
+        Assert.NotEqual(GlobalHotKey.VK_NUMPAD2, GlobalHotKey.VK_NUMPAD8);
     }
 }

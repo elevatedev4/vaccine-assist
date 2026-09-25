@@ -11,10 +11,15 @@
         Loaded="AgePromptWindow_OnLoaded"
         PreviewKeyDown="AgePromptWindow_OnPreviewKeyDown">
     <!--
-        Ctrl+Keypad 4 (Will, 2026-09-25, verbatim): "Add new hotkey
-        Ctrl+Keypad 4 that shows a screen to enter patient age, then shows
-        the macro codes page filtered to only show vaccines suitable for
-        their age range..." This is that screen.
+        Originally Ctrl+Keypad 4 (Will, 2026-09-25, verbatim): "Add new
+        hotkey Ctrl+Keypad 4 that shows a screen to enter patient age,
+        then shows the macro codes page filtered to only show vaccines
+        suitable for their age range..." This is that screen. Re-keyed
+        same day, round 2 (Will, verbatim): "Fro the new ctrl+keypad 4
+        item, make it ctrl+keypad 2 to start it..." — the hotkey that
+        opens this window is now Ctrl+Keypad 2 (see MainWindow's
+        _ageMacroHotKey/GlobalHotKey.VK_NUMPAD2); this window itself is
+        unaffected by which hotkey opens it.
 
         No Owner (unlike TextEntryPromptWindow/VarUpdateConfirmationWindow's
         Owner=owner convention) — same "no guaranteed visible owner"
@@ -25,29 +30,23 @@
         match MacroCodesWindow.xaml's shell instead.
 
         Years is required (0-120, same range DataEntryPopupViewModel's own
-        age stage validates); Months is optional, for a finer under-2
-        filter (0-23) - most patients just leave it blank. See
-        AgePromptInput (pure parse/validate, shared with the OK button's
-        enabled state below) and MainWindow.ShowAgeMacroPrompt for how the
-        result feeds AgeMacroCodesUrlBuilder + MacroCodesWindow.
+        age stage validates). See AgePromptInput (pure parse/validate,
+        shared with the OK button's enabled state below) and
+        MainWindow.ShowAgeMacroPrompt for how the result feeds
+        AgeMacroCodesUrlBuilder + MacroCodesWindow.
+
+        2026-09-25 round 2 (Will, verbatim): "We don't vaccicne less than
+        age 3, so remove the months indicator." Months input dropped —
+        years-only, single box.
     -->
     <StackPanel Margin="16">
         <TextBlock Text="Patient age" FontWeight="Bold"/>
-        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-            <StackPanel>
-                <TextBlock Text="Years"/>
-                <TextBox x:Name="YearsTextBox" Width="70"
-                         PreviewTextInput="AgeTextBox_OnPreviewTextInput"
-                         TextChanged="AgeTextBox_OnTextChanged"
-                         KeyDown="AgeTextBox_OnKeyDown"/>
-            </StackPanel>
-            <StackPanel Margin="16,0,0,0">
-                <TextBlock Text="Months (if under 2)"/>
-                <TextBox x:Name="MonthsTextBox" Width="70"
-                         PreviewTextInput="AgeTextBox_OnPreviewTextInput"
-                         TextChanged="AgeTextBox_OnTextChanged"
-                         KeyDown="AgeTextBox_OnKeyDown"/>
-            </StackPanel>
+        <StackPanel Margin="0,12,0,0">
+            <TextBlock Text="Years"/>
+            <TextBox x:Name="YearsTextBox" Width="70"
+                     PreviewTextInput="AgeTextBox_OnPreviewTextInput"
+                     TextChanged="AgeTextBox_OnTextChanged"
+                     KeyDown="AgeTextBox_OnKeyDown"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="OkButton" Content="OK" Padding="12,4" Margin="0,0,8,0"

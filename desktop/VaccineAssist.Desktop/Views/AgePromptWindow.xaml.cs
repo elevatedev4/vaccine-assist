@@ -6,8 +6,9 @@ using System.Windows.Input;
 namespace VaccineAssist.Desktop.Views;
 
 /// <summary>
-/// Ctrl+Keypad 4 (Will, 2026-09-25) — see AgePromptWindow.xaml's doc
-/// comment for the full brief/shell rationale. Same "static
+/// Originally Ctrl+Keypad 4, re-keyed same day to Ctrl+Keypad 2 (Will,
+/// 2026-09-25) — see AgePromptWindow.xaml's doc comment for the full
+/// brief/shell rationale and the re-key. Same "static
 /// ShowAndGetResult, modal ShowDialog, Result property" convention as
 /// TextEntryPromptWindow/VarUpdateConfirmationWindow.
 /// </summary>
@@ -36,7 +37,7 @@ public partial class AgePromptWindow : Window
 
     private void AgeTextBox_OnTextChanged(object sender, TextChangedEventArgs e)
     {
-        OkButton.IsEnabled = AgePromptInput.TryParse(YearsTextBox.Text, MonthsTextBox.Text, out _, out _);
+        OkButton.IsEnabled = AgePromptInput.TryParse(YearsTextBox.Text, out _);
     }
 
     /// <summary>Enter in either textbox is the fast path to OK — same
@@ -58,12 +59,12 @@ public partial class AgePromptWindow : Window
     /// this re-checks rather than trusting the button's enabled state.</summary>
     private void TryContinue()
     {
-        if (!AgePromptInput.TryParse(YearsTextBox.Text, MonthsTextBox.Text, out var years, out var months))
+        if (!AgePromptInput.TryParse(YearsTextBox.Text, out var years))
         {
             return;
         }
 
-        Result = AgePromptResult.Continued(years, months);
+        Result = AgePromptResult.Continued(years);
         DialogResult = true;
     }
 
