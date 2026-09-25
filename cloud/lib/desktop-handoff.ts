@@ -26,6 +26,31 @@ export const DESKTOP_HANDOFF_COOKIE_NAME = "va-desktop-handoff";
  * other two are checked only when present, exactly per the brief ("Origin
  * header is present and not the app's own origin" / "Sec-Fetch-Site must
  * be same-origin/none IF present").
+ *
+ * BUG FIX (Will, 2026-09-25, verbatim: "shows an error every time I log
+ * in ... {\"error\":\"Forbidden.\"}"): also permissive about an OPAQUE
+ * initiator. CloudPageView.PerformDesktopHandoffAsync's
+ * NavigateWithWebResourceRequest is the very FIRST navigation this
+ * WebView2 instance ever makes — its initiating document is still
+ * about:blank, which has an opaque origin. Per the Fetch/HTML "append a
+ * request Origin header" step, browsers still add an Origin header to a
+ * state-changing (POST) navigation from an opaque initiator, but
+ * serialize it as the literal string "null" (not absent) — and the same
+ * opaque-vs-real-origin comparison Sec-Fetch-Site is built from computes
+ * "cross-site" for that same initiator, since an opaque origin never
+ * matches any site. So EVERY desktop login hit this route with Origin:
+ * "null" and (likely) Sec-Fetch-Site: cross-site, tripping both of the
+ * below checks on a 100%-legitimate request.
+ *
+ * This exact shape can't be forged by a hostile web page carrying the
+ * already-required X-Vaccine-Assist-Desktop header: an HTML form can't
+ * set arbitrary request headers at all, and a fetch()/XHR that tried to
+ * add one cross-origin would trigger a CORS preflight this route never
+ * answers, so the browser blocks the real POST from ever being sent —
+ * see the route's own CSRF doc comment. So Origin: "null" is trusted
+ * here, and Sec-Fetch-Site: "cross-site" is trusted too but ONLY when
+ * paired with that same opaque Origin (never on its own, which is still
+ * the ordinary cross-site-attacker signature this guards against).
  */
 export function isTrustedDesktopRequest(request: Request): boolean {
   if (request.headers.get("x-vaccine-assist-desktop") !== "1") {
@@ -37,13 +62,20 @@ export function isTrustedDesktopRequest(request: Request): boolean {
     return false;
   }
 
+  const origin = request.headers.get("origin");
+  const isOpaqueOrigin = origin === "null";
+
   const secFetchSite = request.headers.get("sec-fetch-site");
-  if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "none") {
+  if (
+    secFetchSite &&
+    secFetchSite !== "same-origin" &&
+    secFetchSite !== "none" &&
+    !(isOpaqueOrigin && secFetchSite === "cross-site")
+  ) {
     return false;
   }
 
-  const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(request.url).origin) {
+  if (origin && origin !== new URL(request.url).origin && !isOpaqueOrigin) {
     return false;
   }
 

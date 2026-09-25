@@ -650,6 +650,14 @@ public partial class App : Application
                             AppFileLog.Log(lateHandoffOk
                                 ? "[Startup] late cloud session handoff (post-timeout recovery): ok"
                                 : "[Startup] late cloud session handoff (post-timeout recovery): failed or timed out — see the preceding [CloudPageView] line for the concrete reason");
+
+                            // Same fallback as the normal-path handoff above —
+                            // don't leave the raw failed-request response
+                            // rendered in the WebView2.
+                            if (!lateHandoffOk)
+                            {
+                                cloudPageView.NavigateToPath("/");
+                            }
                         }
                     }
                     catch (Exception ex)
@@ -665,6 +673,27 @@ public partial class App : Application
                 AppFileLog.Log(handoffOk
                     ? "[Startup] cloud session handoff: ok"
                     : "[Startup] cloud session handoff: failed or timed out — see the preceding [CloudPageView] line for the concrete reason");
+
+                // BUG FIX (Will, 2026-09-25, verbatim: "shows an error every
+                // time I log in ... {\"error\":\"Forbidden.\"}. But the app
+                // works fine once that is closed"): PerformDesktopHandoffAsync
+                // navigates the SAME WebView2 straight at
+                // /api/auth/desktop-handoff via NavigateWithWebResourceRequest
+                // (see that method) — on any failure (403 or otherwise) that
+                // navigation still COMPLETED, so the WebView2 is left showing
+                // the raw response body (this app's own {"error":"..."} JSON)
+                // instead of the "the page will just show its own login" this
+                // class's own doc comment already promises. Nothing here used
+                // to actually navigate away from that failed page. Falling
+                // back to "/" is exactly what the WebView2 would show anyway
+                // once it eventually gets there (a second sign-in, a tab
+                // switch, etc.), so doing it immediately is silent — a log
+                // line, not a modal — and never worse than what already
+                // happens on its own moments later.
+                if (!handoffOk)
+                {
+                    cloudPageView.NavigateToPath("/");
+                }
             }
             else
             {

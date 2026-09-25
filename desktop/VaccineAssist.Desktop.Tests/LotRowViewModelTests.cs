@@ -37,7 +37,9 @@ public class LotRowViewModelTests
 
         Assert.Equal(lot.Id, row.Id);
         Assert.Equal(lot.VaccineId, row.VaccineId);
-        Assert.Equal("mNEXSPIKE", row.VaccineName);
+        // V-T55 (Will, 2026-09-25): VaccineName is display-only and runs
+        // through the maker-prefix rule — see VaccineDisplayNameTests.
+        Assert.Equal("Moderna mNEXSPIKE", row.VaccineName);
         Assert.Equal("00000-0000-01", row.VaccineNdc);
         Assert.Equal("ABC123", row.LotNumber);
         Assert.Equal(lot.Expiration?.ToDateTime(TimeOnly.MinValue), row.Expiration);

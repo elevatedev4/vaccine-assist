@@ -57,6 +57,22 @@ public sealed class GlobalHotKey : IDisposable
     /// hotkeys never collide with each other.</summary>
     public const uint VK_NUMPAD8 = 0x68;
 
+    /// <summary>VK_NUMPAD4 — see Win32 virtual-key codes. 2026-09-25 (Will,
+    /// verbatim): "Add new hotkey Ctrl+Keypad 4 that shows a screen to
+    /// enter patient age..." — a third, independent GlobalHotKey instance
+    /// registered the exact same way as the two above (see MainWindow's
+    /// _ageMacroHotKey). Distinct from VK_NUMPAD7 and VK_NUMPAD8 so none of
+    /// the three hotkeys ever collide with each other. Note this is a
+    /// different key than VK_NUMPAD2 — the app deliberately does NOT
+    /// register Ctrl+NumPad2 as a hotkey (see the MSG893 note above: that
+    /// combination was moved to VK_NUMPAD7 because it collided with
+    /// something else on the pharmacy's workstations), which is exactly
+    /// why this feature can safely SEND a synthetic Ctrl+NumPad2 at the
+    /// end of its flow (see MacroCodesWindow's sendCtrlNumPad2OnClose) —
+    /// there's no RegisterHotKey claim on that combination in this process
+    /// to swallow it.</summary>
+    public const uint VK_NUMPAD4 = 0x64;
+
     private readonly Window _window;
     private readonly int _id;
     private readonly uint _vk;

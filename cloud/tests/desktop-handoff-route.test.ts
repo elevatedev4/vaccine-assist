@@ -105,6 +105,61 @@ describe("isTrustedDesktopRequest", () => {
     });
     expect(isTrustedDesktopRequest(request)).toBe(true);
   });
+
+  // Regression (Will, 2026-09-25): CloudPageView's very first navigation
+  // comes from about:blank (opaque origin) — browsers send Origin: "null"
+  // and Sec-Fetch-Site: "cross-site" for that shape, which used to 403
+  // every real desktop login. See isTrustedDesktopRequest's doc comment
+  // for why this exact pairing can't be forged by a hostile web page.
+  it("accepts an opaque (about:blank) initiator: Origin null + Sec-Fetch-Site cross-site", () => {
+    const request = new Request("http://localhost/api/auth/desktop-handoff", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vaccine-Assist-Desktop": "1",
+        Origin: "null",
+        "Sec-Fetch-Site": "cross-site",
+      },
+    });
+    expect(isTrustedDesktopRequest(request)).toBe(true);
+  });
+
+  it("accepts Origin: null on its own (Sec-Fetch-Site absent)", () => {
+    const request = new Request("http://localhost/api/auth/desktop-handoff", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vaccine-Assist-Desktop": "1",
+        Origin: "null",
+      },
+    });
+    expect(isTrustedDesktopRequest(request)).toBe(true);
+  });
+
+  it("still rejects Sec-Fetch-Site: cross-site when Origin is a real cross-site value (not opaque)", () => {
+    const request = new Request("http://localhost/api/auth/desktop-handoff", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vaccine-Assist-Desktop": "1",
+        Origin: "https://attacker.example",
+        "Sec-Fetch-Site": "cross-site",
+      },
+    });
+    expect(isTrustedDesktopRequest(request)).toBe(false);
+  });
+
+  it("still rejects Sec-Fetch-Site: cross-site with no Origin header at all", () => {
+    const request = new Request("http://localhost/api/auth/desktop-handoff", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vaccine-Assist-Desktop": "1",
+        "Sec-Fetch-Site": "cross-site",
+      },
+    });
+    expect(isTrustedDesktopRequest(request)).toBe(false);
+  });
 });
 
 describe("POST /api/auth/desktop-handoff", () => {
@@ -134,6 +189,22 @@ describe("POST /api/auth/desktop-handoff", () => {
     });
     const response = await POST(request);
     expect(response.status).toBe(403);
+  });
+
+  it("does not 403 an opaque (about:blank) initiator — succeeds like any other trusted desktop request", async () => {
+    mockValidSession();
+    const request = new Request("http://localhost/api/auth/desktop-handoff", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vaccine-Assist-Desktop": "1",
+        Origin: "null",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      body: JSON.stringify({ access_token: VALID_ACCESS_TOKEN, refresh_token: VALID_REFRESH_TOKEN }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(303);
   });
 
   it("400s on a missing access_token", async () => {

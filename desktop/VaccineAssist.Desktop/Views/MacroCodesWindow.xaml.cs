@@ -2,10 +2,12 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Navigation;
+using FlaUI.Core.WindowsAPI;
 using Microsoft.Web.WebView2.Core;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Services;
@@ -27,6 +29,20 @@ namespace VaccineAssist.Desktop.Views;
 /// were doing (typically PioneerRx) the moment a code is copied, per
 /// Will's brief: "closes the page so they can go resume data entry
 /// themselves."
+///
+/// 2026-09-25 (Ctrl+Keypad 4 age-macro flow, Will's brief): also reused,
+/// unchanged, by MainWindow.ShowAgeMacroPrompt — that flow shows an
+/// AgePromptWindow first, then opens THIS SAME window class at an
+/// age-filtered URL (see the overrideUrl constructor parameter and
+/// AgeMacroCodesUrlBuilder) so the copy path is identical either way.
+/// The only behavioral difference is sendCtrlNumPad2OnClose: when true,
+/// CoreWebView2_OnWebMessageReceived's existing copy-then-Close is
+/// followed, after this window has actually closed and focus is back on
+/// the previous foreground window, by a synthetic Ctrl+NumPad2 keypress
+/// (see MacroCodesWindow_OnClosed) — "pushes Ctrl+Keypad 2, which will
+/// activate our on-computer macro. The macro will take care of the
+/// rest." The plain Ctrl+Keypad 8 popup (sendCtrlNumPad2OnClose: false,
+/// the default) behaves exactly as before.
 /// </summary>
 public partial class MacroCodesWindow : Window
 {
@@ -36,16 +52,36 @@ public partial class MacroCodesWindow : Window
     private readonly string _macroCodesUrl;
     private readonly IClipboardService _clipboardService;
     private readonly IntPtr _previousForegroundWindow;
+    private readonly bool _sendCtrlNumPad2OnClose;
 
-    /// <param name="cloudApiBaseUrl">AppSettings.CloudApiBaseUrl, e.g. https://vaccine-assist.vercel.app — same base URL VaccineApiService calls against.</param>
+    /// <summary>Set true only inside CoreWebView2_OnWebMessageReceived's
+    /// "vaccine-assist:macro-copied" case, and only when
+    /// _sendCtrlNumPad2OnClose is true — i.e. a code actually got copied
+    /// in the age-macro flow. MacroCodesWindow_OnClosed checks THIS field
+    /// (not _sendCtrlNumPad2OnClose directly) before sending the
+    /// synthetic Ctrl+NumPad2, so cancelling (Escape, the page's own
+    /// "vaccine-assist:macro-cancel", or the window chrome) never fires
+    /// the on-computer macro against a clipboard that was never actually
+    /// updated by this window.</summary>
+    private bool _codeCopiedInAgeMacroFlow;
+
+    /// <param name="cloudApiBaseUrl">AppSettings.CloudApiBaseUrl, e.g. https://vaccine-assist.vercel.app — same base URL VaccineApiService calls against. Ignored (but still required) when <paramref name="overrideUrl"/> is given.</param>
     /// <param name="clipboardService">Same IClipboardService the rest of the app uses (App.xaml.cs's composition root) — belt-and-braces clipboard copy alongside the page's own copy (see CoreWebView2_OnWebMessageReceived).</param>
-    /// <param name="previousForegroundWindow">The foreground window handle at the moment MainWindow decided to show this popup (captured via GetForegroundWindow() before Show()) — restored via SetForegroundWindow when this popup closes, so focus lands back where the pharmacist was, not on this app's MainWindow. IntPtr.Zero is tolerated (just skips the restore) rather than throwing.</param>
-    public MacroCodesWindow(string cloudApiBaseUrl, IClipboardService clipboardService, IntPtr previousForegroundWindow)
+    /// <param name="previousForegroundWindow">The foreground window handle at the moment MainWindow decided to show this popup (captured via GetForegroundWindow() before Show() — for the age-macro flow, before AgePromptWindow, per Will's brief) — restored via SetForegroundWindow when this popup closes, so focus lands back where the pharmacist was, not on this app's MainWindow. IntPtr.Zero is tolerated (just skips the restore) rather than throwing.</param>
+    /// <param name="overrideUrl">2026-09-25: the age-macro flow's own AgeMacroCodesUrlBuilder.BuildUrl result (…/macro-codes?embed=1&amp;age=&lt;years&gt;[&amp;ageMonths=&lt;n&gt;]) in place of the plain BuildMacroCodesUrl(cloudApiBaseUrl) below. Null (the default) keeps the existing Ctrl+Keypad 8 behavior unchanged.</param>
+    /// <param name="sendCtrlNumPad2OnClose">2026-09-25: true only for the age-macro flow (see the class doc comment above) — sends a synthetic Ctrl+NumPad2 once this window has closed and focus is restored. False (the default) for the plain Ctrl+Keypad 8 popup.</param>
+    public MacroCodesWindow(
+        string cloudApiBaseUrl,
+        IClipboardService clipboardService,
+        IntPtr previousForegroundWindow,
+        string? overrideUrl = null,
+        bool sendCtrlNumPad2OnClose = false)
     {
         InitializeComponent();
         _clipboardService = clipboardService ?? throw new ArgumentNullException(nameof(clipboardService));
         _previousForegroundWindow = previousForegroundWindow;
-        _macroCodesUrl = BuildMacroCodesUrl(cloudApiBaseUrl);
+        _macroCodesUrl = overrideUrl ?? BuildMacroCodesUrl(cloudApiBaseUrl);
+        _sendCtrlNumPad2OnClose = sendCtrlNumPad2OnClose;
 
         Loaded += MacroCodesWindow_OnLoaded;
         Closed += MacroCodesWindow_OnClosed;
@@ -158,6 +194,11 @@ public partial class MacroCodesWindow : Window
                         codeElement.GetString() is { Length: > 0 } code)
                     {
                         _clipboardService.SetText(code);
+                        if (_sendCtrlNumPad2OnClose)
+                        {
+                            _codeCopiedInAgeMacroFlow = true;
+                            AppFileLog.Log($"[AgeMacro] copied {code}");
+                        }
                     }
                     Close();
                     break;
@@ -186,8 +227,29 @@ public partial class MacroCodesWindow : Window
         }
     }
 
-    /// <summary>Restores foreground focus to whatever was active before this popup was shown (see the constructor's doc comment) — runs regardless of how the popup was closed (code copied, cancelled, Escape, or the window chrome). Also detaches the WebMessageReceived handler and disposes the WebView2 control so its CoreWebView2 environment/process is released promptly rather than waiting on GC.</summary>
-    private void MacroCodesWindow_OnClosed(object? sender, EventArgs e)
+    /// <summary>Restores foreground focus to whatever was active before this popup was shown (see the constructor's doc comment) — runs regardless of how the popup was closed (code copied, cancelled, Escape, or the window chrome). Also detaches the WebMessageReceived handler and disposes the WebView2 control so its CoreWebView2 environment/process is released promptly rather than waiting on GC.
+    ///
+    /// 2026-09-25 (age-macro flow only, and only when _codeCopiedInAgeMacroFlow
+    /// is true — see that field's doc comment for why a cancel/Escape close
+    /// never reaches this branch): after focus is restored, waits ~150ms
+    /// (async void + await Task.Delay,
+    /// same "don't block the UI thread" pattern as MacroCodesWindow_OnLoaded's
+    /// async WebView2 init above — SendInput itself is an OS-level call
+    /// that works regardless of thread, so the delay is the only reason
+    /// this needs to be async) so the previous foreground app has actually
+    /// finished becoming the foreground window before the synthetic
+    /// keypress lands, then sends Ctrl+NumPad2 via FlaUI's
+    /// Keyboard.TypeSimultaneously — the same SendInput-backed helper
+    /// PioneerEntryAutomation's steps already use for other key
+    /// combinations (e.g. SendF3AndDismissPreEntryDialogsStep's Alt+Down/
+    /// Alt+O), rather than a second hand-rolled SendInput wrapper. Ctrl+
+    /// NumPad2 is deliberately NOT one of this app's own registered
+    /// global hotkeys (see GlobalHotKey.VK_NUMPAD4's doc comment — that
+    /// combination was moved to Ctrl+NumPad7 back in MSG893 specifically
+    /// because it collided with something else on the pharmacy's
+    /// workstations), so sending it here cannot be swallowed by this
+    /// app's own WndProc hook.</summary>
+    private async void MacroCodesWindow_OnClosed(object? sender, EventArgs e)
     {
         if (WebView.CoreWebView2 is not null)
         {
@@ -198,6 +260,30 @@ public partial class MacroCodesWindow : Window
         if (_previousForegroundWindow != IntPtr.Zero)
         {
             SetForegroundWindow(_previousForegroundWindow);
+        }
+
+        if (!_codeCopiedInAgeMacroFlow)
+        {
+            return;
+        }
+
+        AppFileLog.Log("[AgeMacro] focus restored");
+
+        try
+        {
+            await Task.Delay(150);
+            // Fully-qualified: System.Windows.Input.Keyboard (already used
+            // in this file for Key/KeyEventArgs' namespace) and
+            // FlaUI.Core.Input.Keyboard share the bare name "Keyboard" —
+            // a `using FlaUI.Core.Input;` here would be an ambiguous-
+            // reference compile error, so this calls it fully-qualified
+            // instead rather than adding that using.
+            FlaUI.Core.Input.Keyboard.TypeSimultaneously(new[] { VirtualKeyShort.LCONTROL, VirtualKeyShort.NUMPAD2 });
+            AppFileLog.Log("[AgeMacro] sent Ctrl+Num2");
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MacroCodesWindow.SendCtrlNumPad2", ex);
         }
     }
 

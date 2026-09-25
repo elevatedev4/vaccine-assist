@@ -191,9 +191,15 @@ public sealed class FaxSettingsViewModel : ObservableObject
                 return;
             }
 
+            // V-T53 follow-up (Will, 2026-09-25): normalize BEFORE the
+            // blank check too — a token that's nothing but whitespace/
+            // zero-width characters/quotes should read as "not entered",
+            // same as a literally empty box. See FaxApiTokenNormalizer.
+            var normalizedApiToken = FaxApiTokenNormalizer.Normalize(ApiToken);
+
             // Notifyre-only: a blank token would otherwise save silently
             // and only fail later, mid-run, on the first real send.
-            if (SelectedProvider == FaxProvider.Notifyre && string.IsNullOrWhiteSpace(ApiToken))
+            if (SelectedProvider == FaxProvider.Notifyre && string.IsNullOrWhiteSpace(normalizedApiToken))
             {
                 ErrorMessage = "Enter a Notifyre API token.";
                 return;
@@ -222,7 +228,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
 
             _localSettingsService.Save(_settings);
 
-            _credentialStore.Save(new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = ApiToken.Trim() });
+            _credentialStore.Save(new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = normalizedApiToken });
 
             _prescriberDirectory.Save(Prescribers
                 .Where(r => !string.IsNullOrWhiteSpace(r.Name) || !string.IsNullOrWhiteSpace(r.Npi))
@@ -257,7 +263,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
             // _settings.Fax.Provider — otherwise switching the dropdown
             // and clicking Test connection before Save would silently
             // test the wrong vendor.
-            var credentials = new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = ApiToken.Trim() };
+            var credentials = new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = FaxApiTokenNormalizer.Normalize(ApiToken) };
             var client = FaxClientFactory.Create(SelectedProvider, _httpClient, credentials);
             var result = await client.TestConnectionAsync();
 

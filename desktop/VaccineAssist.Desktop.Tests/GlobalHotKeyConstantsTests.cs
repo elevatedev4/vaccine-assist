@@ -36,4 +36,26 @@ public class GlobalHotKeyConstantsTests
         // would fail the second one as already-claimed.
         Assert.NotEqual(GlobalHotKey.VK_NUMPAD7, GlobalHotKey.VK_NUMPAD8);
     }
+
+    /// <summary>2026-09-25: pins VK_NUMPAD4 (the Ctrl+Keypad 4 age-macro
+    /// hotkey's virtual key — see MainWindow's _ageMacroHotKey) so a
+    /// future edit can't silently change it without a test noticing, same
+    /// as the VK_NUMPAD8 test above.</summary>
+    [Fact]
+    public void VkNumPad4IsTheNumpadFourVirtualKeyCode()
+    {
+        Assert.Equal(0x64u, GlobalHotKey.VK_NUMPAD4);
+    }
+
+    /// <summary>All three GlobalHotKey instances MainWindow registers
+    /// (data-entry Ctrl+NumPad7, macro-codes Ctrl+Keypad 8, age-macro
+    /// Ctrl+Keypad 4) must use pairwise-distinct vk values — same
+    /// reasoning as MacroCodesHotkeyUsesADifferentVirtualKeyThanDataEntryHotkey
+    /// above, extended to the third hotkey.</summary>
+    [Fact]
+    public void AgeMacroHotkeyUsesADifferentVirtualKeyThanTheOtherTwoHotkeys()
+    {
+        Assert.NotEqual(GlobalHotKey.VK_NUMPAD4, GlobalHotKey.VK_NUMPAD7);
+        Assert.NotEqual(GlobalHotKey.VK_NUMPAD4, GlobalHotKey.VK_NUMPAD8);
+    }
 }
