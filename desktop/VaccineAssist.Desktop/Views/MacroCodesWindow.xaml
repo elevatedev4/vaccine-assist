@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="Macro codes"
-        Width="1375" Height="1025"
+        Width="1700" Height="600"
         WindowStyle="ToolWindow"
         Topmost="True"
         ShowInTaskbar="False"
@@ -43,6 +43,24 @@
         visible desktop on a smaller monitor while staying centered. Same
         popup class/size for both the Ctrl+Keypad 8 flow and the age-macro
         flow (they share this window).
+
+        MACRO-POPUP ROUND 3 (Will, verbatim, same day): "Make it wider so
+        that it will display bigger, and make the height fit only what it
+        needs to be able to show everything, not extra space at the
+        bottom." Width/Height above are now just the DESIGN-TIME/fallback
+        values — MacroCodesWindow.xaml.cs's constructor overrides both
+        before Show via MacroCodesWindowSizing: Width becomes as wide as
+        the work area allows (up to 1700px), and Height starts at a
+        modest 600px (MacroCodesWindowSizing.InitialHeight) until the
+        cloud page's first "vaccine-assist:content-size" message arrives
+        (see lib/macro-embed.ts's ContentSizeMessage on the cloud side),
+        at which point CoreWebView2_OnWebMessageReceived resizes the
+        window to fit that content exactly (clamped to the work area) and
+        re-centers it, since CenterScreen only applies on the very first
+        Show. If the content ever ends up taller than the clamp allows,
+        the WebView2 control scrolls internally rather than clipping —
+        see the cloud page's own round-3 doc comment for why its old
+        `overflow: hidden` embed rule is gone.
 
         The page copies the code itself and posts
         window.chrome.webview.postMessage({ type: "vaccine-assist:macro-copied",
