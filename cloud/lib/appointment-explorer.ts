@@ -14,7 +14,25 @@
  * type's PHI-boundary doc comment for what's guaranteed to NEVER appear
  * here (name/email/phone/notes/raw age/DOB/etc). Every function below
  * only ever reads these fields.
+ *
+ * V-names-everywhere (Will 2026-09-25, verbatim: "It should show the
+ * same names everywhere that it is applicable"): every free-text vaccine
+ * name here is Acuity intake text, not a catalog row, so
+ * vaccineDisplayName's own case-insensitive comirnaty/spikevax/mnexspike
+ * prefix test IS the "starts with a COVID product name" check this
+ * file's callers need — it's applied at every point a name (or a
+ * vaccine-mode GROUP label, which is just one of these same names) is
+ * rendered to a human or written into an exported CSV cell, and
+ * deliberately NOT applied to any matching/filter/sort/grouping key
+ * (ExplorerFilters.vaccine's selected values, groupRows' own `group`
+ * strings, sortRows' comparison values) — see each call site below for
+ * why. vaccineDisplayName is a no-op for any non-COVID string (day/hour/
+ * appointment-type/brand/age-bucket values included), so applying it
+ * indiscriminately in a couple of spots below (groupedRowsToCsv's Group
+ * column) is safe even when that column isn't actually a vaccine name.
  */
+
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 export type CovidBrand = "pfizer" | "moderna" | "any";
 export type CovidAgeBucket = "3-11" | "12-64" | "65+" | "unknown";
@@ -259,7 +277,10 @@ export function vaccineCellValues(row: ExplorerRow): VaccineCellValues {
     return { vaccineNamesDisplay: "", covidBrand: "", covidAgeBucket: "", fluAgeBucket: "" };
   }
   return {
-    vaccineNamesDisplay: row.vaccineNames.join(", ") || "—",
+    // V-names-everywhere: each name display-formatted individually
+    // (never the joined string) so vaccineDisplayName's own prefix test
+    // sees one name at a time.
+    vaccineNamesDisplay: row.vaccineNames.map(vaccineDisplayName).join(", ") || "—",
     covidBrand: row.covidBrand,
     covidAgeBucket: row.covidAgeBucket,
     fluAgeBucket: row.fluAgeBucket,
@@ -543,14 +564,22 @@ function csvField(value: string): string {
  * COVID-brand/COVID-age/Flu-age fields instead of 'any'/'unknown'") — a
  * test-only appointment's default "any"/"unknown" buckets are just as
  * misleading in a CSV export as they are on screen. The "Vaccines" field
- * itself is deliberately left as `row.vaccineNames.join(", ")` rather than
- * vaccineCellValues' own vaccineNamesDisplay: that field already renders
- * "" for a test-only row (vaccineNames is empty by isTestOnlyAppointment's
- * own definition) with no change needed, and vaccineNamesDisplay's "—"
- * fallback for a genuinely-empty NON-test row is a table-display
- * convenience this CSV export never used (an empty CSV field has always
- * been plain "", not "—") — reusing it here would be an unrelated
- * behavior change to a case nobody asked to fix.
+ * itself is deliberately left as `row.vaccineNames.map(...).join(", ")`
+ * rather than vaccineCellValues' own vaccineNamesDisplay: that field
+ * already renders "" for a test-only row (vaccineNames is empty by
+ * isTestOnlyAppointment's own definition) with no change needed, and
+ * vaccineNamesDisplay's "—" fallback for a genuinely-empty NON-test row
+ * is a table-display convenience this CSV export never used (an empty
+ * CSV field has always been plain "", not "—") — reusing it here would
+ * be an unrelated behavior change to a case nobody asked to fix.
+ *
+ * V-names-everywhere (Will 2026-09-25): the "Vaccines" field now also
+ * runs each name through vaccineDisplayName before joining — CSV exports
+ * are no longer left raw (that was yesterday's deliberate exclusion;
+ * Will's follow-up made explicit that exports count as a place a name
+ * "reaches a human" too). row.vaccineNames.length below is unaffected —
+ * it counts raw entries, and vaccineDisplayName never changes how many
+ * there are.
  */
 function rowToCsvFields(row: ExplorerRow): string[] {
   const lead = computeLeadDays(row);
@@ -562,7 +591,7 @@ function rowToCsvFields(row: ExplorerRow): string[] {
     row.createdDate,
     lead === null ? "" : String(lead),
     row.appointmentTypeName,
-    row.vaccineNames.join(", "),
+    row.vaccineNames.map(vaccineDisplayName).join(", "),
     row.testNames.join(", "),
     String(row.vaccineNames.length),
     vaccineCells.covidBrand,
@@ -590,12 +619,23 @@ export function rowsToCsv(rows: ExplorerRow[]): string {
  * each row's own group label. A row that belongs to multiple groups (the
  * "vaccine"/"test" double-membership modes) appears once per group it's
  * in, same as the on-screen grouped tables.
+ *
+ * V-names-everywhere: the leading "Group" cell runs through
+ * vaccineDisplayName too — in "vaccine" grouping mode, `group` IS a raw
+ * vaccine name (see groupRows' vaccine case below), and this display
+ * formatting must never touch the grouping itself (groupRows' own
+ * bucketing, done before this function ever runs, stays keyed by the
+ * raw name). Every OTHER grouping mode's `group` value (a day/hour/
+ * appointment-type/brand/age-bucket string) never starts with comirnaty/
+ * spikevax/mnexspike, so vaccineDisplayName is a no-op for those and this
+ * one call covers every mode safely without needing to know which mode
+ * produced these groups.
  */
 export function groupedRowsToCsv(groups: ExplorerRowGroup[]): string {
   const lines = [["Group", ...CSV_HEADERS].join(",")];
   for (const { group, rows } of groups) {
     for (const row of rows) {
-      lines.push([group, ...rowToCsvFields(row)].map(csvField).join(","));
+      lines.push([vaccineDisplayName(group), ...rowToCsvFields(row)].map(csvField).join(","));
     }
   }
   return lines.join("\n");
@@ -748,7 +788,12 @@ export function activeFilterChips(filters: ExplorerFilters): FilterChip[] {
 
   for (const field of CHECKLIST_FILTER_FIELDS) {
     const values = filters[field];
-    if (values.length > 0) chips.push({ key: field, label: `${FILTER_FIELD_LABELS[field]}: ${values.join(", ")}` });
+    // V-names-everywhere: the "vaccine" chip's SELECTED VALUES are raw
+    // vaccine names (matching filters.vaccine, which must stay raw for
+    // applyFilters to keep working) — display-format them here, in the
+    // chip's own label text only, never touching `values` itself.
+    const displayValues = field === "vaccine" ? values.map(vaccineDisplayName) : values;
+    if (values.length > 0) chips.push({ key: field, label: `${FILTER_FIELD_LABELS[field]}: ${displayValues.join(", ")}` });
   }
 
   const search = filters.search.trim();

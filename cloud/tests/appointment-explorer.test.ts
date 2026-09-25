@@ -361,6 +361,20 @@ describe("vaccineCellValues", () => {
       fluAgeBucket: "3-64",
     });
   });
+
+  // V-names-everywhere (Will 2026-09-25): the intake free-text name gets
+  // the same maker prefix as everywhere else in the app when it starts
+  // with comirnaty/spikevax/mnexspike (case-insensitive) — every other
+  // name in the list passes through unchanged.
+  it("maker-prefixes a comirnaty/spikevax/mnexspike free-text name in vaccineNamesDisplay", () => {
+    const covidRow = row({
+      vaccineNames: ["Flu", "comirnaty 2026-27 12+", "Spikevax 2026-27"],
+      testNames: [],
+    });
+    expect(vaccineCellValues(covidRow).vaccineNamesDisplay).toBe(
+      "Flu, Pfizer comirnaty 2026-27 12+, Moderna Spikevax 2026-27"
+    );
+  });
 });
 
 // V-T27 (Will, verbatim, 2026-09-09): "Group by should make groups and
@@ -532,6 +546,28 @@ describe("groupedRowsToCsv", () => {
     expect(lines.some((line) => line.startsWith("Flu,"))).toBe(true);
     expect(lines.some((line) => line.startsWith("COVID-Pfizer,"))).toBe(true);
   });
+
+  // V-names-everywhere (Will 2026-09-25): in "vaccine" grouping mode, the
+  // Group column IS a raw vaccine name — maker-prefix it for display,
+  // same as every other exported name.
+  it("maker-prefixes the Group column in vaccine-grouping mode", () => {
+    const covidRow = row({ vaccineNames: ["Comirnaty 2026-27 12+"] });
+    const groups = groupRows([covidRow], "vaccine");
+    const csv = groupedRowsToCsv(groups);
+    const lines = csv.split("\n").slice(1);
+    expect(lines.some((line) => line.startsWith("Pfizer Comirnaty 2026-27 12+,"))).toBe(true);
+  });
+
+  // Every other grouping mode's Group value (a day/hour/appointment-type/
+  // brand/age-bucket string) never starts with comirnaty/spikevax/
+  // mnexspike, so vaccineDisplayName is a no-op there — same "apply it
+  // universally, it's harmless" posture as the free-text search column.
+  it("leaves a non-vaccine Group value unchanged in non-vaccine grouping modes", () => {
+    const groups = groupRows([row({ date: "2026-09-10" })], "apptDate");
+    const csv = groupedRowsToCsv(groups);
+    const lines = csv.split("\n").slice(1);
+    expect(lines[0].startsWith("2026-09-10,")).toBe(true);
+  });
 });
 
 describe("rowsToCsv", () => {
@@ -557,6 +593,18 @@ describe("rowsToCsv", () => {
   it("joins multiple vaccine names with a comma and quotes the field", () => {
     const csv = rowsToCsv([row({ vaccineNames: ["Flu", "COVID-Pfizer"] })]);
     expect(csv).toContain('"Flu, COVID-Pfizer"');
+  });
+
+  // V-names-everywhere (Will 2026-09-25): CSV exports are no longer left
+  // raw — the Vaccines cell now carries the same maker-prefixed name
+  // every on-screen display does.
+  it("maker-prefixes a comirnaty/spikevax/mnexspike name in the Vaccines CSV cell", () => {
+    const csv = rowsToCsv([row({ vaccineNames: ["Comirnaty 2026-27 12+"] })]);
+    expect(csv).toContain("Pfizer Comirnaty 2026-27 12+");
+    const dataLine = csv.split("\n")[1];
+    // # vaccines count stays 1 — the prefix never changes how many raw
+    // entries there were.
+    expect(dataLine.split(",")).toContain("1");
   });
 
   it("includes the Tests column, joining multiple test names with a comma", () => {
@@ -751,6 +799,19 @@ describe("activeFilterChips", () => {
   it("builds a chip for the tests filter, like vaccine", () => {
     const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, tests: ["COVID", "Strep Throat"] };
     expect(activeFilterChips(filters)).toEqual([{ key: "tests", label: "Tests: COVID, Strep Throat" }]);
+  });
+
+  // V-names-everywhere (Will 2026-09-25): the vaccine chip's LABEL is
+  // maker-prefixed for display; the underlying filter value (what
+  // applyFilters actually matches against row.vaccineNames) must stay
+  // the raw string, which this test also locks down via the `filters`
+  // object passed in never being mutated by activeFilterChips.
+  it("maker-prefixes the vaccine chip's label without changing the underlying filter value", () => {
+    const filters: ExplorerFilters = { ...EMPTY_EXPLORER_FILTERS, vaccine: ["Comirnaty 2026-27 12+", "Flu"] };
+    expect(activeFilterChips(filters)).toEqual([
+      { key: "vaccine", label: "Vaccine: Pfizer Comirnaty 2026-27 12+, Flu" },
+    ]);
+    expect(filters.vaccine).toEqual(["Comirnaty 2026-27 12+", "Flu"]);
   });
 });
 

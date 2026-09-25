@@ -152,4 +152,29 @@ describe("GET /api/eligibility/for-age", () => {
     expect(body.vaccines[0].quantity_default).toBeUndefined();
     expect(body.vaccines[0].directions_default).toBeUndefined();
   });
+
+  // V-names-everywhere (Will 2026-09-25): this route feeds the desktop's
+  // guided data-entry flow directly, so it gets the same additive
+  // `displayName` field GET /api/vaccines carries — `name` stays raw for
+  // the flow's own grouping/matching.
+  it("adds a maker-prefixed displayName for a COVID product, leaving `name` raw", async () => {
+    const vaccines = [{ id: "v-comirnaty", name: "Comirnaty 2026-27 12+", active: true, dose: "1" }];
+    mockSupabase(vaccines, []);
+
+    const response = await GET(authedRequest("/api/eligibility/for-age?age=40"));
+    const body = await response.json();
+
+    expect(body.vaccines[0].name).toBe("Comirnaty 2026-27 12+");
+    expect(body.vaccines[0].displayName).toBe("Pfizer Comirnaty 2026-27 12+");
+  });
+
+  it("leaves displayName unchanged (a no-op) for a non-COVID vaccine", async () => {
+    const vaccines = [{ id: "v-mmr", name: "MMR-II", active: true, dose: "1" }];
+    mockSupabase(vaccines, []);
+
+    const response = await GET(authedRequest("/api/eligibility/for-age?age=40"));
+    const body = await response.json();
+
+    expect(body.vaccines[0].displayName).toBe("MMR-II");
+  });
 });

@@ -4,6 +4,7 @@ import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
 import { formatNdcForStorage } from "@/lib/ndc";
 import { annotateVaccinesWithDefaults } from "@/lib/entry-defaults";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 /**
  * REST endpoint for the desktop app's Vaccines screen (what we offer).
@@ -45,6 +46,11 @@ import { annotateVaccinesWithDefaults } from "@/lib/entry-defaults";
  * additive, same posture as `directions_default`: omitted entirely when
  * `quantity` is already on file, and also omitted (not sent as null)
  * when the short_code has no entry in the table — never invent a number.
+ *
+ * V-names-everywhere (Will 2026-09-25): every vaccine object returned
+ * from GET (both paths) and POST also carries a `displayName` field
+ * (withDisplayName below) — the maker-prefixed COVID name for the
+ * desktop app to render, additive next to the untouched `name`.
  */
 const VACCINE_COLUMNS_BASE =
   "id, name, ndc, dose, short_code, cash_price_cents, active, created_at, updated_at";
@@ -73,6 +79,20 @@ type VaccineRow = Record<string, unknown> & {
  */
 function withDefaults(rows: readonly VaccineRow[]): VaccineRow[] {
   return annotateVaccinesWithDefaults(rows);
+}
+
+/**
+ * V-names-everywhere (desktop API support, Will 2026-09-25): adds a
+ * `displayName` field — the maker-prefixed COVID name (lib/vaccine-
+ * display-name.ts's vaccineDisplayName), a no-op for every non-COVID
+ * name — to each row, purely additive. `name` itself is never touched:
+ * it's still the raw catalog name matching/lookup/desktop-storage code
+ * relies on, exactly as before this change. The desktop app (which
+ * doesn't run the web app's own display-formatting code) reads this
+ * field to show the same maker-prefixed names the cloud pages do.
+ */
+function withDisplayName<T extends { name: string }>(rows: readonly T[]): (T & { displayName: string })[] {
+  return rows.map((row) => ({ ...row, displayName: vaccineDisplayName(row.name) }));
 }
 
 export async function GET(request: Request) {
@@ -109,7 +129,7 @@ export async function GET(request: Request) {
       }
 
       const vaccines = quantityDirectionsSupported ? withDefaults((data ?? []) as VaccineRow[]) : data;
-      return NextResponse.json({ vaccines, quantityDirectionsSupported });
+      return NextResponse.json({ vaccines: withDisplayName((vaccines ?? []) as VaccineRow[]), quantityDirectionsSupported });
     }
 
     let vaccinesResult: {
@@ -134,14 +154,14 @@ export async function GET(request: Request) {
 
     const vaccinesAnnotated = quantityDirectionsSupported
       ? withDefaults((vaccines ?? []) as VaccineRow[])
-      : vaccines ?? [];
+      : ((vaccines ?? []) as VaccineRow[]);
     const vaccineIdsWithActiveLot = new Set((activeLots ?? []).map((lot) => lot.vaccine_id));
     const vaccinesWithLotFlag = vaccinesAnnotated.map((vaccine) => ({
       ...vaccine,
       hasActiveLot: vaccineIdsWithActiveLot.has(vaccine.id as string),
     }));
 
-    return NextResponse.json({ vaccines: vaccinesWithLotFlag, quantityDirectionsSupported });
+    return NextResponse.json({ vaccines: withDisplayName(vaccinesWithLotFlag), quantityDirectionsSupported });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },
@@ -268,7 +288,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Failed to create vaccine." }, { status: 500 });
     }
 
-    return NextResponse.json({ vaccine: data }, { status: 201 });
+    return NextResponse.json({ vaccine: { ...data, displayName: vaccineDisplayName(data.name) } }, { status: 201 });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

@@ -3,6 +3,7 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { isMissingColumnError } from "@/lib/schema-degradation";
 import { formatNdcForStorage } from "@/lib/ndc";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 /**
  * PATCH /api/vaccines/[id] — toggles a vaccine's `active` flag from the
@@ -108,7 +109,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       return NextResponse.json({ error: "Failed to update vaccine." }, { status: 500 });
     }
 
-    return NextResponse.json({ vaccine: data, quantityDirectionsSupported });
+    return NextResponse.json({
+      vaccine: { ...data, displayName: vaccineDisplayName(data.name) },
+      quantityDirectionsSupported,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

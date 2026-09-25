@@ -148,6 +148,32 @@ describe("CSV export", () => {
     const csv = dosesGivenPivotToCsv(commaPivot);
     expect(csv).toContain('"Vaccine, Extra"');
   });
+
+  // V-names-everywhere (Will 2026-09-25): CSV exports are no longer left
+  // raw — dosesGivenPivotToCsv's column header and productTotalsToCsv's
+  // Product cell now carry the same maker-prefixed name the on-screen
+  // tables already show (app/doses-given/page.tsx's LeafHeaderCell.label
+  // and the "By product" table's row label).
+  it("maker-prefixes a comirnaty/spikevax/mnexspike product name in dosesGivenPivotToCsv's header", () => {
+    const covidPivot = buildDosesGivenPivot(
+      [{ date: "2026-09-01", rows: [{ itemName: "Comirnaty 2026-27 12+", vaccineId: null }] }],
+      (row) => row.itemName
+    );
+    const csv = dosesGivenPivotToCsv(covidPivot);
+    const lines = csv.split("\n");
+    expect(lines[0]).toBe("Date,Pfizer Comirnaty 2026-27 12+,Total");
+    // The data row's own cell is still a plain count, unaffected.
+    expect(lines[1]).toBe("2026-09-01,1,1");
+  });
+
+  it("maker-prefixes a comirnaty/spikevax/mnexspike product name in productTotalsToCsv's Product cell", () => {
+    const covidPivot = buildDosesGivenPivot(
+      [{ date: "2026-09-01", rows: [{ itemName: "Spikevax 2026-27", vaccineId: null }] }],
+      (row) => row.itemName
+    );
+    const csv = productTotalsToCsv(covidPivot);
+    expect(csv).toBe(["Product,Total", "Moderna Spikevax 2026-27,1", "Total,1"].join("\n"));
+  });
 });
 
 // V-doses-given-layout (Will 2026-09-13): default-range and quick-pick

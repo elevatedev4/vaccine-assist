@@ -23,6 +23,7 @@ import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
 import { extractUnitFromRawLine } from "@/lib/on-hand/quantity-cell";
 import { computeDemandTarget } from "@/lib/ordering-recommendation";
 import { administeredSummary } from "@/lib/administered/store";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import { deriveProductViewFields } from "@/lib/product-view";
 import { computeOrderPackages } from "@/lib/vaccine-product-catalog";
 import { remainingPackages } from "@/lib/ordering-ordered-today";
@@ -739,6 +740,14 @@ export async function GET(request: Request) {
       return {
         key: row.key,
         vaccineName: row.vaccineName,
+        // V-names-everywhere (Will 2026-09-25): additive maker-prefixed
+        // display name for the desktop app — the web Ordering page
+        // already computes its own richer product-grouped displayName
+        // client-side (lib/product-view.ts) and ignores this field, so
+        // adding it here changes nothing there. `vaccineName` above stays
+        // the raw catalog name every matching/collapsing/write path in
+        // this route relies on.
+        displayName: vaccineDisplayName(row.vaccineName),
         ndc: row.ndc,
         group: row.group,
         active: row.active,

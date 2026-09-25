@@ -3,6 +3,7 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { evaluateEligibilityRules, type EligibilityRule } from "@/lib/eligibility";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { annotateVaccinesWithDefaults, type VaccineDefaultsRow } from "@/lib/entry-defaults";
+import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 
 /**
  * GET ?age=N -> every ACTIVE vaccine whose eligibility rules don't BLOCK
@@ -97,7 +98,15 @@ export async function GET(request: Request) {
         eligibility: evaluateEligibilityRules(rulesByVaccineId.get(vaccine.id as string) ?? [], { ageYears: age }),
       }))
       .filter(({ eligibility }) => eligibility.status !== "blocked")
-      .map(({ vaccine, eligibility }) => ({ ...vaccine, eligibility }));
+      .map(({ vaccine, eligibility }) => ({
+        ...vaccine,
+        // V-names-everywhere (Will 2026-09-25): additive maker-prefixed
+        // display name for the desktop guided data-entry flow — `name`
+        // (used to group/label vaccines further down that flow) is
+        // untouched.
+        displayName: vaccineDisplayName(vaccine.name),
+        eligibility,
+      }));
 
     return NextResponse.json({ vaccines: eligibleVaccines });
   } catch (err) {
