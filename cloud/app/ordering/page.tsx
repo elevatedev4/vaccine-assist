@@ -13,7 +13,7 @@ import { formatSurplus, surplusVsTarget } from "@/lib/ordering-recommendation";
 import { buildToOrderRows, type ToOrderRow } from "@/lib/ordering-to-order";
 import { SaveStatusIndicator, TargetInput, OrderedTodayInput, type SaveStatus } from "@/app/ordering/target-input";
 import { vaccineDisplayName } from "@/lib/vaccine-display-name";
-import { remainingPackages, splitByOrderedToday } from "@/lib/ordering-ordered-today";
+import { orderedTodayState, remainingPackages, type OrderedTodayState } from "@/lib/ordering-ordered-today";
 
 /**
  * Web edition of the desktop app's Ordering tab
@@ -54,35 +54,45 @@ import { remainingPackages, splitByOrderedToday } from "@/lib/ordering-ordered-t
  *   - "All vaccines — on hand, schedule, last 7 days given" heading now
  *     separates the To-order table from the full table below it
  *
- * V-ordering-ordered-today (Will 2026-09-25, verbatim): "Add a field to
- * the table/recommended order where I can enter the # packages I have
- * ordered for today, they way I can keep track of what I've ordered and
- * know if I need to order more. If something has met the total amount
- * we were supposed to order, you can mark it as 'already ordered full
- * amount' and separate it to the bottom of the recommended order." —
- * "the table/recommended order" is the "To order" table above (NOT the
- * "All vaccines" BOH table below it, which is untouched):
- *   - a new "Ordered today" (pkg) input per row (app/ordering/
- *     target-input.tsx's OrderedTodayInput), autosaving via PUT
- *     /api/ordering/ordered-today, persisted per product per America/
- *     Chicago calendar day (see that route + lib/ordering-ordered-today.ts)
- *   - the Order qty (pkg) cell grows a muted "(N left)" suffix once
- *     something's been entered today, e.g. "3 (1 left)" — chosen over a
- *     separate "Remaining" column specifically so every row stays ONE
- *     LINE (this page's long-standing layout rule — see V-T51's doc
- *     comment in target-input.tsx)
- *   - lib/ordering-ordered-today.ts's splitByOrderedToday STABLE-
- *     partitions the already-sorted toOrderRows into "still to order"
- *     and "fully ordered" WITHOUT re-sorting either group (Will: "Sorting
- *     inside each group stays as today") — rendered as two separate
- *     tables (same column shape) rather than one table with an inline
- *     divider row, matching this file's existing "All vaccines" vs
- *     "Inactive vaccines" pattern of separate tables rather than a
- *     shared one. The second table's Order qty cell reads "Already
- *     ordered full amount" (muted) instead of a number — Will's own
- *     wording, marking the row directly rather than relying solely on
- *     the heading above it — while "Ordered today" stays a live input
- *     so lowering it moves the row back to the main list.
+ * V-ordering-ordered-today (Will 2026-09-25 round 1, verbatim): "Add a
+ * field to the table/recommended order where I can enter the # packages
+ * I have ordered for today, they way I can keep track of what I've
+ * ordered and know if I need to order more. If something has met the
+ * total amount we were supposed to order, you can mark it as 'already
+ * ordered full amount' and separate it to the bottom of the recommended
+ * order." — round 1 shipped a new "Ordered today" (pkg) input per "To
+ * order" row (app/ordering/target-input.tsx's OrderedTodayInput),
+ * autosaving via PUT /api/ordering/ordered-today, persisted per product
+ * per America/Chicago calendar day (see that route + lib/ordering-
+ * ordered-today.ts), plus a second "Already ordered full amount" table
+ * below it that fully-ordered rows moved into.
+ *
+ * V-ordering-ordered-colors (Will, same day, round 2, verbatim): "Works
+ * great. Add the ordered field to the table below too in case we also
+ * order other vaccines that weren't on the reocmmended order. Instead
+ * of making the item in teh recomemdned order move down to its own
+ * section, just make it turn green when th full amount as been ordered
+ * and yellow if something has been entered and it isn't enough." —
+ * replaces round 1's move-to-a-second-table behavior:
+ *   - round 1's separate "Already ordered full amount" table is GONE —
+ *     every "To order" row stays in its original place/order and just
+ *     changes color: lib/ordering-ordered-today.ts's orderedTodayState
+ *     (replacing isFullyOrdered/splitByOrderedToday) returns "none" /
+ *     "partial" / "complete" per row, rendered as no highlight / yellow
+ *     / green (styles.orderedTodayPartial / orderedTodayComplete below)
+ *   - the "Ordered today" input is now ALSO on the "All vaccines" table
+ *     below "To order" (item 1 of Will's ask) — same input, same PUT,
+ *     same coloring rule; a row with nothing recommended (order 0, or a
+ *     known package size the catalog just doesn't have) shows green on
+ *     any nonzero entry rather than never going green (there's no
+ *     numeric target to fall short of either way — see
+ *     orderedTodayState's doc comment)
+ *   - colors never stand alone (contrast + a11y): each colored row also
+ *     gets a small "Ordered"/"Partial" text badge next to the input,
+ *     plus a `title` tooltip on the row — see orderedTodayBadge* styles
+ *     and orderedTodayRowTitle below
+ *   - the Order qty (pkg) cell's muted "(N left)" suffix (one-line
+ *     layout rule, V-T51) is unchanged and still applies in every state
  */
 
 type RecommendationRow = {
@@ -185,6 +195,21 @@ const EMAIL_MODAL_DISMISSED_KEY = "ordering-email-setup-dismissed";
 const NDC_COPIED_FLAG = "Copied";
 const NDC_COPY_FLASH_MS = 1200;
 
+// Shared base for the "Ordered"/"Partial" text badge (V-ordering-ordered-
+// colors, round 2) — the non-color signal next to orderedTodayComplete/
+// Partial's row backgrounds above, so state is never conveyed by color
+// alone. White text on a solid dark fill for both variants (contrast
+// checked: >=4.9:1, passes WCAG AA for normal-size text).
+const orderedTodayBadgeBase: CSSProperties = {
+  fontSize: "11px",
+  fontWeight: 700,
+  marginLeft: "6px",
+  padding: "1px 6px",
+  borderRadius: 3,
+  color: "#fff",
+  whiteSpace: "nowrap" as const,
+};
+
 const styles = {
   main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1000 },
   toolbar: { display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" as const, marginBottom: "0.5rem" },
@@ -245,17 +270,25 @@ const styles = {
   // brief ("pick the option that keeps every row one line"). Same small-
   // muted-hint posture as toOrderThSub above.
   toOrderRemainingHint: { fontSize: "11px", color: "#888" },
-  // Small divider/heading between the still-to-order table and the
-  // "Already ordered full amount" one below it (V-ordering-ordered-
-  // today) — deliberately lighter-weight than the page's <h2>s (this
-  // isn't a new top-level section, just a sub-grouping within "To
-  // order").
-  toOrderFullyOrderedHeading: { marginTop: "1.25rem", marginBottom: "0.25rem", fontWeight: 600, color: "#555", fontSize: "0.85rem" },
-  // Muted row style for the "Already ordered full amount" table's rows
-  // — color inherited by every plain-text child cell (the NDC button and
-  // the Ordered-today input keep their own explicit colors/borders, so
-  // they read normally even inside a muted row).
-  toOrderFullyOrderedRow: { color: "#888" },
+  // Row-level color for lib/ordering-ordered-today.ts's orderedTodayState
+  // (V-ordering-ordered-colors, round 2, Will: "turn green when the full
+  // amount has been ordered and yellow if something has been entered and
+  // it isn't enough") — used on BOTH the "To order" table's rows (in
+  // place of round 1's move-to-a-second-table behavior) and the "All
+  // vaccines" table's rows below it. Pale enough that plain black text
+  // stays comfortably readable (contrast kept — colors never stand alone,
+  // see orderedTodayBadgeComplete/Partial below for the non-color signal).
+  // Green reuses the same "#e6f4ea" fill tdRightOrderDue already uses
+  // elsewhere on this page for a positive/actioned state, for visual
+  // consistency; yellow reuses trOrderDue's existing "#fff8d6" below.
+  orderedTodayComplete: { background: "#e6f4ea" },
+  orderedTodayPartial: { background: "#fff8d6" },
+  // The badges themselves (see orderedTodayBadgeBase above) — dark green
+  // "Ordered" / dark amber "Partial", each a solid fill behind white text
+  // rather than tinted text on the row's own pale background, so the
+  // badge reads clearly regardless of which row color it sits on.
+  orderedTodayBadgeComplete: { ...orderedTodayBadgeBase, background: "#1b5e20" },
+  orderedTodayBadgePartial: { ...orderedTodayBadgeBase, background: "#8a6d00" },
   // NDC copy button (V-to-order-table-emphasis: "Make NDC a button that
   // they can click to copy it like we've used on macro codes") — same
   // colored-bordered-button posture as app/macro-codes/page.tsx's dose
@@ -399,6 +432,29 @@ function onHandStatusMessage(lastReceivedAt: string | null): string {
   return lastReceivedAt
     ? `On-hand data last received: ${new Date(lastReceivedAt).toLocaleString()}`
     : "On-hand data last received: never";
+}
+
+/** The <tr> background for a row's orderedTodayState — "none" returns
+ * undefined so the caller's own existing row style (e.g. the "All
+ * vaccines" table's trOrderDue) still applies unchanged, per Will's
+ * brief ("none -> unchanged"). */
+function orderedTodayRowStyle(state: OrderedTodayState): CSSProperties | undefined {
+  if (state === "complete") return styles.orderedTodayComplete;
+  if (state === "partial") return styles.orderedTodayPartial;
+  return undefined;
+}
+
+/** Non-color signal to pair with orderedTodayRowStyle (contrast/a11y —
+ * colors never stand alone): a `title` tooltip for the row, alongside
+ * the visible "Ordered"/"Partial" badge rendered next to each input. */
+function orderedTodayRowTitle(state: OrderedTodayState, remaining: number | null): string | undefined {
+  if (state === "complete") return "Ordered today: full amount ordered";
+  if (state === "partial") {
+    return remaining !== null
+      ? `Ordered today: partial — ${remaining} more package${remaining === 1 ? "" : "s"} needed`
+      : "Ordered today: partial";
+  }
+  return undefined;
 }
 
 /** The "Surplus" cell's style + text for a row — green/red/neutral per
@@ -751,8 +807,10 @@ export default function OrderingPage() {
 
   // "Ordered today" autosave (V-ordering-ordered-today) — same
   // "PUT then reload" shape as saveTarget above, so a save that flips a
-  // row's fully-ordered status (and therefore which of the two "To
-  // order" tables it belongs in) is reflected immediately.
+  // row's orderedTodayState (round 2: none/partial/complete, hence its
+  // color) is reflected immediately. Shared by both the "To order"
+  // table and the "All vaccines" table below it (round 2 item 1) — same
+  // key-keyed PUT either way.
   const saveOrderedToday = useCallback(
     async (key: string, orderedToday: number): Promise<boolean> => {
       if (!session) return false;
@@ -942,16 +1000,6 @@ export default function OrderingPage() {
     [toOrderRows, orderedTodayByKey]
   );
 
-  // Will's brief: rows that have met/exceeded their recommended package
-  // count today separate to the bottom, under their own heading, WITHOUT
-  // re-sorting either group — lib/ordering-ordered-today.ts's
-  // splitByOrderedToday is a stable partition, so toOrderRows' existing
-  // group/order-desc/name-asc sort survives in both halves.
-  const { remaining: toOrderRemainingRows, fullyOrdered: toOrderFullyOrderedRows } = useMemo(
-    () => splitByOrderedToday(toOrderRowsWithOrdering),
-    [toOrderRowsWithOrdering]
-  );
-
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -985,22 +1033,20 @@ export default function OrderingPage() {
   if (data) statusParts.push(onHandStatusMessage(data.onHandLastReceivedAt));
   if (data?.trendUnavailable) statusParts.push("Last-7-days-given trend unavailable — using scheduled estimate only.");
 
-  // One <tr> for either "To order" table (still-to-order, or "Already
-  // ordered full amount" below it) — V-ordering-ordered-today. Kept as
-  // one render function so the NDC-copy-button/Order-qty-cell markup
-  // isn't duplicated between the two tables; `fullyOrdered` only changes
-  // the row's muted style and the Order qty cell's content (a number vs
-  // Will's own "Already ordered full amount" wording), never the
-  // column set — both tables stay the exact same shape/width.
-  function renderToOrderRow(row: ToOrderRowWithOrdering, fullyOrdered: boolean) {
+  // The "To order" table's one <tr> (V-ordering-ordered-colors, round 2
+  // — round 1's separate "Already ordered full amount" table is gone;
+  // the row just recolors in place via orderedTodayState/
+  // orderedTodayRowStyle/orderedTodayRowTitle above).
+  function renderToOrderRow(row: ToOrderRowWithOrdering) {
     const ndcText = formatNdcDashed(row.ndc) || "—";
     const isCopied = copiedNdcKey === row.key;
     const canCopy = !!row.ndc;
     const ndcButtonText = isCopied ? NDC_COPIED_FLAG : ndcText;
     const target = targetByKey.get(row.key) ?? null;
+    const state = orderedTodayState({ orderPackages: row.orderPackages, orderedToday: row.orderedToday });
 
     return (
-      <tr key={row.key} style={fullyOrdered ? styles.toOrderFullyOrderedRow : undefined}>
+      <tr key={row.key} style={orderedTodayRowStyle(state)} title={orderedTodayRowTitle(state, row.remaining)}>
         <td style={styles.toOrderTd}>{vaccineDisplayName(row.displayName)}</td>
         <td style={styles.toOrderTd}>
           <button
@@ -1021,15 +1067,9 @@ export default function OrderingPage() {
         <td style={styles.toOrderTdRight}>{onHandDisplay(onHandByKey.get(row.key) ?? null)}</td>
         <td style={styles.toOrderTdRight}>{target ?? "—"}</td>
         <td style={styles.toOrderTdOrderQty}>
-          {fullyOrdered ? (
-            "Already ordered full amount"
-          ) : (
-            <>
-              {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
-              {row.orderedToday > 0 && row.remaining !== null && (
-                <span style={styles.toOrderRemainingHint}> ({row.remaining} left)</span>
-              )}
-            </>
+          {row.orderPackages ?? `— (${row.order} dose${row.order === 1 ? "" : "s"})`}
+          {row.orderedToday > 0 && row.remaining !== null && (
+            <span style={styles.toOrderRemainingHint}> ({row.remaining} left)</span>
           )}
         </td>
         <td style={styles.toOrderTd}>
@@ -1038,7 +1078,13 @@ export default function OrderingPage() {
             disabled={orderedTodayPending}
             disabledTitle={orderedTodayPending ? "activates after the database step" : undefined}
             onSave={(value) => saveOrderedToday(row.key, value)}
+            highlighted={state !== "none"}
           />
+          {state !== "none" && (
+            <span style={state === "complete" ? styles.orderedTodayBadgeComplete : styles.orderedTodayBadgePartial}>
+              {state === "complete" ? "Ordered" : "Partial"}
+            </span>
+          )}
         </td>
       </tr>
     );
@@ -1161,72 +1207,31 @@ export default function OrderingPage() {
       {toOrderRows.length === 0 ? (
         <p style={styles.muted}>Nothing to order</p>
       ) : (
-        <>
-          {toOrderRemainingRows.length === 0 ? (
-            <p style={styles.muted}>Nothing left to order today.</p>
-          ) : (
-            <table style={{ ...styles.toOrderTable, marginTop: "0.5rem" }} className="to-order-table">
-              <thead>
-                <tr>
-                  <th style={styles.toOrderTh}>Product</th>
-                  <th style={styles.toOrderTh}>NDC</th>
-                  <th style={styles.toOrderThRight}>
-                    BOH
-                    <span style={styles.toOrderThSub}>(doses)</span>
-                  </th>
-                  <th style={styles.toOrderThRight}>
-                    Target
-                    <span style={styles.toOrderThSub}>(doses)</span>
-                  </th>
-                  <th style={styles.toOrderThRight}>
-                    Order qty
-                    <span style={styles.toOrderThSub}>(pkg)</span>
-                  </th>
-                  <th style={styles.toOrderTh}>
-                    Ordered today
-                    <span style={styles.toOrderThSub}>(pkg)</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>{toOrderRemainingRows.map((row) => renderToOrderRow(row, false))}</tbody>
-            </table>
-          )}
-
-          {/* V-ordering-ordered-today: rows that have met/exceeded their
-           * recommended package count today, separated to the bottom
-           * under their own heading (Will's brief) rather than mixed
-           * into the table above. */}
-          {toOrderFullyOrderedRows.length > 0 && (
-            <>
-              <p style={styles.toOrderFullyOrderedHeading}>Already ordered full amount</p>
-              <table style={{ ...styles.toOrderTable, marginTop: "0.25rem" }} className="to-order-table">
-                <thead>
-                  <tr>
-                    <th style={styles.toOrderTh}>Product</th>
-                    <th style={styles.toOrderTh}>NDC</th>
-                    <th style={styles.toOrderThRight}>
-                      BOH
-                      <span style={styles.toOrderThSub}>(doses)</span>
-                    </th>
-                    <th style={styles.toOrderThRight}>
-                      Target
-                      <span style={styles.toOrderThSub}>(doses)</span>
-                    </th>
-                    <th style={styles.toOrderThRight}>
-                      Order qty
-                      <span style={styles.toOrderThSub}>(pkg)</span>
-                    </th>
-                    <th style={styles.toOrderTh}>
-                      Ordered today
-                      <span style={styles.toOrderThSub}>(pkg)</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>{toOrderFullyOrderedRows.map((row) => renderToOrderRow(row, true))}</tbody>
-              </table>
-            </>
-          )}
-        </>
+        <table style={{ ...styles.toOrderTable, marginTop: "0.5rem" }} className="to-order-table">
+          <thead>
+            <tr>
+              <th style={styles.toOrderTh}>Product</th>
+              <th style={styles.toOrderTh}>NDC</th>
+              <th style={styles.toOrderThRight}>
+                BOH
+                <span style={styles.toOrderThSub}>(doses)</span>
+              </th>
+              <th style={styles.toOrderThRight}>
+                Target
+                <span style={styles.toOrderThSub}>(doses)</span>
+              </th>
+              <th style={styles.toOrderThRight}>
+                Order qty
+                <span style={styles.toOrderThSub}>(pkg)</span>
+              </th>
+              <th style={styles.toOrderTh}>
+                Ordered today
+                <span style={styles.toOrderThSub}>(pkg)</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>{toOrderRowsWithOrdering.map((row) => renderToOrderRow(row))}</tbody>
+        </table>
       )}
 
       <h2 style={styles.sectionHeading}>All vaccines</h2>
@@ -1279,6 +1284,10 @@ export default function OrderingPage() {
               Order
               <span style={styles.toOrderThSub}>(pkg)</span>
             </th>
+            <th style={styles.toOrderTh}>
+              Ordered today
+              <span style={styles.toOrderThSub}>(pkg)</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1307,11 +1316,22 @@ export default function OrderingPage() {
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>—</td>
                   <td style={styles.tdRight}>—</td>
+                  <td style={styles.td}>—</td>
                 </tr>
                 {enrichedRows.map((row) => {
                   const surplus = surplusCell(row);
+                  // V-ordering-ordered-colors, round 2 item 1 ("add the
+                  // ordered field to the table below too... where there is
+                  // no recommended quantity, a non-zero entry shows
+                  // green"): recomputed locally from this row's own
+                  // client-side orderPackages, same "never trust the API's
+                  // own copy" posture as the "To order" table's
+                  // toOrderRowsWithOrdering above.
+                  const remaining = remainingPackages(row.orderPackages, row.orderedToday);
+                  const state = orderedTodayState({ orderPackages: row.orderPackages, orderedToday: row.orderedToday });
+                  const rowStyle = orderedTodayRowStyle(state) ?? (row.order > 0 ? styles.trOrderDue : undefined);
                   return (
-                    <tr key={row.key} style={row.order > 0 ? styles.trOrderDue : undefined}>
+                    <tr key={row.key} style={rowStyle} title={orderedTodayRowTitle(state, remaining)}>
                       <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{vaccineDisplayName(row.displayName)}</td>
                       <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
@@ -1332,6 +1352,20 @@ export default function OrderingPage() {
                       <td style={surplus.style}>{surplus.text}</td>
                       <td style={orderCellStyleInHighlightedRow(row)}>{row.order}</td>
                       <td style={orderCellStyleInHighlightedRow(row)}>{row.orderPackages ?? "—"}</td>
+                      <td style={styles.td}>
+                        <OrderedTodayInput
+                          value={row.orderedToday}
+                          disabled={orderedTodayPending}
+                          disabledTitle={orderedTodayPending ? "activates after the database step" : undefined}
+                          onSave={(value) => saveOrderedToday(row.key, value)}
+                          highlighted={state !== "none" || row.order > 0}
+                        />
+                        {state !== "none" && (
+                          <span style={state === "complete" ? styles.orderedTodayBadgeComplete : styles.orderedTodayBadgePartial}>
+                            {state === "complete" ? "Ordered" : "Partial"}
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
