@@ -2014,13 +2014,26 @@ function MacroCodesPageContent() {
          * disappearing never changes the cell's own height — it renders
          * in the slack the (taller) dose-button column already reserves
          * for this row. white-space: nowrap + pointer-events: none per
-         * brief (it's a status label, not interactive). */
+         * brief (it's a status label, not interactive).
+         * ROUND 3 REVIEW FIX (reviewer, 2026-09-28): left: 0 with no
+         * width cap let the note overflow .macro-product-name-cell-c and
+         * paint over the dose buttons in the embed popup's 3-column grid,
+         * where that cell (flex: 1, min-width: 0) can be squeezed to
+         * ~150-200px while the note's own text stays ~200px wide. Adding
+         * right: 0 pins BOTH edges to the (already-shrunk) cell, so the
+         * note's box always matches the cell's actual width instead of
+         * the button column's; overflow/ellipsis (still nowrap) clips
+         * instead of spilling when it doesn't fit, and the font drops
+         * slightly to fit more of it before that clipping kicks in. */
         .macro-armed-note {
           position: absolute;
           left: 0;
+          right: 0;
           top: 100%;
           white-space: nowrap;
-          font-size: 0.72rem;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          font-size: 0.68rem;
           color: #8a6d1a;
           pointer-events: none;
         }
