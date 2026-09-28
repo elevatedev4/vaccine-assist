@@ -8,9 +8,10 @@
  *
  * Will's mapping is "first letter where possible" with a few deliberate
  * substitutions where two products would otherwise collide on the same
- * letter: he originally wrote "U" for both FluMist and Fluad (Fluad gets
- * "A" instead) and "P" for both Pfizer 12+ and Prevnar 20 (Prevnar gets
- * "N" instead) — MACRO_HOTKEYS below is that already-resolved, collision-
+ * letter: he originally wrote "U" for both FluMist and Fluad (round 1
+ * gave Fluad "A" instead; round 2, 2026-09-28 verbatim answer, moved it
+ * to "D") and "P" for both Pfizer 12+ and Prevnar 20 (Prevnar gets "N"
+ * instead) — MACRO_HOTKEYS below is that already-resolved, collision-
  * free mapping, not something this module re-derives.
  *
  * This file is pure (no React/DOM) so it can be unit tested directly —
@@ -40,7 +41,7 @@ export const MACRO_HOTKEYS: Readonly<Record<string, readonly string[]>> = {
   f: ["flucelvaxmdv", "flucelvaxpfs"],
   u: ["flumist"],
   l: ["mflusiva"],
-  a: ["fluad"],
+  d: ["fluad"],
   "3": ["spikevax6mo11"],
   p: ["comirnaty12"],
   m: ["mnexspike"],
@@ -160,4 +161,139 @@ export function underlineHotkey(displayName: string, key: string): { before: str
     letter: displayName.slice(index, index + lowerKey.length),
     after: displayName.slice(index + lowerKey.length),
   };
+}
+
+/**
+ * ROUND 2 (Will's verbatim answer, 2026-09-28): "Multi-dose vaccines need
+ * a second key press for the dose." Pressing a multi-dose product's
+ * letter (Shingrix, Gardasil, Engerix, Vaqta, MMR, or any other product
+ * whose visible dose count is > 1 — this is derived from
+ * MacroProductGroup.doses.length, not a hardcoded product list) no
+ * longer copies immediately; it "arms" that product, and a following
+ * digit keypress (1/2/3…) copies that specific dose the same way
+ * clicking its button would. A single-dose product's letter still copies
+ * on the one press, unchanged from round 1. `armedProductKey` is the
+ * only piece of state this needs — everything else (which product's row
+ * to highlight, which other rows to dim, which digit maps to which dose)
+ * is derived from it plus the current `visibleTopGroups` by the page.
+ */
+export type HotkeyState = { armedProductKey: string | null };
+
+export const INITIAL_HOTKEY_STATE: HotkeyState = { armedProductKey: null };
+
+/**
+ * What the page should DO in response to a keypress, on top of adopting
+ * the returned `state` (the page always does `setHotkeyState(result.state)`
+ * unconditionally — `state` already reflects every case below, including
+ * "no change"). `copy` is the only action that has a further side effect
+ * (call the same `handleCopy(row, label)` a dose-button click calls);
+ * `arm`/`clear`/`none` are informational only (arm/clear exist mainly so
+ * this reducer's own tests can assert on them precisely).
+ */
+export type HotkeyAction =
+  | { type: "copy"; product: MacroProductGroup; row: MacroRow }
+  | { type: "arm"; product: MacroProductGroup }
+  | { type: "clear" }
+  | { type: "none" };
+
+export type HotkeyTransitionResult = { state: HotkeyState; action: HotkeyAction };
+
+/** Finds the currently-armed product by productKey within
+ * `visibleTopGroups`, walking the same block -> section -> product order
+ * resolveHotkeyTarget uses. Returns null when that product isn't in the
+ * visible set at all (e.g. armed, then a search/age filter change hid
+ * it) — the page is expected to proactively clear armed state whenever
+ * `visibleTopGroups` itself changes, so this is a defensive fallback,
+ * not the primary way armed state gets cleared. */
+function findArmedProduct(
+  armedProductKey: string,
+  visibleTopGroups: readonly MacroTopGroupBlock[]
+): MacroProductGroup | null {
+  for (const block of visibleTopGroups) {
+    for (const section of block.sections) {
+      for (const product of section.products) {
+        if (product.productKey === armedProductKey) return product;
+      }
+    }
+  }
+  return null;
+}
+
+/** Resolves a vaccine-letter (or the digit "3", which doubles as
+ * Moderna 3-11's key when nothing is armed) keypress to its target
+ * product via resolveHotkeyTarget, then decides arm vs. copy from that
+ * product's own dose count — shared by both the "nothing armed yet" and
+ * "re-arm to a different product while already armed" paths below, so
+ * they can never disagree about which products are multi-dose. */
+function armOrCopyForLetter(
+  state: HotkeyState,
+  lowerKey: string,
+  visibleTopGroups: readonly MacroTopGroupBlock[]
+): HotkeyTransitionResult {
+  const target = resolveHotkeyTarget(lowerKey, visibleTopGroups);
+  // An unmapped key, or a mapped key whose product is currently hidden
+  // by a filter, changes nothing — in particular it does NOT clear an
+  // existing armed state (only Escape, a successful dose copy, or the
+  // page's own visibleTopGroups-changed effect do that).
+  if (!target) return { state, action: { type: "none" } };
+  if (target.product.doses.length > 1) {
+    return { state: { armedProductKey: target.product.productKey }, action: { type: "arm", product: target.product } };
+  }
+  return { state: { armedProductKey: null }, action: { type: "copy", product: target.product, row: target.row } };
+}
+
+/**
+ * Pure keypress -> (next state, action) transition for the armed-mode
+ * hotkey flow. `key` is whatever `KeyboardEvent.key` gives the page
+ * (case-insensitive letters/digits, plus the literal "Escape" — this
+ * function lowercases internally so either "Escape" or "escape" works).
+ *
+ * Order of precedence, matching Will's verbatim brief:
+ * 1. Escape always clears armed state (and does nothing else — the page
+ *    is responsible for NOT letting its embed-cancel/modal-close Escape
+ *    handlers also fire while a product is armed).
+ * 2. While a product is armed, any single digit is read as a DOSE
+ *    NUMBER first — this is what makes "3" mean "dose 3 of the armed
+ *    product" instead of Moderna 3-11 while armed, per Will's note.
+ *    A digit that isn't any of the armed product's dose numbers does
+ *    nothing (stays armed, `action: "none"`). A digit while the armed
+ *    product is no longer visible (filtered out since arming) clears
+ *    instead of leaving a dangling reference.
+ * 3. Otherwise (not armed, or armed but the key isn't a bare digit) the
+ *    key is resolved as a vaccine letter/hotkey via armOrCopyForLetter
+ *    above — this also covers "3" when nothing is armed (Moderna) and
+ *    re-arming to a different product while one is already armed.
+ * 4. An unmapped key changes nothing (`state` unchanged, `action: "none"`).
+ */
+export function hotkeyTransition(
+  state: HotkeyState,
+  key: string,
+  visibleTopGroups: readonly MacroTopGroupBlock[]
+): HotkeyTransitionResult {
+  const lowerKey = (key ?? "").trim().toLowerCase();
+  if (!lowerKey) return { state, action: { type: "none" } };
+
+  if (lowerKey === "escape") {
+    if (state.armedProductKey === null) return { state, action: { type: "none" } };
+    return { state: { armedProductKey: null }, action: { type: "clear" } };
+  }
+
+  const isSingleDigit = /^[0-9]$/.test(lowerKey);
+
+  if (state.armedProductKey !== null && isSingleDigit) {
+    const product = findArmedProduct(state.armedProductKey, visibleTopGroups);
+    if (!product) return { state: { armedProductKey: null }, action: { type: "clear" } };
+    const doseNumber = Number(lowerKey);
+    const dose = product.doses.find((d) => d.row.doseNumber === doseNumber);
+    if (!dose) return { state, action: { type: "none" } };
+    return { state: { armedProductKey: null }, action: { type: "copy", product, row: dose.row } };
+  }
+
+  return armOrCopyForLetter(state, lowerKey, visibleTopGroups);
+}
+
+/** The armed-mode hint text shown near the highlighted row/page header
+ * (Will's verbatim wording, N = the armed product's own dose count). */
+export function armedHotkeyNote(doseCount: number): string {
+  return `Press 1–${doseCount} for the dose · Esc to clear`;
 }
