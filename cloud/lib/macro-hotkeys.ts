@@ -198,14 +198,28 @@ export type HotkeyAction =
 
 export type HotkeyTransitionResult = { state: HotkeyState; action: HotkeyAction };
 
-/** Finds the currently-armed product by productKey within
+/**
+ * Finds the currently-armed product by productKey within
  * `visibleTopGroups`, walking the same block -> section -> product order
  * resolveHotkeyTarget uses. Returns null when that product isn't in the
  * visible set at all (e.g. armed, then a search/age filter change hid
- * it) — the page is expected to proactively clear armed state whenever
- * `visibleTopGroups` itself changes, so this is a defensive fallback,
- * not the primary way armed state gets cleared. */
-function findArmedProduct(
+ * it).
+ *
+ * ROUND 2 FOLLOW-UP (reviewer, code review on 5a39605): this is now the
+ * PRIMARY way armed state gets cleared by a visibility change, not a
+ * defensive fallback — app/macro-codes/page.tsx calls this directly
+ * (instead of clearing on every `visibleTopGroups` reference change) so
+ * arming survives a background refetch that rebuilds the same visible
+ * rows with new array/object identities (the 60s heartbeat, window
+ * focus/visibilitychange — exactly the alt-tab-to-desktop-app workflow
+ * this hotkey feature is FOR) and only clears when the armed product is
+ * genuinely no longer among the visible ones (a real age-filter/search
+ * change, or the product's own row disappearing). Exported so the page
+ * can reuse the identical lookup instead of a second hand-rolled walk
+ * that could drift from this one; also used internally by
+ * hotkeyTransition's digit-dose-select branch above.
+ */
+export function findArmedProduct(
   armedProductKey: string,
   visibleTopGroups: readonly MacroTopGroupBlock[]
 ): MacroProductGroup | null {

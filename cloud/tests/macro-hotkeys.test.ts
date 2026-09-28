@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   armedHotkeyNote,
+  findArmedProduct,
   hotkeyForProduct,
   hotkeyTransition,
   INITIAL_HOTKEY_STATE,
@@ -337,6 +338,54 @@ describe("hotkeyTransition (round 2: armed multi-dose flow)", () => {
     const result = hotkeyTransition(armed, "1", filtered);
     expect(result.action).toEqual({ type: "clear" });
     expect(result.state).toEqual(NOT_ARMED);
+  });
+});
+
+describe("findArmedProduct", () => {
+  // ROUND 2 FOLLOW-UP (reviewer, code review on 5a39605): app/macro-codes/
+  // page.tsx now calls this directly to decide whether to clear armed
+  // state, instead of clearing on every `visibleTopGroups` reference
+  // change (which fired on background refetches too, e.g. the 60s
+  // heartbeat / window-focus refetch — see this file's own follow-up
+  // note in lib/macro-hotkeys.ts). The key behavior these tests pin
+  // down: a REBUILT-but-still-present product (a fresh array from a
+  // same-data refetch, new object identities throughout) still resolves,
+  // while a genuinely filtered-out product does not.
+  const topGroups = buildVisibleTopGroups([
+    { productKey: "p:shingrix", name: "Shingrix", code: "shingrix1", dose: "1" },
+    { productKey: "p:shingrix", name: "Shingrix", code: "shingrix2", dose: "2" },
+    { productKey: "p:comirnaty", name: "Comirnaty", code: "comirnaty12" },
+  ]);
+
+  it("resolves the armed product when it's still in the visible set", () => {
+    const found = findArmedProduct("p:shingrix", topGroups);
+    expect(found?.displayName).toBe("Shingrix");
+    expect(found?.doses).toHaveLength(2);
+  });
+
+  it("still resolves after a same-data rebuild that gives every array/object a new reference (a background refetch, not a real filter change)", () => {
+    // Rebuilding from the exact same source entries simulates a
+    // heartbeat/focus refetch that returns unchanged data: none of the
+    // objects below are the SAME references as `topGroups`' — only the
+    // productKey strings match — which is exactly what tripped up the
+    // old `useEffect(..., [visibleTopGroups])` clear.
+    const rebuilt = buildVisibleTopGroups([
+      { productKey: "p:shingrix", name: "Shingrix", code: "shingrix1", dose: "1" },
+      { productKey: "p:shingrix", name: "Shingrix", code: "shingrix2", dose: "2" },
+      { productKey: "p:comirnaty", name: "Comirnaty", code: "comirnaty12" },
+    ]);
+    expect(rebuilt).not.toBe(topGroups);
+    const found = findArmedProduct("p:shingrix", rebuilt);
+    expect(found?.displayName).toBe("Shingrix");
+  });
+
+  it("returns null once the armed product is genuinely filtered out", () => {
+    const filtered = filterMacroTopGroups(topGroups, "comirnaty"); // hides Shingrix
+    expect(findArmedProduct("p:shingrix", filtered)).toBeNull();
+  });
+
+  it("returns null against an empty visible set", () => {
+    expect(findArmedProduct("p:shingrix", [])).toBeNull();
   });
 });
 

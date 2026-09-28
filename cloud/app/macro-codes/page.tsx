@@ -26,6 +26,7 @@ import {
 } from "@/lib/macro-codes";
 import {
   armedHotkeyNote,
+  findArmedProduct,
   hotkeyForProduct,
   hotkeyTransition,
   underlineHotkey,
@@ -817,20 +818,16 @@ function MacroCodesPageContent() {
   );
 
   // Macro-codes hotkeys round 2: the currently-armed product (for the
-  // "Press 1-N for the dose" note near the header) — null whenever
-  // nothing is armed, same lookup lib/macro-hotkeys.ts's hotkeyTransition
-  // does internally, just needed here too for display.
-  const armedProduct = useMemo(() => {
-    if (!hotkeyState.armedProductKey) return null;
-    for (const block of visibleTopGroups) {
-      for (const section of block.sections) {
-        for (const product of section.products) {
-          if (product.productKey === hotkeyState.armedProductKey) return product;
-        }
-      }
-    }
-    return null;
-  }, [hotkeyState.armedProductKey, visibleTopGroups]);
+  // "Press 1-N for the dose" note near the header, and for the
+  // visibility-based clear effect below) — null whenever nothing is
+  // armed OR the armed product is no longer in `visibleTopGroups`.
+  // lib/macro-hotkeys.ts's findArmedProduct is the single source of
+  // truth for this lookup (also used internally by hotkeyTransition's
+  // digit branch), so the page never re-implements its own walk.
+  const armedProduct = useMemo(
+    () => (hotkeyState.armedProductKey ? findArmedProduct(hotkeyState.armedProductKey, visibleTopGroups) : null),
+    [hotkeyState.armedProductKey, visibleTopGroups]
+  );
 
   const rowKey = macroRowKey;
 
@@ -1145,14 +1142,28 @@ function MacroCodesPageContent() {
 
   // Macro-codes hotkeys round 2: arming is only meaningful against the
   // CURRENT visible set — an age-filter or search change can hide the
-  // armed product (or shuffle dose numbers into view/out of it), so any
-  // change to `visibleTopGroups` clears armed state outright rather than
-  // leaving a stale highlight/note pointing at something that may no
-  // longer be what's on screen. A copy clears it too (see handleCopy).
+  // armed product, and that should clear it rather than leaving a stale
+  // highlight/note pointing at something no longer on screen.
+  //
+  // ROUND 2 FOLLOW-UP (reviewer, code review on 5a39605): this used to
+  // clear on EVERY `visibleTopGroups` reference change, but
+  // vaccines/lots (and hence visibleTopGroups) get brand-new array
+  // references on every successful background refetch too — the 60s
+  // heartbeat and the window focus/visibilitychange refetch (below),
+  // i.e. exactly the alt-tab-to-the-desktop-app-and-back Ctrl+Keypad 2
+  // workflow this feature exists for — which was silently un-arming a
+  // product before its dose digit got pressed. `armedProduct` above
+  // already resolves to null ONLY when the armed product is genuinely
+  // no longer among the visible ones (findArmedProduct, a real
+  // filter/search change or the row disappearing) — a same-data refetch
+  // re-resolves the SAME productKey to a new-but-still-non-null object,
+  // so this effect does nothing on those. A copy clears armed state too
+  // (see handleCopy), independently of this effect.
   useEffect(() => {
-    setHotkeyState(INITIAL_HOTKEY_STATE);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleTopGroups]);
+    if (hotkeyState.armedProductKey && !armedProduct) {
+      setHotkeyState(INITIAL_HOTKEY_STATE);
+    }
+  }, [armedProduct, hotkeyState.armedProductKey]);
 
   // MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): the first cut of
   // this effect measured `document.documentElement.scrollHeight`, but
