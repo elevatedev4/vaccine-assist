@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildEntryValueRows, doseColumnLabel, doseNumberOf, type EntryValueVaccine } from "@/lib/entry-values";
+import {
+  buildEntryValueRows,
+  centsToDollarsInputValue,
+  doseColumnLabel,
+  doseNumberOf,
+  parseDollarsInputToCents,
+  type EntryValueVaccine,
+} from "@/lib/entry-values";
 import { defaultDirections } from "@/lib/entry-defaults";
 import { formatNdcDashed } from "@/lib/ndc";
 
@@ -13,6 +20,7 @@ function vaccine(overrides: Partial<EntryValueVaccine>): EntryValueVaccine {
     active: true,
     quantity: null,
     directions: null,
+    cash_price_cents: null,
     ...overrides,
   };
 }
@@ -124,5 +132,101 @@ describe("buildEntryValueRows", () => {
   it("looks up the real catalog type for a known short_code", () => {
     const rows = buildEntryValueRows([vaccine({ id: "shx", name: "Shingles", short_code: "shingrix", dose: "1" })]);
     expect(rows[0].catalogType).toBe("Shingles");
+  });
+
+  describe("cash price (per PRODUCT, not per dose)", () => {
+    it("a single-dose product's row carries its own cash price and is editable", () => {
+      const rows = buildEntryValueRows([vaccine({ id: "c1", name: "Comirnaty", short_code: "comirnaty12", cash_price_cents: 14799 })]);
+      expect(rows[0].cashPriceCents).toBe(14799);
+      expect(rows[0].cashPriceEditable).toBe(true);
+    });
+
+    it("null cash price stays null (never invented)", () => {
+      const rows = buildEntryValueRows([vaccine({ id: "c1", name: "Comirnaty", cash_price_cents: null })]);
+      expect(rows[0].cashPriceCents).toBeNull();
+    });
+
+    it("a multi-dose product's first dose row is the editable one; every dose shares its price", () => {
+      const rows = buildEntryValueRows([
+        vaccine({ id: "s1", name: "Shingrix", short_code: "shingrix1", dose: "1", ndc: "58160-0821-52", cash_price_cents: 23299 }),
+        // Dose 2's OWN cash_price_cents (a stray/stale value) is ignored —
+        // the product's price always comes from the first dose row, same
+        // convention lib/macro-codes.ts's MacroProductGroup uses.
+        vaccine({ id: "s2", name: "Shingrix", short_code: "shingrix2", dose: "2", ndc: "58160-0821-52", cash_price_cents: 999 }),
+      ]);
+      expect(rows.map((r) => r.cashPriceCents)).toEqual([23299, 23299]);
+      expect(rows.map((r) => r.cashPriceEditable)).toEqual([true, false]);
+    });
+
+    // Review fix (2026-09-28): GET /api/vaccines orders by `name` only,
+    // and same-product dose rows share a name, so their relative fetch
+    // order is unspecified — the primary/editable row must be picked by
+    // parsing each row's own `dose` column, never by array order.
+    it("picks the LOWEST-doseNumber row as primary even when dose 2 appears before dose 1 in the input array", () => {
+      const rows = buildEntryValueRows([
+        vaccine({ id: "s2", name: "Shingrix", short_code: "shingrix2", dose: "2", ndc: "58160-0821-52", cash_price_cents: 999 }),
+        vaccine({ id: "s1", name: "Shingrix", short_code: "shingrix1", dose: "1", ndc: "58160-0821-52", cash_price_cents: 23299 }),
+      ]);
+      const dose1Row = rows.find((r) => r.id === "s1")!;
+      const dose2Row = rows.find((r) => r.id === "s2")!;
+      expect(dose1Row.cashPriceEditable).toBe(true);
+      expect(dose2Row.cashPriceEditable).toBe(false);
+      expect(dose1Row.cashPriceCents).toBe(23299);
+      expect(dose2Row.cashPriceCents).toBe(23299);
+    });
+  });
+});
+
+describe("centsToDollarsInputValue", () => {
+  it("formats cents as a plain 2-decimal dollar string", () => {
+    expect(centsToDollarsInputValue(8900)).toBe("89.00");
+    expect(centsToDollarsInputValue(14799)).toBe("147.99");
+  });
+
+  it("returns an empty string for null (no price on file)", () => {
+    expect(centsToDollarsInputValue(null)).toBe("");
+  });
+
+  it("formats zero as 0.00, not blank", () => {
+    expect(centsToDollarsInputValue(0)).toBe("0.00");
+  });
+});
+
+describe("parseDollarsInputToCents", () => {
+  it("round-trips with centsToDollarsInputValue", () => {
+    expect(parseDollarsInputToCents(centsToDollarsInputValue(14799))).toBe(14799);
+  });
+
+  it("parses a plain dollar amount to cents", () => {
+    expect(parseDollarsInputToCents("89")).toBe(8900);
+    expect(parseDollarsInputToCents("89.00")).toBe(8900);
+    expect(parseDollarsInputToCents("89.5")).toBe(8950);
+  });
+
+  it("tolerates a leading $", () => {
+    expect(parseDollarsInputToCents("$89.00")).toBe(8900);
+  });
+
+  it("tolerates thousands-separator commas", () => {
+    expect(parseDollarsInputToCents("1,234.56")).toBe(123456);
+    expect(parseDollarsInputToCents("$1,234.56")).toBe(123456);
+  });
+
+  it("blank (or whitespace-only) clears the price to null", () => {
+    expect(parseDollarsInputToCents("")).toBeNull();
+    expect(parseDollarsInputToCents("   ")).toBeNull();
+  });
+
+  it("rejects a negative amount", () => {
+    expect(parseDollarsInputToCents("-5")).toBeUndefined();
+  });
+
+  it("rejects more than 2 decimal places", () => {
+    expect(parseDollarsInputToCents("89.999")).toBeUndefined();
+  });
+
+  it("rejects non-numeric garbage", () => {
+    expect(parseDollarsInputToCents("abc")).toBeUndefined();
+    expect(parseDollarsInputToCents("$")).toBeUndefined();
   });
 });

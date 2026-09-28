@@ -58,7 +58,57 @@ export type EntryValueRow = {
   shortCode: string | null;
   quantity: string | null;
   directions: string | null;
+  /** Cash price in cents for the PRODUCT (not this individual dose row)
+   * — Will's ask: "add cash price to all vaccines" is one price per
+   * vaccine product, shared by every dose. Always the LOWEST-doseNumber
+   * active dose row's cash_price_cents — resolved by parsing each dose
+   * row's own `dose` column via doseNumberOf, NEVER by array/fetch order
+   * (GET /api/vaccines orders by `name` only, and same-product dose rows
+   * share a name, so their relative order is unspecified) — same
+   * convention as lib/macro-codes.ts's MacroProductGroup.cashPriceCents
+   * (`first.cashPriceCents` after sorting by doseNumber), so a price
+   * entered here shows up there. Every dose row of a product carries the
+   * SAME value here even though only the lowest-dose row's DB column
+   * actually holds it. */
+  cashPriceCents: number | null;
+  /** True only for the LOWEST-doseNumber active dose row of a product
+   * (see cashPriceCents above for how that row is picked) — the ONE row
+   * whose cash price is actually editable/saved; every other dose row of
+   * the same product shows cashPriceCents read-only (see
+   * app/entry-values/page.tsx). */
+  cashPriceEditable: boolean;
 };
+
+/**
+ * Cents -> the plain (no "$", no thousands separator) dollar string an
+ * editable cash-price input shows, e.g. 8900 -> "89.00", null -> "" (an
+ * empty input = no price on file). Distinct from lib/vaccine-entry-
+ * payload.ts's formatCashPrice, which formats a READ-ONLY "$89.00"/"—"
+ * display string — this one round-trips with parseDollarsInputToCents
+ * below for an editable field.
+ */
+export function centsToDollarsInputValue(cents: number | null): string {
+  if (cents === null) return "";
+  return (cents / 100).toFixed(2);
+}
+
+/**
+ * The inverse of centsToDollarsInputValue: an editable cash-price input's
+ * raw string -> cents. "" (or whitespace-only) -> null (clears the
+ * price). A leading "$" is tolerated. Anything else that isn't a
+ * non-negative number with at most 2 decimal places -> undefined, so the
+ * caller can reject the edit rather than silently saving a wrong/garbled
+ * amount.
+ */
+export function parseDollarsInputToCents(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const withoutDollarSign = (trimmed.startsWith("$") ? trimmed.slice(1).trim() : trimmed).replace(/,/g, "");
+  if (!/^\d+(\.\d{1,2})?$/.test(withoutDollarSign)) return undefined;
+  const dollars = Number.parseFloat(withoutDollarSign);
+  if (!Number.isFinite(dollars) || dollars < 0) return undefined;
+  return Math.round(dollars * 100);
+}
 
 /** Parses the `dose` column into a 1-indexed dose number, defaulting to
  * 1 for a missing/unparseable value — same convention as
@@ -97,6 +147,20 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
 
   const rows: EntryValueRow[] = [];
   for (const product of products) {
+    // The LOWEST-doseNumber dose row is the ONE place cash price is
+    // actually edited/stored — see EntryValueRow.cashPriceCents's doc
+    // comment. Picked by parsing each row's own `dose` column
+    // (doseNumberOf), NOT by product.vaccineIds' array order, which
+    // reflects GET /api/vaccines' name-only ordering and is unspecified
+    // among same-named dose siblings (review fix, 2026-09-28: a
+    // dose-2-then-dose-1 fetch order previously put the editable input
+    // on dose 2, so a saved price never matched what lib/macro-codes.ts
+    // shows via its own doseNumber-sorted `first`).
+    const primaryId = [...product.vaccineIds].sort(
+      (a, b) => doseNumberOf(byId.get(a)?.dose ?? null) - doseNumberOf(byId.get(b)?.dose ?? null)
+    )[0];
+    const productCashPriceCents = byId.get(primaryId)?.cash_price_cents ?? null;
+
     for (const id of product.vaccineIds) {
       const doseCount = doseCountById.get(id) ?? product.vaccineIds.length;
       const vaccine = byId.get(id);
@@ -114,6 +178,8 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
         shortCode: vaccine.short_code,
         quantity: vaccine.quantity,
         directions: vaccine.directions,
+        cashPriceCents: productCashPriceCents,
+        cashPriceEditable: id === primaryId,
       });
     }
   }
