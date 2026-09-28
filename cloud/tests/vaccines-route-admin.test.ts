@@ -455,6 +455,113 @@ describe("PATCH /api/vaccines/[id]", () => {
     expect(response.status).toBe(400);
   });
 
+  // --- cash price (Will 2026-09-28: "add cash price to all vaccines...
+  // a field where I can edit the vaccine price") -----------------------
+
+  it("persists a valid cash_price_cents", async () => {
+    const single = vi.fn(async () => ({
+      data: { id: "v1", name: "Comirnaty", cash_price_cents: 14799 },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cash_price_cents: 14799 }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ cash_price_cents: 14799 });
+  });
+
+  it("accepts 0 as a valid cash_price_cents", async () => {
+    const single = vi.fn(async () => ({ data: { id: "v1", name: "Flu", cash_price_cents: 0 }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cash_price_cents: 0 }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith({ cash_price_cents: 0 });
+  });
+
+  it("clears cash_price_cents when given null", async () => {
+    const single = vi.fn(async () => ({ data: { id: "v1", name: "Flu", cash_price_cents: null }, error: null }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cash_price_cents: null }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+
+    expect(update).toHaveBeenCalledWith({ cash_price_cents: null });
+  });
+
+  it("rejects a negative cash_price_cents", async () => {
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cash_price_cents: -100 }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-integer cash_price_cents", async () => {
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cash_price_cents: 147.99 }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-number, non-null cash_price_cents", async () => {
+    const response = await PATCH(
+      authedRequest("/api/vaccines/v1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cash_price_cents: "14799" }),
+      }),
+      { params: Promise.resolve({ id: "v1" }) }
+    );
+    expect(response.status).toBe(400);
+    expect(getSupabaseServerClient).not.toHaveBeenCalled();
+  });
+
   it("returns 409 when quantity/directions is the ONLY thing to update and the columns don't exist yet", async () => {
     const missingColumnError = { code: "42703", message: 'column "quantity" of relation "vaccine" does not exist' };
     const update = vi.fn(() => ({

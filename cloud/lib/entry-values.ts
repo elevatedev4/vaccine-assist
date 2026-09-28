@@ -58,7 +58,52 @@ export type EntryValueRow = {
   shortCode: string | null;
   quantity: string | null;
   directions: string | null;
+  /** Cash price in cents for the PRODUCT (not this individual dose row)
+   * — Will's ask: "add cash price to all vaccines" is one price per
+   * vaccine product, shared by every dose. Always the first (lowest
+   * doseNumber) active dose row's cash_price_cents, same convention as
+   * lib/macro-codes.ts's MacroProductGroup.cashPriceCents (`first.cashPriceCents`),
+   * so a price entered here shows up there. Every dose row of a product
+   * carries the SAME value here even though only the first dose row's DB
+   * column actually holds it. */
+  cashPriceCents: number | null;
+  /** True only for the first (lowest doseNumber) active dose row of a
+   * product — the ONE row whose cash price is actually editable/saved;
+   * every other dose row of the same product shows cashPriceCents
+   * read-only (see app/entry-values/page.tsx). */
+  cashPriceEditable: boolean;
 };
+
+/**
+ * Cents -> the plain (no "$", no thousands separator) dollar string an
+ * editable cash-price input shows, e.g. 8900 -> "89.00", null -> "" (an
+ * empty input = no price on file). Distinct from lib/vaccine-entry-
+ * payload.ts's formatCashPrice, which formats a READ-ONLY "$89.00"/"—"
+ * display string — this one round-trips with parseDollarsInputToCents
+ * below for an editable field.
+ */
+export function centsToDollarsInputValue(cents: number | null): string {
+  if (cents === null) return "";
+  return (cents / 100).toFixed(2);
+}
+
+/**
+ * The inverse of centsToDollarsInputValue: an editable cash-price input's
+ * raw string -> cents. "" (or whitespace-only) -> null (clears the
+ * price). A leading "$" is tolerated. Anything else that isn't a
+ * non-negative number with at most 2 decimal places -> undefined, so the
+ * caller can reject the edit rather than silently saving a wrong/garbled
+ * amount.
+ */
+export function parseDollarsInputToCents(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const withoutDollarSign = trimmed.startsWith("$") ? trimmed.slice(1).trim() : trimmed;
+  if (!/^\d+(\.\d{1,2})?$/.test(withoutDollarSign)) return undefined;
+  const dollars = Number.parseFloat(withoutDollarSign);
+  if (!Number.isFinite(dollars) || dollars < 0) return undefined;
+  return Math.round(dollars * 100);
+}
 
 /** Parses the `dose` column into a 1-indexed dose number, defaulting to
  * 1 for a missing/unparseable value — same convention as
@@ -97,6 +142,11 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
 
   const rows: EntryValueRow[] = [];
   for (const product of products) {
+    // The first dose row is the ONE place cash price is actually
+    // edited/stored — see EntryValueRow.cashPriceCents's doc comment.
+    const primaryId = product.vaccineIds[0];
+    const productCashPriceCents = byId.get(primaryId)?.cash_price_cents ?? null;
+
     for (const id of product.vaccineIds) {
       const doseCount = doseCountById.get(id) ?? product.vaccineIds.length;
       const vaccine = byId.get(id);
@@ -114,6 +164,8 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
         shortCode: vaccine.short_code,
         quantity: vaccine.quantity,
         directions: vaccine.directions,
+        cashPriceCents: productCashPriceCents,
+        cashPriceEditable: id === primaryId,
       });
     }
   }

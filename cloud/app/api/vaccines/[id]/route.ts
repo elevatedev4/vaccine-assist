@@ -13,12 +13,18 @@ import { vaccineDisplayName } from "@/lib/vaccine-display-name";
  * 4:31pm: "so I can persist the researched package NDCs via the API")
  * edits its `ndc` — the CORE column from 0001_init.sql, not an additive
  * one, so writing it needs no schema-degradation retry like
- * quantity/directions below. Body: { active?: boolean, quantity?: string
- * | null, directions?: string | null, ndc?: string | null } — at least
- * one field required. `ndc` is validated/formatted by
- * lib/ndc.ts's formatNdcForStorage (10-11 digits, dashes optional,
- * stored dashed 5-4-2) — see that function's doc comment for the
- * 10-digit padding judgment call.
+ * quantity/directions below — and (Will, 2026-09-28: "add cash price to
+ * all vaccines... a field where I can edit the vaccine price") edits its
+ * `cash_price_cents`, also a core 0001_init.sql column. Body: { active?:
+ * boolean, quantity?: string | null, directions?: string | null, ndc?:
+ * string | null, cash_price_cents?: number | null } — at least one field
+ * required. `ndc` is validated/formatted by lib/ndc.ts's
+ * formatNdcForStorage (10-11 digits, dashes optional, stored dashed
+ * 5-4-2) — see that function's doc comment for the 10-digit padding
+ * judgment call. `cash_price_cents` must be a non-negative integer (whole
+ * cents) or null to clear it — the /entry-values page converts its
+ * dollar input to cents before sending (lib/entry-values.ts's
+ * parseDollarsInputToCents).
  *
  * This is the only write path onto vaccine.active/quantity/directions
  * from the desktop app: the desktop app never holds the Supabase
@@ -45,7 +51,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   try {
     const body = await request.json();
-    const { active, quantity, directions, ndc } = body ?? {};
+    const { active, quantity, directions, ndc, cash_price_cents } = body ?? {};
 
     const update: Record<string, unknown> = {};
     if (active !== undefined) {
@@ -78,6 +84,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         return NextResponse.json({ error: "directions must be a string or null." }, { status: 400 });
       }
       update.directions = directions;
+    }
+    if (cash_price_cents !== undefined) {
+      if (cash_price_cents === null) {
+        update.cash_price_cents = null;
+      } else if (typeof cash_price_cents !== "number" || !Number.isInteger(cash_price_cents) || cash_price_cents < 0) {
+        return NextResponse.json({ error: "cash_price_cents must be a non-negative integer (cents) or null." }, { status: 400 });
+      } else {
+        update.cash_price_cents = cash_price_cents;
+      }
     }
     if (Object.keys(update).length === 0) {
       return NextResponse.json({ error: "Nothing to update." }, { status: 400 });

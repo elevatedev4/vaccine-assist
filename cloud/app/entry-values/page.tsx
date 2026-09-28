@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
-import { buildEntryValueRows, doseColumnLabel, type EntryValueRow, type EntryValueVaccine } from "@/lib/entry-values";
+import {
+  buildEntryValueRows,
+  centsToDollarsInputValue,
+  doseColumnLabel,
+  parseDollarsInputToCents,
+  type EntryValueRow,
+  type EntryValueVaccine,
+} from "@/lib/entry-values";
 import { planFillDefaults, type FillDefaultsPatch } from "@/lib/entry-defaults";
 import { formatNdcDashed } from "@/lib/ndc";
 import { createDebouncedRunner, type DebouncedRunner } from "@/lib/lots-autosave";
@@ -45,7 +52,7 @@ import { vaccineDisplayName } from "@/lib/vaccine-display-name";
  *   fill-when-blank.
  */
 
-type RowDraft = { quantity: string; directions: string };
+type RowDraft = { quantity: string; directions: string; cashPrice: string };
 
 const AUTOSAVE_DEBOUNCE_MS = 500;
 
@@ -63,6 +70,8 @@ const styles = {
   type: { fontWeight: 600 },
   quantityInput: { width: "8ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
   directionsInput: { width: "100%", minWidth: "22ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
+  cashPriceInput: { width: "7ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
+  cashPriceReadOnly: { color: "#777" },
   /** Marks a new Type group — the first row of the table never gets it
    * (no border floating above the header). */
   typeGroupStart: { borderTop: "2px solid #ddd" },
@@ -159,7 +168,11 @@ export default function EntryValuesPage() {
       const loadedRows = buildEntryValueRows(loadedVaccines);
       const loadedDrafts: Record<string, RowDraft> = {};
       for (const row of loadedRows) {
-        loadedDrafts[row.id] = { quantity: row.quantity ?? "", directions: row.directions ?? "" };
+        loadedDrafts[row.id] = {
+          quantity: row.quantity ?? "",
+          directions: row.directions ?? "",
+          cashPrice: centsToDollarsInputValue(row.cashPriceCents),
+        };
       }
       setDrafts(loadedDrafts);
       draftsRef.current = loadedDrafts;
@@ -201,7 +214,7 @@ export default function EntryValuesPage() {
 
   function updateDraft(id: string, patch: Partial<RowDraft>) {
     setDrafts((prev) => {
-      const next = { ...prev, [id]: { ...(prev[id] ?? { quantity: "", directions: "" }), ...patch } };
+      const next = { ...prev, [id]: { ...(prev[id] ?? { quantity: "", directions: "", cashPrice: "" }), ...patch } };
       draftsRef.current = next;
       return next;
     });
@@ -224,11 +237,19 @@ export default function EntryValuesPage() {
     getAutosaveRunner(id).flushNow();
   }
 
-  /** Sends a PATCH for whichever of quantity/directions changed since
-   * the last-saved snapshot — silent on success, a red toast on failure
-   * (Will's brief: "silent on success, red popup on failure"). Reads
-   * from draftsRef/lastSavedRef at CALL time, not from component state,
-   * so it always sees the value as of when it actually fires. */
+  /** Sends a PATCH for whichever of quantity/directions/cashPrice changed
+   * since the last-saved snapshot — silent on success, a red toast on
+   * failure (Will's brief: "silent on success, red popup on failure").
+   * Reads from draftsRef/lastSavedRef at CALL time, not from component
+   * state, so it always sees the value as of when it actually fires.
+   * cashPrice is only ever drafted/scheduled for a row's own id when that
+   * row is the product's cashPriceEditable one (see renderRow) — so this
+   * always PATCHes the SAME single dose row Quantity/Directions already
+   * do, never a fan-out to sibling dose rows. An unparsable cashPrice
+   * (parseDollarsInputToCents returns undefined) is rejected client-side:
+   * the draft is reverted to its last-saved value and an error toast
+   * explains why, same "revert + surface error" posture as the Active
+   * toggle on /vaccines. */
   async function runAutosave(id: string) {
     if (!session) return;
 
@@ -241,20 +262,34 @@ export default function EntryValuesPage() {
     const saved = lastSavedRef.current[id];
     if (!draft || !saved) return;
 
+    const row = rowById.get(id);
+    const label = row ? `${vaccineDisplayName(row.displayName)} dose ${row.doseNumber}` : "this row";
+
     const quantityChanged = draft.quantity !== saved.quantity;
     const directionsChanged = draft.directions !== saved.directions;
-    if (!quantityChanged && !directionsChanged) return;
+    const cashPriceChanged = draft.cashPrice !== saved.cashPrice;
 
-    const body: Record<string, string | null> = {};
+    let cashPriceCents: number | null | undefined;
+    if (cashPriceChanged) {
+      cashPriceCents = parseDollarsInputToCents(draft.cashPrice);
+      if (cashPriceCents === undefined) {
+        pushError(`Couldn't save cash price for ${label} — enter a dollar amount like 89.00, or leave it blank.`);
+        updateDraft(id, { cashPrice: saved.cashPrice });
+      }
+    }
+
+    if (!quantityChanged && !directionsChanged && cashPriceCents === undefined) return;
+
+    const body: Record<string, string | number | null> = {};
     if (quantityChanged) body.quantity = draft.quantity.trim() === "" ? null : draft.quantity;
     if (directionsChanged) body.directions = draft.directions.trim() === "" ? null : draft.directions;
+    if (cashPriceChanged && cashPriceCents !== undefined) body.cash_price_cents = cashPriceCents;
+
+    if (Object.keys(body).length === 0) return; // only an invalid cashPrice edit — already reverted above
 
     const seq = (autosaveSeqRef.current[id] ?? 0) + 1;
     autosaveSeqRef.current[id] = seq;
     autosaveInFlightRef.current[id] = true;
-
-    const row = rowById.get(id);
-    const label = row ? `${vaccineDisplayName(row.displayName)} dose ${row.doseNumber}` : "this row";
 
     try {
       const response = await fetch(`/api/vaccines/${id}`, {
@@ -273,7 +308,15 @@ export default function EntryValuesPage() {
 
       if (data.quantityDirectionsSupported === false) setQuantityDirectionsSupported(false);
 
-      setLastSavedRefAndState(id, draft);
+      setLastSavedRefAndState(id, draftsRef.current[id] ?? draft);
+      // Cash price is PRODUCT-level (EntryValueRow.cashPriceCents) — this
+      // updates `vaccines` so the memoized `rows` recompute and every
+      // sibling dose row's read-only price reflects the new value
+      // immediately, without a full reload.
+      if (body.cash_price_cents !== undefined) {
+        const savedCents = body.cash_price_cents as number | null;
+        setVaccines((prev) => prev.map((v) => (v.id === id ? { ...v, cash_price_cents: savedCents } : v)));
+      }
     } catch (err) {
       if (autosaveSeqRef.current[id] !== seq) return;
       pushError(`Couldn't save entry values for ${label} — ${err instanceof Error ? err.message : "Failed to save vaccine."}`);
@@ -345,10 +388,11 @@ export default function EntryValuesPage() {
           if (patch.quantity !== undefined) quantitiesFilled += 1;
           if (patch.directions !== undefined) directionsFilled += 1;
           updateDraftFromPatch(patch);
-          const prevSaved = lastSavedRef.current[patch.id] ?? { quantity: "", directions: "" };
+          const prevSaved = lastSavedRef.current[patch.id] ?? { quantity: "", directions: "", cashPrice: "" };
           setLastSavedRefAndState(patch.id, {
             quantity: patch.quantity ?? prevSaved.quantity,
             directions: patch.directions ?? prevSaved.directions,
+            cashPrice: prevSaved.cashPrice,
           });
         } catch (err) {
           const row = rowById.get(patch.id);
@@ -407,7 +451,7 @@ export default function EntryValuesPage() {
   }
 
   function renderRow(row: EntryValueRow, isTypeGroupStart: boolean) {
-    const draft = drafts[row.id] ?? { quantity: "", directions: "" };
+    const draft = drafts[row.id] ?? { quantity: "", directions: "", cashPrice: "" };
     const quantityBlank = isBlank(draft.quantity);
     const complete = !quantityBlank && !isBlank(draft.directions);
     const groupBorder = isTypeGroupStart ? styles.typeGroupStart : undefined;
@@ -445,6 +489,34 @@ export default function EntryValuesPage() {
           />
         </td>
         <td style={{ ...styles.td, ...groupBorder }}>
+          {row.cashPriceEditable ? (
+            <input
+              type="text"
+              inputMode="decimal"
+              aria-label={`${vaccineDisplayName(row.displayName)} cash price`}
+              style={styles.cashPriceInput}
+              value={draft.cashPrice}
+              onChange={(e) => {
+                updateDraft(row.id, { cashPrice: e.target.value });
+                scheduleAutosave(row.id);
+              }}
+              onBlur={() => flushAutosaveNow(row.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          ) : (
+            // Mirrors the product's price from `row.cashPriceCents` (NOT
+            // this row's own `draft`, which is never written for a
+            // non-editable row) so it updates the instant the editable
+            // dose-1 row's price is saved — see runAutosave's `setVaccines`
+            // call, which recomputes `rows` for every sibling dose.
+            <span style={styles.cashPriceReadOnly} title="Same as dose 1 — cash price is per vaccine, not per dose">
+              {centsToDollarsInputValue(row.cashPriceCents) || "—"}
+            </span>
+          )}
+        </td>
+        <td style={{ ...styles.td, ...groupBorder }}>
           <span
             style={{ ...styles.dot, background: complete ? "#16a34a" : "#c9c9c9" }}
             title={complete ? "Quantity and directions on file" : "Missing quantity or directions"}
@@ -459,7 +531,8 @@ export default function EntryValuesPage() {
     <main style={styles.main}>
       <h1>Entry values</h1>
       <p style={styles.muted}>
-        Quantity and directions used for Pioneer prescription entry, per dose. Changes save automatically.
+        Quantity and directions used for Pioneer prescription entry, per dose. Cash price is per vaccine — set it on
+        the first dose row. Changes save automatically.
       </p>
 
       {loading && <p style={styles.muted}>Loading…</p>}
@@ -489,6 +562,7 @@ export default function EntryValuesPage() {
                 <th style={styles.th}>Dose</th>
                 <th style={styles.th}>Quantity</th>
                 <th style={styles.th}>Directions</th>
+                <th style={styles.th}>Cash price</th>
                 <th style={styles.th}></th>
               </tr>
             </thead>

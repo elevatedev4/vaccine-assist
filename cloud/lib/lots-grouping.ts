@@ -69,6 +69,15 @@ export type LotsCatalogVaccine = {
   name: string;
   ndc: string | null;
   active: boolean;
+  /** Cash price in cents for this dose row, or null/undefined when unset
+   * or not selected by a given caller's query. Set on the DB `vaccine`
+   * row directly (0001_init.sql) — see lib/entry-values.ts's
+   * EntryValueRow.cashPriceCents for how it's treated as ONE price per
+   * product (the first dose row's value), matching lib/macro-codes.ts's
+   * MacroRowVaccine/MacroProductGroup.cashPriceCents (same optional
+   * shape, so a caller that doesn't select the column isn't forced to
+   * fake one). */
+  cash_price_cents?: number | null;
 };
 
 export type LotsProductGroup = {
