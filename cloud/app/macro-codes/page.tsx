@@ -1256,6 +1256,26 @@ function MacroCodesPageContent() {
     };
   }, [embed, embedContentEl, modalCardEl]);
 
+  // FOCUS FIX (Will, 2026-09-28, 1:14pm verbatim): "the macro-codes
+  // popup appears but does NOT have keyboard focus. Pressing F ... does
+  // nothing until he clicks inside the popup. He needs the popup
+  // focused so pressing F immediately picks Flucelvax." The desktop
+  // WebView2 host now grabs OS-level keyboard focus the moment it shows
+  // this popup (MacroCodesWindow.ActivateAndFocusWebView), but that only
+  // gets input to THIS document — which element inside it has DOM focus
+  // is still this page's own call. Focusing <main> here (once, when it
+  // first mounts in embed mode; see the tabIndex={-1} above) gives the
+  // hotkeys keydown effect a non-form default target instead of nothing
+  // — the filter input used to autoFocus instead, which is exactly what
+  // broke this: see that input's own comment for why. rAF, same as the
+  // content-size effect above, so this runs after the mount frame is
+  // actually laid out rather than synchronously during it.
+  useEffect(() => {
+    if (!embed || !embedContentEl) return;
+    const frame = requestAnimationFrame(() => embedContentEl.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [embed, embedContentEl]);
+
   if (!authChecked) {
     return <AuthLoading />;
   }
@@ -1668,7 +1688,16 @@ function MacroCodesPageContent() {
   return (
     <main
       ref={setEmbedContentEl}
-      style={embed ? { ...styles.main, padding: "12px 24px" } : styles.main}
+      // FOCUS FIX (Will, 2026-09-28, 1:14pm — desktop popup didn't have
+      // keyboard focus, so pressing a hotkey letter did nothing until
+      // clicked into): tabIndex={-1} makes <main> itself a valid,
+      // script-only focus target (never in the Tab order, never shown a
+      // focus ring) — see the effect below that focuses it once in embed
+      // mode, instead of the filter input autofocusing (removed below).
+      // Scoped to embed only so the normal, non-embed page's tab order/
+      // outline is untouched.
+      tabIndex={embed ? -1 : undefined}
+      style={embed ? { ...styles.main, padding: "12px 24px", outline: "none" } : styles.main}
     >
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
 
@@ -1694,8 +1723,21 @@ function MacroCodesPageContent() {
 
       {/* Embed (2026-09-13; sizing rationale updated by macro-popup round
        * 3, 2026-09-25 — see this file's top-of-file doc comment): only
-       * the margin shrinks here — width/position/autoFocus are untouched
-       * so the box stays visible and focused at top. */}
+       * the margin shrinks here — width/position are untouched so the
+       * box stays visible at top.
+       *
+       * FOCUS FIX (Will, 2026-09-28): this box no longer autofocuses in
+       * embed mode. It used to (autoFocus={embed}), but that put DOM
+       * focus on an <input> the instant the popup opened — the hotkeys
+       * keydown effect above deliberately ignores keydown while focus is
+       * in an INPUT/TEXTAREA/SELECT (so typing a search or lot number
+       * never triggers a hotkey), so every hotkey letter typed the
+       * moment the popup opened a letter into THIS box instead of
+       * selecting a vaccine, even once the desktop popup itself gained
+       * real keyboard focus. <main> above is focused instead (see the
+       * effect near the ResizeObserver one), so the hotkey listener sees
+       * a non-form target by default; clicking into this box to type a
+       * search still works exactly as before. */}
       <div style={embed ? { ...styles.filterBox, margin: "0 0 6px" } : styles.filterBox}>
         <input
           type="text"
@@ -1704,7 +1746,6 @@ function MacroCodesPageContent() {
           placeholder="Filter by name or code…"
           aria-label="Filter vaccines"
           style={styles.filterInput}
-          autoFocus={embed}
         />
       </div>
 

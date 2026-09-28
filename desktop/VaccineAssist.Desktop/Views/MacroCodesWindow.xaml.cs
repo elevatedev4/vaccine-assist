@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Navigation;
+using System.Windows.Threading;
 using FlaUI.Core.WindowsAPI;
 using Microsoft.Web.WebView2.Core;
 using VaccineAssist.Desktop.Logging;
@@ -52,6 +53,40 @@ public partial class MacroCodesWindow : Window
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    /// <summary>ASFW_ANY — see DataEntryPopupWindow.ActivateAndFocusCurrentStage's doc comment for the full rationale behind this whole P/Invoke sequence, duplicated here rather than shared to keep this popup-focus fix scoped to this file.</summary>
+    private const uint ASFW_ANY = 0xFFFFFFFF;
+
+    private const byte VK_MENU = 0x12;
+
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+
     private readonly string _macroCodesUrl;
     private readonly IClipboardService _clipboardService;
     private readonly IntPtr _previousForegroundWindow;
@@ -78,6 +113,34 @@ public partial class MacroCodesWindow : Window
     /// the on-computer macro against a clipboard that was never actually
     /// updated by this window.</summary>
     private bool _codeCopiedInAgeMacroFlow;
+
+    /// <summary>REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): "Focus-after-
+    /// Dispose race, no guard." ScheduleFocusWebView/FocusWebView are
+    /// called from four places (right after Show(), CoreWebView2 init,
+    /// NavigationCompleted, and this window's own Activated — see
+    /// ActivateAndFocusWebView's doc comment), each ending in a
+    /// Dispatcher.BeginInvoke(DispatcherPriority.Input, ...) call.
+    /// MacroCodesWindow_OnClosed disposes WebView synchronously but never
+    /// cancelled an already-queued focus operation — since
+    /// DispatcherPriority.Input (5) is lower than Normal (9), a focus
+    /// call queued by NavigationCompleted or an Activated re-fire from
+    /// the Topmost toggle would routinely run AFTER Dispose() on every
+    /// ordinary close (copy-a-code, Escape-cancel, age-macro auto-close),
+    /// and a post-Dispose WebView.Focus() call reaching
+    /// App.OnDispatcherUnhandledException pops the "ran into a problem"
+    /// MessageBox on completely normal use. Set true at the very top of
+    /// MacroCodesWindow_OnClosed, before anything else runs — both
+    /// ScheduleFocusWebView and FocusWebView bail out immediately once
+    /// this is true.</summary>
+    private bool _closed;
+
+    /// <summary>REVIEWER FIX: the pending Dispatcher.BeginInvoke operation
+    /// from ScheduleFocusWebView's DispatcherPriority.Input call (there's
+    /// at most one meaningfully in flight at a time — each call re-uses
+    /// this field rather than tracking a list), so MacroCodesWindow_OnClosed
+    /// can Abort() it directly instead of relying on the _closed guard
+    /// alone. Null whenever nothing is currently queued/pending.</summary>
+    private DispatcherOperation? _pendingFocusOperation;
 
     /// <param name="cloudApiBaseUrl">AppSettings.CloudApiBaseUrl, e.g. https://vaccine-assist.vercel.app — same base URL VaccineApiService calls against. Ignored (but still required) when <paramref name="overrideUrl"/> is given.</param>
     /// <param name="clipboardService">Same IClipboardService the rest of the app uses (App.xaml.cs's composition root) — belt-and-braces clipboard copy alongside the page's own copy (see CoreWebView2_OnWebMessageReceived).</param>
@@ -113,6 +176,18 @@ public partial class MacroCodesWindow : Window
 
         Loaded += MacroCodesWindow_OnLoaded;
         Closed += MacroCodesWindow_OnClosed;
+
+        // FOCUS FIX (Will, 2026-09-28, 1:14pm): the popup appeared but
+        // didn't have keyboard focus, so pressing a hotkey letter (F for
+        // Flucelvax) did nothing until the pharmacist clicked into it
+        // first — see ActivateAndFocusWebView's doc comment for the full
+        // fix. Activated is wired the same "belt-and-suspenders" way
+        // DataEntryPopupWindow_OnActivated is: ActivateAndFocusWebView
+        // already schedules a focus attempt itself, but re-scheduling
+        // here too costs nothing (focusing the same control again is a
+        // no-op) and covers any future path that activates this window
+        // without going through that method.
+        Activated += MacroCodesWindow_OnActivated;
     }
 
     private static string BuildMacroCodesUrl(string cloudApiBaseUrl)
@@ -126,14 +201,54 @@ public partial class MacroCodesWindow : Window
     /// second popup when the hotkey fires while one is already showing —
     /// same "bring the existing instance forward" rule
     /// DataEntryPopupWindow.ActivateAndFocusCurrentStage follows for the
-    /// data-entry popup, just without that method's fuller multi-fallback
-    /// dance (AttachThreadInput/Alt-nudge): this popup is triggered from
-    /// the SAME hotkey-press dispatcher callback that grants foreground-
-    /// activation rights (see GlobalHotKey.WndProc), so a direct
-    /// SetForegroundWindow call here is expected to succeed without those
-    /// extra fallbacks.
+    /// data-entry popup. Now just delegates to ActivateAndFocusWebView so
+    /// a repeat hotkey press re-focuses the WebView (and its hotkey
+    /// listener) the same way the very first Show does — see that
+    /// method's doc comment for why the plain Activate()+SetForegroundWindow
+    /// this used to do on its own wasn't reliable enough (FOCUS FIX,
+    /// Will, 2026-09-28).
     /// </summary>
     public void BringToFront()
+    {
+        ActivateAndFocusWebView();
+    }
+
+    /// <summary>
+    /// FOCUS FIX (Will, 2026-09-28, 1:14pm, verbatim symptom): "the macro-
+    /// codes popup appears but does NOT have keyboard focus. Pressing F
+    /// ... does nothing until he clicks inside the popup." Both spawn
+    /// paths that show this window (MainWindow.ShowMacroCodesPopup for
+    /// the plain Ctrl+Keypad 8 popup, and ShowAgeMacroPrompt for the
+    /// age-macro flow) call this right after Show(), and BringToFront
+    /// above (the "already open, re-activate" path) delegates to it too.
+    ///
+    /// This window is opened from a global hotkey while PioneerRx (or
+    /// whatever the pharmacist was using) is the foreground window — same
+    /// "Windows refuses to let a background process steal foreground/
+    /// keyboard focus" problem DataEntryPopupWindow.ActivateAndFocusCurrentStage
+    /// solves for the data-entry popup, and the same fix: Activate() (WPF's
+    /// own request) is not enough on its own, so this runs the same
+    /// multi-fallback Win32 sequence (AllowSetForegroundWindow(ASFW_ANY),
+    /// then an AttachThreadInput-backed SetForegroundWindow, then an "Alt
+    /// nudge" retry if that still didn't take, then a Topmost toggle to
+    /// force WPF to reassert activation) before focusing this window's
+    /// WebView2 control specifically — the earlier BringToFront never
+    /// focused the WebView at all, which is why the window came to the
+    /// foreground but keystrokes still didn't reach the page's document
+    /// keydown listener (cloud/app/macro-codes/page.tsx).
+    ///
+    /// Focus is placed on the WebView control (not just the window) at
+    /// FOUR points, because the page can finish rendering at any of them
+    /// relative to this call: here (deferred to Loaded if the window
+    /// hasn't laid out yet), again once CoreWebView2 finishes
+    /// initializing (MacroCodesWindow_OnLoaded), again once the page's
+    /// own navigation completes (CoreWebView2_OnNavigationCompleted —
+    /// the page may still be loading when this window first becomes
+    /// active), and again from this window's own Activated event
+    /// (MacroCodesWindow_OnActivated) as a final belt-and-suspenders
+    /// catch-all. Re-focusing the same control repeatedly is a no-op.
+    /// </summary>
+    public void ActivateAndFocusWebView()
     {
         if (Visibility != Visibility.Visible)
         {
@@ -147,13 +262,172 @@ public partial class MacroCodesWindow : Window
         Activate();
 
         var handle = new WindowInteropHelper(this).Handle;
-        if (handle != IntPtr.Zero)
+        if (handle == IntPtr.Zero)
         {
-            SetForegroundWindow(handle);
+            AppFileLog.Log("[Focus] MacroCodesWindow.ActivateAndFocusWebView: no native handle yet after Activate() — skipping the rest of the foreground sequence.");
+            ScheduleFocusWebView();
+            return;
+        }
+
+        AppFileLog.Log($"[Focus] MacroCodesWindow: After Activate(): GetForegroundWindow()==hwnd is {IsThisWindowForeground(handle)}.");
+
+        // Best-effort throughout, same posture as
+        // DataEntryPopupWindow.ActivateAndFocusCurrentStage: every Win32
+        // call here no-ops on failure rather than throwing, and the
+        // sequence keeps going regardless.
+        AllowSetForegroundWindow(ASFW_ANY);
+
+        TryAttachedSetForeground(handle);
+        AppFileLog.Log($"[Focus] MacroCodesWindow: After attach-thread-input SetForegroundWindow/SetActiveWindow: GetForegroundWindow()==hwnd is {IsThisWindowForeground(handle)}.");
+
+        if (!IsThisWindowForeground(handle))
+        {
+            TryAltNudgeThenSetForeground(handle);
+            AppFileLog.Log($"[Focus] MacroCodesWindow: After the Alt-nudge fallback: GetForegroundWindow()==hwnd is {IsThisWindowForeground(handle)}.");
         }
 
         Topmost = false;
         Topmost = true;
+
+        ScheduleFocusWebView();
+    }
+
+    private static bool IsThisWindowForeground(IntPtr handle) => GetForegroundWindow() == handle;
+
+    /// <summary>Same AttachThreadInput-backed fallback as
+    /// DataEntryPopupWindow.TryAttachedSetForeground — see that method's
+    /// doc comment. Always pairs the attach with a detach in finally.</summary>
+    private void TryAttachedSetForeground(IntPtr handle)
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground == handle)
+        {
+            SetActiveWindow(handle);
+            return;
+        }
+
+        var foregroundThreadId = foreground == IntPtr.Zero ? 0u : GetWindowThreadProcessId(foreground, out _);
+        var currentThreadId = GetCurrentThreadId();
+        var attached = false;
+        try
+        {
+            if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId)
+            {
+                attached = AttachThreadInput(currentThreadId, foregroundThreadId, true);
+            }
+
+            BringWindowToTop(handle);
+            SetForegroundWindow(handle);
+            SetActiveWindow(handle);
+        }
+        finally
+        {
+            if (attached)
+            {
+                AttachThreadInput(currentThreadId, foregroundThreadId, false);
+            }
+        }
+    }
+
+    /// <summary>Same synthetic-Alt-keypress fallback as
+    /// DataEntryPopupWindow.TryAltNudgeThenSetForeground — see that
+    /// method's doc comment for why this helps SetForegroundWindow
+    /// succeed. Key DOWN then UP so Alt is never left logically stuck.</summary>
+    private static void TryAltNudgeThenSetForeground(IntPtr handle)
+    {
+        keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+        keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        SetForegroundWindow(handle);
+        SetActiveWindow(handle);
+    }
+
+    /// <summary>Defers FocusWebView to DispatcherPriority.Input (WPF can't
+    /// reliably accept a focus request before the window has actually
+    /// finished becoming active — same reasoning as
+    /// DataEntryPopupWindow.ScheduleFocusCurrentStagePrimaryControl), or
+    /// to this window's Loaded event if it hasn't fired yet (Show() does
+    /// not always raise Loaded synchronously before returning).
+    ///
+    /// REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): bails out immediately
+    /// once _closed is set (see that field's doc comment) instead of
+    /// queuing a focus call that could run after WebView.Dispose(). The
+    /// queued Dispatcher operation itself is captured into
+    /// _pendingFocusOperation so MacroCodesWindow_OnClosed can Abort() it
+    /// directly too — belt-and-suspenders alongside the _closed check
+    /// inside FocusWebView, in case an operation was already dequeued and
+    /// mid-flight when Close() ran.</summary>
+    private void ScheduleFocusWebView()
+    {
+        if (_closed) return;
+
+        if (!IsLoaded)
+        {
+            Loaded -= MacroCodesWindow_OnLoadedFocusRetry;
+            Loaded += MacroCodesWindow_OnLoadedFocusRetry;
+            return;
+        }
+
+        _pendingFocusOperation = Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusWebView));
+    }
+
+    private void MacroCodesWindow_OnLoadedFocusRetry(object sender, RoutedEventArgs e)
+    {
+        Loaded -= MacroCodesWindow_OnLoadedFocusRetry;
+        if (_closed) return;
+        _pendingFocusOperation = Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusWebView));
+    }
+
+    /// <summary>Puts WPF/keyboard focus directly on the WebView2 control
+    /// so the embedded page (not this window's own chrome) receives
+    /// keydown events immediately — see ActivateAndFocusWebView's doc
+    /// comment for why this is called from multiple points. Safe to call
+    /// before CoreWebView2 has finished initializing; WebView.Focus() is
+    /// a plain WPF focus call on the control itself.
+    ///
+    /// REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): a _closed re-check
+    /// right before touching WebView, PLUS a try/catch around the calls
+    /// themselves — ScheduleFocusWebView's _closed guard and
+    /// MacroCodesWindow_OnClosed's Abort() cover the common case, but a
+    /// Dispatcher operation can already be mid-flight (dequeued, about to
+    /// run this method) the instant Close() starts running on the same
+    /// thread, so neither of those alone fully closes the race. If
+    /// WebView.Focus()/Keyboard.Focus() still throws on an already-
+    /// disposed WebView2 control (ObjectDisposedException/
+    /// InvalidOperationException — WebView2's own Dispose() contract
+    /// doesn't guarantee which one), this swallows it rather than letting
+    /// it reach App.OnDispatcherUnhandledException, which would otherwise
+    /// pop the "Vaccine Assist ran into a problem" MessageBox on
+    /// completely ordinary popup use (copy-a-code, Escape-cancel,
+    /// age-macro auto-close).</summary>
+    private void FocusWebView()
+    {
+        if (_closed) return;
+
+        try
+        {
+            WebView.Focus();
+            Keyboard.Focus(WebView);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Lost the race against Close()/Dispose() — nothing to focus
+            // anymore, nothing to log; this is the expected shape of the
+            // race this guard exists for, not a real failure.
+        }
+        catch (InvalidOperationException)
+        {
+            // Same race, different exception shape (observed from
+            // WebView2/WPF depending on exactly how far Dispose() had
+            // gotten) — same "nothing to do" response.
+        }
+    }
+
+    /// <summary>Belt-and-suspenders catch-all — see
+    /// ActivateAndFocusWebView's doc comment. Mirrors
+    /// DataEntryPopupWindow_OnActivated.</summary>
+    private void MacroCodesWindow_OnActivated(object? sender, EventArgs e)
+    {
+        ScheduleFocusWebView();
     }
 
     /// <summary>
@@ -188,7 +462,16 @@ public partial class MacroCodesWindow : Window
             await WebView.EnsureCoreWebView2Async(environment);
 
             WebView.CoreWebView2.WebMessageReceived += CoreWebView2_OnWebMessageReceived;
+            WebView.CoreWebView2.NavigationCompleted += CoreWebView2_OnNavigationCompleted;
             WebView.CoreWebView2.Navigate(_macroCodesUrl);
+
+            // FOCUS FIX (Will, 2026-09-28): CoreWebView2 init can finish
+            // after the window has already been activated/focused above
+            // (ActivateAndFocusWebView runs synchronously off the hotkey
+            // callback; this await can still be pending at that point) —
+            // re-focus now that the control is actually ready to receive
+            // it. See ActivateAndFocusWebView's doc comment.
+            ScheduleFocusWebView();
         }
         catch (Exception ex)
         {
@@ -270,6 +553,40 @@ public partial class MacroCodesWindow : Window
     }
 
     /// <summary>
+    /// FOCUS FIX (Will, 2026-09-28): the page may still be mid-navigation
+    /// when ActivateAndFocusWebView first ran (see its doc comment for
+    /// why focus is placed from several points), so this re-focuses the
+    /// WebView once the page has actually finished loading — the point
+    /// at which its own document keydown listener
+    /// (cloud/app/macro-codes/page.tsx) is guaranteed to be wired up.
+    /// Also nudges the embedded document itself via window.focus() —
+    /// belt-and-suspenders on top of the WPF-level WebView.Focus()/
+    /// Keyboard.Focus() FocusWebView already does; best-effort, so any
+    /// failure is logged and swallowed rather than surfaced.
+    /// </summary>
+    private void CoreWebView2_OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+    {
+        ScheduleFocusWebView();
+
+        _ = TryFocusDocumentAsync();
+    }
+
+    private async Task TryFocusDocumentAsync()
+    {
+        try
+        {
+            if (WebView.CoreWebView2 is not null)
+            {
+                await WebView.CoreWebView2.ExecuteScriptAsync("window.focus();");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MacroCodesWindow.WindowFocusScript", ex);
+        }
+    }
+
+    /// <summary>
     /// MACRO-POPUP ROUND 3: resizes this window to fit `contentHeightPx`
     /// (the page's own document.documentElement.scrollHeight, CSS px ==
     /// WPF DIPs here — see ContentSizeMessage's doc comment) plus this
@@ -340,9 +657,27 @@ public partial class MacroCodesWindow : Window
     /// brief.</summary>
     private async void MacroCodesWindow_OnClosed(object? sender, EventArgs e)
     {
+        // REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): set FIRST, before
+        // anything else below — see _closed's own doc comment. Every
+        // focus entry point (ScheduleFocusWebView, the Loaded retry
+        // handler, FocusWebView itself) checks this and bails out, so
+        // nothing queued or newly triggered after this line can reach
+        // WebView post-Dispose. Abort() on the still-pending operation
+        // (if any) is belt-and-suspenders on top of that — cancels a
+        // call that's already sitting in the Dispatcher queue outright
+        // rather than letting it run and rely on FocusWebView's own
+        // _closed/try-catch guards.
+        _closed = true;
+        _pendingFocusOperation?.Abort();
+        _pendingFocusOperation = null;
+
+        Activated -= MacroCodesWindow_OnActivated;
+        Loaded -= MacroCodesWindow_OnLoadedFocusRetry;
+
         if (WebView.CoreWebView2 is not null)
         {
             WebView.CoreWebView2.WebMessageReceived -= CoreWebView2_OnWebMessageReceived;
+            WebView.CoreWebView2.NavigationCompleted -= CoreWebView2_OnNavigationCompleted;
         }
         WebView.Dispose();
 

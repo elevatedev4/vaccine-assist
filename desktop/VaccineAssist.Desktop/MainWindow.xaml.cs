@@ -637,6 +637,11 @@ public partial class MainWindow : Window
         _openMacroCodesPopup = popup;
 
         popup.Show();
+        // FOCUS FIX (Will, 2026-09-28): Show() alone doesn't grab keyboard
+        // focus away from whatever hotkey-triggered popups launch on top
+        // of (typically PioneerRx) — see
+        // MacroCodesWindow.ActivateAndFocusWebView's doc comment.
+        popup.ActivateAndFocusWebView();
     }
 
     /// <summary>
@@ -726,6 +731,16 @@ public partial class MainWindow : Window
 
         AppFileLog.Log("[AgeMacro] opened");
         popup.Show();
+        // FOCUS FIX (Will, 2026-09-28, 1:14pm): "the macro-codes popup
+        // appears but does NOT have keyboard focus... he needs the popup
+        // focused so pressing F immediately picks Flucelvax." The age
+        // prompt that just closed (AgePromptWindow.ShowAndGetResult,
+        // modal) leaves PioneerRx (captured above as
+        // previousForegroundWindow) as the foreground window, so this
+        // popup needs the same foreground-stealing sequence
+        // DataEntryPopupWindow uses — see
+        // MacroCodesWindow.ActivateAndFocusWebView's doc comment.
+        popup.ActivateAndFocusWebView();
     }
 
     /// <summary>V-T53: tray menu's "Vaccine faxes — Settings" — same
