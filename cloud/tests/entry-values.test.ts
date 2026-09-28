@@ -157,6 +157,23 @@ describe("buildEntryValueRows", () => {
       expect(rows.map((r) => r.cashPriceCents)).toEqual([23299, 23299]);
       expect(rows.map((r) => r.cashPriceEditable)).toEqual([true, false]);
     });
+
+    // Review fix (2026-09-28): GET /api/vaccines orders by `name` only,
+    // and same-product dose rows share a name, so their relative fetch
+    // order is unspecified — the primary/editable row must be picked by
+    // parsing each row's own `dose` column, never by array order.
+    it("picks the LOWEST-doseNumber row as primary even when dose 2 appears before dose 1 in the input array", () => {
+      const rows = buildEntryValueRows([
+        vaccine({ id: "s2", name: "Shingrix", short_code: "shingrix2", dose: "2", ndc: "58160-0821-52", cash_price_cents: 999 }),
+        vaccine({ id: "s1", name: "Shingrix", short_code: "shingrix1", dose: "1", ndc: "58160-0821-52", cash_price_cents: 23299 }),
+      ]);
+      const dose1Row = rows.find((r) => r.id === "s1")!;
+      const dose2Row = rows.find((r) => r.id === "s2")!;
+      expect(dose1Row.cashPriceEditable).toBe(true);
+      expect(dose2Row.cashPriceEditable).toBe(false);
+      expect(dose1Row.cashPriceCents).toBe(23299);
+      expect(dose2Row.cashPriceCents).toBe(23299);
+    });
   });
 });
 
@@ -188,6 +205,11 @@ describe("parseDollarsInputToCents", () => {
 
   it("tolerates a leading $", () => {
     expect(parseDollarsInputToCents("$89.00")).toBe(8900);
+  });
+
+  it("tolerates thousands-separator commas", () => {
+    expect(parseDollarsInputToCents("1,234.56")).toBe(123456);
+    expect(parseDollarsInputToCents("$1,234.56")).toBe(123456);
   });
 
   it("blank (or whitespace-only) clears the price to null", () => {

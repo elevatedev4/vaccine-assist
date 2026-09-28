@@ -60,17 +60,22 @@ export type EntryValueRow = {
   directions: string | null;
   /** Cash price in cents for the PRODUCT (not this individual dose row)
    * — Will's ask: "add cash price to all vaccines" is one price per
-   * vaccine product, shared by every dose. Always the first (lowest
-   * doseNumber) active dose row's cash_price_cents, same convention as
-   * lib/macro-codes.ts's MacroProductGroup.cashPriceCents (`first.cashPriceCents`),
-   * so a price entered here shows up there. Every dose row of a product
-   * carries the SAME value here even though only the first dose row's DB
-   * column actually holds it. */
+   * vaccine product, shared by every dose. Always the LOWEST-doseNumber
+   * active dose row's cash_price_cents — resolved by parsing each dose
+   * row's own `dose` column via doseNumberOf, NEVER by array/fetch order
+   * (GET /api/vaccines orders by `name` only, and same-product dose rows
+   * share a name, so their relative order is unspecified) — same
+   * convention as lib/macro-codes.ts's MacroProductGroup.cashPriceCents
+   * (`first.cashPriceCents` after sorting by doseNumber), so a price
+   * entered here shows up there. Every dose row of a product carries the
+   * SAME value here even though only the lowest-dose row's DB column
+   * actually holds it. */
   cashPriceCents: number | null;
-  /** True only for the first (lowest doseNumber) active dose row of a
-   * product — the ONE row whose cash price is actually editable/saved;
-   * every other dose row of the same product shows cashPriceCents
-   * read-only (see app/entry-values/page.tsx). */
+  /** True only for the LOWEST-doseNumber active dose row of a product
+   * (see cashPriceCents above for how that row is picked) — the ONE row
+   * whose cash price is actually editable/saved; every other dose row of
+   * the same product shows cashPriceCents read-only (see
+   * app/entry-values/page.tsx). */
   cashPriceEditable: boolean;
 };
 
@@ -98,7 +103,7 @@ export function centsToDollarsInputValue(cents: number | null): string {
 export function parseDollarsInputToCents(value: string): number | null | undefined {
   const trimmed = value.trim();
   if (trimmed === "") return null;
-  const withoutDollarSign = trimmed.startsWith("$") ? trimmed.slice(1).trim() : trimmed;
+  const withoutDollarSign = (trimmed.startsWith("$") ? trimmed.slice(1).trim() : trimmed).replace(/,/g, "");
   if (!/^\d+(\.\d{1,2})?$/.test(withoutDollarSign)) return undefined;
   const dollars = Number.parseFloat(withoutDollarSign);
   if (!Number.isFinite(dollars) || dollars < 0) return undefined;
@@ -142,9 +147,18 @@ export function buildEntryValueRows(vaccines: readonly EntryValueVaccine[]): Ent
 
   const rows: EntryValueRow[] = [];
   for (const product of products) {
-    // The first dose row is the ONE place cash price is actually
-    // edited/stored — see EntryValueRow.cashPriceCents's doc comment.
-    const primaryId = product.vaccineIds[0];
+    // The LOWEST-doseNumber dose row is the ONE place cash price is
+    // actually edited/stored — see EntryValueRow.cashPriceCents's doc
+    // comment. Picked by parsing each row's own `dose` column
+    // (doseNumberOf), NOT by product.vaccineIds' array order, which
+    // reflects GET /api/vaccines' name-only ordering and is unspecified
+    // among same-named dose siblings (review fix, 2026-09-28: a
+    // dose-2-then-dose-1 fetch order previously put the editable input
+    // on dose 2, so a saved price never matched what lib/macro-codes.ts
+    // shows via its own doseNumber-sorted `first`).
+    const primaryId = [...product.vaccineIds].sort(
+      (a, b) => doseNumberOf(byId.get(a)?.dose ?? null) - doseNumberOf(byId.get(b)?.dose ?? null)
+    )[0];
     const productCashPriceCents = byId.get(primaryId)?.cash_price_cents ?? null;
 
     for (const id of product.vaccineIds) {

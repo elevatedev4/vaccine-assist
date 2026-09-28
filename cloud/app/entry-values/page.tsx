@@ -308,7 +308,17 @@ export default function EntryValuesPage() {
 
       if (data.quantityDirectionsSupported === false) setQuantityDirectionsSupported(false);
 
-      setLastSavedRefAndState(id, draftsRef.current[id] ?? draft);
+      // The "saved" snapshot must be the draft that was actually SENT
+      // (`draft`, captured when this call started) — NOT whatever is in
+      // draftsRef.current[id] now, which may already hold a newer,
+      // unsent edit typed while this PATCH was in flight. Stamping that
+      // newer value as saved would make the next autosave cycle think
+      // it's already on the server and silently skip it (review fix,
+      // 2026-09-28). The one exception is cashPrice when it was reverted
+      // above (an invalid amount that was never sent) — its saved value
+      // stays `saved.cashPrice`, not the (also reverted) `draft.cashPrice`,
+      // though the two are identical after the revert.
+      setLastSavedRefAndState(id, { ...draft, cashPrice: cashPriceCents === undefined ? saved.cashPrice : draft.cashPrice });
       // Cash price is PRODUCT-level (EntryValueRow.cashPriceCents) — this
       // updates `vaccines` so the memoized `rows` recompute and every
       // sibling dose row's read-only price reflects the new value
