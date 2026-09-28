@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { MacroDoseButton, MacroRow } from "@/lib/macro-codes";
 import type { MacroSection } from "@/lib/macro-catalog";
 
@@ -184,8 +185,12 @@ export interface RenderMacroDoseButtonOptions {
    * vaccines." An optional new FIRST line, shown above `visibleLabel`/
    * `label` — /macro-codes' renderSectionVersionC (this module's only
    * current caller) passes the product's displayName here; omitted
-   * entirely (no layout change at all) when a caller doesn't pass it. */
-  topLabel?: string;
+   * entirely (no layout change at all) when a caller doesn't pass it.
+   * Macro-codes hotkeys (2026-09-28): a ReactNode rather than a plain
+   * string so the caller can underline the product's hotkey letter
+   * (lib/macro-hotkeys.ts's underlineHotkey) inline — still just
+   * rendered as-is below, no other change. */
+  topLabel?: ReactNode;
   /** Shown instead of the full `dose.label` (e.g. version B/C's short
    * "Dose 1"/"One dose" — lib/macro-codes.ts's doseButtonShortLabel)
    * while the click/copy/tooltip still use the full descriptive label. */

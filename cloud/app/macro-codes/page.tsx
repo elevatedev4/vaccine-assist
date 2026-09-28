@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
@@ -24,6 +24,7 @@ import {
   type MacroSectionGroup,
   type MacroTopGroupBlock,
 } from "@/lib/macro-codes";
+import { hotkeyForProduct, resolveHotkeyTarget, underlineHotkey } from "@/lib/macro-hotkeys";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { todayInChicago } from "@/lib/chicago-date";
 import { modalDatesBlocked } from "@/lib/lot-expiry";
@@ -1055,6 +1056,44 @@ function MacroCodesPageContent() {
     };
   }, [embed, modal, anyMenuOpen]);
 
+  // Macro-codes hotkeys (Will's verbatim ask, 2026-09-28, 10:31am):
+  // "pushing the hotkey selects the vaccine and copies the code (and
+  // advances the data entry in the desktop Ctrl+Keypad 2 flow)." One
+  // document-level keydown listener, embed and normal mode alike —
+  // pressing a mapped letter/digit calls the SAME handleCopy(row, label)
+  // a click on that product's dose-1 button calls, so lot-modal/BUD
+  // gating/embed postMessage all behave exactly as a click would. Skips
+  // entirely while the lot/exp modal is open (its own fields, including
+  // the lot-number text input, must be able to use any letter), while
+  // focus is in a form field/contentEditable (the version-C filter box
+  // above all), while ctrl/meta/alt is held (leaves browser/OS shortcuts
+  // on the same key alone), and on a held-key repeat. lib/macro-
+  // hotkeys.ts's resolveHotkeyTarget does the actual key -> product
+  // resolution, walking `visibleTopGroups` so a product hidden by the
+  // current age/search filter can never be selected by its hotkey.
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (modal) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
+      }
+      const hit = resolveHotkeyTarget(event.key, visibleTopGroups);
+      if (!hit) return;
+      const dose = hit.product.doses.find((d) => d.row === hit.row);
+      if (!dose) return;
+      event.preventDefault();
+      void handleCopy(hit.row, dose.label);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [modal, visibleTopGroups, handleCopy]);
+
   // MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): the first cut of
   // this effect measured `document.documentElement.scrollHeight`, but
   // per the CSSOM View spec the ROOT element's scrollHeight is
@@ -1195,7 +1234,7 @@ function MacroCodesPageContent() {
     dose: MacroDoseButton,
     colors: SectionColors,
     options?: {
-      topLabel?: string;
+      topLabel?: ReactNode;
       visibleLabel?: string;
       subLabel?: string;
       block?: boolean;
@@ -1214,6 +1253,35 @@ function MacroCodesPageContent() {
       compact: embed,
       ...options,
     });
+  }
+
+  /** Macro-codes hotkeys: renders `label` with its hotkey letter
+   * underlined (a <u className="macro-hotkey">, per Will's verbatim ask
+   * — "the letter should be underlined in the name") when
+   * lib/macro-hotkeys.ts's underlineHotkey finds it in the text, else a
+   * small "[K]"-style badge naming the key instead (the letter genuinely
+   * isn't in this product's name). `hotkeyKey` null (no hotkey covers
+   * this product) renders `label` completely unchanged. Shared by both
+   * name-render sites below (the product cell and a dose button's
+   * topLabel) so they always agree. */
+  function renderHotkeyLabel(label: string, hotkeyKey: string | null) {
+    if (!hotkeyKey) return label;
+    const split = underlineHotkey(label, hotkeyKey);
+    if (!split) {
+      return (
+        <>
+          {label}
+          <span className="macro-hotkey-badge">[{hotkeyKey.toUpperCase()}]</span>
+        </>
+      );
+    }
+    return (
+      <>
+        {split.before}
+        <u className="macro-hotkey">{split.letter}</u>
+        {split.after}
+      </>
+    );
   }
 
   function renderSettingsMenu(product: MacroProductGroup) {
@@ -1363,10 +1431,22 @@ function MacroCodesPageContent() {
           const doseCount = product.doses.length;
           const price = formatCashPrice(product.cashPriceCents);
           const metaText = price ? `${product.ageBase} · ${price}` : product.ageBase;
+          // Macro-codes hotkeys: resolved from the product's dose-1 row
+          // (same representative row groupMacroRowsBySection already
+          // uses) — null when no hotkey covers this product, in which
+          // case renderHotkeyLabel below is a no-op.
+          const hotkeyKey = hotkeyForProduct(product.doses[0]?.row.shortCode ?? "");
+          const displayLabel = macroProductDisplayLabel(product.displayName, product.age);
           return (
             <div key={product.productKey} className="macro-row macro-row-c" style={rowStyle}>
               <div className="macro-product-name-cell-c">
-                <div className="macro-product-name-c" style={nameStyle}>{macroProductDisplayLabel(product.displayName, product.age)}</div>
+                <div
+                  className="macro-product-name-c"
+                  style={nameStyle}
+                  title={hotkeyKey ? `Press ${hotkeyKey.toUpperCase()} to copy` : undefined}
+                >
+                  {renderHotkeyLabel(displayLabel, hotkeyKey)}
+                </div>
                 <div className="macro-product-meta-c" style={metaStyle}>
                   {metaText}
                   {product.note && (
@@ -1396,7 +1476,7 @@ function MacroCodesPageContent() {
                     // own first row, above the existing dose row (2) and
                     // schedule row (3, where present) — see this file's
                     // ROUND 14 doc comment.
-                    topLabel: macroProductDisplayLabel(product.displayName, product.age),
+                    topLabel: renderHotkeyLabel(displayLabel, hotkeyKey),
                     visibleLabel: doseButtonShortLabel(dose.row, doseCount),
                     subLabel: dose.row.doseInterval,
                     large: true,
@@ -1857,6 +1937,24 @@ function MacroCodesPageContent() {
         .macro-note-icon:focus-visible .macro-note-tooltip {
           visibility: visible;
           opacity: 1;
+        }
+        /* Macro-codes hotkeys (Will's verbatim ask, 2026-09-28): "The
+         * letter should be underlined in the name." A heavier underline
+         * than the browser default so it reads as a hotkey hint at a
+         * glance, no colour change. */
+        .macro-hotkey {
+          text-decoration-thickness: 2px;
+          text-underline-offset: 2px;
+        }
+        /* Fallback for a product whose hotkey letter genuinely isn't in
+         * its own display name (see lib/macro-hotkeys.ts's
+         * underlineHotkey) — a small "[K]"-style badge naming the key
+         * instead. */
+        .macro-hotkey-badge {
+          font-size: 0.75em;
+          font-weight: 400;
+          color: #666;
+          margin-left: 4px;
         }
         .macro-dose-buttons-c {
           display: flex;
