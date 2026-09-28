@@ -195,6 +195,14 @@ export interface RenderMacroDoseButtonOptions {
    * "Dose 1"/"One dose" — lib/macro-codes.ts's doseButtonShortLabel)
    * while the click/copy/tooltip still use the full descriptive label. */
   visibleLabel?: string;
+  /** Macro-codes hotkeys round 2 (2026-09-28): when the caller wants the
+   * dose digit underlined (its product is currently "armed" — see
+   * lib/macro-hotkeys.ts's HotkeyState), pass the same text as
+   * `visibleLabel` here but as a ReactNode with the digit wrapped in a
+   * `<u>` — this is what actually renders, while `visibleLabel` (a plain
+   * string) still drives the button's own min-width math and its
+   * "Copied ✓" swap sizing. Ignored while showing "Copied ✓". */
+  visibleLabelNode?: ReactNode;
   /** An optional second, tiny/muted line — the per-dose schedule
    * interval (MacroRow.doseInterval, e.g. "2 mo" under a "Dose 2"
    * button). Hidden while showing "Copied ✓". */
@@ -457,7 +465,7 @@ export function renderMacroDoseButton(
               : undefined
           }
         >
-          {visibleText}
+          {!isCopied && params.visibleLabelNode ? params.visibleLabelNode : visibleText}
         </span>
         {showSubLabelSlot && (
           <span

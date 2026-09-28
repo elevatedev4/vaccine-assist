@@ -24,7 +24,15 @@ import {
   type MacroSectionGroup,
   type MacroTopGroupBlock,
 } from "@/lib/macro-codes";
-import { hotkeyForProduct, resolveHotkeyTarget, underlineHotkey } from "@/lib/macro-hotkeys";
+import {
+  armedHotkeyNote,
+  findArmedProduct,
+  hotkeyForProduct,
+  hotkeyTransition,
+  underlineHotkey,
+  INITIAL_HOTKEY_STATE,
+  type HotkeyState,
+} from "@/lib/macro-hotkeys";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { todayInChicago } from "@/lib/chicago-date";
 import { modalDatesBlocked } from "@/lib/lot-expiry";
@@ -531,6 +539,11 @@ function MacroCodesPageContent() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copyFailure, setCopyFailure] = useState<{ key: string; code: string } | null>(null);
   const [anyMenuOpen, setAnyMenuOpen] = useState(false);
+  // Macro-codes hotkeys round 2 (Will's verbatim answer, 2026-09-28):
+  // "Multi-dose vaccines need a second key press for the dose" — this is
+  // the whole armed/unarmed state, driven by lib/macro-hotkeys.ts's pure
+  // hotkeyTransition reducer (see the hotkeys keydown effect below).
+  const [hotkeyState, setHotkeyState] = useState<HotkeyState>(INITIAL_HOTKEY_STATE);
 
   type ModalState = {
     row: MacroRow;
@@ -804,6 +817,18 @@ function MacroCodesPageContent() {
     [ageFilteredTopGroups, filterQuery]
   );
 
+  // Macro-codes hotkeys round 2: the currently-armed product (for the
+  // "Press 1-N for the dose" note near the header, and for the
+  // visibility-based clear effect below) — null whenever nothing is
+  // armed OR the armed product is no longer in `visibleTopGroups`.
+  // lib/macro-hotkeys.ts's findArmedProduct is the single source of
+  // truth for this lookup (also used internally by hotkeyTransition's
+  // digit branch), so the page never re-implements its own walk.
+  const armedProduct = useMemo(
+    () => (hotkeyState.armedProductKey ? findArmedProduct(hotkeyState.armedProductKey, visibleTopGroups) : null),
+    [hotkeyState.armedProductKey, visibleTopGroups]
+  );
+
   const rowKey = macroRowKey;
 
   // Closes every open ⚙ menu on an outside click/tap, and on Escape —
@@ -856,6 +881,11 @@ function MacroCodesPageContent() {
 
   async function handleCopy(row: MacroRow, label: string) {
     if (!row.macro || !row.shortCode) return;
+    // Macro-codes hotkeys round 2: a copy (whichever path triggered it —
+    // a click, a single-press hotkey, or the second, dose-digit press of
+    // an armed multi-dose product) always clears any armed state, same
+    // as Will's "Escape clears it" rule but for the success path.
+    setHotkeyState(INITIAL_HOTKEY_STATE);
     // V-lots-bud-spikevax follow-up (Will 2026-09-25 4:58pm verbatim):
     // "stop them from copying the code or continuing data entry without
     // updating it, just like if it were expired" — row.lotExpiry
@@ -1042,11 +1072,16 @@ function MacroCodesPageContent() {
   // modal nor a ⚙ menu is open — those already own Escape for their own
   // narrower close, above — Escape here posts macro-cancel and closes
   // the popup entirely, same two message channels as a successful copy.
+  // Macro-codes hotkeys round 2 (Will's verbatim answer, 2026-09-28):
+  // "while armed, Escape must not close the embed window or post
+  // macro-cancel" — this effect yields to the hotkeys effect below
+  // (which clears the armed state on the SAME keypress) whenever a
+  // product is currently armed.
   useEffect(() => {
     if (!embed) return;
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      if (modal || anyMenuOpen) return;
+      if (modal || anyMenuOpen || hotkeyState.armedProductKey) return;
       postToHost({ type: "vaccine-assist:macro-cancel" });
       window.close();
     }
@@ -1054,23 +1089,31 @@ function MacroCodesPageContent() {
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [embed, modal, anyMenuOpen]);
+  }, [embed, modal, anyMenuOpen, hotkeyState.armedProductKey]);
 
   // Macro-codes hotkeys (Will's verbatim ask, 2026-09-28, 10:31am):
   // "pushing the hotkey selects the vaccine and copies the code (and
   // advances the data entry in the desktop Ctrl+Keypad 2 flow)." One
   // document-level keydown listener, embed and normal mode alike —
-  // pressing a mapped letter/digit calls the SAME handleCopy(row, label)
-  // a click on that product's dose-1 button calls, so lot-modal/BUD
-  // gating/embed postMessage all behave exactly as a click would. Skips
-  // entirely while the lot/exp modal is open (its own fields, including
-  // the lot-number text input, must be able to use any letter), while
-  // focus is in a form field/contentEditable (the version-C filter box
-  // above all), while ctrl/meta/alt is held (leaves browser/OS shortcuts
-  // on the same key alone), and on a held-key repeat. lib/macro-
-  // hotkeys.ts's resolveHotkeyTarget does the actual key -> product
-  // resolution, walking `visibleTopGroups` so a product hidden by the
-  // current age/search filter can never be selected by its hotkey.
+  // a resolved copy calls the SAME handleCopy(row, label) a click on
+  // that dose button calls, so lot-modal/BUD gating/embed postMessage
+  // all behave exactly as a click would. Skips entirely while the
+  // lot/exp modal is open (its own fields, including the lot-number
+  // text input, must be able to use any letter), while focus is in a
+  // form field/contentEditable (the version-C filter box above all),
+  // while ctrl/meta/alt is held (leaves browser/OS shortcuts on the
+  // same key alone), and on a held-key repeat.
+  //
+  // ROUND 2 (Will's verbatim answer, 2026-09-28): multi-dose products no
+  // longer copy on one press — lib/macro-hotkeys.ts's hotkeyTransition
+  // (a pure reducer, see its own doc comment) now owns the whole
+  // letter -> arm -> digit -> copy flow, including Escape-clears-armed;
+  // this effect just feeds it the raw key and current visibleTopGroups,
+  // adopts the returned state unconditionally, and runs the `copy` side
+  // effect when that's what came back. Escape is included here (not
+  // skipped) so arming/clearing share the exact same listener the
+  // letter/digit keys use — see the embed-cancel effect just above for
+  // how it yields to this one while armed.
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (modal) return;
@@ -1081,18 +1124,46 @@ function MacroCodesPageContent() {
         const tag = target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
       }
-      const hit = resolveHotkeyTarget(event.key, visibleTopGroups);
-      if (!hit) return;
-      const dose = hit.product.doses.find((d) => d.row === hit.row);
-      if (!dose) return;
+      const result = hotkeyTransition(hotkeyState, event.key, visibleTopGroups);
+      if (result.action.type === "none") return;
+      setHotkeyState(result.state);
       event.preventDefault();
-      void handleCopy(hit.row, dose.label);
+      if (result.action.type === "copy") {
+        const { product, row } = result.action;
+        const dose = product.doses.find((d) => d.row === row);
+        void handleCopy(row, dose?.label ?? "");
+      }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [modal, visibleTopGroups, handleCopy]);
+  }, [modal, visibleTopGroups, hotkeyState, handleCopy]);
+
+  // Macro-codes hotkeys round 2: arming is only meaningful against the
+  // CURRENT visible set — an age-filter or search change can hide the
+  // armed product, and that should clear it rather than leaving a stale
+  // highlight/note pointing at something no longer on screen.
+  //
+  // ROUND 2 FOLLOW-UP (reviewer, code review on 5a39605): this used to
+  // clear on EVERY `visibleTopGroups` reference change, but
+  // vaccines/lots (and hence visibleTopGroups) get brand-new array
+  // references on every successful background refetch too — the 60s
+  // heartbeat and the window focus/visibilitychange refetch (below),
+  // i.e. exactly the alt-tab-to-the-desktop-app-and-back Ctrl+Keypad 2
+  // workflow this feature exists for — which was silently un-arming a
+  // product before its dose digit got pressed. `armedProduct` above
+  // already resolves to null ONLY when the armed product is genuinely
+  // no longer among the visible ones (findArmedProduct, a real
+  // filter/search change or the row disappearing) — a same-data refetch
+  // re-resolves the SAME productKey to a new-but-still-non-null object,
+  // so this effect does nothing on those. A copy clears armed state too
+  // (see handleCopy), independently of this effect.
+  useEffect(() => {
+    if (hotkeyState.armedProductKey && !armedProduct) {
+      setHotkeyState(INITIAL_HOTKEY_STATE);
+    }
+  }, [armedProduct, hotkeyState.armedProductKey]);
 
   // MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): the first cut of
   // this effect measured `document.documentElement.scrollHeight`, but
@@ -1236,6 +1307,7 @@ function MacroCodesPageContent() {
     options?: {
       topLabel?: ReactNode;
       visibleLabel?: string;
+      visibleLabelNode?: ReactNode;
       subLabel?: string;
       block?: boolean;
       large?: boolean;
@@ -1437,8 +1509,19 @@ function MacroCodesPageContent() {
           // case renderHotkeyLabel below is a no-op.
           const hotkeyKey = hotkeyForProduct(product.doses[0]?.row.shortCode ?? "");
           const displayLabel = macroProductDisplayLabel(product.displayName, product.age);
+          // Macro-codes hotkeys round 2 (Will's verbatim answer,
+          // 2026-09-28): a multi-dose product's row gets highlighted
+          // while armed, every OTHER row dims — hotkeyState.armedProductKey
+          // is cleared on Escape, a copy, or a visible-set change (see
+          // the hotkeys keydown effect above), so this is never stale
+          // for longer than one render.
+          const isArmed = hotkeyState.armedProductKey === product.productKey;
+          const isDimmed = hotkeyState.armedProductKey !== null && !isArmed;
+          const rowClassName = ["macro-row", "macro-row-c", isArmed ? "macro-row-armed" : "", isDimmed ? "macro-row-dimmed" : ""]
+            .filter(Boolean)
+            .join(" ");
           return (
-            <div key={product.productKey} className="macro-row macro-row-c" style={rowStyle}>
+            <div key={product.productKey} className={rowClassName} style={rowStyle}>
               <div className="macro-product-name-cell-c">
                 <div
                   className="macro-product-name-c"
@@ -1465,19 +1548,37 @@ function MacroCodesPageContent() {
                 </div>
               </div>
               <div className="macro-dose-buttons-c">
-                {product.doses.map((dose) =>
+                {product.doses.map((dose) => {
+                  // Macro-codes hotkeys round 2: while THIS product is
+                  // armed, underline the dose digit itself (e.g. the "1"
+                  // in "Dose 1") the same way renderHotkeyLabel underlines
+                  // a vaccine letter — reusing underlineHotkey rather than
+                  // a new helper, since a digit is just another substring
+                  // to find/split. visibleLabel (the plain string) still
+                  // drives the button's width math; visibleLabelNode is
+                  // only what actually renders.
+                  const visibleLabel = doseButtonShortLabel(dose.row, doseCount);
+                  const doseSplit = isArmed ? underlineHotkey(visibleLabel, String(dose.row.doseNumber)) : null;
+                  const visibleLabelNode = doseSplit ? (
+                    <>
+                      {doseSplit.before}
+                      <u className="macro-hotkey">{doseSplit.letter}</u>
+                      {doseSplit.after}
+                    </>
+                  ) : undefined;
                   // V-T50: per-product flu color override (Flucelvax
                   // green, FluMist gray, mFLUSIVA red) when one exists,
                   // else the section color used everywhere else — see
                   // lib/macro-dose-button.tsx's PRODUCT_COLORS/
                   // resolveDoseButtonColors.
-                  renderDoseButton(dose, resolveDoseButtonColors(dose.row), {
+                  return renderDoseButton(dose, resolveDoseButtonColors(dose.row), {
                     // ROUND 14 (V-T48): the vaccine name as the button's
                     // own first row, above the existing dose row (2) and
                     // schedule row (3, where present) — see this file's
                     // ROUND 14 doc comment.
                     topLabel: renderHotkeyLabel(displayLabel, hotkeyKey),
-                    visibleLabel: doseButtonShortLabel(dose.row, doseCount),
+                    visibleLabel,
+                    visibleLabelNode,
                     subLabel: dose.row.doseInterval,
                     large: true,
                     // ROUND 13 (Will's verbatim feedback via the
@@ -1501,8 +1602,8 @@ function MacroCodesPageContent() {
                     // placeholder line rather than being one line shorter
                     // than its siblings.
                     reserveSubLabelSlot: product.doses.some((d) => Boolean(d.row.doseInterval)),
-                  })
-                )}
+                  });
+                })}
               </div>
               <div className="macro-settings-cell">{renderSettingsMenu(product)}</div>
             </div>
@@ -1574,6 +1675,20 @@ function MacroCodesPageContent() {
           >
             Show all
           </a>
+        </p>
+      )}
+
+      {/* Macro-codes hotkeys round 2 (Will's verbatim answer, 2026-09-28):
+       * shown near the page header while a multi-dose product is armed —
+       * same visibility posture as the age-filter note above (not hidden
+       * by embed mode). armedProduct is null (this renders nothing)
+       * whenever hotkeyState.armedProductKey is null or points at a
+       * product the current filter has hidden. */}
+      {armedProduct && (
+        <p style={embed ? styles.ageFilterNoteEmbed : styles.ageFilterNote}>
+          <strong>{macroProductDisplayLabel(armedProduct.displayName, armedProduct.age)} armed</strong>
+          {" — "}
+          {armedHotkeyNote(armedProduct.doses.length)}
         </p>
       )}
 
@@ -1867,6 +1982,21 @@ function MacroCodesPageContent() {
           gap: 0.5rem;
           padding: 6px 0;
           border-bottom: 1px solid #eee;
+        }
+        /* Macro-codes hotkeys round 2 (Will's verbatim answer, 2026-09-28):
+         * "its row is highlighted and every other row is de-emphasized
+         * (dimmed)" while a multi-dose product is armed waiting for its
+         * dose digit. Border-radius + background on the armed row so it
+         * reads as a distinct highlighted block, not just a color change
+         * on an otherwise identical row. */
+        .macro-row-armed {
+          background: #fff6d6;
+          border-radius: 4px;
+          outline: 2px solid #d8a812;
+          outline-offset: 1px;
+        }
+        .macro-row-dimmed {
+          opacity: 0.4;
         }
         .macro-product-name-cell-c {
           flex: 1 1 auto;
