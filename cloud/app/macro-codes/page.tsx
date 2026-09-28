@@ -1546,6 +1546,20 @@ function MacroCodesPageContent() {
                     </span>
                   )}
                 </div>
+                {/* Macro-codes hotkeys round 3 (Will's verbatim answer,
+                 * 2026-09-28, on top of round 2 above): the "armed" note
+                 * used to sit at the page header (removed) where it
+                 * pushed the whole table down whenever it appeared/
+                 * disappeared. It now renders INSIDE the armed product's
+                 * own name cell, absolutely positioned so it never adds
+                 * to the cell's (or row's) flow height — the row's actual
+                 * height is already set by the (much taller) dose-button
+                 * column beside it, so this small line fits in that
+                 * existing slack instead of growing anything. Product
+                 * name is dropped from the note text (armedHotkeyNote
+                 * already omits it) since the row's own name is right
+                 * above; only the armed row ever renders this. */}
+                {isArmed && <div className="macro-armed-note">{armedHotkeyNote(doseCount)}</div>}
               </div>
               <div className="macro-dose-buttons-c">
                 {product.doses.map((dose) => {
@@ -1675,20 +1689,6 @@ function MacroCodesPageContent() {
           >
             Show all
           </a>
-        </p>
-      )}
-
-      {/* Macro-codes hotkeys round 2 (Will's verbatim answer, 2026-09-28):
-       * shown near the page header while a multi-dose product is armed —
-       * same visibility posture as the age-filter note above (not hidden
-       * by embed mode). armedProduct is null (this renders nothing)
-       * whenever hotkeyState.armedProductKey is null or points at a
-       * product the current filter has hidden. */}
-      {armedProduct && (
-        <p style={embed ? styles.ageFilterNoteEmbed : styles.ageFilterNote}>
-          <strong>{macroProductDisplayLabel(armedProduct.displayName, armedProduct.age)} armed</strong>
-          {" — "}
-          {armedHotkeyNote(armedProduct.doses.length)}
         </p>
       )}
 
@@ -2001,6 +2001,41 @@ function MacroCodesPageContent() {
         .macro-product-name-cell-c {
           flex: 1 1 auto;
           min-width: 0;
+          /* Macro-codes hotkeys round 3: anchors .macro-armed-note below,
+           * which is absolutely positioned against THIS cell (not the
+           * page) so it never shifts the table. */
+          position: relative;
+        }
+        /* Macro-codes hotkeys round 3 (Will's verbatim answer,
+         * 2026-09-28): "put that somewhere where it doesn't shift the
+         * whole table down when it is displayed... underneath the
+         * vaccine name/info as small text." Pulled out of flow (absolute,
+         * anchored to .macro-product-name-cell-c above) so appearing/
+         * disappearing never changes the cell's own height — it renders
+         * in the slack the (taller) dose-button column already reserves
+         * for this row. white-space: nowrap + pointer-events: none per
+         * brief (it's a status label, not interactive).
+         * ROUND 3 REVIEW FIX (reviewer, 2026-09-28): left: 0 with no
+         * width cap let the note overflow .macro-product-name-cell-c and
+         * paint over the dose buttons in the embed popup's 3-column grid,
+         * where that cell (flex: 1, min-width: 0) can be squeezed to
+         * ~150-200px while the note's own text stays ~200px wide. Adding
+         * right: 0 pins BOTH edges to the (already-shrunk) cell, so the
+         * note's box always matches the cell's actual width instead of
+         * the button column's; overflow/ellipsis (still nowrap) clips
+         * instead of spilling when it doesn't fit, and the font drops
+         * slightly to fit more of it before that clipping kicks in. */
+        .macro-armed-note {
+          position: absolute;
+          left: 0;
+          right: 0;
+          top: 100%;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          font-size: 0.68rem;
+          color: #8a6d1a;
+          pointer-events: none;
         }
         .macro-product-name-c {
           font-size: 15px;
