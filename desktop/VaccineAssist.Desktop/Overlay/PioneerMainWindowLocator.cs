@@ -37,12 +37,15 @@ namespace VaccineAssist.Desktop.Overlay;
 /// instance — which is exactly why switching focus between two open
 /// PioneerRx windows previously did nothing.
 ///
-/// Still deliberately simpler than rx-verify's own MainWindowAnchorRule:
-/// no maximized-only requirement (see PioneerWindowAnchorRule's own doc
-/// comment) — this icon just needs to sit near whatever Pioneer window
-/// is currently in front; it isn't drawing verdict boxes that must never
-/// jump to the wrong window mid-gesture the way rx-verify's integrated
-/// boxes layer is.
+/// 2026-09-28 (Will, verbatim: "Make the blue icon stay pinned to the top
+/// right of the screen just like the RxVerify overlay is. Use the same
+/// logic. That way it doesn't pop on every little mini screen pioneer
+/// might pop up."): every tick now also reads IsZoomed(hWnd) per
+/// candidate — the same maximized-only requirement rx-verify's own
+/// MainWindowAnchorRule uses for its foreground re-anchor — so a Pioneer
+/// dialog/mini screen taking foreground (never maximized) can no longer
+/// steal the anchor from the maximized main window; switching between
+/// two maximized PioneerRx instances still re-anchors, same as before.
 /// </summary>
 public static class PioneerMainWindowLocator
 {
@@ -54,6 +57,9 @@ public static class PioneerMainWindowLocator
 
     [DllImport("user32.dll")]
     private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsZoomed(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
@@ -146,7 +152,7 @@ public static class PioneerMainWindowLocator
                 return true;
             }
 
-            candidates.Add(new PioneerWindowAnchorRule.Candidate(hWnd, true, IsIconic(hWnd), ToRectangle(rect)));
+            candidates.Add(new PioneerWindowAnchorRule.Candidate(hWnd, true, IsIconic(hWnd), IsZoomed(hWnd), ToRectangle(rect)));
             return true;
         }, IntPtr.Zero);
 

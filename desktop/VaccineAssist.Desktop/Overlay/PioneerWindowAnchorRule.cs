@@ -19,40 +19,45 @@ namespace VaccineAssist.Desktop.Overlay;
 /// overlay to integrate on that window").
 ///
 /// PioneerMainWindowLocator (the impure half — EnumWindows/
-/// GetForegroundWindow/GetWindowRect) builds the candidate list and the
-/// current foreground handle every ~250ms tick and hands them to <see
-/// cref="Resolve"/>, which:
+/// GetForegroundWindow/GetWindowRect/IsZoomed) builds the candidate list
+/// and the current foreground handle every ~250ms tick and hands them to
+/// <see cref="Resolve"/>, which:
 ///   1. Prefers the CURRENT foreground handle when it's one of Pioneer's
-///      own top-level windows (i.e. it's in <paramref name="candidates"/>)
-///      and eligible — this is what makes the icon follow the user
-///      between two open PioneerRx windows on Alt+Tab/click. Unlike
-///      rx-verify's own rule, there's no "must be maximized" requirement
-///      here: this icon isn't drawing anything that would misbehave
-///      anchored to a smaller/restored Pioneer window, so any eligible
-///      foreground Pioneer window wins outright (see
-///      PioneerMainWindowLocator's own doc comment for why it can afford
-///      to be simpler here).
+///      own top-level windows (i.e. it's in <paramref name="candidates"/>),
+///      MAXIMIZED, and eligible — this is what makes the icon follow the
+///      user between two open, maximized PioneerRx windows on Alt+Tab/
+///      click, while a mini screen/dialog Pioneer pops up in front (never
+///      maximized) can't steal the anchor. This mirrors rx-verify's own
+///      "ROUND 8" rule exactly (2026-09-28, Will verbatim: "Make the blue
+///      icon stay pinned to the top right of the screen just like the
+///      RxVerify overlay is. Use the same logic. That way it doesn't pop
+///      on every little mini screen pioneer might pop up.") — this used
+///      to accept ANY eligible foreground Pioneer window, maximized or
+///      not, which is exactly what let a small popup drag the icon along
+///      with it.
 ///   2. Otherwise stays on the previously-cached handle (the LAST
 ///      Pioneer window the user was in) as long as it's still eligible —
 ///      this is what keeps the icon in place when focus moves to some
-///      OTHER, non-Pioneer window (e.g. vaccine-assist's own window): it
-///      does NOT jump to whichever Pioneer window happens to be largest,
-///      it just stays put. A minimized cached window is still found here
-///      (Eligible only requires IsVisible + a sane rect — Win32 keeps
-///      IsWindowVisible true for a minimized window; only IsIconic
-///      distinguishes it), so the icon keeps tracking it; it's
-///      PioneerOverlayController.Tick() that actually hides the icon once
-///      Anchor.IsMinimized comes back true, not this rule.
-///   3. Falls back to a fresh <see cref="Choose"/> (largest eligible
-///      candidate) only when NEITHER the foreground nor the cached
-///      handle resolves to anything still open — e.g. the very first
-///      tick, or after the previously-anchored window was closed
-///      entirely.
+///      OTHER, non-Pioneer window (e.g. vaccine-assist's own window), or
+///      to a non-maximized Pioneer dialog: it does NOT jump to whichever
+///      Pioneer window happens to be largest, it just stays put. A
+///      minimized cached window is still found here (Eligible only
+///      requires IsVisible + a sane rect — Win32 keeps IsWindowVisible
+///      true for a minimized window; only IsIconic distinguishes it), so
+///      the icon keeps tracking it; it's PioneerOverlayController.Tick()
+///      that actually hides the icon once Anchor.IsMinimized comes back
+///      true, not this rule.
+///   3. Falls back to a fresh <see cref="Choose"/> (prefers a maximized
+///      eligible candidate, largest by area; falls back to the largest
+///      eligible candidate overall when none is maximized) only when
+///      NEITHER the foreground nor the cached handle resolves to
+///      anything still open — e.g. the very first tick, or after the
+///      previously-anchored window was closed entirely.
 /// </summary>
 public static class PioneerWindowAnchorRule
 {
     /// <summary>Plain Win32 snapshot of one of PioneerRx's own top-level windows.</summary>
-    public readonly record struct Candidate(IntPtr Handle, bool IsVisible, bool IsMinimized, Rectangle Bounds);
+    public readonly record struct Candidate(IntPtr Handle, bool IsVisible, bool IsMinimized, bool IsMaximized, Rectangle Bounds);
 
     /// <summary>Which HWND/rect/minimized-state to anchor the overlay icon to.</summary>
     public readonly record struct Anchor(IntPtr Handle, Rectangle Bounds, bool IsMinimized);
@@ -64,10 +69,12 @@ public static class PioneerWindowAnchorRule
     /// e.g. the very first tick or after a run where nothing was found).
     ///
     /// FOCUS-FOLLOW: if <paramref name="foregroundHandle"/> is a
-    /// DIFFERENT, eligible candidate than <paramref name="cachedHandle"/>,
-    /// it wins immediately — the user just switched to Pioneer's other
-    /// window. Pass IntPtr.Zero (the default) to skip this check
-    /// entirely and get plain stickiness.
+    /// DIFFERENT, MAXIMIZED, eligible candidate than <paramref
+    /// name="cachedHandle"/>, it wins immediately — the user just
+    /// switched to Pioneer's other main window. A foreground Pioneer
+    /// window that isn't maximized (a dialog/mini screen) never steals
+    /// the anchor this way. Pass IntPtr.Zero (the default) to skip this
+    /// check entirely and get plain stickiness.
     /// </summary>
     public static Anchor? Resolve(IntPtr cachedHandle, IReadOnlyList<Candidate> candidates, IntPtr foregroundHandle = default)
     {
@@ -75,7 +82,7 @@ public static class PioneerWindowAnchorRule
         {
             foreach (var candidate in candidates)
             {
-                if (candidate.Handle == foregroundHandle && IsEligible(candidate))
+                if (candidate.Handle == foregroundHandle && candidate.IsMaximized && IsEligible(candidate))
                 {
                     return new Anchor(candidate.Handle, candidate.Bounds, candidate.IsMinimized);
                 }
@@ -97,17 +104,22 @@ public static class PioneerWindowAnchorRule
     }
 
     /// <summary>
-    /// Fresh selection with no memory of any previous pick: the largest
-    /// (by rect area) eligible candidate. Null when there are none (e.g.
-    /// PioneerRx has no window open at all, or every one is
-    /// invisible/degenerate).
+    /// Fresh selection with no memory of any previous pick: among the
+    /// eligible (visible, sane rect) candidates, prefer maximized ones —
+    /// largest by rect area if more than one qualifies; if none is
+    /// maximized, fall back to the largest eligible candidate overall.
+    /// Null when there are no eligible candidates at all (e.g. PioneerRx
+    /// has no window open at all, or every one is invisible/degenerate).
     /// </summary>
     public static Anchor? Choose(IReadOnlyList<Candidate> candidates)
     {
         var eligible = candidates.Where(IsEligible).ToList();
         if (eligible.Count == 0) return null;
 
-        var best = eligible.OrderByDescending(c => Area(c.Bounds)).First();
+        var maximized = eligible.Where(c => c.IsMaximized).ToList();
+        var pool = maximized.Count > 0 ? maximized : eligible;
+
+        var best = pool.OrderByDescending(c => Area(c.Bounds)).First();
         return new Anchor(best.Handle, best.Bounds, best.IsMinimized);
     }
 
