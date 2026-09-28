@@ -343,8 +343,8 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 PreEntryDialogTitles.All.Where(t => t != PreEntryDialogTitles.Priority).Select(t => $"\"{t}\""));
             return new PioneerEntryStepResult(Name, Success: true, DryRun: true,
                 $"Would press F3 from the Rx Profile, then select \"{_priorityValue}\" in the \"{PreEntryDialogTitles.Priority}\" " +
-                $"dialog (or type \"{_priorityValue}\" + Enter if no selectable list is found) if it appears, and ESC through " +
-                $"the {otherDialogs} dialog(s) if any appear (no PioneerRx call made).");
+                $"dialog (or type \"{_priorityValue}\" + Enter if no selectable list is found) and press F12 to save it if it " +
+                $"appears, and ESC through the {otherDialogs} dialog(s) if any appear (no PioneerRx call made).");
         }
 
         if (context.AttachedWindow is null)
@@ -1452,10 +1452,18 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     private static bool VerifyDialogGone(IntPtr dialogHandle) =>
         SynchronousPoll.WaitUntil(() => Win32WindowEnumerator.IsWindowGone(dialogHandle), maxTicks: 15, () => Thread.Sleep(100));
 
-    /// <summary>Step (c) — Confirm. Brief point 2c: a button named OK /
-    /// Select / Save / Continue / Accept (case-insensitive; also matches by
-    /// AutomationId containing "ok"/"accept") -> Invoke; else a plain Enter
-    /// to the dialog; else Alt+O.
+    /// <summary>Step (c) — Confirm. V-T41 (Will's 2026-09-28 report): "It
+    /// makes it to the priority screen and enters 'Vaccine' as the
+    /// priority, but fails to save it. Need to push F12 after that, then
+    /// continue." — F12 is Pioneer's Save shortcut, so it's now tried
+    /// FIRST (see <see cref="PriorityConfirmPlan.Order"/> for the fixed
+    /// attempt order this documents). If F12 doesn't verifiably close the
+    /// dialog (either the guard refused it, or it closed but is still
+    /// open), the original brief point 2c fallbacks run unchanged: a
+    /// button named OK / Select / Save / Continue / Accept (case-
+    /// insensitive; also matches by AutomationId containing "ok"/"accept",
+    /// or equal to "uxSave" — Pioneer's actual Save button on this dialog)
+    /// -> Invoke; else a plain Enter to the dialog; else Alt+O.
     ///
     /// V-T41 ROUND 4 REVIEW FIX (BLOCKER 2 — safety reviewer): "if the
     /// dialog is already gone -> return Resolved (nothing to confirm, no
@@ -1465,7 +1473,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// (FindAllDescendants off `dialog`, never a desktop-wide search) —
     /// unchanged, preserved per the reviewer's explicit note. Invoke on a
     /// found button targets that button's own UIA provider directly
-    /// (COM-targeted, not raw OS input) so it's NOT gated; every Enter/
+    /// (COM-targeted, not raw OS input) so it's NOT gated; every F12/Enter/
     /// Alt+O keystroke IS raw OS input, so each is gated via
     /// TryAuthorizeDialogInput immediately before it's sent — a refusal
     /// simply means "don't send this one," not an exception, so the method
@@ -1483,6 +1491,28 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         try
         {
+            if (TryAuthorizeDialogInput(dialogHandle, mainProcessId, "F12 (Save)", log))
+            {
+                dialog.FocusNative();
+                Keyboard.Type(VirtualKeyShort.F12);
+                var closedAfterF12 = VerifyDialogGone(dialogHandle);
+                log($"[{Name}] \"Priority\" dialog: sent F12 (Save) -> {(closedAfterF12 ? "closed" : "still open")}.");
+                if (closedAfterF12) return true;
+            }
+        }
+        catch
+        {
+            // Fall through to the button/Enter/Alt+O fallbacks below.
+        }
+
+        if (Win32WindowEnumerator.IsWindowGone(dialogHandle))
+        {
+            log($"[{Name}] \"Priority\" dialog: confirm — dialog closed after F12; nothing further to do.");
+            return true;
+        }
+
+        try
+        {
             var buttonCondition = dialog.ConditionFactory.ByControlType(ControlType.Button);
             foreach (var button in dialog.FindAllDescendants(buttonCondition))
             {
@@ -1491,7 +1521,8 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 var nameMatches = ConfirmButtonNames.Any(candidate => name.Contains(candidate, StringComparison.OrdinalIgnoreCase));
                 var idMatches =
                     automationId.Contains("ok", StringComparison.OrdinalIgnoreCase) ||
-                    automationId.Contains("accept", StringComparison.OrdinalIgnoreCase);
+                    automationId.Contains("accept", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(automationId, "uxSave", StringComparison.OrdinalIgnoreCase);
                 if (!nameMatches && !idMatches) continue;
 
                 if (button.Patterns.Invoke.IsSupported)

@@ -67,6 +67,9 @@ by step — see "Side-by-side: macro vs. current code" below.
    - **"Priority"** — NOT simply dismissed. The macro **sets it to
      "Vaccine"** (a selection, not an Escape) — Will, 2026-09-13: "It
      needs to set the priority to Vaccine when that window comes up."
+     Select Vaccine, then F12 saves the dialog (Will, 2026-09-28: F12 is
+     Pioneer's Save shortcut — tried first, before the OK/Enter/Alt+O
+     fallbacks).
    - **"Scan Hard Copy"** — Escaped/dismissed.
    - **"Patient on Cycle Fill"** — Escaped/dismissed (added later,
      MSG893 hotfix — may not appear on every machine/configuration;
