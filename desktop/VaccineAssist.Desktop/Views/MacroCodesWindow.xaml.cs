@@ -134,6 +134,19 @@ public partial class MacroCodesWindow : Window
     /// this is true.</summary>
     private bool _closed;
 
+    /// <summary>ESCAPE FIX (Will, 2026-09-28, verbatim): "pushing Esc
+    /// closes the whole app window [while a dose is armed]. Instead, make
+    /// it clear back to the full list ... then esc again closes the app
+    /// window." True once CoreWebView2_OnNavigationCompleted has fired
+    /// with e.IsSuccess (the page's own Escape/hotkey listener is
+    /// guaranteed wired up at that point — see
+    /// cloud/app/macro-codes/page.tsx's hotkeys effect); false before
+    /// that and reset to false on a failed navigation, so a page that
+    /// never loaded (FailurePanel showing) can't leave the popup stuck
+    /// with no way to close it. See MacroCodesEscapePolicy for the actual
+    /// decision this guards.</summary>
+    private bool _pageReady;
+
     /// <summary>REVIEWER FIX: the pending Dispatcher.BeginInvoke operation
     /// from ScheduleFocusWebView's DispatcherPriority.Input call (there's
     /// at most one meaningfully in flight at a time — each call re-uses
@@ -482,6 +495,10 @@ public partial class MacroCodesWindow : Window
 
     private void ShowInitFailure(Exception ex)
     {
+        // ESCAPE FIX: WebView2 itself never came up, so there's no page
+        // to hand Escape to — keep closing the window directly.
+        _pageReady = false;
+
         WebView.Visibility = Visibility.Collapsed;
         FailurePanel.Visibility = Visibility.Visible;
         FailureDetailTextBlock.Text = $"{ex.GetType().Name}: {ex.Message}";
@@ -566,6 +583,14 @@ public partial class MacroCodesWindow : Window
     /// </summary>
     private void CoreWebView2_OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
+        // ESCAPE FIX: only a successful navigation means the page's own
+        // Escape/hotkey listener is actually wired up — see _pageReady's
+        // doc comment and MacroCodesEscapePolicy. A failed navigation
+        // (e.g. transient network issue) leaves this false so Escape
+        // keeps closing the window directly instead of relying on a page
+        // that never finished loading.
+        _pageReady = e.IsSuccess;
+
         ScheduleFocusWebView();
 
         _ = TryFocusDocumentAsync();
@@ -615,10 +640,37 @@ public partial class MacroCodesWindow : Window
         });
     }
 
-    /// <summary>Brief step 3: "on ... the window's own Escape (PreviewKeyDown) just close." Handled at the window level (not inside the WebView2 page) so it works even before/if the page never loads (e.g. the failure panel is showing).</summary>
+    /// <summary>ESCAPE FIX (Will, 2026-09-28, verbatim): "pushing Esc
+    /// closes the whole app window [while a dose is armed]. Instead, make
+    /// it clear back to the full list of macro codes, then esc again
+    /// closes the app window." Originally this closed on every Escape
+    /// unconditionally (brief step 3 from the original build: "on ... the
+    /// window's own Escape (PreviewKeyDown) just close") — that fires
+    /// before the embedded page's own document keydown listener ever sees
+    /// the key, so the page's already-correct "first Escape clears the
+    /// armed dose, second Escape posts macro-cancel" logic
+    /// (cloud/lib/macro-hotkeys.ts hotkeyTransition +
+    /// app/macro-codes/page.tsx) never got a chance to run.
+    ///
+    /// Now: let the page own Escape whenever it safely can (see
+    /// MacroCodesEscapePolicy's doc comment for what "safely can" means)
+    /// by doing nothing and leaving the event unhandled, so it continues
+    /// to the WebView2 control's document. The page will either clear the
+    /// armed state (first Escape) or post
+    /// "vaccine-assist:macro-cancel" (second Escape), which
+    /// CoreWebView2_OnWebMessageReceived already closes the window for.
+    /// Only fall back to closing here directly when the page can't be
+    /// trusted to have handled it (not loaded yet, navigation failed, or
+    /// focus isn't actually in the WebView) — the pharmacist must never
+    /// be stuck with a popup no key can dismiss.</summary>
     private void MacroCodesWindow_OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape)
+        if (e.Key != Key.Escape)
+        {
+            return;
+        }
+
+        if (MacroCodesEscapePolicy.ShouldCloseImmediately(_pageReady, WebView.IsKeyboardFocusWithin))
         {
             Close();
         }

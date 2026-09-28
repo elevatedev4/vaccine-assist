@@ -1119,8 +1119,21 @@ function MacroCodesPageContent() {
       if (modal) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.repeat) return;
+      // ESCAPE FIX (2026-09-28 follow-up): letter/digit hotkeys still
+      // ignore a form target (typing a search term must never arm/copy a
+      // vaccine), but Escape is exempted from this guard. Without the
+      // exemption, arming a product (focus on <main>) and then clicking
+      // into the filter box (mouse, not keyboard) left Escape a dead end
+      // while armed: this effect used to bail out here before ever
+      // calling hotkeyTransition, so the armed state never cleared, and
+      // the embed-cancel effect below independently declines to close
+      // the popup while armed (see its own hotkeyState.armedProductKey
+      // check) — so the key did nothing at all instead of clearing back
+      // to the full list per Will's brief. hotkeyTransition itself is
+      // already a no-op for Escape when nothing is armed (see its doc
+      // comment), so letting it through here for every target is safe.
       const target = event.target as HTMLElement | null;
-      if (target) {
+      if (target && event.key !== "Escape") {
         const tag = target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
       }
