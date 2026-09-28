@@ -114,6 +114,34 @@ public partial class MacroCodesWindow : Window
     /// updated by this window.</summary>
     private bool _codeCopiedInAgeMacroFlow;
 
+    /// <summary>REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): "Focus-after-
+    /// Dispose race, no guard." ScheduleFocusWebView/FocusWebView are
+    /// called from four places (right after Show(), CoreWebView2 init,
+    /// NavigationCompleted, and this window's own Activated — see
+    /// ActivateAndFocusWebView's doc comment), each ending in a
+    /// Dispatcher.BeginInvoke(DispatcherPriority.Input, ...) call.
+    /// MacroCodesWindow_OnClosed disposes WebView synchronously but never
+    /// cancelled an already-queued focus operation — since
+    /// DispatcherPriority.Input (5) is lower than Normal (9), a focus
+    /// call queued by NavigationCompleted or an Activated re-fire from
+    /// the Topmost toggle would routinely run AFTER Dispose() on every
+    /// ordinary close (copy-a-code, Escape-cancel, age-macro auto-close),
+    /// and a post-Dispose WebView.Focus() call reaching
+    /// App.OnDispatcherUnhandledException pops the "ran into a problem"
+    /// MessageBox on completely normal use. Set true at the very top of
+    /// MacroCodesWindow_OnClosed, before anything else runs — both
+    /// ScheduleFocusWebView and FocusWebView bail out immediately once
+    /// this is true.</summary>
+    private bool _closed;
+
+    /// <summary>REVIEWER FIX: the pending Dispatcher.BeginInvoke operation
+    /// from ScheduleFocusWebView's DispatcherPriority.Input call (there's
+    /// at most one meaningfully in flight at a time — each call re-uses
+    /// this field rather than tracking a list), so MacroCodesWindow_OnClosed
+    /// can Abort() it directly instead of relying on the _closed guard
+    /// alone. Null whenever nothing is currently queued/pending.</summary>
+    private DispatcherOperation? _pendingFocusOperation;
+
     /// <param name="cloudApiBaseUrl">AppSettings.CloudApiBaseUrl, e.g. https://vaccine-assist.vercel.app — same base URL VaccineApiService calls against. Ignored (but still required) when <paramref name="overrideUrl"/> is given.</param>
     /// <param name="clipboardService">Same IClipboardService the rest of the app uses (App.xaml.cs's composition root) — belt-and-braces clipboard copy alongside the page's own copy (see CoreWebView2_OnWebMessageReceived).</param>
     /// <param name="previousForegroundWindow">The foreground window handle at the moment MainWindow decided to show this popup (captured via GetForegroundWindow() before Show() — for the age-macro flow, before AgePromptWindow, per Will's brief) — restored via SetForegroundWindow when this popup closes, so focus lands back where the pharmacist was, not on this app's MainWindow. IntPtr.Zero is tolerated (just skips the restore) rather than throwing.</param>
@@ -318,9 +346,20 @@ public partial class MacroCodesWindow : Window
     /// finished becoming active — same reasoning as
     /// DataEntryPopupWindow.ScheduleFocusCurrentStagePrimaryControl), or
     /// to this window's Loaded event if it hasn't fired yet (Show() does
-    /// not always raise Loaded synchronously before returning).</summary>
+    /// not always raise Loaded synchronously before returning).
+    ///
+    /// REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): bails out immediately
+    /// once _closed is set (see that field's doc comment) instead of
+    /// queuing a focus call that could run after WebView.Dispose(). The
+    /// queued Dispatcher operation itself is captured into
+    /// _pendingFocusOperation so MacroCodesWindow_OnClosed can Abort() it
+    /// directly too — belt-and-suspenders alongside the _closed check
+    /// inside FocusWebView, in case an operation was already dequeued and
+    /// mid-flight when Close() ran.</summary>
     private void ScheduleFocusWebView()
     {
+        if (_closed) return;
+
         if (!IsLoaded)
         {
             Loaded -= MacroCodesWindow_OnLoadedFocusRetry;
@@ -328,13 +367,14 @@ public partial class MacroCodesWindow : Window
             return;
         }
 
-        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusWebView));
+        _pendingFocusOperation = Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusWebView));
     }
 
     private void MacroCodesWindow_OnLoadedFocusRetry(object sender, RoutedEventArgs e)
     {
         Loaded -= MacroCodesWindow_OnLoadedFocusRetry;
-        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusWebView));
+        if (_closed) return;
+        _pendingFocusOperation = Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusWebView));
     }
 
     /// <summary>Puts WPF/keyboard focus directly on the WebView2 control
@@ -342,11 +382,44 @@ public partial class MacroCodesWindow : Window
     /// keydown events immediately — see ActivateAndFocusWebView's doc
     /// comment for why this is called from multiple points. Safe to call
     /// before CoreWebView2 has finished initializing; WebView.Focus() is
-    /// a plain WPF focus call on the control itself.</summary>
+    /// a plain WPF focus call on the control itself.
+    ///
+    /// REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): a _closed re-check
+    /// right before touching WebView, PLUS a try/catch around the calls
+    /// themselves — ScheduleFocusWebView's _closed guard and
+    /// MacroCodesWindow_OnClosed's Abort() cover the common case, but a
+    /// Dispatcher operation can already be mid-flight (dequeued, about to
+    /// run this method) the instant Close() starts running on the same
+    /// thread, so neither of those alone fully closes the race. If
+    /// WebView.Focus()/Keyboard.Focus() still throws on an already-
+    /// disposed WebView2 control (ObjectDisposedException/
+    /// InvalidOperationException — WebView2's own Dispose() contract
+    /// doesn't guarantee which one), this swallows it rather than letting
+    /// it reach App.OnDispatcherUnhandledException, which would otherwise
+    /// pop the "Vaccine Assist ran into a problem" MessageBox on
+    /// completely ordinary popup use (copy-a-code, Escape-cancel,
+    /// age-macro auto-close).</summary>
     private void FocusWebView()
     {
-        WebView.Focus();
-        Keyboard.Focus(WebView);
+        if (_closed) return;
+
+        try
+        {
+            WebView.Focus();
+            Keyboard.Focus(WebView);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Lost the race against Close()/Dispose() — nothing to focus
+            // anymore, nothing to log; this is the expected shape of the
+            // race this guard exists for, not a real failure.
+        }
+        catch (InvalidOperationException)
+        {
+            // Same race, different exception shape (observed from
+            // WebView2/WPF depending on exactly how far Dispose() had
+            // gotten) — same "nothing to do" response.
+        }
     }
 
     /// <summary>Belt-and-suspenders catch-all — see
@@ -584,6 +657,20 @@ public partial class MacroCodesWindow : Window
     /// brief.</summary>
     private async void MacroCodesWindow_OnClosed(object? sender, EventArgs e)
     {
+        // REVIEWER FIX (REQUEST_CHANGES, 2026-09-28): set FIRST, before
+        // anything else below — see _closed's own doc comment. Every
+        // focus entry point (ScheduleFocusWebView, the Loaded retry
+        // handler, FocusWebView itself) checks this and bails out, so
+        // nothing queued or newly triggered after this line can reach
+        // WebView post-Dispose. Abort() on the still-pending operation
+        // (if any) is belt-and-suspenders on top of that — cancels a
+        // call that's already sitting in the Dispatcher queue outright
+        // rather than letting it run and rely on FocusWebView's own
+        // _closed/try-catch guards.
+        _closed = true;
+        _pendingFocusOperation?.Abort();
+        _pendingFocusOperation = null;
+
         Activated -= MacroCodesWindow_OnActivated;
         Loaded -= MacroCodesWindow_OnLoadedFocusRetry;
 
