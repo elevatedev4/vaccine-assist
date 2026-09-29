@@ -411,7 +411,46 @@ public partial class MacroCodesWindow : Window
     /// it reach App.OnDispatcherUnhandledException, which would otherwise
     /// pop the "Vaccine Assist ran into a problem" MessageBox on
     /// completely ordinary popup use (copy-a-code, Escape-cancel,
-    /// age-macro auto-close).</summary>
+    /// age-macro auto-close).
+    ///
+    /// V-T64 FOLLOW-UP (reviewer, on 962fdee): asked whether this should
+    /// also call `WebView.CoreWebView2Controller?.MoveFocus(
+    /// CoreWebView2MoveFocusReason.Programmatic)` after the WPF-level
+    /// focus calls below, to move REAL Win32/browser keyboard focus into
+    /// the page (not just WPF's own focus scope) — reasoning: now that
+    /// MacroCodesEscapePolicy never closes the window once the page is
+    /// ready, Escape must actually reach the browser, and if native focus
+    /// were sitting on the WebView2 host/chrome instead, Escape would do
+    /// nothing until the pharmacist clicked in first.
+    ///
+    /// Verified against the exact DLL this project links for
+    /// net8.0-windows (Microsoft.Web.WebView2 1.0.4191.47's
+    /// lib_manual/net5.0-windows10.0.17763.0/Microsoft.Web.WebView2.Wpf.dll
+    /// — byte-identical to bin/Debug/net8.0-windows/Microsoft.Web.WebView2.Wpf.dll,
+    /// confirmed via `cmp`) by reading its IL metadata directly (no
+    /// Windows machine needed for this — System.Reflection.Metadata reads
+    /// the type table without loading/executing the assembly): at this
+    /// pinned version, Microsoft.Web.WebView2.Wpf.WebView2 has NO public
+    /// CoreWebView2Controller property. Its only public WebView2-object
+    /// surface is CoreWebView2 (Microsoft.Web.WebView2.Core.CoreWebView2),
+    /// which itself has no MoveFocus — MoveFocus lives only on
+    /// Microsoft.Web.WebView2.Core.CoreWebView2Controller, which the WPF
+    /// control keeps behind a PRIVATE explicit interface member
+    /// (IWebView2Private.InitializeController) with no public accessor.
+    /// So `WebView.CoreWebView2Controller` does not exist in this
+    /// codebase and would not compile — per the reviewer's own fallback
+    /// ("say so and use WebView.Focus() plus Keyboard.Focus only"), this
+    /// stays as-is below. Reaching the controller anyway would mean
+    /// reflecting into a private field, which is fragile against SDK
+    /// updates and not done here. CoreWebView2_OnNavigationCompleted's
+    /// TryFocusDocumentAsync (this file) already does the best available
+    /// native-side nudge — `WebView.CoreWebView2.ExecuteScriptAsync(
+    /// "window.focus();")` — as a page-side supplement to the WPF-level
+    /// focus calls immediately below; upgrading the MoveFocus path is
+    /// only possible by taking a newer Microsoft.Web.WebView2 package
+    /// version (which does add a public CoreWebView2Controller property
+    /// in later releases) — a separate, riskier change out of scope for
+    /// this bug fix.</summary>
     private void FocusWebView()
     {
         if (_closed) return;
