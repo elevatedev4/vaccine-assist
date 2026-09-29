@@ -755,9 +755,16 @@ public partial class MainWindow : Window
         }
 
         var viewModel = new FaxSettingsViewModel(_settings, _localSettingsService, _faxCredentialStore, _prescriberDirectory, _faxHttpClient);
+        // Notifyre-key-visibility follow-up (Will, 2026-09-28): rebuild
+        // the orchestrator's live IFaxClient from whatever's now on disk
+        // every time Settings persists a credential/provider change — see
+        // RebuildFaxClient's own doc comment for the "not done for phase
+        // 1" gap this closes.
+        viewModel.CredentialsSaved += RebuildFaxClient;
         var window = new FaxSettingsWindow(viewModel);
         window.Closed += (_, _) =>
         {
+            viewModel.CredentialsSaved -= RebuildFaxClient;
             if (ReferenceEquals(_openFaxSettingsWindow, window))
             {
                 _openFaxSettingsWindow = null;
@@ -765,6 +772,23 @@ public partial class MainWindow : Window
         };
         _openFaxSettingsWindow = window;
         window.Show();
+    }
+
+    /// <summary>Notifyre-key-visibility follow-up (Will, 2026-09-28):
+    /// "the real send path ... must read the STORED token, never a
+    /// transient textbox value" — App.xaml.cs originally built
+    /// _faxRunOrchestrator's IFaxClient ONCE at startup from whatever
+    /// credentials were on disk then (see its own "not done for phase 1"
+    /// comment), so a token saved mid-session never took effect until a
+    /// restart. Re-reads FaxCredentialStore + the current provider right
+    /// after Fax settings saves anything, and swaps the orchestrator's
+    /// client for a fresh one built from that — same
+    /// FaxClientFactory.Create call App.xaml.cs's startup path uses.</summary>
+    private void RebuildFaxClient()
+    {
+        var freshCredentials = _faxCredentialStore.Load() ?? new FaxCredentials();
+        var freshClient = FaxClientFactory.Create(_settings.Fax.Provider, _faxHttpClient, freshCredentials);
+        _faxRunOrchestrator.UpdateFaxClient(freshClient);
     }
 
     /// <summary>V-T53: tray menu's "Open fax folder" — the shared
@@ -836,12 +860,14 @@ public partial class MainWindow : Window
 
     /// <summary>V-T53: shows FaxRunSummaryWindow plus a tray balloon after
     /// every completed run (scheduled or "Run now") — Will's brief: "tray
-    /// balloon 'Vaccine faxes: 12 sent, 1 failed, 2 need a fax number'."</summary>
+    /// balloon 'Vaccine faxes: 12 sent, 1 failed, 2 skipped (no
+    /// prescriber fax)'" (renamed from "need a fax number" per the
+    /// 2026-09-28 fax-report-layout brief).</summary>
     private void FaxRunScheduler_OnRunCompleted(object? sender, FaxRunSummary summary)
     {
         _trayIconController?.ShowBalloonTip(
             "Vaccine faxes",
-            $"{summary.Sent} sent, {summary.Failed} failed, {summary.NeedsFaxNumber} need a fax number");
+            $"{summary.Sent} sent, {summary.Failed} failed, {summary.SkippedNoFax} skipped (no prescriber fax)");
 
         var viewModel = new FaxRunSummaryViewModel(summary, _faxRunOrchestrator, _settings);
         var window = new FaxRunSummaryWindow(viewModel);

@@ -29,10 +29,27 @@ public sealed class FaxRunOrchestrator
         Converters = { new JsonStringEnumConverter() },
     };
 
+    /// <summary>Per-row Status text for a skipped (no usable prescriber
+    /// fax) group — a plain string rather than a FaxLedgerStatus enum
+    /// value, since a skipped group never actually becomes a
+    /// FaxLedgerEntry (see the skip branch's own comment below).</summary>
+    private const string SkippedNoFaxStatus = "Skipped (no prescriber fax)";
+
     private readonly IReportImporter _importer;
     private readonly IPrescriberDirectory _prescriberDirectory;
     private readonly IVaccineRecordPdfBuilder _pdfBuilder;
-    private readonly IFaxClient _faxClient;
+
+    /// <summary>NOT readonly (Notifyre-key-visibility follow-up, Will
+    /// 2026-09-28) — App.xaml.cs originally built this ONCE at startup
+    /// from whatever credentials were on disk THEN, so saving a new
+    /// Notifyre token in Fax settings never took effect until the app
+    /// restarted (see App.xaml.cs's own "not done for phase 1" comment on
+    /// this class's construction). UpdateFaxClient lets MainWindow swap
+    /// in a freshly-built client (fresh credentials re-read from
+    /// FaxCredentialStore) right after a Settings save, so every run/
+    /// retry/poll after that point uses the STORED token, never a stale
+    /// in-memory one.</summary>
+    private IFaxClient _faxClient;
     private readonly IFaxLedger _ledger;
     private readonly IImportLedger _importLedger;
     private readonly string _faxRootDir;
@@ -58,6 +75,17 @@ public sealed class FaxRunOrchestrator
 
     /// <summary>True while a run is currently in progress.</summary>
     public bool IsRunning => _runLock.CurrentCount == 0;
+
+    /// <summary>Swaps in a freshly-built IFaxClient (see the field's own
+    /// doc comment) — called by MainWindow right after Fax settings
+    /// persists a credential/provider change, so the next run/retry/poll
+    /// picks it up without an app restart. Never called mid-run in
+    /// practice (Settings' Save button is disabled while IsBusy, and a
+    /// run holding _runLock doesn't block this simple field swap either
+    /// way — the in-flight run just finishes with whichever client
+    /// instance it already captured locally, which is fine since a
+    /// single run is short-lived).</summary>
+    public void UpdateFaxClient(IFaxClient faxClient) => _faxClient = faxClient;
 
     /// <summary>Runs the full pipeline once. Returns null (a no-op,
     /// logged, never thrown) if a run is already in progress.</summary>
@@ -187,22 +215,30 @@ public sealed class FaxRunOrchestrator
 
         foreach (var group in groups)
         {
-            var resolvedFax =
-                FaxNumberNormalizer.ToDialableOrNull(group.PrescriberFaxFromReport) ??
-                FaxNumberNormalizer.ToDialableOrNull(_prescriberDirectory.TryGetFaxNumber(group.PrescriberName, group.PrescriberNpi));
+            // Fax-report-layout brief (Will, 2026-09-28): "rows with an
+            // empty prescriber OR empty/invalid fax are skipped silently"
+            // — an empty prescriber NAME skips even if the report
+            // somehow still had a fax number column value, since the
+            // letter's "To:" block needs someone to address it to.
+            var hasPrescriberName = !string.IsNullOrWhiteSpace(group.PrescriberName);
+            var resolvedFax = hasPrescriberName
+                ? FaxNumberNormalizer.ToDialableOrNull(group.PrescriberFaxFromReport) ??
+                  FaxNumberNormalizer.ToDialableOrNull(_prescriberDirectory.TryGetFaxNumber(group.PrescriberName, group.PrescriberNpi))
+                : null;
 
             if (resolvedFax is null)
             {
-                summary.NeedsFaxNumber++;
+                summary.SkippedNoFax++;
                 summary.Rows.Add(new FaxRunRowSummary
                 {
                     PatientInitials = group.PatientInitials,
                     PrescriberName = group.PrescriberName ?? "(unknown prescriber)",
-                    Status = nameof(FaxLedgerStatus.NeedsFaxNumber),
-                    // V-T53 column-map follow-up (Will's brief): "reject
-                    // rows with no usable fax (report them in the summary
-                    // as 'no fax on file')".
-                    Error = "No fax on file for this prescriber.",
+                    Status = SkippedNoFaxStatus,
+                    // Never surfaced as an Error (brief: "not listed as
+                    // errors/Needs fax number nags") — the Status text
+                    // above already says exactly what happened, in a
+                    // neutral colour (see FaxRunSummaryWindow.xaml).
+                    Error = null,
                 });
                 // NOT fingerprinted — see ReportImporter's doc comment on
                 // why: these rows must still be pick-up-able once Will
@@ -224,7 +260,7 @@ public sealed class FaxRunOrchestrator
             byte[] pdfBytes;
             try
             {
-                pdfBytes = _pdfBuilder.Build(group, settings).PdfBytes;
+                pdfBytes = _pdfBuilder.Build(group, settings, resolvedFax).PdfBytes;
             }
             catch (Exception ex)
             {
@@ -274,7 +310,7 @@ public sealed class FaxRunOrchestrator
             ledgerEntries.Add(entry);
             // Fingerprinted now that this group made it far enough to
             // count as processed (queued, or a real vendor-side
-            // failure) — never for NeedsFaxNumber, see above.
+            // failure) — never for a skipped-no-fax group, see above.
             newFingerprints.AddRange(entry.RowFingerprints);
 
             AppFileLog.Log($"[FaxRunOrchestrator] {entry.PatientInitials} -> {entry.PrescriberName ?? "?"} ({entry.FaxNumberLast4}): {entry.Status}");
@@ -323,6 +359,7 @@ public sealed class FaxRunOrchestrator
             {
                 PatientInitials = entry.PatientInitials,
                 PrescriberName = entry.PrescriberName ?? "(unknown prescriber)",
+                FaxNumberLast4 = entry.FaxNumberLast4,
                 Status = entry.Status.ToString(),
                 Error = entry.Error,
                 LedgerEntryId = entry.Id,

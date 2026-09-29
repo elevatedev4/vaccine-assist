@@ -34,6 +34,9 @@ public sealed class FaxSettingsViewModel : ObservableObject
     private string _pharmacyName = "";
     private string _pharmacyPhone = "";
     private string _pharmacyFax = "";
+    private string _pharmacyAddressLine1 = "";
+    private string _pharmacyCityStateZip = "";
+    private string _signatureName = "";
     private string _accountCode = "";
     private string _inputFolder = "";
     private string _dailyRunTime = "18:30";
@@ -41,6 +44,18 @@ public sealed class FaxSettingsViewModel : ObservableObject
     private bool _isBusy;
     private string? _statusMessage;
     private string? _errorMessage;
+
+    /// <summary>The Notifyre token actually on disk right now (from
+    /// FaxCredentialStore) — kept separate from the bindable ApiToken
+    /// property, which is ONLY ever "whatever's typed in the box THIS
+    /// session" (starts blank even when a key IS stored — Notifyre-key-
+    /// visibility follow-up, Will 2026-09-28: "leave the token box empty
+    /// ... never display the full token"). SaveAsync falls back to this
+    /// when the box is left blank, so re-saving unrelated fields (e.g.
+    /// pharmacy phone) can never accidentally blank out an already-saved
+    /// key.</summary>
+    private string _storedNotifyreApiToken = "";
+    private DateTime? _storedNotifyreTokenSavedAtUtc;
 
     /// <summary>Which header form Notifyre last proved it accepts this
     /// token in — loaded from the credential store on window open,
@@ -72,9 +87,18 @@ public sealed class FaxSettingsViewModel : ObservableObject
         {
             if (row is not null) Prescribers.Remove(row);
         });
+        ForgetKeyCommand = new AsyncRelayCommand(ForgetKeyAsync, () => !IsBusy && HasStoredNotifyreKey);
 
         LoadFromCurrentState();
     }
+
+    /// <summary>Raised right after SaveAsync (or ForgetKeyAsync)
+    /// persists a Notifyre credential/provider change — MainWindow
+    /// subscribes to rebuild FaxRunOrchestrator's IFaxClient from the
+    /// freshly-stored credentials, so a real send never uses a stale
+    /// in-memory token from before this save (see
+    /// FaxRunOrchestrator.UpdateFaxClient's own doc comment).</summary>
+    public event Action? CredentialsSaved;
 
     public ObservableCollection<FaxColumnMapRow> ColumnMap { get; } = new();
     public ObservableCollection<PrescriberRow> Prescribers { get; } = new();
@@ -115,6 +139,13 @@ public sealed class FaxSettingsViewModel : ObservableObject
     public string PharmacyName { get => _pharmacyName; set => SetProperty(ref _pharmacyName, value); }
     public string PharmacyPhone { get => _pharmacyPhone; set => SetProperty(ref _pharmacyPhone, value); }
     public string PharmacyFax { get => _pharmacyFax; set => SetProperty(ref _pharmacyFax, value); }
+    public string PharmacyAddressLine1 { get => _pharmacyAddressLine1; set => SetProperty(ref _pharmacyAddressLine1, value); }
+    public string PharmacyCityStateZip { get => _pharmacyCityStateZip; set => SetProperty(ref _pharmacyCityStateZip, value); }
+
+    /// <summary>Printed under "Sincerely," on the letter — see
+    /// FaxSettings.SignatureName's own doc comment for the default.</summary>
+    public string SignatureName { get => _signatureName; set => SetProperty(ref _signatureName, value); }
+
     public string AccountCode { get => _accountCode; set => SetProperty(ref _accountCode, value); }
     public string InputFolder { get => _inputFolder; set => SetProperty(ref _inputFolder, value); }
     public string DailyRunTime { get => _dailyRunTime; set => SetProperty(ref _dailyRunTime, value); }
@@ -124,10 +155,22 @@ public sealed class FaxSettingsViewModel : ObservableObject
     public string? StatusMessage { get => _statusMessage; private set => SetProperty(ref _statusMessage, value); }
     public string? ErrorMessage { get => _errorMessage; private set => SetProperty(ref _errorMessage, value); }
 
+    /// <summary>"No key saved" / "Notifyre key saved (ends …1234, saved
+    /// …)" — see FaxKeyStatus.Describe. Bound read-only next to the API
+    /// token box; never shows the token itself.</summary>
+    public string NotifyreKeyStatusText => FaxKeyStatus.Describe(
+        FaxKeyStatus.Last4OfToken(_storedNotifyreApiToken), _storedNotifyreTokenSavedAtUtc);
+
+    /// <summary>Drives the "Forget key" button's enabled state and the
+    /// API-token box's "paste a new key to replace" hint text's
+    /// visibility.</summary>
+    public bool HasStoredNotifyreKey => !string.IsNullOrWhiteSpace(_storedNotifyreApiToken);
+
     public ICommand SaveCommand { get; }
     public ICommand TestConnectionCommand { get; }
     public ICommand AddPrescriberCommand { get; }
     public ICommand DeletePrescriberCommand { get; }
+    public ICommand ForgetKeyCommand { get; }
 
     /// <summary>Set by the code-behind's folder-browse dialog (a WPF/
     /// Win32 concern that doesn't belong in this ViewModel) — see
@@ -142,6 +185,9 @@ public sealed class FaxSettingsViewModel : ObservableObject
         PharmacyName = fax.PharmacyName;
         PharmacyPhone = fax.PharmacyPhone;
         PharmacyFax = fax.PharmacyFax;
+        PharmacyAddressLine1 = fax.PharmacyAddressLine1;
+        PharmacyCityStateZip = fax.PharmacyCityStateZip;
+        SignatureName = fax.SignatureName;
         AccountCode = fax.AccountCode ?? "";
         InputFolder = fax.InputFolder;
         DailyRunTime = fax.DailyRunTime;
@@ -150,8 +196,19 @@ public sealed class FaxSettingsViewModel : ObservableObject
         var credentials = _credentialStore.Load();
         AccessId = credentials?.AccessId ?? "";
         AccessPassword = credentials?.AccessPassword ?? "";
-        ApiToken = credentials?.ApiToken ?? "";
         _notifyreAuthMode = credentials?.NotifyreAuthMode ?? NotifyreAuthMode.XApiToken;
+
+        // Notifyre-key-visibility follow-up (Will, 2026-09-28): ApiToken
+        // (the bindable box value) starts BLANK even when a key IS
+        // stored — see its own field doc comment and
+        // FaxSettingsWindow.xaml.cs (no longer prefills ApiTokenBox from
+        // this). _storedNotifyreApiToken/_storedNotifyreTokenSavedAtUtc
+        // back the read-only "Notifyre key saved ..." status line instead.
+        ApiToken = "";
+        _storedNotifyreApiToken = credentials?.ApiToken ?? "";
+        _storedNotifyreTokenSavedAtUtc = credentials?.NotifyreTokenSavedAtUtc;
+        OnPropertyChanged(nameof(NotifyreKeyStatusText));
+        OnPropertyChanged(nameof(HasStoredNotifyreKey));
 
         ColumnMap.Clear();
         var map = fax.ColumnMap;
@@ -166,7 +223,9 @@ public sealed class FaxSettingsViewModel : ObservableObject
         ColumnMap.Add(new FaxColumnMapRow { Field = "Patient last name", Header = map.PatientLastNameHeader });
         ColumnMap.Add(new FaxColumnMapRow { Field = "Vaccine name", Required = true, Header = map.VaccineNameHeader });
         ColumnMap.Add(new FaxColumnMapRow { Field = "Administered date", Required = true, Header = map.AdministeredDateHeader });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "DOB", Header = map.DobHeader ?? "" });
+        // REQUIRED (fax-report-layout brief, 2026-09-28) — see
+        // FaxColumnMap.DobHeader's own doc comment.
+        ColumnMap.Add(new FaxColumnMapRow { Field = "DOB", Required = true, Header = map.DobHeader });
         ColumnMap.Add(new FaxColumnMapRow { Field = "Lot", Header = map.LotHeader ?? "" });
         ColumnMap.Add(new FaxColumnMapRow { Field = "Manufacturer", Header = map.ManufacturerHeader ?? "" });
         ColumnMap.Add(new FaxColumnMapRow { Field = "Dose", Header = map.DoseHeader ?? "" });
@@ -206,11 +265,19 @@ public sealed class FaxSettingsViewModel : ObservableObject
             // blank check too — a token that's nothing but whitespace/
             // zero-width characters/quotes should read as "not entered",
             // same as a literally empty box. See FaxApiTokenNormalizer.
-            var normalizedApiToken = FaxApiTokenNormalizer.Normalize(ApiToken);
+            var typedApiToken = FaxApiTokenNormalizer.Normalize(ApiToken);
 
-            // Notifyre-only: a blank token would otherwise save silently
-            // and only fail later, mid-run, on the first real send.
-            if (SelectedProvider == FaxProvider.Notifyre && string.IsNullOrWhiteSpace(normalizedApiToken))
+            // Notifyre-key-visibility follow-up (Will, 2026-09-28): the
+            // box is ALWAYS blank on open now (never prefilled with the
+            // real secret — see LoadFromCurrentState), so a blank box
+            // here means "keep whatever's already stored", NOT "erase
+            // it" — only error out when NOTHING has ever been saved
+            // either. A non-blank box always means "replace it with
+            // this".
+            var tokenChanged = !string.IsNullOrWhiteSpace(typedApiToken);
+            var tokenToPersist = tokenChanged ? typedApiToken : _storedNotifyreApiToken;
+
+            if (SelectedProvider == FaxProvider.Notifyre && string.IsNullOrWhiteSpace(tokenToPersist))
             {
                 ErrorMessage = "Enter a Notifyre API token.";
                 return;
@@ -231,6 +298,9 @@ public sealed class FaxSettingsViewModel : ObservableObject
             fax.PharmacyName = PharmacyName.Trim();
             fax.PharmacyPhone = PharmacyPhone.Trim();
             fax.PharmacyFax = PharmacyFax.Trim();
+            fax.PharmacyAddressLine1 = PharmacyAddressLine1.Trim();
+            fax.PharmacyCityStateZip = PharmacyCityStateZip.Trim();
+            fax.SignatureName = SignatureName.Trim();
             fax.AccountCode = string.IsNullOrWhiteSpace(AccountCode) ? null : AccountCode.Trim();
             fax.InputFolder = InputFolder.Trim();
             fax.DailyRunTime = DailyRunTime.Trim();
@@ -243,8 +313,30 @@ public sealed class FaxSettingsViewModel : ObservableObject
             // last discovered (_notifyreAuthMode) — otherwise Save would
             // silently overwrite a discovered non-documented mode back
             // to the documented default every time Will edits anything
-            // else in this window.
-            _credentialStore.Save(new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = normalizedApiToken, NotifyreAuthMode = _notifyreAuthMode });
+            // else in this window. tokenToPersist is either the newly
+            // typed token or (box left blank) whatever was already
+            // stored — see its own comment above; NotifyreTokenSavedAtUtc
+            // only advances when the token actually changed, so
+            // re-saving unrelated fields doesn't make an unchanged key
+            // look freshly re-entered.
+            if (tokenChanged)
+            {
+                _storedNotifyreTokenSavedAtUtc = DateTime.UtcNow;
+            }
+            _storedNotifyreApiToken = tokenToPersist;
+            _credentialStore.Save(new FaxCredentials
+            {
+                AccessId = AccessId.Trim(),
+                AccessPassword = AccessPassword,
+                ApiToken = tokenToPersist,
+                NotifyreAuthMode = _notifyreAuthMode,
+                NotifyreTokenSavedAtUtc = _storedNotifyreTokenSavedAtUtc,
+            });
+            // The box itself always goes back to blank after a save —
+            // never re-shows the token that's now on disk.
+            ApiToken = "";
+            OnPropertyChanged(nameof(NotifyreKeyStatusText));
+            OnPropertyChanged(nameof(HasStoredNotifyreKey));
 
             _prescriberDirectory.Save(Prescribers
                 .Where(r => !string.IsNullOrWhiteSpace(r.Name) || !string.IsNullOrWhiteSpace(r.Npi))
@@ -257,6 +349,10 @@ public sealed class FaxSettingsViewModel : ObservableObject
                 .ToList());
 
             StatusMessage = "Saved.";
+            // MainWindow rebuilds FaxRunOrchestrator's IFaxClient from
+            // what was just persisted, so a real send never uses a stale
+            // in-memory client built at app-startup credentials.
+            CredentialsSaved?.Invoke();
         }
         catch (Exception ex)
         {
@@ -268,6 +364,33 @@ public sealed class FaxSettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>"Forget key" button (Will, 2026-09-28) — clears the
+    /// stored Notifyre token from disk. The confirm dialog lives in
+    /// FaxSettingsWindow.xaml.cs's code-behind (a UI concern), not here —
+    /// by the time this runs, Will has already confirmed.</summary>
+    private Task ForgetKeyAsync()
+    {
+        ErrorMessage = null;
+        StatusMessage = null;
+
+        var stored = _credentialStore.Load() ?? new FaxCredentials();
+        stored.ApiToken = "";
+        stored.NotifyreTokenSavedAtUtc = null;
+        _credentialStore.Save(stored);
+
+        _storedNotifyreApiToken = "";
+        _storedNotifyreTokenSavedAtUtc = null;
+        OnPropertyChanged(nameof(NotifyreKeyStatusText));
+        OnPropertyChanged(nameof(HasStoredNotifyreKey));
+
+        StatusMessage = "Notifyre key removed.";
+        // Rebuild the live fax client too — otherwise a run started
+        // right after "Forget key" would still send with the
+        // just-forgotten token still held in memory.
+        CredentialsSaved?.Invoke();
+        return Task.CompletedTask;
+    }
+
     private async Task TestConnectionAsync()
     {
         IsBusy = true;
@@ -275,19 +398,57 @@ public sealed class FaxSettingsViewModel : ObservableObject
         StatusMessage = null;
         try
         {
+            // Notifyre-key-visibility follow-up (Will, 2026-09-28): the
+            // box is blank by default now (see LoadFromCurrentState), so
+            // "test with whatever's in the box" would silently test with
+            // nothing whenever Will hasn't just retyped it — use the
+            // BOX when something's typed, otherwise fall back to the
+            // STORED key, and say plainly which one was used so Will
+            // never has to guess whether an untyped Save is still needed.
+            var typedToken = FaxApiTokenNormalizer.Normalize(ApiToken);
+            var usingStoredNotifyreKey = false;
+            string notifyreTokenToTest;
+            if (SelectedProvider == FaxProvider.Notifyre)
+            {
+                if (!string.IsNullOrWhiteSpace(typedToken))
+                {
+                    notifyreTokenToTest = typedToken;
+                }
+                else if (!string.IsNullOrWhiteSpace(_storedNotifyreApiToken))
+                {
+                    notifyreTokenToTest = _storedNotifyreApiToken;
+                    usingStoredNotifyreKey = true;
+                }
+                else
+                {
+                    ErrorMessage = "Enter a Notifyre API token to test.";
+                    return;
+                }
+            }
+            else
+            {
+                notifyreTokenToTest = typedToken;
+            }
+
             // Uses the dropdown's CURRENT selection, not the last-saved
             // _settings.Fax.Provider — otherwise switching the dropdown
             // and clicking Test connection before Save would silently
             // test the wrong vendor.
-            var credentials = new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = FaxApiTokenNormalizer.Normalize(ApiToken) };
+            var credentials = new FaxCredentials { AccessId = AccessId.Trim(), AccessPassword = AccessPassword, ApiToken = notifyreTokenToTest };
             var client = FaxClientFactory.Create(SelectedProvider, _httpClient, credentials);
             var result = await client.TestConnectionAsync();
 
             // result.Summary already starts with "Connected. " (see
             // NotifyreFaxClient/SrFaxClient's own TestConnectionAsync) —
             // prepending it again here used to show "Connected.
-            // Connected. ..." in the dialog.
-            StatusMessage = result.Success ? result.Summary : null;
+            // Connected. ..." in the dialog. For Notifyre, also say
+            // which key it used (Will's brief item 3).
+            var keySourceSuffix = SelectedProvider == FaxProvider.Notifyre
+                ? (usingStoredNotifyreKey
+                    ? " Connected using the saved key."
+                    : " Connected using the key in the box (not saved yet — press Save).")
+                : "";
+            StatusMessage = result.Success ? result.Summary + keySourceSuffix : null;
             ErrorMessage = result.Success ? null : result.ErrorMessage ?? "Couldn't connect.";
 
             // V-T53 401 follow-up (Will, 2026-09-25): NotifyreFaxClient's
@@ -304,7 +465,13 @@ public sealed class FaxSettingsViewModel : ObservableObject
                 var stored = _credentialStore.Load() ?? new FaxCredentials();
                 stored.ApiToken = credentials.ApiToken;
                 stored.NotifyreAuthMode = credentials.NotifyreAuthMode;
+                stored.NotifyreTokenSavedAtUtc = DateTime.UtcNow;
                 _credentialStore.Save(stored);
+                _storedNotifyreApiToken = credentials.ApiToken;
+                _storedNotifyreTokenSavedAtUtc = stored.NotifyreTokenSavedAtUtc;
+                OnPropertyChanged(nameof(NotifyreKeyStatusText));
+                OnPropertyChanged(nameof(HasStoredNotifyreKey));
+                CredentialsSaved?.Invoke();
             }
         }
         catch (Exception ex)
@@ -333,7 +500,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
             PatientLastNameHeader = Header("Patient last name"),
             VaccineNameHeader = Header("Vaccine name"),
             AdministeredDateHeader = Header("Administered date"),
-            DobHeader = OptionalHeader("DOB"),
+            DobHeader = Header("DOB"),
             LotHeader = OptionalHeader("Lot"),
             ManufacturerHeader = OptionalHeader("Manufacturer"),
             DoseHeader = OptionalHeader("Dose"),

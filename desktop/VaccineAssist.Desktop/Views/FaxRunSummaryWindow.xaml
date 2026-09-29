@@ -7,8 +7,8 @@
         WindowStartupLocation="CenterScreen">
     <!--
         Will's brief: "show FaxRunSummaryWindow (counts: imported rows,
-        patients, sent, in-process, failed, needs-fax-number, with a
-        per-row grid)." Failed rows get a Retry button (ViewModels/
+        patients, sent, in-process, failed, skipped (no prescriber fax),
+        with a per-row grid)." Failed rows get a Retry button (ViewModels/
         FaxRunSummaryViewModel.cs's RetryCommand — CanExecute only for
         Status == "Failed", so it's the ONLY way a retry ever happens —
         explicit click, never automatic).
@@ -39,13 +39,14 @@
             <TextBlock Text="{Binding Summary.Sent, StringFormat='Sent: {0}'}" Margin="0,0,16,0" Foreground="Green"/>
             <TextBlock Text="{Binding Summary.InProcess, StringFormat='In process: {0}'}" Margin="0,0,16,0"/>
             <TextBlock Text="{Binding Summary.Failed, StringFormat='Failed: {0}'}" Margin="0,0,16,0" Foreground="Red"/>
-            <TextBlock Text="{Binding Summary.NeedsFaxNumber, StringFormat='Needs fax number: {0}'}" Margin="0,0,16,0" Foreground="DarkOrange"/>
+            <TextBlock Text="{Binding Summary.SkippedNoFax, StringFormat='Skipped (no prescriber fax): {0}'}" Margin="0,0,16,0" Foreground="Gray"/>
         </WrapPanel>
 
         <DataGrid Grid.Row="4" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Patient" Binding="{Binding PatientInitials}" Width="*"/>
                 <DataGridTextColumn Header="Prescriber" Binding="{Binding PrescriberName}" Width="2*"/>
+                <DataGridTextColumn Header="Fax (last 4)" Binding="{Binding FaxNumberLast4}" Width="*"/>
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"/>
                 <DataGridTextColumn Header="Error" Binding="{Binding Error}" Width="3*"/>
                 <DataGridTemplateColumn Header="" Width="80">

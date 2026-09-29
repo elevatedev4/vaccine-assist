@@ -51,7 +51,16 @@ public static class ReportRowParser
             return (null, "missing or unparsable administered date");
         }
 
-        TryParseDate(row.Get(map.DobHeader), out var dob);
+        // DOB is REQUIRED (fax-report-layout brief, 2026-09-28) — the
+        // letter's "Birth Date" table column has no sensible fallback, so
+        // a row without a parsable DOB is skipped with a named reason
+        // rather than faxed with a blank/dashed date.
+        var dobRaw = row.Get(map.DobHeader);
+        if (string.IsNullOrWhiteSpace(dobRaw) || !TryParseDate(dobRaw, out var dob))
+        {
+            return (null, "missing or unparsable date of birth");
+        }
+
         TryParseDate(row.Get(map.VisDateHeader), out var visDate);
 
         var record = new ImmunizationRecord

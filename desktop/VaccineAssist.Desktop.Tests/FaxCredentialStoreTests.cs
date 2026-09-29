@@ -186,6 +186,54 @@ public class FaxCredentialStoreTests
     }
 
     [Fact]
+    public void SaveThenLoadRoundTripsTheNotifyreTokenSavedAtTimestamp()
+    {
+        // Notifyre-key-visibility follow-up (Will, 2026-09-28) — plain
+        // (not DPAPI-protected, see TheTokenIsNotStoredInPlainTextOnDisk
+        // below for the contrast) round trip of the "when was this saved"
+        // timestamp FaxSettingsViewModel's status line reads.
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        try
+        {
+            var store = new FaxCredentialStore(path);
+            var savedAt = new DateTime(2026, 9, 28, 19, 20, 0, DateTimeKind.Utc);
+            store.Save(new FaxCredentials { ApiToken = "test-token", NotifyreTokenSavedAtUtc = savedAt });
+
+            var loaded = store.Load();
+
+            Assert.NotNull(loaded);
+            Assert.Equal(savedAt, loaded!.NotifyreTokenSavedAtUtc);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ATokenSavedWithoutAnExplicitTimestampRoundTripsAsNull()
+    {
+        // Covers an older credentials.json written before this field
+        // existed just as well as a fresh Save that never set it —
+        // DateTime.TryParse(null, ...) fails closed to null either way.
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        try
+        {
+            var store = new FaxCredentialStore(path);
+            store.Save(new FaxCredentials { ApiToken = "test-token" });
+
+            var loaded = store.Load();
+
+            Assert.NotNull(loaded);
+            Assert.Null(loaded!.NotifyreTokenSavedAtUtc);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void DeleteRemovesAPreviouslySavedCredentialsFile()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");

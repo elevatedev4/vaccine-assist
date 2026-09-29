@@ -36,6 +36,17 @@ public sealed class FaxSettings
     /// header.</summary>
     public string PharmacyFax { get; set; } = "";
 
+    /// <summary>Street address line printed in the letter's pharmacy
+    /// block (fax-report-layout brief, 2026-09-28 — Will's current fax
+    /// example shows a street address above city/state/zip). Blank is
+    /// valid; the PDF just omits the line.</summary>
+    public string PharmacyAddressLine1 { get; set; } = "";
+
+    /// <summary>"City, ST 12345"-style line printed under
+    /// PharmacyAddressLine1 in the letter's pharmacy block. Blank is
+    /// valid; the PDF just omits the line.</summary>
+    public string PharmacyCityStateZip { get; set; } = "";
+
     /// <summary>SRFax sSenderEmail — where SRFax sends delivery
     /// notifications; not printed on the PDF.</summary>
     public string SenderEmail { get; set; } = "";
@@ -56,4 +67,10 @@ public sealed class FaxSettings
     /// by default; a pharmacy that DOES want the automatic folder-watch
     /// daily run can still switch this back on in Fax settings).</summary>
     public bool DailyRunEnabled { get; set; } = false;
+
+    /// <summary>Printed under "Sincerely," on the letter (fax-report-
+    /// layout brief, 2026-09-28) — defaults to Will's own current
+    /// signature (his brief's own default text), editable per
+    /// workstation/pharmacist in Fax settings.</summary>
+    public string SignatureName { get; set; } = "Will Anderson, Pharm.D.";
 }

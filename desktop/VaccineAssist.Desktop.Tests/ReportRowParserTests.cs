@@ -34,6 +34,7 @@ public class ReportRowParserTests
             [Map.PatientLastNameHeader] = "Patient",
             [Map.VaccineNameHeader] = "Flu",
             [Map.AdministeredDateHeader] = "2026-09-01",
+            [Map.DobHeader] = "1980-01-15",
             [Map.LotHeader!] = "LOT1",
             [Map.PrescriberNameHeader!] = "Dr. Synthetic",
         });
@@ -45,6 +46,7 @@ public class ReportRowParserTests
         Assert.Equal("Test", record!.PatientFirstName);
         Assert.Equal("Flu", record.VaccineName);
         Assert.Equal(new System.DateOnly(2026, 9, 1), record.AdministeredDate);
+        Assert.Equal(new System.DateOnly(1980, 1, 15), record.PatientDob);
         Assert.Equal("LOT1", record.Lot);
         Assert.Equal("Dr. Synthetic", record.PrescriberName);
     }
@@ -100,6 +102,43 @@ public class ReportRowParserTests
         Assert.Equal("missing or unparsable administered date", reason);
     }
 
+    [Fact]
+    public void MissingDobIsSkippedWithReason()
+    {
+        // Fax-report-layout brief (2026-09-28): DOB is REQUIRED — the
+        // letter's "Birth Date" table column has no sensible fallback.
+        var row = MakeRow(new Dictionary<string, string>
+        {
+            [Map.PatientFirstNameHeader] = "Test",
+            [Map.PatientLastNameHeader] = "Patient",
+            [Map.VaccineNameHeader] = "Flu",
+            [Map.AdministeredDateHeader] = "2026-09-01",
+        });
+
+        var (record, reason) = ReportRowParser.Parse(row, Map, "test.csv");
+
+        Assert.Null(record);
+        Assert.Equal("missing or unparsable date of birth", reason);
+    }
+
+    [Fact]
+    public void UnparsableDobIsSkippedWithReason()
+    {
+        var row = MakeRow(new Dictionary<string, string>
+        {
+            [Map.PatientFirstNameHeader] = "Test",
+            [Map.PatientLastNameHeader] = "Patient",
+            [Map.VaccineNameHeader] = "Flu",
+            [Map.AdministeredDateHeader] = "2026-09-01",
+            [Map.DobHeader] = "not-a-date",
+        });
+
+        var (record, reason) = ReportRowParser.Parse(row, Map, "test.csv");
+
+        Assert.Null(record);
+        Assert.Equal("missing or unparsable date of birth", reason);
+    }
+
     // ---- Pioneer's real report shape (V-T53 401/column-map follow-up,
     // Will 2026-09-23) — the DEFAULT FaxColumnMap(), no overrides. ----
 
@@ -112,6 +151,7 @@ public class ReportRowParserTests
             [map.PatientFullNameHeader!] = "Doe, Jane",
             [map.VaccineNameHeader] = "Influenza",
             [map.AdministeredDateHeader] = "2026-09-01",
+            [map.DobHeader] = "1968-06-11",
         });
 
         var (record, reason) = ReportRowParser.Parse(row, map, "report.xlsx");
@@ -193,6 +233,7 @@ public class ReportRowParserTests
             [map.PatientFullNameHeader!] = "Doe, Jane",
             [map.VaccineNameHeader] = "Shingrix",
             [map.AdministeredDateHeader] = "2026-09-01",
+            [map.DobHeader] = "1968-06-11",
             [map.PrescriberNameHeader!] = "Dr. Synthetic",
             [map.PrescriberFaxHeader!] = "(555) 010-0100",
         });

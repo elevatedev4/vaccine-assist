@@ -25,6 +25,15 @@ public sealed class FaxCredentials
     /// connection.</summary>
     public NotifyreAuthMode NotifyreAuthMode { get; set; } = NotifyreAuthMode.XApiToken;
 
+    /// <summary>UTC instant ApiToken was last (re)persisted — Notifyre-
+    /// key-visibility follow-up (Will, 2026-09-28: "make sure the
+    /// settings is storing the Notifyre key... it doesn't show that in
+    /// the settings that it is"). Plain (not DPAPI-protected — it's a
+    /// timestamp, not a secret) so FaxSettingsViewModel can show "saved
+    /// &lt;date&gt;" without ever displaying the token itself. Null on an
+    /// install that predates this field, or once ForgetKey clears it.</summary>
+    public DateTime? NotifyreTokenSavedAtUtc { get; set; }
+
     /// <summary>SRFax-specific completeness check — NotifyreFaxClient
     /// checks ApiToken directly instead, since a SRFax-only or
     /// Notifyre-only install will legitimately have the other vendor's

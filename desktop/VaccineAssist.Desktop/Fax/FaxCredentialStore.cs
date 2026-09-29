@@ -76,7 +76,23 @@ public sealed class FaxCredentialStore : IFaxCredentialStore
                 ? parsedAuthMode
                 : NotifyreAuthMode.XApiToken;
 
-            return new FaxCredentials { AccessId = accessId, AccessPassword = accessPassword, ApiToken = apiToken, NotifyreAuthMode = authMode };
+            // Plain (not protected) round-trip ISO-8601 — absent/unparsable
+            // (an older credentials.json, or corrupt) just means "unknown
+            // saved time", never fails the whole load (matches
+            // NotifyreAuthMode's own tolerant-default pattern above).
+            DateTime? savedAtUtc = DateTime.TryParse(
+                dto.NotifyreTokenSavedAtUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedSavedAt)
+                ? parsedSavedAt
+                : null;
+
+            return new FaxCredentials
+            {
+                AccessId = accessId,
+                AccessPassword = accessPassword,
+                ApiToken = apiToken,
+                NotifyreAuthMode = authMode,
+                NotifyreTokenSavedAtUtc = savedAtUtc,
+            };
         }
         catch
         {
@@ -98,6 +114,7 @@ public sealed class FaxCredentialStore : IFaxCredentialStore
             AccessPasswordProtected = Protect(credentials.AccessPassword),
             ApiTokenProtected = Protect(credentials.ApiToken),
             NotifyreAuthMode = credentials.NotifyreAuthMode.ToString(),
+            NotifyreTokenSavedAtUtc = credentials.NotifyreTokenSavedAtUtc?.ToString("o"),
         };
 
         var json = JsonSerializer.Serialize(dto, JsonOptions);
@@ -156,5 +173,11 @@ public sealed class FaxCredentialStore : IFaxCredentialStore
         /// (null) on any credentials.json written before this field
         /// existed.</summary>
         public string? NotifyreAuthMode { get; set; }
+
+        /// <summary>Round-trip ISO-8601 UTC instant, plain text (a
+        /// timestamp, not a secret) — absent on any credentials.json
+        /// written before this field existed, or once ForgetKey clears
+        /// it.</summary>
+        public string? NotifyreTokenSavedAtUtc { get; set; }
     }
 }

@@ -17,10 +17,14 @@ namespace VaccineAssist.Desktop.Fax;
 /// else. Still fully re-mappable in the Settings grid for a workstation
 /// whose export differs.
 ///
-/// Required (never null/blank, brief's own wording): patient name,
-/// vaccine name, administered date. Every other header is optional — a
-/// report missing an optional column just leaves that field blank on
-/// every row, never rejects the file (see ReportImporter.ValidateHeaders).
+/// Required (Will's fax-report-layout brief, 2026-09-28, verbatim):
+/// administered date, patient name, DOB, vaccine name. Prescriber name
+/// and fax are optional at the FILE/header level (a row missing either
+/// is simply skipped as "no prescriber fax" — see FaxRunOrchestrator —
+/// never rejects the file). Every remaining header (lot, manufacturer,
+/// dose, route/site, VIS date, pharmacist, NPI) is fully optional — a
+/// report missing one of those just leaves that field blank on every
+/// row, never rejects the file (see ReportImporter.ValidateHeaders).
 /// </summary>
 public sealed class FaxColumnMap
 {
@@ -44,7 +48,13 @@ public sealed class FaxColumnMap
     public string VaccineNameHeader { get; set; } = "Dispensed Item Name";
     public string AdministeredDateHeader { get; set; } = "Immunization Administered On";
 
-    public string? DobHeader { get; set; } = "Patient Date of Birth";
+    /// <summary>REQUIRED (fax-report-layout brief, 2026-09-28) — the PDF's
+    /// "Birth Date" table column has no fallback text for a missing DOB,
+    /// so a row without one is skipped rather than faxed with a blank
+    /// date. Non-nullable (unlike the optional headers below) to match
+    /// VaccineNameHeader/AdministeredDateHeader's own required shape.</summary>
+    public string DobHeader { get; set; } = "Patient Date of Birth";
+
     public string? LotHeader { get; set; }
     public string? ManufacturerHeader { get; set; }
     public string? DoseHeader { get; set; }
@@ -76,5 +86,6 @@ public sealed class FaxColumnMap
 
         yield return ("vaccine name", VaccineNameHeader);
         yield return ("administered date", AdministeredDateHeader);
+        yield return ("date of birth", DobHeader);
     }
 }

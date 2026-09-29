@@ -53,4 +53,25 @@ public static class FaxNumberNormalizer
         var digits = StripToDigits(value);
         return digits.Length <= 4 ? digits : digits[^4..];
     }
+
+    /// <summary>"(###) ###-####" for a valid 10/11-digit US/Canada number
+    /// (fax-report-layout brief, 2026-09-28: the letter's "To:" block
+    /// shows the fax number actually being sent to, formatted
+    /// consistently regardless of how the report/directory had it typed —
+    /// "(###) ###-####", digits-only, or dashed all normalize to the
+    /// same display form). Falls back to the trimmed raw input when it
+    /// isn't a valid 10/11-digit number, so an already-odd value still
+    /// shows SOMETHING rather than going blank.</summary>
+    public static string ToDisplay(string? value)
+    {
+        var digits = StripToDigits(value);
+        if (digits.Length == 11 && digits[0] == '1')
+        {
+            digits = digits[1..];
+        }
+
+        return digits.Length == 10
+            ? $"({digits[..3]}) {digits.Substring(3, 3)}-{digits[6..]}"
+            : (value ?? "").Trim();
+    }
 }

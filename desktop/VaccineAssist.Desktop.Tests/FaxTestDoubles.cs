@@ -104,7 +104,7 @@ internal sealed class FakeFaxClient : IFaxClient
 /// failure path.</summary>
 internal sealed class FaultyPdfBuilder : IVaccineRecordPdfBuilder
 {
-    public VaccinePdfResult Build(PatientFaxGroup group, FaxSettings faxSettings) =>
+    public VaccinePdfResult Build(PatientFaxGroup group, FaxSettings faxSettings, string resolvedFaxNumber) =>
         throw new InvalidOperationException("simulated PDF build failure");
 }
 

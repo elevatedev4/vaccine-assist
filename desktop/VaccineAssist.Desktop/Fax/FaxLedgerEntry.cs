@@ -1,11 +1,12 @@
 namespace VaccineAssist.Desktop.Fax;
 
-/// <summary>Ledger-entry lifecycle state — NeedsFaxNumber is a dead end
-/// (never sent; shown in the run summary so Will can add the number and
-/// re-run) rather than a transition into Queued.</summary>
+/// <summary>Ledger-entry lifecycle state — a group with no usable
+/// prescriber fax never becomes a FaxLedgerEntry at all (see
+/// FaxRunOrchestrator's skip branch — it's reported directly in the run
+/// summary as "Skipped (no prescriber fax)" instead), so every value
+/// here really is a real fax's state, never a dead end.</summary>
 public enum FaxLedgerStatus
 {
-    NeedsFaxNumber,
     Queued,
     InProcess,
     Sent,
