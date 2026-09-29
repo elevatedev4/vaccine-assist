@@ -448,6 +448,34 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// (Save)"). Non-blocking companion fix: Win32WindowEnumerator.ForceForeground
 /// now logs explicitly when its Alt-nudge fallback was actually needed
 /// (previously only its outcome was logged, not that it fired).
+///
+/// ROUND 8 — INVISIBLE WINDOWS BLOCKED READINESS + SILENT STALL (V-T41
+/// R4, Will's 2026-09-29 12:25 app.log: "You made it farther" — the known
+/// dialogs (Scan Hard Copy) got dismissed, but the step then went 22
+/// silent seconds before hitting its 30s absolute deadline, and the
+/// window inventory logged at that point named 7 enabled-but-INVISIBLE
+/// 'Auto-Suggest Dropdown' windows (owner=0) as the only remaining
+/// candidates. TWO fixes:
+///   1. HasBlockingPioneerWindow's filter (now split out as the pure,
+///      directly-unit-testable IsEligibleBlockingCandidate) explicitly
+///      skips any INVISIBLE window before ever asking whether it's
+///      enabled — an invisible window can never be something a
+///      pharmacist is visibly stuck behind, so it can never be a
+///      blocking modal. DialogClassifier.IsTransientWindow already
+///      recognizes 'Auto-Suggest Dropdown' by class name regardless of
+///      visibility, so this is belt-and-suspenders for that exact class
+///      and the real fix for any invisible window of a class this repo
+///      hasn't named yet. Does NOT touch TryDismissNextStrayPioneerWindow
+///      (dismissal) or any Priority strategy.
+///   2. RunCombinedPreEntryLoopAsync now logs ONE heartbeat line at most
+///      every ~2s (DefaultHeartbeatInterval) on an empty tick — see its
+///      own doc comment — naming exactly what IsAddNewRxReady saw: the
+///      "New Rx"-titled window (handle/class only), the next-step field
+///      (found/enabled), and the current blocking-window list (class/
+///      visible/enabled/size/owner — no titles, same NO-PHI shape as
+///      WindowInfoDiagnostics.DescribeNoPhi elsewhere in this file). See
+///      DescribeReadinessVerdict in ExecuteAsync. So the next silent
+///      stretch explains itself in app.log instead of leaving 22s blank.
 /// </summary>
 public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 {
@@ -600,6 +628,54 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             return true;
         }
 
+        // V-T41 ROUND 8 heartbeat: recomputes the SAME three readiness
+        // ingredients IsAddNewRxReady just checked (New Rx-titled window,
+        // next-step field found/enabled, currently-blocking windows) as
+        // NO-PHI text — see RunCombinedPreEntryLoopAsync's `describeVerdict`
+        // doc comment. Only ever invoked when a heartbeat is actually due
+        // (at most once per ~2s), never every tick. Never throws.
+        string DescribeReadinessVerdict()
+        {
+            AutomationElement? titledWindow = null;
+            try
+            {
+                titledWindow = FindTopLevelPioneerWindowByTitle(
+                    name => name.Contains("New Rx", StringComparison.OrdinalIgnoreCase), previousHandle, mainProcessId);
+            }
+            catch
+            {
+                // Best-effort diagnostic only.
+            }
+
+            string newRxWindowDesc;
+            if (titledWindow is not null)
+            {
+                var handle = SafeNativeHandle(titledWindow);
+                string className;
+                try { className = titledWindow.ClassName ?? "<unknown>"; }
+                catch { className = "<unknown>"; }
+                newRxWindowDesc = $"found (handle=0x{handle.ToInt64():X}, class='{className}')";
+            }
+            else
+            {
+                newRxWindowDesc = "not found";
+            }
+
+            var current = TryGetElementFromHandle(previousHandle);
+            var (fieldFound, fieldEnabled) = DescribeNextStepFieldState(current);
+
+            var foundHandleForBlockCheck = titledWindow is not null ? SafeNativeHandle(titledWindow)
+                : current is not null ? SafeNativeHandle(current)
+                : IntPtr.Zero;
+            var blocking = FindBlockingPioneerWindows(previousHandle, foundHandleForBlockCheck, baselineHandles, mainProcessId);
+            var blockingDesc = blocking.Count == 0
+                ? "none"
+                : string.Join(" \\ ", blocking.Select(WindowInfoDiagnostics.DescribeNoPhi));
+
+            return $"\"New Rx\" window: {newRxWindowDesc}; next-step field: found={fieldFound} enabled={fieldEnabled}; " +
+                   $"blocking windows: {blockingDesc}";
+        }
+
         // V-T41 ROUND 3: wraps TryDismissNextPendingDialogOrStrayWindow with
         // PreEntryLoopGuard's hard circuit breaker — see class doc
         // comment's ROUND 3 section. `title` is exactly
@@ -632,7 +708,9 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         try
         {
             loopResult = await RunCombinedPreEntryLoopAsync(
-                IsAddNewRxReady, TryDismissNext, TicksFor(CombinedPreEntryLoopTimeout), WaitTick, cancellationToken);
+                IsAddNewRxReady, TryDismissNext, TicksFor(CombinedPreEntryLoopTimeout), WaitTick, cancellationToken,
+                logHeartbeat: text => context.Log($"[{Name}] Still waiting: {text}"),
+                describeVerdict: DescribeReadinessVerdict);
         }
         catch (PreEntryLoopProtectionException ex)
         {
@@ -784,6 +862,17 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// (ExecuteAsync) doesn't override it.</summary>
     public static readonly TimeSpan DefaultAbsoluteDeadline = TimeSpan.FromSeconds(30);
 
+    /// <summary>V-T41 ROUND 8 (Will's 2026-09-29 12:25 app.log: 22 silent
+    /// seconds — nothing logged — between the last dismissal and the 30s
+    /// deadline firing, because loggedIgnoredHandles only logs a given
+    /// window handle ONCE, ever): how often, at most, an empty tick (no
+    /// dismissal, not yet ready) logs a heartbeat line via `logHeartbeat`
+    /// below, so the NEXT silent stretch explains itself in app.log instead
+    /// of leaving Will guessing. Gated off the same `now` clock as
+    /// `absoluteDeadline` so it stays deterministic/fast under a fake clock
+    /// in tests — see HeartbeatLogsAtMostOncePerIntervalAcrossManyEmptyTicks.</summary>
+    public static readonly TimeSpan DefaultHeartbeatInterval = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// V-..., 2026-09-10: PURE polling algorithm (no UIA/FlaUI dependency
     /// of its own — same "pure logic split out as a public static method
@@ -812,6 +901,18 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// a run that keeps "making progress" every tick (so emptyTicks never
     /// accumulates) would otherwise never trip the maxEmptyTicks guard at
     /// all, no matter how long it actually ran.
+    ///
+    /// V-T41 ROUND 8: `logHeartbeat`/`describeVerdict` (both optional — a
+    /// null either one disables the heartbeat entirely, same
+    /// backward-compatible-default posture as `absoluteDeadline`/`now`) log
+    /// ONE line, at most once per `heartbeatInterval` (default
+    /// DefaultHeartbeatInterval, ~2s, gated off the same `now` clock used
+    /// for the absolute deadline), on every tick that was neither ready nor
+    /// able to dismiss anything — i.e. exactly the silent stretch Will's
+    /// 2026-09-29 12:25 log had 22s of nothing in. `describeVerdict` is
+    /// only ever CALLED when a heartbeat is actually due (never every
+    /// tick), so it can do a live UIA re-scan without adding per-tick cost
+    /// to the hot path.
     /// </summary>
     public static async Task<CombinedPreEntryLoopResult> RunCombinedPreEntryLoopAsync(
         Func<bool> isAddNewRxReady,
@@ -820,13 +921,18 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         Func<Task> waitTick,
         CancellationToken cancellationToken = default,
         TimeSpan? absoluteDeadline = null,
-        Func<DateTime>? now = null)
+        Func<DateTime>? now = null,
+        Action<string>? logHeartbeat = null,
+        Func<string>? describeVerdict = null,
+        TimeSpan? heartbeatInterval = null)
     {
         var dismissed = new List<string>();
         var emptyTicks = 0;
         var deadline = absoluteDeadline ?? DefaultAbsoluteDeadline;
         var clock = now ?? (static () => DateTime.UtcNow);
         var start = clock();
+        var heartbeatEvery = heartbeatInterval ?? DefaultHeartbeatInterval;
+        DateTime? lastHeartbeat = null;
 
         while (true)
         {
@@ -849,6 +955,16 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 dismissed.Add(title);
                 emptyTicks = 0;
                 continue;
+            }
+
+            if (logHeartbeat is not null && describeVerdict is not null)
+            {
+                var nowTicks = clock();
+                if (lastHeartbeat is null || nowTicks - lastHeartbeat.Value >= heartbeatEvery)
+                {
+                    lastHeartbeat = nowTicks;
+                    logHeartbeat(describeVerdict());
+                }
             }
 
             if (emptyTicks >= maxEmptyTicks)
@@ -2684,34 +2800,69 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// still happen on a machine where this scan itself fails, not a
     /// worse outcome than before this fix).</summary>
     private static bool HasBlockingPioneerWindow(IntPtr mainHandle, IntPtr foundHandle, IReadOnlySet<IntPtr> baselineHandles, int mainProcessId)
+        => FindBlockingPioneerWindows(mainHandle, foundHandle, baselineHandles, mainProcessId).Count > 0;
+
+    /// <summary>V-T41 ROUND 8 (Will's 2026-09-29 12:25 app.log — "You made
+    /// it farther," then stuck 22s silent before hitting the 30s absolute
+    /// deadline with 7 enabled-but-INVISIBLE 'Auto-Suggest Dropdown'
+    /// windows, owner=0, the only candidates left): pure (no FlaUI/live UIA
+    /// element — just WindowInfo's own already-captured fields) half of
+    /// HasBlockingPioneerWindow's filter, extracted so it's directly unit
+    /// testable without a real Pioneer install. An invisible window can
+    /// never be something a pharmacist is visibly stuck behind, so it can
+    /// never be a blocking modal — this is a decisive, class-name-
+    /// independent check, checked BEFORE DialogClassifier.IsTransientWindow
+    /// (which already treats 'Auto-Suggest Dropdown' as transient by class
+    /// name, so this is belt-and-suspenders for that exact class and the
+    /// real fix for any invisible window of a class this repo hasn't named
+    /// yet). Does NOT touch dismissal (TryDismissNextStrayPioneerWindow) or
+    /// any Priority strategy — readiness-path only.</summary>
+    public static bool IsEligibleBlockingCandidate(WindowInfo info, IntPtr foundHandle, IReadOnlySet<IntPtr> baselineHandles)
     {
+        var handle = info.Handle;
+        if (handle == IntPtr.Zero || handle == foundHandle) return false;
+        if (baselineHandles.Contains(handle)) return false;
+        if (!info.IsVisible) return false; // V-T41 ROUND 8 — see doc comment above
+        // V-T41: a transient popup (Auto-Suggest Dropdown, tooltip, etc.)
+        // never blocks readiness — see class doc comment and
+        // DialogClassifier.IsTransientWindow. Without this, a still-open
+        // autocomplete popup over an otherwise-ready Add New Rx screen
+        // would make this loop refuse "ready" forever once
+        // TryDismissNextStrayPioneerWindow stopped ESCing it.
+        if (DialogClassifier.IsTransientWindow(info)) return false;
+        return true;
+    }
+
+    /// <summary>Live half of HasBlockingPioneerWindow's filter — every
+    /// dialog candidate that passes the pure IsEligibleBlockingCandidate
+    /// filter AND is currently ENABLED (the live FlaUI/UIA value, not
+    /// WindowInfo's own possibly-stale IsEnabled snapshot). Also backs the
+    /// heartbeat log's "blocking windows" line (see
+    /// RunCombinedPreEntryLoopAsync's `describeVerdict` wiring in
+    /// ExecuteAsync) so the same list the readiness check actually used is
+    /// what gets logged. Best-effort/never throws — see
+    /// HasBlockingPioneerWindow's own doc comment.</summary>
+    private static List<WindowInfo> FindBlockingPioneerWindows(IntPtr mainHandle, IntPtr foundHandle, IReadOnlySet<IntPtr> baselineHandles, int mainProcessId)
+    {
+        var blocking = new List<WindowInfo>();
         try
         {
             foreach (var (window, info) in FindPioneerDialogCandidates(mainHandle, mainProcessId))
             {
-                var handle = info.Handle;
-                if (handle == IntPtr.Zero || handle == foundHandle) continue;
-                if (baselineHandles.Contains(handle)) continue;
-                // V-T41: a transient popup (Auto-Suggest Dropdown, tooltip,
-                // etc.) never blocks readiness — see class doc comment and
-                // DialogClassifier.IsTransientWindow. Without this, a
-                // still-open autocomplete popup over an otherwise-ready Add
-                // New Rx screen would make this loop refuse "ready" forever
-                // once TryDismissNextStrayPioneerWindow stopped ESCing it.
-                if (DialogClassifier.IsTransientWindow(info)) continue;
+                if (!IsEligibleBlockingCandidate(info, foundHandle, baselineHandles)) continue;
 
                 bool isEnabled;
                 try { isEnabled = window.Properties.IsEnabled.ValueOrDefault; }
                 catch { isEnabled = true; } // best-effort: treat "can't tell" as potentially blocking
 
-                if (isEnabled) return true;
+                if (isEnabled) blocking.Add(info);
             }
         }
         catch
         {
-            // Best-effort only — see doc comment above.
+            // Best-effort only — see HasBlockingPioneerWindow's own doc comment.
         }
-        return false;
+        return blocking;
     }
 
     /// <summary>Every top-level window currently owned by the Pioneer
@@ -2840,6 +2991,32 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     {
         try { return element.Properties.IsEnabled.ValueOrDefault; }
         catch { return false; }
+    }
+
+    /// <summary>V-T41 ROUND 8 heartbeat diagnostic only — mirrors
+    /// HasNextStepField's two-field check but reports found/enabled
+    /// SEPARATELY instead of collapsing to one bool, so the heartbeat log
+    /// can say exactly which of "field not found" vs "field found but
+    /// disabled" is currently true (see RunCombinedPreEntryLoopAsync's
+    /// `describeVerdict` wiring in ExecuteAsync). Never throws; never
+    /// changes HasNextStepField's own decision.</summary>
+    private static (bool Found, bool Enabled) DescribeNextStepFieldState(AutomationElement? window)
+    {
+        if (window is null) return (false, false);
+        try
+        {
+            var prescriberField = window.FindFirstDescendant(cf => cf.ByAutomationId(SelectPrescriberStep.PrescriberQuickSearchAutomationId));
+            if (prescriberField is not null) return (true, IsEnabledSafe(prescriberField));
+
+            var ndcField = window.FindFirstDescendant(cf => cf.ByAutomationId(InputVaccineCodeStep.PrescribedItemQuickSearchAutomationId));
+            if (ndcField is not null) return (true, IsEnabledSafe(ndcField));
+
+            return (false, false);
+        }
+        catch
+        {
+            return (false, false);
+        }
     }
 
     /// <summary>Wraps a known window handle back into an AutomationElement

@@ -356,6 +356,172 @@ public class SendF3AndDismissPreEntryDialogsStepTests
         Assert.Equal(3, waitTickCallCount);
     }
 
+    // --- V-T41 ROUND 8 (Will's 2026-09-29 12:25 app.log — "You made it
+    // farther," then 22 silent seconds before the 30s deadline fired):
+    // RunCombinedPreEntryLoopAsync's heartbeat log on empty ticks. ---
+
+    [Fact]
+    public async Task OmittingHeartbeatCallbacksBehavesExactlyLikeBeforeThisRound()
+    {
+        // Every pre-existing call site (and every test above this one)
+        // never passes logHeartbeat/describeVerdict — confirms the new
+        // parameters are fully backward compatible (default null = no
+        // heartbeat, no behavior change).
+        var waitTickCallCount = 0;
+        Task CountingWait() { waitTickCallCount++; return Task.CompletedTask; }
+
+        var result = await SendF3AndDismissPreEntryDialogsStep.RunCombinedPreEntryLoopAsync(
+            isAddNewRxReady: () => false,
+            tryDismissNextPending: () => null,
+            maxEmptyTicks: 3, CountingWait);
+
+        Assert.False(result.AddNewRxReady);
+        Assert.Equal(3, waitTickCallCount);
+    }
+
+    [Fact]
+    public async Task HeartbeatLogsAtMostOncePerIntervalAcrossManyEmptyTicks()
+    {
+        // A fake clock that advances 300ms per tick (PollInterval's real
+        // value) across 20 empty ticks (6s of simulated elapsed time), a
+        // huge absoluteDeadline so ONLY maxEmptyTicks stops the loop, and a
+        // 2s heartbeat interval (the default). Worked out against the
+        // loop's exact tick order (heartbeat check runs once per empty
+        // tick, gated on the SAME clock used for the deadline): heartbeats
+        // fire on tick 1 (elapsed=0ms, first-ever), tick 8 (elapsed=2100ms,
+        // >=2000ms since the first), and tick 15 (elapsed=4200ms, >=2000ms
+        // since the second) — exactly 3 over 6s of elapsed time, never
+        // once per tick (which would be 20).
+        var start = new DateTime(2026, 9, 29, 12, 25, 0, DateTimeKind.Utc);
+        var elapsedMs = 0;
+        DateTime Clock() => start.AddMilliseconds(elapsedMs);
+
+        var tickCount = 0;
+        Task CountingWait() { tickCount++; elapsedMs += 300; return Task.CompletedTask; }
+
+        var heartbeats = new List<string>();
+        var describeVerdictCallCount = 0;
+        string DescribeVerdict() { describeVerdictCallCount++; return "verdict text"; }
+
+        var result = await SendF3AndDismissPreEntryDialogsStep.RunCombinedPreEntryLoopAsync(
+            isAddNewRxReady: () => false,
+            tryDismissNextPending: () => null,
+            maxEmptyTicks: 20,
+            waitTick: CountingWait,
+            cancellationToken: default,
+            absoluteDeadline: TimeSpan.FromMinutes(5),
+            now: Clock,
+            logHeartbeat: heartbeats.Add,
+            describeVerdict: DescribeVerdict);
+
+        Assert.False(result.AddNewRxReady);
+        Assert.Equal(20, tickCount); // unchanged from the pre-heartbeat maxEmptyTicks behavior
+        Assert.Equal(3, heartbeats.Count); // at most once per ~2s over 6s elapsed, never once per tick
+        Assert.All(heartbeats, h => Assert.Equal("verdict text", h));
+        // describeVerdict is only ever called when a heartbeat is actually
+        // due — never on every tick (see RunCombinedPreEntryLoopAsync's own
+        // doc comment: "no per-tick cost to the hot path").
+        Assert.Equal(3, describeVerdictCallCount);
+    }
+
+    [Fact]
+    public async Task HeartbeatNeverFiresWhenEveryTickDismissesSomething()
+    {
+        // A run that keeps "making progress" every tick (see the ROUND 4
+        // REVIEW FIX doc comment above) never has an EMPTY tick, so the
+        // heartbeat — gated on the same "nothing ready, nothing dismissed"
+        // branch — should never fire either.
+        var remaining = 5;
+        string? TryDismiss()
+        {
+            if (remaining <= 0) return null;
+            remaining--;
+            return "Scan Hard Copy";
+        }
+
+        var heartbeats = new List<string>();
+
+        await SendF3AndDismissPreEntryDialogsStep.RunCombinedPreEntryLoopAsync(
+            isAddNewRxReady: () => remaining <= 0,
+            tryDismissNextPending: TryDismiss,
+            maxEmptyTicks: 5,
+            waitTick: NoOpWait,
+            cancellationToken: default,
+            absoluteDeadline: null,
+            now: null,
+            logHeartbeat: heartbeats.Add,
+            describeVerdict: () => "verdict text");
+
+        Assert.Empty(heartbeats);
+    }
+
+    // --- V-T41 ROUND 8: IsEligibleBlockingCandidate — the pure half of
+    // HasBlockingPioneerWindow's filter, extracted so the "invisible
+    // windows can never block readiness" fix (Will's 2026-09-29 12:25 log)
+    // is directly unit testable without a real Pioneer install. ---
+
+    [Fact]
+    public void IsEligibleBlockingCandidateIsFalseForAnEnabledButInvisibleWindow()
+    {
+        // Deliberately TITLED with an unrecognized class (unlike the real
+        // 'Auto-Suggest Dropdown' log entry) so DialogClassifier.
+        // IsTransientWindow's existing class-name/untitled rules do NOT
+        // already exclude it — this proves the NEW, independent visibility
+        // check is what makes this pass. Before this round, this exact
+        // shape (enabled, invisible, titled, unknown class) would have
+        // been treated as a blocking modal.
+        var window = new WindowInfo(new IntPtr(50), "Mystery Popup", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "SomeUnknownClass",
+            IsVisible: false, IsEnabled: true, Width: 313, Height: 240);
+
+        Assert.False(SendF3AndDismissPreEntryDialogsStep.IsEligibleBlockingCandidate(
+            window, IntPtr.Zero, new HashSet<IntPtr>()));
+    }
+
+    [Fact]
+    public void IsEligibleBlockingCandidateIsTrueForAnEnabledVisibleUnrecognizedWindow()
+    {
+        var window = new WindowInfo(new IntPtr(51), "Mystery Popup", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: true, ClassName: "SomeUnknownClass",
+            IsVisible: true, IsEnabled: true, Width: 400, Height: 300);
+
+        Assert.True(SendF3AndDismissPreEntryDialogsStep.IsEligibleBlockingCandidate(
+            window, IntPtr.Zero, new HashSet<IntPtr>()));
+    }
+
+    [Fact]
+    public void IsEligibleBlockingCandidateIsFalseForTheExactInvisibleAutoSuggestDropdownFromTheLog()
+    {
+        // Regression lock for Will's 2026-09-29 12:25 log line exactly:
+        // class='Auto-Suggest Dropdown' titleLen=0 visible=False
+        // enabled=True size=313x240 owner=0x0. Already excluded via
+        // DialogClassifier.IsTransientWindow's class-name match even
+        // before this round; this locks that in alongside the new
+        // explicit visibility check.
+        var window = new WindowInfo(new IntPtr(52), "", 1234, IntPtr.Zero,
+            IsPopupStyle: true, IsDialogFrameStyle: false, ClassName: "Auto-Suggest Dropdown",
+            IsVisible: false, IsEnabled: true, Width: 313, Height: 240);
+
+        Assert.False(SendF3AndDismissPreEntryDialogsStep.IsEligibleBlockingCandidate(
+            window, IntPtr.Zero, new HashSet<IntPtr>()));
+    }
+
+    [Fact]
+    public void IsEligibleBlockingCandidateExcludesTheFoundHandleAndBaselineHandlesRegardlessOfVisibility()
+    {
+        var foundHandle = new IntPtr(60);
+        var baselineHandle = new IntPtr(61);
+        var baseline = new HashSet<IntPtr> { baselineHandle };
+
+        var foundWindow = new WindowInfo(foundHandle, "Add New Rx", 1234, IntPtr.Zero,
+            IsPopupStyle: false, IsDialogFrameStyle: false, IsVisible: true, IsEnabled: true);
+        var baselineWindow = new WindowInfo(baselineHandle, "Some Other Screen", 1234, IntPtr.Zero,
+            IsPopupStyle: false, IsDialogFrameStyle: false, IsVisible: true, IsEnabled: true);
+
+        Assert.False(SendF3AndDismissPreEntryDialogsStep.IsEligibleBlockingCandidate(foundWindow, foundHandle, baseline));
+        Assert.False(SendF3AndDismissPreEntryDialogsStep.IsEligibleBlockingCandidate(baselineWindow, foundHandle, baseline));
+    }
+
     // --- WaitForAsync (two-signal "either" polling primitive) ---
 
     [Fact]
