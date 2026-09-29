@@ -127,8 +127,13 @@ public class FaxSendViewModelTests : IDisposable
 
         Assert.Equal(FaxSendState.Done, vm.State);
         Assert.Single(vm.Rows);
-        Assert.Equal(1, vm.Summary!.Sent);
-        Assert.Contains("1 sent", vm.StatusMessage);
+        // FakeFaxClient's QueueAsync succeeds but GetStatusAsync defaults
+        // to InProcess (no StatusResults entry configured) — same
+        // "marks the ledger InProcess" behavior FaxRunOrchestratorTests'
+        // SuccessfulRunQueuesTheFaxAndMarksTheLedgerInProcess asserts.
+        Assert.Equal(1, vm.Summary!.InProcess);
+        Assert.Equal(0, vm.Summary!.Sent);
+        Assert.Contains("0 sent", vm.StatusMessage);
         Assert.Null(vm.RejectionMessage);
         Assert.False(vm.HasRejection);
     }
