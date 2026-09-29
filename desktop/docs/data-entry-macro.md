@@ -140,7 +140,7 @@ by step — see "Side-by-side: macro vs. current code" below.
 |---|---|---|---|---|
 | 1 | Trigger from Rx Profile | Ctrl+Keypad 7 hotkey (`GlobalHotKey`, `VK_NUMPAD7`) | n/a | Live, matches |
 | 2 | F3 | `SendF3AndDismissPreEntryDialogsStep` (first half) | `Keyboard.Type(VirtualKeyShort.F3)` on the attached Rx Profile window | CONFIRMED (F3 keypress itself; not a UIA lookup) |
-| 3a | "Priority" → set to Vaccine | `SendF3AndDismissPreEntryDialogsStep.TryHandlePriorityIfShowing`/`ResolvePriorityDialog` | Layered strategy: UIA ComboBox/List select, else raw-view select, else focus+type "Vaccine"+Enter (keyboard fallback) — verified closed (`VerifyDialogGone`) before declaring success | UNCONFIRMED control shape (no live dump of this dialog) but Will confirms this part now works ("getting 'Vaccine' correctly on the priority") — **kept as-is this round** |
+| 3a | "Priority" → set to Vaccine | `SendF3AndDismissPreEntryDialogsStep.TryHandlePriorityIfShowing`/`ResolvePriorityDialog` | Layered strategy: keyboard type-ahead (no dropdown, macro-fidelity) first, else UIA raw-view select, else keyboard type-ahead (Alt+Down) — verified closed (`VerifyDialogGone`) before declaring success | **CONFIRMED (V-T41 ROUND 6, Will's 2026-09-29 11:14 app.log)** — live UIA dump: `Window id='RxPromiseTimeDialog' → Edit id='uxPrioritySearch' [Value] · Button id='DropDownButton' · Text id='uxPatientsLastPriority' · Document id='uxPriorityComment' · Edit id='uxTime' · Edit id='uxDate' · Button id='CalendarButton' · Button id='uxCancel' · Button id='uxSave'.` An Edit search box with its own separate 'Auto-Suggest Dropdown' popup window — NOT a classic ComboBox/ComboLBox, which every prior round had assumed. |
 | 3b | "Scan Hard Copy" → dismiss | same step, `PreEntryDialogTitles.ScanHardCopy` | ESC | UNCONFIRMED against a live dump |
 | 3c | "Patient on Cycle Fill" → dismiss | same step, `PreEntryDialogTitles.PatientOnCycleFill` | ESC | UNCONFIRMED against a live dump |
 | 4 | Prescriber alternate ID + Enter×2 | `SelectPrescriberStep` | `uxPrescriberQuickSearch` (Edit, Value pattern) | CONFIRMED (2026-09-05 dumps + rx-verify cross-check) |
@@ -179,9 +179,13 @@ by step — see "Side-by-side: macro vs. current code" below.
   no signature field confirmed in any live dump.
 - Medicare home-visit reason prompt has no UI at all.
 - `InputDirectionsStep`'s `uxDirections` AutomationId is unconfirmed.
-- The Priority/Scan Hard Copy/Patient on Cycle Fill dialogs' exact
-  control shapes are unconfirmed (Priority's selection strategy was
-  built defensively — try several UIA shapes — for exactly this reason).
+- The Scan Hard Copy/Patient on Cycle Fill dialogs' exact control shapes
+  are still unconfirmed. Priority's own shape is now CONFIRMED (see the
+  side-by-side table row 3a, V-T41 ROUND 6) — its selection strategy stays
+  built defensively (try several UIA shapes) since Priority's shape can
+  still differ across PioneerRx versions/configurations, but the
+  macro-fidelity strategy now also targets the confirmed AutomationId
+  `uxPrioritySearch` directly when present.
 
 Confirming any of the above needs a **live UIA tree dump** from the
 pharmacy's own machine at the moment each screen/dialog is showing (the

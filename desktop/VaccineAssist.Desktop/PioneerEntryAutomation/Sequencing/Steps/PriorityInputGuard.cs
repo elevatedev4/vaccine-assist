@@ -1,3 +1,5 @@
+using System;
+
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 
 /// <summary>
@@ -52,4 +54,29 @@ public static class PriorityInputGuard
     {
         return dialogAliveAndVisible && dialogIsForeground;
     }
+
+    /// <summary>
+    /// V-T41 ROUND 6 (Will's 2026-09-29 11:14 app.log, this round): the
+    /// window-class list every "is this popup safe to send to / safe to
+    /// Escape-close before confirming" check in
+    /// SendF3AndDismissPreEntryDialogsStep (TryAuthorizeDialogInput,
+    /// TryAuthorizeConfirmInput, EnsureDropdownClosedAndDialogForeground)
+    /// shares — centralized here (rather than each call site re-listing
+    /// class names) so the set stays in exactly one place. Previously only
+    /// 'ComboLBox' (a classic Win32 combo's own drop-down list window) was
+    /// recognized; the decisive log's own UIA dump proved PioneerRx's real
+    /// Priority dialog control is an Edit search box (AutomationId
+    /// 'uxPrioritySearch') with its OWN separate top-level popup window,
+    /// class 'Auto-Suggest Dropdown' (Pioneer's autocomplete popup — see
+    /// DialogClassifier.IsTransientWindowClass, which already treats this
+    /// same class as never-a-real-dialog for the UNRELATED "should this
+    /// window ever be ESC'd as a stray pre-entry dialog" question this
+    /// guard doesn't answer). Case-insensitive; null/empty is never a
+    /// match.
+    /// </summary>
+    private static readonly string[] RecognizedPopupWindowClasses = { "ComboLBox", "Auto-Suggest Dropdown" };
+
+    public static bool IsRecognizedPopupWindowClass(string? windowClass) =>
+        !string.IsNullOrEmpty(windowClass) &&
+        Array.Exists(RecognizedPopupWindowClasses, c => string.Equals(c, windowClass, StringComparison.OrdinalIgnoreCase));
 }

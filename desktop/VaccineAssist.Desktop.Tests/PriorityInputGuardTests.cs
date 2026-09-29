@@ -93,4 +93,35 @@ public class PriorityInputGuardTests
         // allowance.
         Assert.False(PriorityInputGuard.CanConfirmDialog(dialogAliveAndVisible: true, dialogIsForeground: false));
     }
+
+    /// <summary>
+    /// V-T41 ROUND 6 (Will's 2026-09-29 11:14 app.log — the live UIA dump
+    /// showed PioneerRx's real Priority dialog is an Edit search box with
+    /// its own separate top-level popup window, class 'Auto-Suggest
+    /// Dropdown', NOT a classic ComboBox/ComboLBox): IsRecognizedPopupWindowClass
+    /// is the shared, pure classification every "is this popup safe to
+    /// send to / safe to Escape-close" check in
+    /// SendF3AndDismissPreEntryDialogsStep now goes through — see its own
+    /// doc comment for why the set lives here in exactly one place.
+    /// </summary>
+    [Theory]
+    [InlineData("ComboLBox")]
+    [InlineData("comboLBOX")]
+    [InlineData("Auto-Suggest Dropdown")]
+    [InlineData("AUTO-SUGGEST DROPDOWN")]
+    public void RecognizedPopupWindowClassesAreCaseInsensitiveMatches(string windowClass)
+    {
+        Assert.True(PriorityInputGuard.IsRecognizedPopupWindowClass(windowClass));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("WindowsForms10.Window.8.app.0.37e3228_r7_ad1")]
+    [InlineData("Auto-Suggest")]
+    [InlineData("ComboBox")]
+    public void UnrecognizedOrMissingWindowClassesAreNotMatches(string? windowClass)
+    {
+        Assert.False(PriorityInputGuard.IsRecognizedPopupWindowClass(windowClass));
+    }
 }
