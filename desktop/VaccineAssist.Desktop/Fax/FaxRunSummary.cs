@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VaccineAssist.Desktop.Fax;
 
 /// <summary>One row of a FaxRunSummary's grid — never a patient's full
@@ -28,6 +30,16 @@ public sealed class FaxRunRowSummary
 public sealed class FaxRunSummary
 {
     public DateTime RunAtUtc { get; set; }
+
+    /// <summary>RunAtUtc converted to local time — V-T65 R5 follow-up
+    /// (coordinator, 2026-09-29): the Send History section's Date column
+    /// binds this instead of RunAtUtc directly, since a plain XAML
+    /// StringFormat binding has no way to call ToLocalTime() itself and
+    /// was showing UTC. Computed, not persisted (JsonIgnore) — always
+    /// derived fresh from RunAtUtc, including for an older runs\*.json
+    /// file read back that predates this property.</summary>
+    [JsonIgnore]
+    public DateTime RunAtLocal => RunAtUtc.ToLocalTime();
 
     /// <summary>File NAME only (never a full path) — V-T65 R5's Send
     /// History section (Views/FaxSendWindow.xaml) lists past batches by

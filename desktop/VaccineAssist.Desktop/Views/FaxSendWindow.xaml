@@ -116,7 +116,7 @@
                 <DataGrid x:Name="HistoryGrid" ItemsSource="{Binding History}" AutoGenerateColumns="False"
                           IsReadOnly="True" CanUserAddRows="False" MaxHeight="140" SelectionMode="Single">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Date" Binding="{Binding RunAtUtc, StringFormat='MM/dd/yyyy h:mm tt'}" Width="1.6*"/>
+                        <DataGridTextColumn Header="Date" Binding="{Binding RunAtLocal, StringFormat='MM/dd/yyyy h:mm tt'}" Width="1.6*"/>
                         <DataGridTextColumn Header="File" Binding="{Binding FileName}" Width="2*"/>
                         <DataGridTextColumn Header="Sent" Binding="{Binding Sent}" Width="*"/>
                         <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="*"/>
