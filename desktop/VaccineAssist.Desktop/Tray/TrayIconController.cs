@@ -38,6 +38,8 @@ namespace VaccineAssist.Desktop.Tray;
 /// </summary>
 public sealed class TrayIconController : IDisposable
 {
+    private const string BaseTooltipText = "Vaccine Assist";
+
     private readonly NotifyIcon _notifyIcon;
 
     public event EventHandler? OpenRequested;
@@ -94,11 +96,25 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon = new NotifyIcon
         {
             Icon = LoadAppIcon(),
-            Text = "Vaccine Assist",
+            Text = BaseTooltipText,
             ContextMenuStrip = menu,
             Visible = true,
         };
         _notifyIcon.DoubleClick += (_, _) => OpenRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>V-T65 R5 (Will, verbatim, 2026-09-29: "allow the app to
+    /// work from the background to send faxes since it may take some
+    /// time") — a small, in-place way to see faxes are still working
+    /// without opening Views/FaxSendWindow.xaml. MainWindow calls this from
+    /// Services/FaxSendCoordinator.InProcessCountChanged; 0 restores the
+    /// plain "Vaccine Assist" tooltip. NotifyIcon.Text is capped at 63
+    /// characters by Windows — this stays well under that.</summary>
+    public void UpdateFaxTooltip(int inProcessCount)
+    {
+        _notifyIcon.Text = inProcessCount > 0
+            ? $"{BaseTooltipText} — Faxes: {inProcessCount} in process"
+            : BaseTooltipText;
     }
 
     /// <summary>V-T53: "tray balloon 'Vaccine faxes: 12 sent, 1 failed, 2

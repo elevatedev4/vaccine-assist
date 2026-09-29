@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using VaccineAssist.Desktop.Fax;
+using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
 using VaccineAssist.Desktop.ViewModels;
 using Xunit;
@@ -18,6 +19,12 @@ namespace VaccineAssist.Desktop.Tests;
 /// FaxRunOrchestratorTests — no WPF Window/OpenFileDialog involved at
 /// all, matching the "Windows test project can't run on macOS, keep the
 /// pure logic separately testable" brief).
+///
+/// V-T65 R5: FaxSendViewModel is now a thin pass-through over
+/// FaxSendCoordinator (see that class's doc comment) — MakeViewModel below
+/// builds a coordinator wired to the same temp-dir fakes/doubles and wraps
+/// it, so every existing assertion here still exercises the real state
+/// machine, just one layer down.
 /// </summary>
 public class FaxSendViewModelTests : IDisposable
 {
@@ -38,16 +45,27 @@ public class FaxSendViewModelTests : IDisposable
         try { Directory.Delete(_tempDir, recursive: true); } catch { /* best-effort */ }
     }
 
-    private FaxRunOrchestrator MakeOrchestrator(out FakeFaxClient faxClient)
+    private FaxRunOrchestrator MakeOrchestrator(out FakeFaxClient faxClient, out FaxLedger faxLedger)
     {
         var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
         var reportImporter = new ReportImporter(importLedger);
         faxClient = new FakeFaxClient();
-        var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
+        faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
+        var fileLedger = new FaxFileLedger(Path.Combine(_tempDir, "sent-files.json"));
 
         return new FaxRunOrchestrator(
             reportImporter, new VaccineRecordPdfBuilder(),
-            faxClient, faxLedger, importLedger, _faxRootDir);
+            faxClient, faxLedger, importLedger, _faxRootDir, fileLedger);
+    }
+
+    private FaxSendViewModel MakeViewModel(FaxRunOrchestrator orchestrator, FaxLedger faxLedger) =>
+        MakeViewModel(orchestrator, faxLedger, out _);
+
+    private FaxSendViewModel MakeViewModel(FaxRunOrchestrator orchestrator, FaxLedger faxLedger, out FaxSendCoordinator coordinator)
+    {
+        var historyStore = new FaxRunHistoryStore(Path.Combine(_faxRootDir, "runs"));
+        coordinator = new FaxSendCoordinator(orchestrator, MakeSettings(), faxLedger, historyStore);
+        return new FaxSendViewModel(coordinator);
     }
 
     private static AppSettings MakeSettings() => new()
@@ -75,8 +93,8 @@ public class FaxSendViewModelTests : IDisposable
     [Fact]
     public void StartsInNoFileWithSendDisabled()
     {
-        var orchestrator = MakeOrchestrator(out _);
-        var vm = new FaxSendViewModel(orchestrator, MakeSettings());
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger);
 
         Assert.Equal(FaxSendState.NoFile, vm.State);
         Assert.Null(vm.FilePath);
@@ -88,8 +106,8 @@ public class FaxSendViewModelTests : IDisposable
     public void ChoosingAFileMovesToFileChosenAndEnablesSend()
     {
         var reportPath = WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out _);
-        var vm = new FaxSendViewModel(orchestrator, MakeSettings());
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger);
 
         vm.SetChosenFile(reportPath);
 
@@ -104,8 +122,8 @@ public class FaxSendViewModelTests : IDisposable
         // V-T65 R4's core requirement: picking a file must NOT trigger a
         // send by itself — only SendAsync (SendCommand) may.
         var reportPath = WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out var faxClient);
-        var vm = new FaxSendViewModel(orchestrator, MakeSettings());
+        var orchestrator = MakeOrchestrator(out var faxClient, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger);
 
         vm.SetChosenFile(reportPath);
         Assert.Empty(faxClient.QueuedRequests);
@@ -119,8 +137,8 @@ public class FaxSendViewModelTests : IDisposable
     public async Task SendingPopulatesRowsAndMovesToDoneWithATotalsMessage()
     {
         var reportPath = WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out _);
-        var vm = new FaxSendViewModel(orchestrator, MakeSettings());
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger);
         vm.SetChosenFile(reportPath);
 
         await vm.SendAsync();
@@ -147,8 +165,8 @@ public class FaxSendViewModelTests : IDisposable
         // must surface it.
         var path = Path.Combine(_inputDir, "bad.csv");
         File.WriteAllText(path, "Not,The,Right,Headers\nx,y,z,w\n");
-        var orchestrator = MakeOrchestrator(out var faxClient);
-        var vm = new FaxSendViewModel(orchestrator, MakeSettings());
+        var orchestrator = MakeOrchestrator(out var faxClient, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger);
         vm.SetChosenFile(path);
 
         await vm.SendAsync();
@@ -167,8 +185,8 @@ public class FaxSendViewModelTests : IDisposable
     public async Task PickingANewFileAfterARunClearsThePreviousResults()
     {
         var firstReport = WriteReport("report1.csv");
-        var orchestrator = MakeOrchestrator(out _);
-        var vm = new FaxSendViewModel(orchestrator, MakeSettings());
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger);
         vm.SetChosenFile(firstReport);
         await vm.SendAsync();
         Assert.Single(vm.Rows);
@@ -186,9 +204,9 @@ public class FaxSendViewModelTests : IDisposable
     public async Task RetryCommandOnlyEnabledForFailedRows()
     {
         var reportPath = WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out var faxClient);
+        var orchestrator = MakeOrchestrator(out var faxClient, out var faxLedger);
         faxClient.QueueResults.Enqueue(new FaxQueueResult(false, null, "vendor rejected the number"));
-        var vm = new FaxSendViewModel(orchestrator, MakeSettings());
+        var vm = MakeViewModel(orchestrator, faxLedger);
         vm.SetChosenFile(reportPath);
 
         await vm.SendAsync();
@@ -201,5 +219,98 @@ public class FaxSendViewModelTests : IDisposable
 
         Assert.Equal(nameof(FaxLedgerStatus.InProcess), failedRow.Status);
         Assert.False(vm.RetryCommand.CanExecute(failedRow));
+    }
+
+    // ---- V-T65 R5 (Will, verbatim, 2026-09-29): "it still shows status
+    // 'InProcess' in the app. Need to make sure this stuff updates ...
+    // allow the app to work from the background to send faxes ... Need to
+    // also be able to get back to send history." ----
+
+    [Fact]
+    public async Task RefreshNowPicksUpAStatusChangeFaxRunSchedulerWroteInTheBackground()
+    {
+        // Simulates FaxRunScheduler's own background FaxReceiptPoller tick
+        // updating ledger.json between refreshes — the window must reflect
+        // that without Will closing and reopening it.
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+
+        var row = vm.Rows.Single();
+        Assert.Equal(nameof(FaxLedgerStatus.InProcess), row.Status);
+        Assert.Contains("1 in process", vm.SummaryLine);
+
+        var entries = faxLedger.Load();
+        entries.Single(e => e.Id == row.LedgerEntryId).Status = FaxLedgerStatus.Sent;
+        faxLedger.Save(entries);
+
+        coordinator.RefreshNow();
+
+        Assert.Equal(nameof(FaxLedgerStatus.Sent), row.Status);
+        Assert.Equal("Done: 1 sent, 0 failed", vm.SummaryLine);
+    }
+
+    [Fact]
+    public async Task InProcessCountChangedFiresWhenARowResolves()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        var raised = 0;
+        coordinator.InProcessCountChanged += (_, _) => raised++;
+        vm.SetChosenFile(reportPath);
+
+        await vm.SendAsync(); // 0 -> 1 in-process: one raise
+        Assert.Equal(1, coordinator.InProcessCount);
+
+        var entries = faxLedger.Load();
+        entries.Single().Status = FaxLedgerStatus.Sent;
+        faxLedger.Save(entries);
+        coordinator.RefreshNow(); // 1 -> 0 in-process: another raise
+
+        Assert.Equal(0, coordinator.InProcessCount);
+        Assert.True(raised >= 2);
+    }
+
+    [Fact]
+    public async Task ReopeningTheWindowReusesTheSameCoordinatorsLiveState()
+    {
+        // MainWindow.ShowFaxSendWindow builds a NEW FaxSendViewModel every
+        // time but always wraps the SAME FaxSendCoordinator — closing the
+        // window must not lose an in-flight send, and a second VM must see
+        // it immediately.
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient, out var faxLedger);
+        var firstVm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        firstVm.SetChosenFile(reportPath);
+        await firstVm.SendAsync();
+
+        // "Close" the first window (drop the VM) and "reopen" it — same
+        // production pattern as MainWindow's ShowFaxSendWindow.
+        var secondVm = new FaxSendViewModel(coordinator);
+
+        Assert.Equal(FaxSendState.Done, secondVm.State);
+        Assert.Single(secondVm.Rows);
+        // Same underlying ObservableCollection — the coordinator's, not a
+        // fresh snapshot — so both VMs see the identical row instance.
+        Assert.Same(firstVm.Rows.Single(), secondVm.Rows.Single());
+        Assert.Single(faxClient.QueuedRequests); // reopening never re-sends
+    }
+
+    [Fact]
+    public async Task SendHistoryShowsThePastBatchRightAfterSending()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger);
+        vm.SetChosenFile(reportPath);
+
+        await vm.SendAsync();
+
+        var batch = Assert.Single(vm.History);
+        Assert.Equal("report.csv", batch.FileName);
+        Assert.Equal(1, batch.InProcess);
     }
 }

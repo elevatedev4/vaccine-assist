@@ -11,6 +11,15 @@ public enum FaxLedgerStatus
     InProcess,
     Sent,
     Failed,
+
+    /// <summary>V-T65 R5 (Will's brief, 2026-09-29): a fax FaxReceiptPoller
+    /// gave up polling — never resolved to Sent/Failed within
+    /// FaxPollSchedule.GiveUpAfter (2h) of being queued. Never set by a
+    /// vendor response; only FaxReceiptPoller.PollAsync sets it, on its own
+    /// elapsed-time check. Terminal in the same sense Sent/Failed are (it
+    /// drops out of "pending" so polling stops), but distinct so the UI can
+    /// say "check Notifyre" instead of implying either outcome.</summary>
+    Unknown,
 }
 
 /// <summary>

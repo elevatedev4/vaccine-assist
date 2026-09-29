@@ -51,16 +51,21 @@ public class FaxRunSchedulerTests : IDisposable
             var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
             faxLedger.Save(new List<FaxLedgerEntry>
             {
-                new() { FaxId = "fax-1", Status = FaxLedgerStatus.InProcess },
+                // V-T65 R5: QueuedAtUtc must be "now", not the default
+                // 0001-01-01 — FaxPollSchedule.HasExpired would otherwise
+                // treat this entry as already 2h+ overdue and mark it
+                // Unknown before ever checking its real status.
+                new() { FaxId = "fax-1", Status = FaxLedgerStatus.InProcess, QueuedAtUtc = DateTime.UtcNow },
             });
             faxClient.StatusResults["fax-1"] = new FaxStatusResult(true, FaxSendStatus.Sent, null, null);
 
+            var fileLedger = new FaxFileLedger(Path.Combine(_tempDir, "sent-files.json"));
             var orchestrator = new FaxRunOrchestrator(
                 reportImporter, new VaccineRecordPdfBuilder(),
-                faxClient, faxLedger, importLedger, _faxRootDir);
+                faxClient, faxLedger, importLedger, _faxRootDir, fileLedger);
 
-            // Short injectable interval — production's real cadence is 10
-            // minutes (see FaxRunScheduler's single-arg constructor).
+            // Short injectable interval — production's real cadence is 15
+            // seconds (see FaxRunScheduler's single-arg constructor).
             var scheduler = new FaxRunScheduler(orchestrator, TimeSpan.FromMilliseconds(20));
 
             try

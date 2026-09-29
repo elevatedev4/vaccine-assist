@@ -93,6 +93,12 @@ public partial class MainWindow : Window
     private readonly IFaxCredentialStore _faxCredentialStore;
     private readonly HttpClient _faxHttpClient;
 
+    /// <summary>V-T65 R5: the singleton send-queue/live-status/history
+    /// service — see Services/FaxSendCoordinator's own doc comment. Every
+    /// FaxSendViewModel ShowFaxSendWindow builds wraps this SAME instance,
+    /// so state survives the window being closed and reopened.</summary>
+    private readonly FaxSendCoordinator _faxSendCoordinator;
+
     /// <summary>At most one Fax settings window at a time — same
     /// re-activate-not-stack rule as _openDataEntryPopup/_openMacroCodesPopup.</summary>
     private FaxSettingsWindow? _openFaxSettingsWindow;
@@ -218,7 +224,8 @@ public partial class MainWindow : Window
         FaxRunScheduler faxRunScheduler,
         FaxRunOrchestrator faxRunOrchestrator,
         IFaxCredentialStore faxCredentialStore,
-        HttpClient faxHttpClient)
+        HttpClient faxHttpClient,
+        FaxSendCoordinator faxSendCoordinator)
     {
         _authService = authService;
         _vaccineApiService = vaccineApiService;
@@ -231,6 +238,7 @@ public partial class MainWindow : Window
         _faxRunOrchestrator = faxRunOrchestrator;
         _faxCredentialStore = faxCredentialStore;
         _faxHttpClient = faxHttpClient;
+        _faxSendCoordinator = faxSendCoordinator;
 
         InitializeComponent();
 
@@ -279,6 +287,17 @@ public partial class MainWindow : Window
             trayIconController.FaxSettingsRequested += (_, _) => ShowFaxSettings();
             trayIconController.FaxOpenFolderRequested += (_, _) => OpenFaxFolder();
             trayIconController.FaxImportFileRequested += (_, _) => ShowFaxSendWindow();
+            // V-T65 R5 (Will, verbatim: "allow the app to work from the
+            // background to send faxes ... make sure the status is
+            // displayed correctly") — tray tooltip reflects the
+            // coordinator's live in-process count regardless of whether
+            // FaxSendWindow is open; seeded once here in case a run was
+            // already in flight the moment this MainWindow was built
+            // (a fresh sign-in with a previous session's faxes still
+            // resolving would otherwise show nothing until the next tick).
+            _faxSendCoordinator.InProcessCountChanged += (_, _) =>
+                trayIconController.UpdateFaxTooltip(_faxSendCoordinator.InProcessCount);
+            trayIconController.UpdateFaxTooltip(_faxSendCoordinator.InProcessCount);
             _trayIconController = trayIconController;
         }
         catch (Exception ex)
@@ -825,7 +844,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        var viewModel = new FaxSendViewModel(_faxRunOrchestrator, _settings);
+        // V-T65 R5: wraps the SAME FaxSendCoordinator every time — closing
+        // this window never cancels a send or stops polling, and
+        // reopening it (this path) re-binds to whatever state the
+        // coordinator already has (see FaxSendViewModel's doc comment).
+        var viewModel = new FaxSendViewModel(_faxSendCoordinator);
         var window = new FaxSendWindow(viewModel);
         window.Closed += (_, _) =>
         {

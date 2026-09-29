@@ -61,8 +61,8 @@ public sealed class ReportImporter : IReportImporter
         }
 
         var newRecords = new List<ImmunizationRecord>();
+        var duplicateRecords = new List<ImmunizationRecord>();
         var skippedRowCount = 0;
-        var duplicateRowCount = 0;
 
         foreach (var row in contents.Rows)
         {
@@ -81,7 +81,10 @@ public sealed class ReportImporter : IReportImporter
 
             if (!seenFingerprints.Add(record.Fingerprint))
             {
-                duplicateRowCount++;
+                // V-T65 R5: kept (not just counted) — FaxRunOrchestrator
+                // groups these and shows "Skipped — already sent <date>"
+                // instead of the row disappearing with no explanation.
+                duplicateRecords.Add(record);
                 continue;
             }
 
@@ -92,7 +95,8 @@ public sealed class ReportImporter : IReportImporter
         {
             NewRecords = newRecords,
             SkippedRowCount = skippedRowCount,
-            DuplicateRowCount = duplicateRowCount,
+            DuplicateRowCount = duplicateRecords.Count,
+            DuplicateRecords = duplicateRecords,
         };
     }
 

@@ -22,12 +22,19 @@ public sealed class FaxRunScheduler : IDisposable
     private readonly DispatcherTimer _receiptPollTimer;
 
     public FaxRunScheduler(FaxRunOrchestrator orchestrator)
-        : this(orchestrator, TimeSpan.FromMinutes(10))
+        : this(orchestrator, TimeSpan.FromSeconds(15))
     {
     }
 
-    /// <summary>Injectable interval seam for tests that need a shorter
-    /// tick than production's real 10-minute cadence.</summary>
+    /// <summary>V-T65 R5 (Will, verbatim, 2026-09-29: "it still shows
+    /// status 'InProcess' in the app. Need to make sure this stuff
+    /// updates."): shrunk from 10 minutes to 15 seconds — FaxReceiptPoller
+    /// no longer checks every pending entry on every tick; each entry's own
+    /// check cadence is gated by FaxPollSchedule (15s/60s/give-up-after-2h),
+    /// so ticking this timer faster just means a fax that resolves quickly
+    /// shows that in the app within ~15s instead of up to 10 minutes later,
+    /// without hammering Notifyre for faxes still genuinely in flight.
+    /// Also the injectable interval seam for tests.</summary>
     public FaxRunScheduler(FaxRunOrchestrator orchestrator, TimeSpan receiptPollInterval)
     {
         _orchestrator = orchestrator;
