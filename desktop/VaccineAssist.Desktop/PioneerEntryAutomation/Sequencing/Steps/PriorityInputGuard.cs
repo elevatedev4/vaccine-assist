@@ -79,4 +79,36 @@ public static class PriorityInputGuard
     public static bool IsRecognizedPopupWindowClass(string? windowClass) =>
         !string.IsNullOrEmpty(windowClass) &&
         Array.Exists(RecognizedPopupWindowClasses, c => string.Equals(c, windowClass, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// V-T41 ROUND 7 REVIEW FIX (BLOCKING — reviewer, this round): a
+    /// SEPARATE, narrow allowance — NOT a relaxation of CanConfirmDialog's
+    /// general invariant above, which stays exactly as strict as ROUND 5
+    /// left it for every other confirm-step call site (Enter-on-button,
+    /// Enter-on-dialog, Alt+O, and the Escape-fallback retry of F12
+    /// itself). This one exists for exactly one situation: the
+    /// macro-fidelity strategy (TryKeyboardNoDropdownStrategy) just typed
+    /// the value into the dialog THIS SAME call, and Pioneer's own
+    /// Auto-Suggest Dropdown (or a legacy ComboLBox) popped up as a
+    /// DIRECT, EXPECTED result of that typing. Will's macro is: type,
+    /// then F12, nothing else — it never Escapes the popup first. ROUND 6
+    /// had this call EnsureDropdownClosedAndDialogForeground
+    /// (Escape-the-popup-then-reassert) UNCONDITIONALLY before the first
+    /// F12 attempt, reversing the macro's own order whenever the popup
+    /// was foreground right after typing — a WinForms autocomplete Escape
+    /// commonly cancels the pending/highlighted suggestion, exactly the
+    /// "F12 sent, dialog stays open" failure shape already seen twice.
+    /// `typedThisCall` is an explicit CALLER-ASSERTED precondition, never
+    /// inferred here — the caller (TryConfirmWithF12BeforeEscapingOwnPopup)
+    /// only ever passes true when it is itself being invoked immediately
+    /// after that same strategy's own typing, so this can't be
+    /// accidentally reused to authorize a stale/unrelated popup. Returns
+    /// false outright when `!typedThisCall`, so this can never become a
+    /// second, looser version of CanConfirmDialog by accident.
+    /// </summary>
+    public static bool CanConfirmAfterOwnTyping(bool dialogAliveAndVisible, bool dialogIsForeground, bool popupForegroundIsRecognizedSameProcess, bool typedThisCall)
+    {
+        if (!dialogAliveAndVisible || !typedThisCall) return false;
+        return dialogIsForeground || popupForegroundIsRecognizedSameProcess;
+    }
 }

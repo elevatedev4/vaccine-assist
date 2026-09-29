@@ -504,6 +504,12 @@ public static class Win32WindowEnumerator
             return;
         }
 
+        // V-T41 ROUND 7 (non-blocking — reviewer): explicit log line for
+        // exactly when this fallback was actually needed (the
+        // attach-thread-input SetForegroundWindow above did not already
+        // succeed), not just its outcome after the fact.
+        log?.Invoke("ForceForeground: attach-thread-input SetForegroundWindow did not succeed — trying the Alt-nudge fallback.");
+
         try
         {
             // Alt-nudge fallback — same technique

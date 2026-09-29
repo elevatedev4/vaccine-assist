@@ -124,4 +124,59 @@ public class PriorityInputGuardTests
     {
         Assert.False(PriorityInputGuard.IsRecognizedPopupWindowClass(windowClass));
     }
+
+    /// <summary>
+    /// V-T41 ROUND 7 REVIEW FIX (BLOCKING — reviewer): "Escape-before-F12
+    /// fires unconditionally on the macro-fidelity path, reversing macro
+    /// order." CanConfirmAfterOwnTyping is a SEPARATE, narrow allowance
+    /// from CanConfirmDialog above (never a relaxation of it — see its own
+    /// doc comment) used ONLY to try F12 in the macro's own order (type,
+    /// then F12, nothing else) immediately after the macro-fidelity
+    /// strategy's own typing, even while a same-process recognized popup
+    /// (Auto-Suggest Dropdown/ComboLBox) that popup-up as a direct result
+    /// of that typing is still foreground.
+    /// </summary>
+    [Fact]
+    public void ConfirmAfterOwnTypingAliveTypedAndDialogForegroundAllows()
+    {
+        Assert.True(PriorityInputGuard.CanConfirmAfterOwnTyping(
+            dialogAliveAndVisible: true, dialogIsForeground: true, popupForegroundIsRecognizedSameProcess: false, typedThisCall: true));
+    }
+
+    [Fact]
+    public void ConfirmAfterOwnTypingAliveTypedAndRecognizedPopupForegroundAllows()
+    {
+        // The exact scenario the reviewer's finding is about: Auto-Suggest
+        // Dropdown popped up as a direct result of our own typing — F12
+        // must reach the dialog WITHOUT an Escape first.
+        Assert.True(PriorityInputGuard.CanConfirmAfterOwnTyping(
+            dialogAliveAndVisible: true, dialogIsForeground: false, popupForegroundIsRecognizedSameProcess: true, typedThisCall: true));
+    }
+
+    [Fact]
+    public void ConfirmAfterOwnTypingNotTypedThisCallRefusesEvenIfForegroundOrPopup()
+    {
+        // typedThisCall is a caller-asserted precondition — false must
+        // refuse regardless of the other two booleans, so this can never
+        // become a second, looser CanConfirmDialog by accident.
+        Assert.False(PriorityInputGuard.CanConfirmAfterOwnTyping(
+            dialogAliveAndVisible: true, dialogIsForeground: true, popupForegroundIsRecognizedSameProcess: true, typedThisCall: false));
+    }
+
+    [Fact]
+    public void ConfirmAfterOwnTypingNotAliveRefusesEvenIfTypedAndForeground()
+    {
+        Assert.False(PriorityInputGuard.CanConfirmAfterOwnTyping(
+            dialogAliveAndVisible: false, dialogIsForeground: true, popupForegroundIsRecognizedSameProcess: true, typedThisCall: true));
+    }
+
+    [Fact]
+    public void ConfirmAfterOwnTypingAliveTypedButNeitherForegroundNorPopupRefuses()
+    {
+        // Something else entirely has foreground — even the narrow
+        // allowance must refuse; the caller falls through to the
+        // Escape-then-reassert fallback.
+        Assert.False(PriorityInputGuard.CanConfirmAfterOwnTyping(
+            dialogAliveAndVisible: true, dialogIsForeground: false, popupForegroundIsRecognizedSameProcess: false, typedThisCall: true));
+    }
 }
