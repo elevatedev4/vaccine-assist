@@ -143,6 +143,42 @@ public static class Win32WindowEnumerator
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    // V-T41 ROUND 6 (this round) — ForceForeground's P/Invokes. Same
+    // AllowSetForegroundWindow+AttachThreadInput+Alt-nudge sequence
+    // DataEntryPopupWindow.ActivateAndFocusCurrentStage and
+    // MacroCodesWindow.ActivateAndFocusWebView already use to steal
+    // foreground from PioneerRx for this app's OWN WPF windows —
+    // duplicated here (not shared/called into) rather than referenced,
+    // same "keep this fix scoped to this file" posture
+    // MacroCodesWindow's own doc comment takes for its own copy, and
+    // because this Uia-namespace class deliberately stays UIA/WPF-free
+    // (see the class doc comment) — generalized to target a FOREIGN
+    // window handle (Pioneer's own Priority dialog) rather than one of
+    // this app's own windows.
+    [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    private const uint ASFW_ANY = 0xFFFFFFFF;
+    private const byte VK_MENU = 0x12;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT
     {
@@ -411,5 +447,119 @@ public static class Win32WindowEnumerator
     {
         try { return GetForegroundWindow(); }
         catch { return IntPtr.Zero; }
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 6 (Will's 2026-09-29 11:14 app.log — the "Priority"
+    /// dialog's macro-fidelity keyboard strategy never actually ran
+    /// because TryBringToForeground's plain SetForegroundWindow was
+    /// checked once, 74ms after the dialog was found, with no retry and
+    /// no stronger technique): a MUCH more likely-to-succeed
+    /// foreground-forcing sequence than TryBringToForeground's single
+    /// SetForegroundWindow call — plain SetForegroundWindow from a
+    /// background process is normally refused outright by Windows'
+    /// foreground-lock rules. Tries, in order, every fallback this app
+    /// already uses successfully for its own popups (see
+    /// DataEntryPopupWindow.ActivateAndFocusCurrentStage's doc comment for
+    /// the full rationale behind each step, duplicated here for a foreign
+    /// window handle instead of one of this app's own):
+    ///   1. AllowSetForegroundWindow(ASFW_ANY) — tells Windows the NEXT
+    ///      SetForegroundWindow call from ANY process is allowed through.
+    ///   2. An AttachThreadInput-backed SetForegroundWindow/SetActiveWindow:
+    ///      if the current foreground window belongs to a different UI
+    ///      thread, this thread's input state is temporarily attached to
+    ///      it (so the switch actually takes), then detached again
+    ///      immediately in a `finally` — an attach is NEVER left standing.
+    ///   3. If still not foreground: a synthetic Alt key down+up (Windows
+    ///      exempts whichever process most recently processed an Alt
+    ///      keypress from the foreground-lock timeout — a well-known
+    ///      workaround), then one more SetForegroundWindow/SetActiveWindow
+    ///      attempt.
+    /// Best-effort throughout — every step is individually try/caught so a
+    /// failure partway through still lets the rest run — and NEVER throws.
+    /// The caller is expected to re-check IsForegroundWindow (this method
+    /// never guarantees success; Windows can still refuse) rather than
+    /// trust it blind — see SendF3AndDismissPreEntryDialogsStep's own
+    /// foreground-wait helper, which polls after calling this.
+    /// </summary>
+    public static void ForceForeground(IntPtr hwnd, Action<string>? log = null)
+    {
+        if (hwnd == IntPtr.Zero) return;
+
+        try
+        {
+            AllowSetForegroundWindow(ASFW_ANY);
+        }
+        catch { /* best-effort */ }
+
+        try
+        {
+            TryAttachedSetForeground(hwnd);
+        }
+        catch { /* best-effort */ }
+
+        if (IsForegroundWindow(hwnd))
+        {
+            log?.Invoke("ForceForeground: attach-thread-input SetForegroundWindow succeeded.");
+            return;
+        }
+
+        // V-T41 ROUND 7 (non-blocking — reviewer): explicit log line for
+        // exactly when this fallback was actually needed (the
+        // attach-thread-input SetForegroundWindow above did not already
+        // succeed), not just its outcome after the fact.
+        log?.Invoke("ForceForeground: attach-thread-input SetForegroundWindow did not succeed — trying the Alt-nudge fallback.");
+
+        try
+        {
+            // Alt-nudge fallback — same technique
+            // DataEntryPopupWindow.TryAltNudgeThenSetForeground /
+            // MacroCodesWindow's own copy use; duplicated (not shared)
+            // per this class's own "stay UIA/WPF-free" posture.
+            keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+        }
+        catch { /* best-effort */ }
+
+        log?.Invoke($"ForceForeground: after Alt-nudge fallback, IsForegroundWindow={IsForegroundWindow(hwnd)}.");
+    }
+
+    /// <summary>Step 2 of ForceForeground — see that method's doc comment.
+    /// AttachThreadInput is ALWAYS paired with a matching detach in a
+    /// `finally` block: leaving two threads' input state attached would
+    /// make the foreground process and this one share keyboard/mouse
+    /// input state indefinitely, not just for this one call.</summary>
+    private static void TryAttachedSetForeground(IntPtr hwnd)
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground == hwnd)
+        {
+            SetActiveWindow(hwnd);
+            return;
+        }
+
+        var foregroundThreadId = foreground == IntPtr.Zero ? 0u : GetWindowThreadProcessId(foreground, out _);
+        var currentThreadId = GetCurrentThreadId();
+        var attached = false;
+        try
+        {
+            if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId)
+            {
+                attached = AttachThreadInput(currentThreadId, foregroundThreadId, true);
+            }
+
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+        }
+        finally
+        {
+            if (attached)
+            {
+                AttachThreadInput(currentThreadId, foregroundThreadId, false);
+            }
+        }
     }
 }

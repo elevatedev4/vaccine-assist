@@ -341,6 +341,113 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 ///      Dialog additionally logs the combo's value read back immediately
 ///      before the F12 attempt — so the next real app.log is conclusive
 ///      about exactly what had focus and what was sent.
+///
+/// ROUND 6 — F12 STILL DOESN'T SAVE, WITH A LIVE DUMP THIS TIME (Will's
+/// 2026-09-29 11:14 app.log, decisive): this is the FIRST live UIA dump of
+/// this dialog ever captured — it's an Edit search box (AutomationId
+/// 'uxPrioritySearch', alongside unrelated Edit fields 'uxTime'/'uxDate' on
+/// the SAME dialog, a DropDownButton, and Buttons uxCancel/uxSave), with
+/// its OWN separate top-level popup window, class 'Auto-Suggest Dropdown'
+/// — NOT a classic ComboBox with a 'ComboLBox' popup, which is what every
+/// prior round assumed and built for. The log's own timeline:
+///   - 31.856: strategy 1 (macro-fidelity) refused 74ms after the dialog
+///     was found — alive=True, dialogForeground=False,
+///     comboPopupForeground=False. It never actually ran.
+///   - 31.926-32.045: strategy 2 (TryUiaSelectStrategy) resolved via an
+///     Edit's ValuePattern.SetValue — text landed in the box and read back
+///     as "Vaccine," but this is a raw UIA write, not real keystrokes;
+///     Pioneer's own auto-suggest resolution never ran.
+///   - 32.083-33.754: confirm-input guard OK (dialog was, by then,
+///     genuinely foreground), F12 sent (SendInput ok=True) — dialog stayed
+///     open. Consistent with diagnosis: SetValue never made a real
+///     selection, so there was nothing for F12 to actually save.
+///   - 35.456-35.523: strategies 2/3 exhausted; strategy 3 refused again
+///     (dialogForeground=False, comboPopupForeground=False — some other
+///     window, never identified, had foreground by then).
+/// TWO root causes, THREE fixes:
+///   1. TryAuthorizeDialogInput's old refusal log had no way to say WHAT
+///      had foreground/focus instead — fixed (see (4) below) so this
+///      never has to be inferred from timestamps again.
+///   2. Strategy 1's own foreground check (`IsForegroundWindow` once, then
+///      a single `TryBringToForeground` with no retry/re-check) was too
+///      weak to win against PioneerRx actually holding foreground —
+///      Win32WindowEnumerator.ForceForeground (new: AllowSetForegroundWindow
+///      (ASFW_ANY) + an AttachThreadInput-backed SetForegroundWindow +, if
+///      still not foreground, a synthetic Alt-nudge — the SAME multi-
+///      fallback sequence DataEntryPopupWindow/MacroCodesWindow already
+///      use successfully to steal foreground from PioneerRx for this
+///      app's own popups, generalized to a foreign hwnd) plus
+///      WaitForDialogForegroundAndFocus's ~1.5s poll (50ms steps,
+///      checking BOTH foreground AND the UIA-focused element's
+///      AutomationId) now runs before strategy 1 types AND before every
+///      confirm (replacing EnsureDropdownClosedAndDialogForeground's old
+///      one-shot re-assert). A timeout logs the actual foreground
+///      window's class/title rather than silently proceeding blind.
+///   3. Diagnosis point 2's actual fix is unchanged code, not new code:
+///      strategy 1 (real keystrokes via NativeKeyboard.SendText) already
+///      existed and is ALREADY tried first — it simply never got to run
+///      (root cause 2 above). Making it actually run is the fix; no
+///      change was needed to how it types.
+/// FOUR further, smaller fixes:
+///   4. Guard popup-class recognition (PriorityInputGuard.
+///      IsRecognizedPopupWindowClass, shared by TryAuthorizeDialogInput,
+///      TryAuthorizeConfirmInput's logging, and
+///      EnsureDropdownClosedAndDialogForeground's Escape-the-stray-popup
+///      step) now recognizes 'Auto-Suggest Dropdown' alongside 'ComboLBox'.
+///      DECISION (brief point 3): the macro is blind keystrokes with no
+///      popup-awareness, so it can't distinguish "F12 while a popup is
+///      foreground" from "F12 while the dialog is foreground" — but
+///      rather than relaxing PriorityInputGuard.CanConfirmDialog's strict
+///      dialog-must-be-foreground invariant (ROUND 5's actual fix — never
+///      regressed), a recognized popup is Escaped and the dialog
+///      re-asserted foreground FIRST, achieving the same net effect (F12
+///      reaches the dialog) without gambling on whether Auto-Suggest
+///      Dropdown handles F12 any differently than ComboLBox's confirmed
+///      "silently ignores it."
+///   5. Strategy 1 now prefers the CONFIRMED AutomationId
+///      'uxPrioritySearch' (FindPrioritySearchField) over the generic
+///      first-Edit-found walk order — the live dump shows OTHER Edit
+///      fields (uxTime, uxDate) on the same dialog a blind "first Edit"
+///      walk could land on instead. Strategies 2/3 keep their original
+///      generic candidate order, unchanged (brief point 5).
+///   6. TryAuthorizeDialogInput's REFUSED line, and TryAuthorizeConfirmInput's
+///      every-call line, now BOTH carry foregroundHandle/class/title (only
+///      the confirm guard had these before) plus the UIA-focused element's
+///      own AutomationId (SafeFocusedAutomationId) — answers "what
+///      actually had focus" without inference from timestamps.
+///   7. Visible recognized-popup inventory (class + size,
+///      DescribeVisiblePopupsForLog) is now logged right after typing
+///      (with an explicit ~1s poll for 'Auto-Suggest Dropdown' — brief
+///      point 2, diagnostic only, never an extra keystroke the macro
+///      doesn't send) and right after F12.
+/// docs/data-entry-macro.md's own "UNCONFIRMED" note for the Priority
+/// dialog's control shape is now stale as of this round — the live dump
+/// above confirms it; not updated in this doc comment (see that file
+/// directly).
+///
+/// ROUND 7 REVIEW FIX (BLOCKING — reviewer, same day): ROUND 6 above had
+/// TryConfirmDialog call EnsureDropdownClosedAndDialogForeground
+/// (Escape-the-popup-then-reassert) UNCONDITIONALLY before the FIRST F12
+/// attempt — including on the macro-fidelity path, right after that same
+/// strategy's own typing. That reverses the macro's actual order (type,
+/// then F12, nothing else — no Escape ever) whenever Pioneer's Auto-Suggest
+/// Dropdown is foreground as a direct, expected result of the typing that
+/// just happened, and a WinForms autocomplete Escape commonly cancels the
+/// pending/highlighted suggestion — exactly the "F12 sent, dialog stays
+/// open" failure shape already seen twice. Fix: TryConfirmDialog now takes
+/// a `typedThisCall` flag (true ONLY from the macro-fidelity strategy's own
+/// call); when true, it tries F12 FIRST via the new
+/// TryConfirmWithF12BeforeEscapingOwnPopup — authorized by a SEPARATE,
+/// narrow PriorityInputGuard.CanConfirmAfterOwnTyping allowance (NOT a
+/// relaxation of CanConfirmDialog's general invariant, which stays exactly
+/// as strict as ROUND 5 left it for every other confirm call site) — and
+/// only falls through to the existing Escape-then-reassert-then-retry path
+/// if that doesn't verifiably close the dialog. Every log line now says
+/// which path fired: "F12 with auto-suggest open (macro order)" vs "F12
+/// after Escape fallback" (renamed from the old undifferentiated "F12
+/// (Save)"). Non-blocking companion fix: Win32WindowEnumerator.ForceForeground
+/// now logs explicitly when its Alt-nudge fallback was actually needed
+/// (previously only its outcome was logged, not that it fired).
 /// </summary>
 public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 {
@@ -1034,65 +1141,18 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// read failure is treated as "not authorized," never as "assume
     /// it's fine" (the opposite default direction of IsEnabledSafe — see
     /// class doc comment's fail-safe-direction note). Never throws.
+    ///
+    /// V-T41 ROUND 6 (this round, brief point 3+4): `foregroundIsSameProcessComboLBoxPopup`
+    /// now recognizes 'Auto-Suggest Dropdown' too, not just 'ComboLBox' —
+    /// see PriorityInputGuard.IsRecognizedPopupWindowClass's own doc
+    /// comment. And every REFUSED line now carries the SAME diagnostic
+    /// fields TryAuthorizeConfirmInput already logged on every call
+    /// (foregroundHandle/class/title), plus the UIA-focused element's own
+    /// AutomationId (SafeFocusedAutomationId) — the decisive log showed a
+    /// refusal with only the three booleans, never saying WHAT actually
+    /// had focus/foreground at that moment.
     /// </summary>
-    private bool TryAuthorizeDialogInput(IntPtr dialogHandle, int mainProcessId, string what, Action<string> log)
-    {
-        bool aliveAndVisible;
-        try { aliveAndVisible = !Win32WindowEnumerator.IsWindowGone(dialogHandle); }
-        catch { aliveAndVisible = false; }
-
-        IntPtr foreground;
-        try { foreground = Win32WindowEnumerator.GetForegroundWindowHandle(); }
-        catch { foreground = IntPtr.Zero; }
-
-        var isDialogForeground = aliveAndVisible && foreground != IntPtr.Zero && foreground == dialogHandle;
-
-        var isComboPopupForeground = false;
-        if (aliveAndVisible && !isDialogForeground && foreground != IntPtr.Zero)
-        {
-            try
-            {
-                var info = Win32WindowEnumerator.Describe(foreground);
-                isComboPopupForeground =
-                    info.ProcessId == mainProcessId &&
-                    string.Equals(info.ClassName, "ComboLBox", StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                isComboPopupForeground = false;
-            }
-        }
-
-        var authorized = PriorityInputGuard.CanSendInput(aliveAndVisible, isDialogForeground, isComboPopupForeground);
-        if (!authorized)
-        {
-            log($"[{Name}] \"Priority\" dialog: input guard REFUSED \"{what}\" — " +
-                $"alive={aliveAndVisible}, dialogForeground={isDialogForeground}, comboPopupForeground={isComboPopupForeground}.");
-        }
-        return authorized;
-    }
-
-    /// <summary>
-    /// V-T41 ROUND 5 (Will's 2026-09-29 follow-up; brief points A + D):
-    /// the STRICT sibling of TryAuthorizeDialogInput used ONLY for the
-    /// Priority dialog's Save/confirm keystrokes (F12, Enter-on-button,
-    /// Enter-on-dialog, Alt+O) — see PriorityInputGuard.CanConfirmDialog's
-    /// own doc comment for why a same-process ComboLBox popup being
-    /// foreground must NOT authorize a confirm send the way it
-    /// legitimately does for combo-typing input: Pioneer's ComboLBox list
-    /// silently ignores F12, which is the actual root cause of "F12 does
-    /// nothing." Every boolean is re-gathered fresh (never cached/reused
-    /// across sends), same posture as TryAuthorizeDialogInput. Logs on
-    /// EVERY call — not just a refusal (brief point D: "log ... the guard
-    /// decision with its three booleans" on every attempt) — including
-    /// the foreground window's class/title so the next real app.log
-    /// answers "was F12 even sent, and what had the focus when it was."
-    /// Title is truncated at the first " - " (NO PHI — same truncation
-    /// PioneerMainWindowLocator.ReadWindowTitleForLog uses), since the
-    /// foreground could in principle be Pioneer's own Rx screen carrying
-    /// a patient name after that delimiter. Never throws.
-    /// </summary>
-    private bool TryAuthorizeConfirmInput(IntPtr dialogHandle, int mainProcessId, string what, Action<string> log)
+    private bool TryAuthorizeDialogInput(AutomationElement contextElement, IntPtr dialogHandle, int mainProcessId, string what, Action<string> log)
     {
         bool aliveAndVisible;
         try { aliveAndVisible = !Win32WindowEnumerator.IsWindowGone(dialogHandle); }
@@ -1118,7 +1178,85 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 {
                     isComboPopupForeground =
                         info.ProcessId == mainProcessId &&
-                        string.Equals(info.ClassName, "ComboLBox", StringComparison.OrdinalIgnoreCase);
+                        PriorityInputGuard.IsRecognizedPopupWindowClass(info.ClassName);
+                }
+            }
+            catch
+            {
+                // Best-effort — diagnostic fields stay blank/false.
+            }
+        }
+
+        var authorized = PriorityInputGuard.CanSendInput(aliveAndVisible, isDialogForeground, isComboPopupForeground);
+        if (!authorized)
+        {
+            log($"[{Name}] \"Priority\" dialog: input guard REFUSED \"{what}\" — " +
+                $"alive={aliveAndVisible}, dialogForeground={isDialogForeground}, comboPopupForeground={isComboPopupForeground}, " +
+                $"foregroundHandle=0x{foreground:X}, foregroundClass=\"{foregroundClass}\", foregroundTitle=\"{foregroundTitle}\", " +
+                $"focusedAutomationId=\"{SafeFocusedAutomationId(contextElement)}\".");
+        }
+        return authorized;
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 5 (Will's 2026-09-29 follow-up; brief points A + D):
+    /// the STRICT sibling of TryAuthorizeDialogInput used ONLY for the
+    /// Priority dialog's Save/confirm keystrokes (F12, Enter-on-button,
+    /// Enter-on-dialog, Alt+O) — see PriorityInputGuard.CanConfirmDialog's
+    /// own doc comment for why a same-process ComboLBox popup being
+    /// foreground must NOT authorize a confirm send the way it
+    /// legitimately does for combo-typing input: Pioneer's ComboLBox list
+    /// silently ignores F12, which is the actual root cause of "F12 does
+    /// nothing." Every boolean is re-gathered fresh (never cached/reused
+    /// across sends), same posture as TryAuthorizeDialogInput. Logs on
+    /// EVERY call — not just a refusal (brief point D: "log ... the guard
+    /// decision with its three booleans" on every attempt) — including
+    /// the foreground window's class/title so the next real app.log
+    /// answers "was F12 even sent, and what had the focus when it was."
+    /// Title is truncated at the first " - " (NO PHI — same truncation
+    /// PioneerMainWindowLocator.ReadWindowTitleForLog uses), since the
+    /// foreground could in principle be Pioneer's own Rx screen carrying
+    /// a patient name after that delimiter. Never throws.
+    ///
+    /// V-T41 ROUND 6 (this round, brief points 3+4): isComboPopupForeground
+    /// now recognizes 'Auto-Suggest Dropdown' too (see
+    /// PriorityInputGuard.IsRecognizedPopupWindowClass) — logged so it's
+    /// visible, but it still NEVER authorizes a confirm send on its own
+    /// (CanConfirmDialog's strict "dialog itself must be foreground"
+    /// invariant is unchanged — see EnsureDropdownClosedAndDialogForeground's
+    /// own doc comment for why a same-process Auto-Suggest popup is
+    /// Escaped and the dialog re-asserted foreground BEFORE this is ever
+    /// called, rather than relaxing this guard to allow it). Also now logs
+    /// the UIA-focused element's own AutomationId on every call (brief
+    /// point 4).
+    /// </summary>
+    private bool TryAuthorizeConfirmInput(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, string what, Action<string> log)
+    {
+        bool aliveAndVisible;
+        try { aliveAndVisible = !Win32WindowEnumerator.IsWindowGone(dialogHandle); }
+        catch { aliveAndVisible = false; }
+
+        IntPtr foreground;
+        try { foreground = Win32WindowEnumerator.GetForegroundWindowHandle(); }
+        catch { foreground = IntPtr.Zero; }
+
+        var isDialogForeground = aliveAndVisible && foreground != IntPtr.Zero && foreground == dialogHandle;
+
+        var isComboPopupForeground = false;
+        var foregroundClass = "";
+        var foregroundTitle = "";
+        if (foreground != IntPtr.Zero)
+        {
+            try
+            {
+                var info = Win32WindowEnumerator.Describe(foreground);
+                foregroundClass = info.ClassName;
+                foregroundTitle = RedactWindowTitleForLog(info.Title);
+                if (aliveAndVisible && !isDialogForeground)
+                {
+                    isComboPopupForeground =
+                        info.ProcessId == mainProcessId &&
+                        PriorityInputGuard.IsRecognizedPopupWindowClass(info.ClassName);
                 }
             }
             catch
@@ -1130,8 +1268,152 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         var authorized = PriorityInputGuard.CanConfirmDialog(aliveAndVisible, isDialogForeground);
         log($"[{Name}] \"Priority\" dialog: confirm-input guard for \"{what}\" -> {(authorized ? "OK" : "REFUSED")} — " +
             $"alive={aliveAndVisible}, dialogForeground={isDialogForeground}, comboPopupForeground={isComboPopupForeground}, " +
-            $"foregroundHandle=0x{foreground:X}, foregroundClass=\"{foregroundClass}\", foregroundTitle=\"{foregroundTitle}\".");
+            $"foregroundHandle=0x{foreground:X}, foregroundClass=\"{foregroundClass}\", foregroundTitle=\"{foregroundTitle}\", " +
+            $"focusedAutomationId=\"{SafeFocusedAutomationId(dialog)}\".");
         return authorized;
+    }
+
+    /// <summary>V-T41 ROUND 6 (brief point 4) — the currently UIA-focused
+    /// element's own AutomationId, read via `anyElement.Automation.
+    /// FocusedElement()` (a global desktop query — which specific element
+    /// this is called on doesn't matter, only that it shares the live
+    /// automation session every Priority-dialog call already uses).
+    /// "&lt;none&gt;" when nothing is focused, "&lt;unknown&gt;" on any read
+    /// failure — never throws.</summary>
+    private static string SafeFocusedAutomationId(AutomationElement anyElement)
+    {
+        try
+        {
+            var focused = anyElement.Automation.FocusedElement();
+            return focused is null ? "<none>" : SafeAutomationId(focused);
+        }
+        catch
+        {
+            return "<unknown>";
+        }
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 6 (brief point 1) — actively makes `dialog` the OS
+    /// foreground window and, if `focusTarget` is given, natively focuses
+    /// it (FocusNative — not FlaUI's UIA-level Focus(), same reasoning as
+    /// QuickSearchFieldEntry's own doc comment), then polls up to ~1.5s
+    /// (50ms steps, SynchronousPoll) until BOTH GetForegroundWindow()==
+    /// dialog hwnd AND the UIA-focused element's AutomationId matches
+    /// `focusTarget`'s own (when `focusTarget` has no AutomationId to
+    /// compare, foreground alone is treated as the wait's success
+    /// condition). Never blocks past the wait budget. If it times out,
+    /// logs the actual foreground window's class/title (NO PHI —
+    /// RedactWindowTitleForLog) so the next real app.log says what
+    /// actually had focus/foreground instead of just "refused." Always
+    /// returns (true = wait succeeded) rather than throwing — the caller
+    /// proceeds either way; TryAuthorizeDialogInput/TryAuthorizeConfirmInput
+    /// are the actual send-time gates.
+    /// </summary>
+    private const int ForegroundWaitMaxTicks = 30;
+    private static readonly TimeSpan ForegroundWaitTickDelay = TimeSpan.FromMilliseconds(50);
+
+    private bool WaitForDialogForegroundAndFocus(AutomationElement dialog, IntPtr dialogHandle, AutomationElement? focusTarget, Action<string> log)
+    {
+        Win32WindowEnumerator.ForceForeground(dialogHandle, msg => log($"[{Name}] \"Priority\" dialog: {msg}"));
+
+        var targetAutomationId = focusTarget is null ? "" : SafeAutomationId(focusTarget);
+        if (focusTarget is not null)
+        {
+            try { focusTarget.FocusNative(); } catch { /* best-effort — the poll below is the real check */ }
+        }
+
+        var ok = false;
+        for (var elapsedTicks = 0; ; elapsedTicks++)
+        {
+            var foregroundIsDialog = Win32WindowEnumerator.IsForegroundWindow(dialogHandle);
+            var focusedIsTarget = string.IsNullOrEmpty(targetAutomationId)
+                ? foregroundIsDialog
+                : string.Equals(SafeFocusedAutomationId(dialog), targetAutomationId, StringComparison.OrdinalIgnoreCase);
+
+            var decision = PriorityForegroundWaitPolicy.Decide(foregroundIsDialog, focusedIsTarget, elapsedTicks, ForegroundWaitMaxTicks);
+            if (decision == PriorityForegroundWaitDecision.Type)
+            {
+                ok = true;
+                break;
+            }
+            if (decision == PriorityForegroundWaitDecision.GiveUp)
+            {
+                ok = false;
+                break;
+            }
+            Thread.Sleep(ForegroundWaitTickDelay);
+        }
+
+        if (!ok)
+        {
+            IntPtr foreground;
+            try { foreground = Win32WindowEnumerator.GetForegroundWindowHandle(); }
+            catch { foreground = IntPtr.Zero; }
+
+            var foregroundClass = "";
+            var foregroundTitle = "";
+            if (foreground != IntPtr.Zero)
+            {
+                try
+                {
+                    var info = Win32WindowEnumerator.Describe(foreground);
+                    foregroundClass = info.ClassName;
+                    foregroundTitle = RedactWindowTitleForLog(info.Title);
+                }
+                catch
+                {
+                    // Best-effort — diagnostic fields stay blank.
+                }
+            }
+
+            log($"[{Name}] \"Priority\" dialog: foreground/focus wait timed out after ~1.5s (target AutomationId=\"{targetAutomationId}\") — " +
+                $"foregroundHandle=0x{foreground:X}, foregroundClass=\"{foregroundClass}\", foregroundTitle=\"{foregroundTitle}\", " +
+                $"focusedAutomationId=\"{SafeFocusedAutomationId(dialog)}\".");
+        }
+
+        return ok;
+    }
+
+    /// <summary>V-T41 ROUND 6 (brief point 2/4) — true when a VISIBLE,
+    /// same-process 'Auto-Suggest Dropdown' top-level window currently
+    /// exists (Pioneer's own autocomplete popup for the Priority search
+    /// box — see PriorityInputGuard.IsRecognizedPopupWindowClass's doc
+    /// comment). Never throws.</summary>
+    private static bool IsAutoSuggestPopupVisible(int mainProcessId)
+    {
+        try
+        {
+            return Win32WindowEnumerator.EnumerateTopLevelWindows().Any(w =>
+                w.ProcessId == mainProcessId && w.IsVisible &&
+                string.Equals(w.ClassName, "Auto-Suggest Dropdown", StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>V-T41 ROUND 6 (brief point 4) — "class (WxH)" for every
+    /// currently visible, same-process, recognized popup window
+    /// (PriorityInputGuard.IsRecognizedPopupWindowClass) — logged right
+    /// after typing and right after F12 so the next real app.log shows the
+    /// exact popup state at each of those two moments instead of only a
+    /// pass/fail. "&lt;none&gt;" when nothing matches. Never throws.</summary>
+    private static string DescribeVisiblePopupsForLog(int mainProcessId)
+    {
+        try
+        {
+            var popups = Win32WindowEnumerator.EnumerateTopLevelWindows()
+                .Where(w => w.ProcessId == mainProcessId && w.IsVisible && PriorityInputGuard.IsRecognizedPopupWindowClass(w.ClassName))
+                .Select(w => $"{w.ClassName} ({w.Width}x{w.Height})")
+                .ToList();
+            return popups.Count == 0 ? "<none>" : string.Join(", ", popups);
+        }
+        catch (Exception ex)
+        {
+            return $"<error: {ex.GetType().Name}>";
+        }
     }
 
     /// <summary>NO PHI: same first-" - "-only truncation
@@ -1419,7 +1701,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             var rect = item.BoundingRectangle;
             if (!rect.IsEmpty)
             {
-                if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, "double-click matched item", log)) return false;
+                if (!TryAuthorizeDialogInput(item, dialogHandle, mainProcessId, "double-click matched item", log)) return false;
                 Mouse.LeftDoubleClick(new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2));
                 return true;
             }
@@ -1454,25 +1736,45 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// (ReadControlValue) before ever attempting to confirm. Outcome
     /// reflects VerifyDialogGone, never merely "an action was
     /// attempted."
+    ///
+    /// V-T41 ROUND 6 (this round, Will's 2026-09-29 11:14 app.log — see
+    /// class doc comment's ROUND 6 section for the full diagnosis): this
+    /// strategy never actually ran that morning — the OLD single
+    /// IsForegroundWindow check + one-shot TryBringToForeground was tested
+    /// 74ms after the dialog was found, with no retry, so the very first
+    /// input-guard check refused immediately. Two fixes:
+    ///   1. Foreground is now actively FORCED (Win32WindowEnumerator.
+    ///      ForceForeground — the same AllowSetForegroundWindow+
+    ///      AttachThreadInput+Alt-nudge sequence this app's own popups use
+    ///      to steal foreground from PioneerRx, generalized to a foreign
+    ///      hwnd) and then WAITED for, up to ~1.5s (50ms steps) — see
+    ///      WaitForDialogForegroundAndFocus — rather than checked once and
+    ///      given up on.
+    ///   2. The control to focus/type into now PREFERS the CONFIRMED
+    ///      AutomationId 'uxPrioritySearch' from that same log's live UIA
+    ///      dump (FindPrioritySearchField) over the generic first-Edit-found
+    ///      walk order FindSelectionControlCandidates uses — that dialog
+    ///      also has OTHER Edit fields (uxTime, uxDate) a plain "first Edit"
+    ///      walk could land on instead.
     /// </summary>
     private PriorityStrategyOutcome TryKeyboardNoDropdownStrategy(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log)
     {
-        if (!Win32WindowEnumerator.IsForegroundWindow(dialogHandle))
+        var control = FindPrioritySearchField(dialog);
+        if (control is null)
         {
-            log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — dialog isn't the foreground window; bringing it forward.");
-            Win32WindowEnumerator.TryBringToForeground(dialogHandle);
+            List<AutomationElement> candidates;
+            try { candidates = FindSelectionControlCandidates(dialog); }
+            catch { candidates = new List<AutomationElement>(); }
+            control = candidates.FirstOrDefault();
         }
 
-        List<AutomationElement> candidates;
-        try { candidates = FindSelectionControlCandidates(dialog); }
-        catch { candidates = new List<AutomationElement>(); }
-
-        var control = candidates.FirstOrDefault();
         if (control is null)
         {
             log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — no selection control found to focus.");
             return PriorityStrategyOutcome.NotFound;
         }
+
+        WaitForDialogForegroundAndFocus(dialog, dialogHandle, control, log);
 
         try
         {
@@ -1482,7 +1784,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             var rect = control.BoundingRectangle;
             if (!rect.IsEmpty)
             {
-                if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, "click selection control (no-dropdown)", log))
+                if (!TryAuthorizeDialogInput(dialog, dialogHandle, mainProcessId, "click selection control (no-dropdown)", log))
                 {
                     return PriorityStrategyOutcome.StillOpen;
                 }
@@ -1493,7 +1795,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 control.FocusNative();
             }
 
-            if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, $"type \"{_priorityValue}\" (no-dropdown)", log))
+            if (!TryAuthorizeDialogInput(dialog, dialogHandle, mainProcessId, $"type \"{_priorityValue}\" (no-dropdown)", log))
             {
                 return PriorityStrategyOutcome.StillOpen;
             }
@@ -1510,6 +1812,20 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             return PriorityStrategyOutcome.StillOpen;
         }
 
+        // V-T41 ROUND 6 (brief point 2): the macro types then presses F12
+        // with no intervening key — it can't "wait" for anything, it's
+        // blind keystrokes. This is diagnostic only (never an extra
+        // keystroke the macro doesn't send): poll up to ~1s for Pioneer's
+        // own 'Auto-Suggest Dropdown' popup to become visible so the next
+        // real app.log says whether it showed up (and its size) instead of
+        // guessing.
+        var popupAppeared = SynchronousPoll.WaitUntil(
+            () => IsAutoSuggestPopupVisible(mainProcessId),
+            maxTicks: 10,
+            () => Thread.Sleep(100));
+        log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — after typing, visible popups: " +
+            $"{DescribeVisiblePopupsForLog(mainProcessId)} (Auto-Suggest Dropdown appeared={popupAppeared}).");
+
         var currentValue = ReadControlValue(control);
         if (!PriorityValueMatcher.StartsWith(currentValue, _priorityValue))
         {
@@ -1519,8 +1835,44 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         }
 
         log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — type-ahead selected \"{_priorityValue}\"; confirming...");
-        TryConfirmDialog(dialog, dialogHandle, mainProcessId, log);
+        // V-T41 ROUND 7 REVIEW FIX (BLOCKING): typedThisCall: true — this
+        // IS the macro-fidelity call site TryConfirmDialog's own doc
+        // comment refers to; every other call site leaves this false.
+        TryConfirmDialog(dialog, dialogHandle, mainProcessId, log, typedThisCall: true);
         return VerifyDialogGone(dialogHandle) ? PriorityStrategyOutcome.Resolved : PriorityStrategyOutcome.StillOpen;
+    }
+
+    /// <summary>V-T41 ROUND 6 — the AutomationId Will's 2026-09-29 11:14
+    /// app.log's live UIA dump confirmed for the Priority dialog's actual
+    /// search box: "Edit id='uxPrioritySearch'" (alongside unrelated Edit
+    /// fields 'uxTime'/'uxDate' on the SAME dialog). Only used by
+    /// TryKeyboardNoDropdownStrategy (tried first) — TryUiaSelectStrategy/
+    /// TryKeyboardStrategy keep their original generic candidate order
+    /// unchanged, per this round's brief point 5.</summary>
+    private const string PriorityFieldAutomationId = "uxPrioritySearch";
+
+    /// <summary>Raw-view search for the element whose AutomationId matches
+    /// PriorityFieldAutomationId — null (never throws) if not found, so the
+    /// caller falls back to FindSelectionControlCandidates's generic
+    /// type-based order (defensive: a differently-configured Pioneer
+    /// install may not expose this exact id).</summary>
+    private static AutomationElement? FindPrioritySearchField(AutomationElement dialog)
+    {
+        try
+        {
+            foreach (var candidate in RawViewDescendants(dialog, maxDepth: 6))
+            {
+                if (string.Equals(SafeAutomationId(candidate), PriorityFieldAutomationId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort — fall through to the generic candidate search.
+        }
+        return null;
     }
 
     /// <summary>
@@ -1568,7 +1920,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 // TryBringToForeground above is NEVER trusted blind —
                 // re-verified fresh immediately before this send, and
                 // before every send after it.
-                if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, "Alt+Down", log))
+                if (!TryAuthorizeDialogInput(dialog, dialogHandle, mainProcessId, "Alt+Down", log))
                 {
                     return PriorityStrategyOutcome.StillOpen;
                 }
@@ -1581,7 +1933,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             var rect = control.BoundingRectangle;
             if (!rect.IsEmpty)
             {
-                if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, "click selection control", log))
+                if (!TryAuthorizeDialogInput(dialog, dialogHandle, mainProcessId, "click selection control", log))
                 {
                     return PriorityStrategyOutcome.StillOpen;
                 }
@@ -1592,7 +1944,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 control.FocusNative();
             }
 
-            if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, "type \"V\"", log))
+            if (!TryAuthorizeDialogInput(dialog, dialogHandle, mainProcessId, "type \"V\"", log))
             {
                 return PriorityStrategyOutcome.StillOpen;
             }
@@ -1712,12 +2064,128 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     private const ushort VK_O = 0x4F;
     private const ushort VK_DOWN = 0x28;
 
-    private bool TryConfirmDialog(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log)
+    /// <summary>
+    /// V-T41 ROUND 7 REVIEW FIX (BLOCKING — reviewer, this round): the
+    /// narrow macro-order F12 attempt — see PriorityInputGuard.
+    /// CanConfirmAfterOwnTyping's own doc comment for the full "why."
+    /// Gathers the same diagnostic booleans TryAuthorizeConfirmInput does
+    /// (dialog alive/foreground, foreground window class/title) plus
+    /// whether the CURRENT foreground is a same-process recognized popup
+    /// (PriorityInputGuard.IsRecognizedPopupWindowClass), but authorizes
+    /// via CanConfirmAfterOwnTyping (always passing typedThisCall: true —
+    /// this method exists ONLY to be called immediately after the
+    /// macro-fidelity strategy's own typing, never from anywhere else)
+    /// instead of the strict CanConfirmDialog every other confirm send
+    /// uses. Deliberately does NOT call dialog.FocusNative() first (unlike
+    /// the Escape-fallback F12 send) — the macro never refocuses anything
+    /// between typing and F12 either; the search box should already hold
+    /// real OS keyboard focus from the typing that just happened, and an
+    /// explicit re-focus here is exactly the kind of extra step this fix
+    /// exists to avoid. Logs "F12 with auto-suggest open (macro order)" on
+    /// every call (guard decision AND the send outcome) so the next real
+    /// app.log says which path fired without inference. Returns true only
+    /// when F12 was actually sent AND the dialog verifiably closed
+    /// afterward (VerifyDialogGone) — a refusal, a thrown exception, or a
+    /// still-open dialog all return false so the caller falls through to
+    /// the existing Escape-then-reassert-then-retry path. Never throws.
+    /// </summary>
+    private bool TryConfirmWithF12BeforeEscapingOwnPopup(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log)
+    {
+        bool aliveAndVisible;
+        try { aliveAndVisible = !Win32WindowEnumerator.IsWindowGone(dialogHandle); }
+        catch { aliveAndVisible = false; }
+
+        IntPtr foreground;
+        try { foreground = Win32WindowEnumerator.GetForegroundWindowHandle(); }
+        catch { foreground = IntPtr.Zero; }
+
+        var isDialogForeground = aliveAndVisible && foreground != IntPtr.Zero && foreground == dialogHandle;
+
+        var isRecognizedPopupForeground = false;
+        var foregroundClass = "";
+        var foregroundTitle = "";
+        if (foreground != IntPtr.Zero)
+        {
+            try
+            {
+                var info = Win32WindowEnumerator.Describe(foreground);
+                foregroundClass = info.ClassName;
+                foregroundTitle = RedactWindowTitleForLog(info.Title);
+                if (aliveAndVisible && !isDialogForeground)
+                {
+                    isRecognizedPopupForeground = info.ProcessId == mainProcessId && PriorityInputGuard.IsRecognizedPopupWindowClass(info.ClassName);
+                }
+            }
+            catch
+            {
+                // Best-effort — diagnostic fields stay blank/false.
+            }
+        }
+
+        var authorized = PriorityInputGuard.CanConfirmAfterOwnTyping(aliveAndVisible, isDialogForeground, isRecognizedPopupForeground, typedThisCall: true);
+        log($"[{Name}] \"Priority\" dialog: macro-order confirm guard for \"F12 with auto-suggest open (macro order)\" -> {(authorized ? "OK" : "REFUSED")} — " +
+            $"alive={aliveAndVisible}, dialogForeground={isDialogForeground}, recognizedPopupForeground={isRecognizedPopupForeground}, " +
+            $"foregroundHandle=0x{foreground:X}, foregroundClass=\"{foregroundClass}\", foregroundTitle=\"{foregroundTitle}\", " +
+            $"focusedAutomationId=\"{SafeFocusedAutomationId(dialog)}\".");
+
+        if (!authorized) return false;
+
+        try
+        {
+            var comboBeforeF12 = FindSelectionControlCandidates(dialog).FirstOrDefault();
+            var comboValueBeforeF12 = comboBeforeF12 is null ? "<no selection control found>" : (ReadControlValue(comboBeforeF12) ?? "<null>");
+            log($"[{Name}] \"Priority\" dialog: combo value read back before F12 with auto-suggest open (macro order) = \"{comboValueBeforeF12}\".");
+
+            var sendOk = NativeKeyboard.SendKey(VK_F12, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "F12 with auto-suggest open (macro order)");
+            var closedAfterF12 = VerifyDialogGone(dialogHandle);
+            log($"[{Name}] \"Priority\" dialog: sent F12 with auto-suggest open (macro order), SendInput reported ok={sendOk} -> {(closedAfterF12 ? "closed" : "still open")}. " +
+                $"Visible popups after F12: {DescribeVisiblePopupsForLog(mainProcessId)}.");
+            return closedAfterF12;
+        }
+        catch (Exception ex)
+        {
+            log($"[{Name}] \"Priority\" dialog: F12 with auto-suggest open (macro order) attempt threw {ex.GetType().Name}: {ex.Message}.");
+            return false;
+        }
+    }
+
+    /// <param name="typedThisCall">V-T41 ROUND 7 REVIEW FIX (BLOCKING —
+    /// reviewer): true ONLY when this call is reached immediately after
+    /// the macro-fidelity strategy (TryKeyboardNoDropdownStrategy) typed
+    /// the value into the dialog this same pass — see
+    /// TryConfirmWithF12BeforeEscapingOwnPopup and
+    /// PriorityInputGuard.CanConfirmAfterOwnTyping's own doc comment for
+    /// why this tries F12 in the macro's own order (type, then F12,
+    /// nothing else) before ever falling through to the
+    /// Escape-then-reassert fallback below. Every other call site
+    /// (TryUiaSelectStrategy, TryKeyboardStrategy) leaves this false —
+    /// unchanged strict behavior.</param>
+    private bool TryConfirmDialog(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log, bool typedThisCall = false)
     {
         if (Win32WindowEnumerator.IsWindowGone(dialogHandle))
         {
             log($"[{Name}] \"Priority\" dialog: confirm — dialog is already gone; nothing to confirm.");
             return true;
+        }
+
+        // V-T41 ROUND 7 REVIEW FIX (BLOCKING) — tried FIRST, before any
+        // Escape: mirrors Will's macro (type, then F12, nothing else)
+        // exactly, even when Pioneer's own Auto-Suggest Dropdown is
+        // foreground as a direct result of the typing that just happened.
+        // Only falls through to the Escape-then-reassert path below if
+        // this doesn't verifiably close the dialog (refused, or F12 sent
+        // but still open).
+        if (typedThisCall)
+        {
+            if (TryConfirmWithF12BeforeEscapingOwnPopup(dialog, dialogHandle, mainProcessId, log))
+            {
+                return true;
+            }
+            if (Win32WindowEnumerator.IsWindowGone(dialogHandle))
+            {
+                log($"[{Name}] \"Priority\" dialog: confirm — dialog closed after the macro-order F12 attempt; nothing further to do.");
+                return true;
+            }
         }
 
         // V-T41 ROUND 5 root cause: whichever strategy set the value may
@@ -1737,12 +2205,16 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         try
         {
-            if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "F12 (Save)", log))
+            if (TryAuthorizeConfirmInput(dialog, dialogHandle, mainProcessId, "F12 after Escape fallback", log))
             {
                 dialog.FocusNative();
-                var sendOk = NativeKeyboard.SendKey(VK_F12, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "F12 (Save)");
+                var sendOk = NativeKeyboard.SendKey(VK_F12, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "F12 after Escape fallback");
                 var closedAfterF12 = VerifyDialogGone(dialogHandle);
-                log($"[{Name}] \"Priority\" dialog: sent F12 (Save), SendInput reported ok={sendOk} -> {(closedAfterF12 ? "closed" : "still open")}.");
+                // V-T41 ROUND 6 (brief point 4): visible popups logged
+                // right after F12 too, same shape as right after typing —
+                // see TryKeyboardNoDropdownStrategy's own popup-wait log.
+                log($"[{Name}] \"Priority\" dialog: sent F12 after Escape fallback, SendInput reported ok={sendOk} -> {(closedAfterF12 ? "closed" : "still open")}. " +
+                    $"Visible popups after F12: {DescribeVisiblePopupsForLog(mainProcessId)}.");
                 if (closedAfterF12) return true;
             }
         }
@@ -1777,7 +2249,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                     return true;
                 }
 
-                if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "Enter on confirm button", log))
+                if (TryAuthorizeConfirmInput(dialog, dialogHandle, mainProcessId, "Enter on confirm button", log))
                 {
                     button.FocusNative();
                     NativeKeyboard.SendKey(VK_RETURN, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Enter on confirm button");
@@ -1799,7 +2271,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         try
         {
-            if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "Enter on dialog", log))
+            if (TryAuthorizeConfirmInput(dialog, dialogHandle, mainProcessId, "Enter on dialog", log))
             {
                 dialog.FocusNative();
                 NativeKeyboard.SendKey(VK_RETURN, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Enter on dialog");
@@ -1813,7 +2285,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         try
         {
-            if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "Alt+O", log))
+            if (TryAuthorizeConfirmInput(dialog, dialogHandle, mainProcessId, "Alt+O", log))
             {
                 NativeKeyboard.SendAltChord(VK_O, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Alt+O");
                 return true;
@@ -1834,12 +2306,35 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// guard is the real safety net if this doesn't fully succeed):
     /// (1) collapse every currently-expanded ComboBox under `dialog` via
     /// ExpandCollapsePattern (COM-targeted, not gated by
-    /// TryAuthorizeDialogInput); (2) if a same-process 'ComboLBox' popup
-    /// is STILL the OS foreground (a legacy WinForms combo whose popup
-    /// doesn't respond to (1)), send a raw Escape to it — the standard
-    /// Win32 way to close a combo drop-down without touching the dialog
-    /// underneath; (3) re-assert the dialog itself as the foreground
-    /// window if it isn't already.
+    /// TryAuthorizeDialogInput); (2) if a same-process RECOGNIZED popup
+    /// (ROUND 6: 'ComboLBox' OR 'Auto-Suggest Dropdown' — see
+    /// PriorityInputGuard.IsRecognizedPopupWindowClass) is STILL the OS
+    /// foreground, send a raw Escape to it — the standard Win32 way to
+    /// close a combo/autocomplete drop-down without touching the dialog
+    /// underneath (an Escape dismisses an autocomplete suggestion list the
+    /// same way it closes a combo's own drop-down — it does NOT clear the
+    /// Edit box's already-typed text, standard Windows autocomplete
+    /// behavior); (3) re-assert the dialog itself as the foreground
+    /// window (ROUND 6: via WaitForDialogForegroundAndFocus's stronger
+    /// ForceForeground+poll, not the old one-shot TryBringToForeground —
+    /// same reasoning as the macro-fidelity strategy's own pre-type wait).
+    ///
+    /// ROUND 6 DECISION (brief point 3 — "decide from the macro text and
+    /// say what you chose"): the macro itself is blind keystrokes with no
+    /// dropdown-awareness, so it can't distinguish "F12 while a popup is
+    /// foreground" from "F12 while the dialog is foreground" — it just
+    /// sends F12 right after typing either way. Rather than relaxing
+    /// PriorityInputGuard.CanConfirmDialog's strict "dialog itself must be
+    /// literal foreground" invariant to ALSO allow a recognized popup (the
+    /// way CanSendInput's popup allowance works for typing), this closes
+    /// the popup and puts the dialog back in front FIRST, then sends F12
+    /// to the dialog — same practical outcome (F12 reaches whatever should
+    /// receive Pioneer's Save shortcut) without gambling on unconfirmed
+    /// behavior: ROUND 5 already proved a ComboLBox popup silently
+    /// swallows F12, and there's no live evidence either way for
+    /// Auto-Suggest Dropdown, so this keeps applying the ONE pattern
+    /// that's actually been confirmed safe rather than trusting a second,
+    /// untested one.
     /// </summary>
     private void EnsureDropdownClosedAndDialogForeground(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log)
     {
@@ -1874,10 +2369,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             if (foreground != IntPtr.Zero && foreground != dialogHandle)
             {
                 var info = Win32WindowEnumerator.Describe(foreground);
-                if (info.ProcessId == mainProcessId && string.Equals(info.ClassName, "ComboLBox", StringComparison.OrdinalIgnoreCase))
+                if (info.ProcessId == mainProcessId && PriorityInputGuard.IsRecognizedPopupWindowClass(info.ClassName))
                 {
-                    log($"[{Name}] \"Priority\" dialog: confirm — a ComboLBox popup still has the foreground; sending Escape to close it.");
-                    NativeKeyboard.SendKey(VK_ESCAPE, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Escape (close stray combo popup)");
+                    log($"[{Name}] \"Priority\" dialog: confirm — a same-process popup (class '{info.ClassName}') still has the foreground; sending Escape to close it.");
+                    NativeKeyboard.SendKey(VK_ESCAPE, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Escape (close stray popup)");
                 }
             }
         }
@@ -1886,17 +2381,11 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             // Best-effort.
         }
 
-        try
-        {
-            if (!Win32WindowEnumerator.IsForegroundWindow(dialogHandle))
-            {
-                Win32WindowEnumerator.TryBringToForeground(dialogHandle);
-            }
-        }
-        catch
-        {
-            // Best-effort.
-        }
+        // ROUND 6: the stronger foreground-forcing sequence, waited for —
+        // same helper the macro-fidelity strategy uses before typing (no
+        // specific focusTarget here; the dialog itself being foreground is
+        // all a confirm keystroke needs).
+        WaitForDialogForegroundAndFocus(dialog, dialogHandle, focusTarget: null, log);
     }
 
     private static string SafeAutomationId(AutomationElement element)
