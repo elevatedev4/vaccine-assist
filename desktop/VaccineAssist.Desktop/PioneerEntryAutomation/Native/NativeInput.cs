@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Native;
@@ -78,4 +80,80 @@ public struct NativeInput
 public static class NativeInputType
 {
     public const uint Keyboard = 1;
+}
+
+/// <summary>
+/// V-T41 ROUND 6 (reviewer REQUEST_CHANGES on round 5, blocking finding
+/// 2, ported from rx-verify's Reports/NativeInput.cs — "the reference
+/// file ... fixed this exact bug for this exact virtual-key in a sibling
+/// app after live failures"): KEYEVENTF_EXTENDEDKEY and the pure
+/// VK-code-set/decision behind it, split out (no P/Invoke of its own) so
+/// it's directly unit-testable — see NativeKeyEventFlagsTests.cs.
+/// MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) returns the BASE scan code, which
+/// Windows shares between several "extended" keys and their NumPad/left-
+/// hand counterpart — whether the OS delivers the keystroke as, e.g., the
+/// arrow key vs. NumPad '2' then depends on the target's NumLock state,
+/// not on wVk, unless KEYEVENTF_EXTENDEDKEY is OR'd into dwFlags (exactly
+/// like a physical extended key's own 0xE0 scan-code prefix would
+/// signal). Directly relevant here: the Priority dialog's Alt+Down
+/// fallback (SendF3AndDismissPreEntryDialogsStep.TryKeyboardStrategy)
+/// sends VK_DOWN (0x28) — without this flag, whether it actually opens
+/// the combo depends on NumLock, silently.
+/// </summary>
+public static class NativeKeyEventFlags
+{
+    /// <summary>OR into KEYBDINPUT.dwFlags on every key-down/key-up event
+    /// for a virtual-key where <see cref="IsExtendedKey"/> is true.</summary>
+    public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+
+    /// <summary>
+    /// The Win32 virtual-key codes that MUST carry KEYEVENTF_EXTENDEDKEY —
+    /// every one of these shares its base scan code with a NumPad key (or,
+    /// for RCONTROL/RMENU, with its left-hand counterpart), so the OS can
+    /// only tell them apart from the NumLock-affected NumPad key or the
+    /// left-hand key by that flag. Same list as rx-verify's own
+    /// ExtendedKeyVirtualKeys.
+    /// </summary>
+    private static readonly HashSet<ushort> ExtendedKeyVirtualKeys = new()
+    {
+        0x21, // VK_PRIOR (Page Up)
+        0x22, // VK_NEXT (Page Down)
+        0x23, // VK_END
+        0x24, // VK_HOME
+        0x25, // VK_LEFT
+        0x26, // VK_UP
+        0x27, // VK_RIGHT
+        0x28, // VK_DOWN
+        0x2D, // VK_INSERT
+        0x2E, // VK_DELETE
+        0x6F, // VK_DIVIDE (NumPad /)
+        0x90, // VK_NUMLOCK
+        0xA3, // VK_RCONTROL
+        0xA5, // VK_RMENU (right Alt)
+    };
+
+    /// <summary>True for a virtual-key code that must carry
+    /// KEYEVENTF_EXTENDEDKEY on every SendInput key event.</summary>
+    public static bool IsExtendedKey(ushort vk) => ExtendedKeyVirtualKeys.Contains(vk);
+}
+
+/// <summary>
+/// V-T41 ROUND 6 (reviewer REQUEST_CHANGES on round 5, blocking finding
+/// 1): per-key/per-character settle delays for NativeKeyboard's sends —
+/// pure TimeSpan constants, no P/Invoke, so they (and the fact they're at
+/// least as generous as rx-verify's own values — see
+/// NativeKeyEventFlagsTests.DelayIsAtLeastRxVerifysValue) are directly
+/// unit-testable. Legacy WinForms combo type-ahead/hotkey handling (the
+/// SAME kind of control Pioneer's Priority dialog and Save shortcut use)
+/// can drop or mis-sequence back-to-back synthetic input with no delay
+/// between events — mirrors rx-verify's Reports/NativeInput.cs
+/// KeystrokeCharDelay exactly (same value: Macro Express's own default
+/// "simulate keystrokes" per-key delay is roughly this).
+/// </summary>
+public static class NativeKeyboardTiming
+{
+    /// <summary>Sleep after fully sending one character (SendChar) and
+    /// between the down/up events of a single non-character key send
+    /// (SendKey) — matches rx-verify's KeystrokeCharDelay value exactly.</summary>
+    public static readonly TimeSpan KeystrokeCharDelay = TimeSpan.FromMilliseconds(30);
 }

@@ -1,6 +1,6 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Native;
 
@@ -31,38 +31,67 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Native;
 /// whether SendInput actually reported sending every event, so the
 /// caller's log line is conclusive rather than "an action was
 /// attempted."
+///
+/// V-T41 ROUND 6 (reviewer REQUEST_CHANGES on round 5, mirroring
+/// rx-verify's Reports/NativeInput.cs — TypeKeystrokes/SendSpecialKey/
+/// IsExtendedKey): two gaps in round 5's implementation fixed here —
+/// (1) EVERY event now goes through SendOneKeyEvent, which ORs
+/// NativeKeyEventFlags.KEYEVENTF_EXTENDEDKEY into dwFlags for any
+/// virtual-key NativeKeyEventFlags.IsExtendedKey flags (round 5's
+/// SendAltChord sent VK_DOWN, 0x28, for the Alt+Down fallback with no
+/// such flag — whether that opens the combo or types NumPad '2' would
+/// have silently depended on the target's NumLock state); (2) every send
+/// path now sleeps NativeKeyboardTiming.KeystrokeCharDelay — once between
+/// SendKey's own down/up pair, and once per character in SendChar (so
+/// SendText, which just calls SendChar in a loop, inherits it too) —
+/// since legacy WinForms input handling (exactly what Pioneer's Priority
+/// dialog is) can drop or mis-sequence back-to-back synthetic input with
+/// no settle time between events.
 /// </summary>
 public static class NativeKeyboard
 {
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const uint MAPVK_VK_TO_VSC = 0;
     private const ushort VK_SHIFT = 0x10;
+    private const ushort VK_MENU = 0x12;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, NativeInput[] pInputs, int cbSize);
 
-    [DllImport("user32.dll")]
+    /// <summary>V-T41 ROUND 6 (reviewer MAJOR finding 3): explicit
+    /// CharSet.Unicode (matching rx-verify's own declaration) — the
+    /// default DllImport CharSet is ANSI, and while plain ASCII
+    /// digits/letters marshal identically either way, this keeps the
+    /// P/Invoke shape correct for any non-ASCII character a Priority
+    /// value could someday contain. SetLastError so a mapping failure is
+    /// diagnosable via Marshal.GetLastWin32Error, same as SendInput's own
+    /// declaration already was.</summary>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern short VkKeyScanW(char ch);
 
-    [DllImport("user32.dll")]
+    /// <summary>See VkKeyScanW's doc comment for why CharSet.Unicode +
+    /// SetLastError were added here too.</summary>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
 
     /// <summary>Sends one virtual-key press+release (e.g. VK_F12 = 0x7B,
-    /// VK_RETURN = 0x0D) as raw SendInput events, scan code included.
-    /// Returns true only when SendInput reports both events sent — see
-    /// class doc comment. `what` is a short label for the log line only
-    /// (e.g. "F12 (Save)").</summary>
+    /// VK_RETURN = 0x0D) as raw SendInput events, scan code AND (when
+    /// applicable) KEYEVENTF_EXTENDEDKEY included, with
+    /// NativeKeyboardTiming.KeystrokeCharDelay between the down and up
+    /// events (V-T41 ROUND 6 — see class doc comment). Returns true only
+    /// when SendInput reports both events sent. `what` is a short label
+    /// for the log line only (e.g. "F12 (Save)").</summary>
     public static bool SendKey(ushort virtualKey, Action<string>? log = null, string what = "")
     {
         try
         {
             var scan = (ushort)MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC);
-            var events = new[]
-            {
-                MakeKeyEvent(virtualKey, scan, keyUp: false),
-                MakeKeyEvent(virtualKey, scan, keyUp: true),
-            };
-            return Send(events, log, $"SendKey vk=0x{virtualKey:X2} scan=0x{scan:X2} what=\"{what}\"");
+
+            var downOk = SendOneKeyEvent(virtualKey, scan, keyUp: false, log, $"SendKey vk=0x{virtualKey:X2} scan=0x{scan:X2} what=\"{what}\" (down)");
+            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+            var upOk = SendOneKeyEvent(virtualKey, scan, keyUp: true, log, $"SendKey vk=0x{virtualKey:X2} scan=0x{scan:X2} what=\"{what}\" (up)");
+
+            return downOk && upOk;
         }
         catch (Exception ex)
         {
@@ -73,22 +102,28 @@ public static class NativeKeyboard
 
     /// <summary>Sends Alt+&lt;virtualKey&gt; as raw SendInput events (e.g.
     /// Alt+O — VK_MENU down, key down, key up, VK_MENU up), scan codes
-    /// included on every one.</summary>
+    /// AND (when applicable) KEYEVENTF_EXTENDEDKEY included on every one
+    /// (V-T41 ROUND 6 — this is what fixes the Alt+Down fallback: VK_DOWN
+    /// now correctly carries the flag instead of silently depending on
+    /// NumLock state), each event separated by
+    /// NativeKeyboardTiming.KeystrokeCharDelay.</summary>
     public static bool SendAltChord(ushort virtualKey, Action<string>? log = null, string what = "")
     {
         try
         {
-            const ushort VK_MENU = 0x12;
             var altScan = (ushort)MapVirtualKeyW(VK_MENU, MAPVK_VK_TO_VSC);
             var scan = (ushort)MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC);
-            var events = new[]
-            {
-                MakeKeyEvent(VK_MENU, altScan, keyUp: false),
-                MakeKeyEvent(virtualKey, scan, keyUp: false),
-                MakeKeyEvent(virtualKey, scan, keyUp: true),
-                MakeKeyEvent(VK_MENU, altScan, keyUp: true),
-            };
-            return Send(events, log, $"SendAltChord vk=0x{virtualKey:X2} scan=0x{scan:X2} what=\"{what}\"");
+            var label = $"SendAltChord vk=0x{virtualKey:X2} scan=0x{scan:X2} what=\"{what}\"";
+
+            var altDownOk = SendOneKeyEvent(VK_MENU, altScan, keyUp: false, log, $"{label} (Alt down)");
+            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+            var keyDownOk = SendOneKeyEvent(virtualKey, scan, keyUp: false, log, $"{label} (key down)");
+            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+            var keyUpOk = SendOneKeyEvent(virtualKey, scan, keyUp: true, log, $"{label} (key up)");
+            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+            var altUpOk = SendOneKeyEvent(VK_MENU, altScan, keyUp: true, log, $"{label} (Alt up)");
+
+            return altDownOk && keyDownOk && keyUpOk && altUpOk;
         }
         catch (Exception ex)
         {
@@ -100,9 +135,11 @@ public static class NativeKeyboard
     /// <summary>Sends one printable character via <c>VkKeyScanW</c>
     /// (virtual-key + required shift state), scan code included — used
     /// for the Priority combo's type-ahead ("V" / "Vaccine") so that path
-    /// gets the same real-scan-code treatment as the F12 Save send.
-    /// Returns false (no events sent) when VkKeyScanW can't map the
-    /// character at all.</summary>
+    /// gets the same real-scan-code treatment as the F12 Save send. Sleeps
+    /// NativeKeyboardTiming.KeystrokeCharDelay once after the character is
+    /// fully sent (V-T41 ROUND 6) — same granularity as rx-verify's own
+    /// TypeKeystrokes. Returns false (no events sent) when VkKeyScanW
+    /// can't map the character at all.</summary>
     public static bool SendChar(char ch, Action<string>? log = null)
     {
         try
@@ -119,14 +156,29 @@ public static class NativeKeyboard
             var needsShift = (shiftState & 1) != 0;
             var scan = (ushort)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
             var shiftScan = (ushort)MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC);
+            var label = $"SendChar '{ch}' vk=0x{vk:X2} scan=0x{scan:X2} shift={needsShift}";
 
-            var events = new List<NativeInput>(4);
-            if (needsShift) events.Add(MakeKeyEvent(VK_SHIFT, shiftScan, keyUp: false));
-            events.Add(MakeKeyEvent(vk, scan, keyUp: false));
-            events.Add(MakeKeyEvent(vk, scan, keyUp: true));
-            if (needsShift) events.Add(MakeKeyEvent(VK_SHIFT, shiftScan, keyUp: true));
+            var shiftDownOk = true;
+            if (needsShift)
+            {
+                shiftDownOk = SendOneKeyEvent(VK_SHIFT, shiftScan, keyUp: false, log, $"{label} (Shift down)");
+            }
 
-            return Send(events.ToArray(), log, $"SendChar '{ch}' vk=0x{vk:X2} scan=0x{scan:X2} shift={needsShift}");
+            var charDownOk = SendOneKeyEvent(vk, scan, keyUp: false, log, $"{label} (down)");
+            var charUpOk = SendOneKeyEvent(vk, scan, keyUp: true, log, $"{label} (up)");
+
+            var shiftUpOk = true;
+            if (needsShift)
+            {
+                // Always released, even if the char down/up above failed —
+                // a failed send must never leave Shift physically "held"
+                // for every keystroke sent afterward.
+                shiftUpOk = SendOneKeyEvent(VK_SHIFT, shiftScan, keyUp: true, log, $"{label} (Shift up)");
+            }
+
+            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+
+            return shiftDownOk && charDownOk && charUpOk && shiftUpOk;
         }
         catch (Exception ex)
         {
@@ -135,8 +187,10 @@ public static class NativeKeyboard
         }
     }
 
-    /// <summary>Sends every character in `text` via SendChar, in order.
-    /// Returns true only when every character was sent.</summary>
+    /// <summary>Sends every character in `text` via SendChar, in order —
+    /// SendChar's own trailing NativeKeyboardTiming.KeystrokeCharDelay
+    /// sleep (V-T41 ROUND 6) naturally spaces every character this loop
+    /// sends. Returns true only when every character was sent.</summary>
     public static bool SendText(string text, Action<string>? log = null)
     {
         var ok = true;
@@ -147,27 +201,42 @@ public static class NativeKeyboard
         return ok;
     }
 
-    private static bool Send(NativeInput[] events, Action<string>? log, string what)
+    /// <summary>Sends exactly one key-down or key-up event, applying
+    /// KEYEVENTF_EXTENDEDKEY when NativeKeyEventFlags.IsExtendedKey(vk) —
+    /// V-T41 ROUND 6 (reviewer blocking finding 2). Returns whether
+    /// SendInput reported sending it.</summary>
+    private static bool SendOneKeyEvent(ushort virtualKey, ushort scan, bool keyUp, Action<string>? log, string what)
     {
-        var sent = SendInput((uint)events.Length, events, Marshal.SizeOf<NativeInput>());
-        var ok = sent == events.Length;
-        log?.Invoke($"NativeKeyboard.{what} -> SendInput returned {sent} (expected {events.Length}, ok={ok}).");
+        var input = MakeKeyEvent(virtualKey, scan, keyUp);
+        var events = new[] { input };
+        var sent = SendInput(1, events, Marshal.SizeOf<NativeInput>());
+        var ok = sent == 1;
+        log?.Invoke($"NativeKeyboard.{what} -> SendInput returned {sent} (expected 1, ok={ok}).");
         return ok;
     }
 
-    private static NativeInput MakeKeyEvent(ushort virtualKey, ushort scan, bool keyUp) => new()
+    private static NativeInput MakeKeyEvent(ushort virtualKey, ushort scan, bool keyUp)
     {
-        type = NativeInputType.Keyboard,
-        u = new InputUnion
+        var flags = keyUp ? KEYEVENTF_KEYUP : 0u;
+        if (NativeKeyEventFlags.IsExtendedKey(virtualKey))
         {
-            ki = new KEYBDINPUT
+            flags |= NativeKeyEventFlags.KEYEVENTF_EXTENDEDKEY;
+        }
+
+        return new NativeInput
+        {
+            type = NativeInputType.Keyboard,
+            u = new InputUnion
             {
-                wVk = virtualKey,
-                wScan = scan,
-                dwFlags = keyUp ? KEYEVENTF_KEYUP : 0,
-                time = 0,
-                dwExtraInfo = 0,
+                ki = new KEYBDINPUT
+                {
+                    wVk = virtualKey,
+                    wScan = scan,
+                    dwFlags = flags,
+                    time = 0,
+                    dwExtraInfo = 0,
+                },
             },
-        },
-    };
+        };
+    }
 }
