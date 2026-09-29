@@ -852,6 +852,12 @@ public partial class MainWindow : Window
         var window = new FaxSendWindow(viewModel);
         window.Closed += (_, _) =>
         {
+            // Reviewer fix (V-T65 R5 REQUEST_CHANGES, 2026-09-29):
+            // without this, every open/close cycle left this VM's
+            // PropertyChanged subscription rooted in the session-long
+            // _faxSendCoordinator forever — see FaxSendViewModel's own
+            // doc comment on the leak this closes.
+            viewModel.Dispose();
             if (ReferenceEquals(_openFaxSendWindow, window))
             {
                 _openFaxSendWindow = null;

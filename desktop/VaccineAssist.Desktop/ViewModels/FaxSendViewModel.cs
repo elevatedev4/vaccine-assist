@@ -1,4 +1,6 @@
+using System;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Windows.Input;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Fax;
@@ -24,15 +26,44 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// coordinator so it survives FaxSendWindow being closed and reopened.
 /// Every property/command here simply forwards to it; PropertyChanged is
 /// relayed 1:1 so existing bindings in FaxSendWindow.xaml need no change.
+///
+/// LEAK FIX (reviewer, V-T65 R5 REQUEST_CHANGES, 2026-09-29): FaxSendCoordinator
+/// is a session-long singleton, but MainWindow.ShowFaxSendWindow builds a
+/// brand-new FaxSendViewModel on every open — the _openFaxSendWindow guard
+/// only stops two windows existing AT ONCE, it does nothing once the
+/// window closes. Without unsubscribing, every open/close cycle rooted one
+/// more VM (via the coordinator's PropertyChanged invocation list)
+/// forever. IDisposable + a field-stored handler (not a lambda, so -=
+/// actually removes it) fixes that; MainWindow's FaxSendWindow.Closed
+/// handler calls Dispose() alongside its existing _openFaxSendWindow reset.
 /// </summary>
-public sealed class FaxSendViewModel : ObservableObject
+public sealed class FaxSendViewModel : ObservableObject, IDisposable
 {
     private readonly FaxSendCoordinator _coordinator;
+    private readonly PropertyChangedEventHandler _coordinatorPropertyChangedHandler;
+    private bool _disposed;
 
     public FaxSendViewModel(FaxSendCoordinator coordinator)
     {
         _coordinator = coordinator;
-        _coordinator.PropertyChanged += (_, e) => OnPropertyChanged(e.PropertyName);
+        // Stored in a field (not inlined as a lambda passed directly to
+        // +=) specifically so Dispose() below has a delegate instance it
+        // can pass to -= — an inline lambda can never be unsubscribed,
+        // which was exactly the leak.
+        _coordinatorPropertyChangedHandler = (_, e) => OnPropertyChanged(e.PropertyName);
+        _coordinator.PropertyChanged += _coordinatorPropertyChangedHandler;
+    }
+
+    /// <summary>Detaches from the coordinator's PropertyChanged — called
+    /// from FaxSendWindow's Closed handler (MainWindow.xaml.cs). The
+    /// coordinator itself is untouched (it's the session-long singleton;
+    /// only this per-window VM's subscription to it is torn down).
+    /// Idempotent — safe to call more than once.</summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _coordinator.PropertyChanged -= _coordinatorPropertyChangedHandler;
     }
 
     public FaxSendState State => _coordinator.State;

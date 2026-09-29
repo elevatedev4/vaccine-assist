@@ -297,6 +297,26 @@ public class FaxSendViewModelTests : IDisposable
         // fresh snapshot — so both VMs see the identical row instance.
         Assert.Same(firstVm.Rows.Single(), secondVm.Rows.Single());
         Assert.Single(faxClient.QueuedRequests); // reopening never re-sends
+
+        // Reviewer fix (V-T65 R5 REQUEST_CHANGES, 2026-09-29): closing the
+        // first window (MainWindow.xaml.cs's FaxSendWindow.Closed handler)
+        // disposes its VM — that must actually unsubscribe from the
+        // session-long coordinator, or every open/close cycle leaks one
+        // more VM forever.
+        var firstVmNotifications = 0;
+        var secondVmNotifications = 0;
+        firstVm.PropertyChanged += (_, _) => firstVmNotifications++;
+        secondVm.PropertyChanged += (_, _) => secondVmNotifications++;
+
+        firstVm.Dispose();
+        var secondReport = WriteReport("report2.csv", prescriberFax: "5555550300");
+        coordinator.SetChosenFile(secondReport); // a real coordinator change, same as picking a new file
+
+        Assert.Equal(0, firstVmNotifications); // disposed — must not still be listening
+        Assert.True(secondVmNotifications > 0); // still attached — must still be listening
+
+        // Disposing twice (e.g. Closed firing more than once) must not throw.
+        firstVm.Dispose();
     }
 
     [Fact]

@@ -21,15 +21,25 @@ public static class FaxSendSummaryLine
         var sent = rows.Count(r => r.Status == nameof(FaxLedgerStatus.Sent));
         var failed = rows.Count(r => r.Status == nameof(FaxLedgerStatus.Failed));
         var skipped = rows.Count(IsSkipped);
+        // Reviewer fix (V-T65 R5 REQUEST_CHANGES, 2026-09-29): a row that
+        // FaxReceiptPoller gave up on after 2h (FaxLedgerStatus.Unknown)
+        // fell into NO bucket before this — the header would read "Done: N
+        // sent, N failed" as if it had resolved one way or the other, when
+        // it's actually neither.
+        var unknown = rows.Count(r => r.Status == nameof(FaxLedgerStatus.Unknown));
 
         if (inProcess > 0)
         {
             var line = $"{inProcess} in process · {sent} sent · {failed} failed";
-            return skipped > 0 ? $"{line} · {skipped} skipped" : line;
+            if (skipped > 0) line += $" · {skipped} skipped";
+            if (unknown > 0) line += $" · {unknown} unknown";
+            return line;
         }
 
         var done = $"Done: {sent} sent, {failed} failed";
-        return skipped > 0 ? $"{done}, {skipped} skipped — already sent" : done;
+        if (skipped > 0) done += $", {skipped} skipped — already sent";
+        if (unknown > 0) done += $", {unknown} unknown — check Notifyre";
+        return done;
     }
 
     private static bool IsInProcess(FaxRunRowSummary row) =>

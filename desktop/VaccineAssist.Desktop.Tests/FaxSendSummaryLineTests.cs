@@ -78,4 +78,49 @@ public class FaxSendSummaryLineTests
 
         Assert.Equal("Done: 0 sent, 0 failed", FaxSendSummaryLine.Compute(rows));
     }
+
+    // ---- Reviewer fix (V-T65 R5 REQUEST_CHANGES, 2026-09-29): a row that
+    // gave up after 2h (FaxLedgerStatus.Unknown) fell into no bucket
+    // before this — "Done: N sent, N failed" would read as if everything
+    // had resolved one way or the other. ----
+
+    [Fact]
+    public void UnknownRowsAppendToTheInProcessLine()
+    {
+        var rows = new List<FaxRunRowSummary>
+        {
+            Row(nameof(FaxLedgerStatus.InProcess)),
+            Row(nameof(FaxLedgerStatus.Unknown)),
+        };
+
+        Assert.Equal("1 in process · 0 sent · 0 failed · 1 unknown", FaxSendSummaryLine.Compute(rows));
+    }
+
+    [Fact]
+    public void UnknownRowsAppendToTheDoneLine()
+    {
+        var rows = new List<FaxRunRowSummary>
+        {
+            Row(nameof(FaxLedgerStatus.Sent)),
+            Row(nameof(FaxLedgerStatus.Unknown)),
+            Row(nameof(FaxLedgerStatus.Unknown)),
+        };
+
+        Assert.Equal("Done: 1 sent, 0 failed, 2 unknown — check Notifyre", FaxSendSummaryLine.Compute(rows));
+    }
+
+    [Fact]
+    public void SkippedAndUnknownBothAppendToTheDoneLineInOrder()
+    {
+        var rows = new List<FaxRunRowSummary>
+        {
+            Row(nameof(FaxLedgerStatus.Sent)),
+            Row("Skipped — already sent 09/29/2026"),
+            Row(nameof(FaxLedgerStatus.Unknown)),
+        };
+
+        Assert.Equal(
+            "Done: 1 sent, 0 failed, 1 skipped — already sent, 1 unknown — check Notifyre",
+            FaxSendSummaryLine.Compute(rows));
+    }
 }
