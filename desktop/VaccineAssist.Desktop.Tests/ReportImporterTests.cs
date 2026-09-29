@@ -168,6 +168,58 @@ public class ReportImporterTests : IDisposable
     }
 
     [Fact]
+    public void XlsxWithADateTimeFormattedCellForAdministeredDateAndDobStillImports()
+    {
+        // V-T65 R4 (Will, 2026-09-29, verbatim: "Tried using my sample
+        // report and it didn't send any faxes"). Reproduces the real
+        // shape of Will's attached sample-fax-report.xlsx WITHOUT copying
+        // it (synthetic names/numbers only, per brief): Pioneer's export
+        // has the two date columns formatted with a full date+time number
+        // format, not a bare date — ClosedXML's Cell.GetString() then
+        // returns "9/28/2026 12:00:00 AM" rather than "9/28/2026", which
+        // ReportRowParser.TryParseDate used to reject outright (every row
+        // silently skipped as "missing or unparsable administered date",
+        // 0 rows ever reaching a fax group). Uses the DEFAULT column map
+        // (Pioneer's real header names), same as the live app.
+        var map = new FaxColumnMap();
+        var path = Path.Combine(_tempDir, "pioneer-shape.xlsx");
+        using (var workbook = new XLWorkbook())
+        {
+            var sheet = workbook.Worksheets.Add("Sheet1");
+            sheet.Cell(1, 1).Value = "Immunization Administered On";
+            sheet.Cell(1, 2).Value = "Patient Full Name Last then First";
+            sheet.Cell(1, 3).Value = "Patient Date of Birth";
+            sheet.Cell(1, 4).Value = "Dispensed Item Name";
+            sheet.Cell(1, 5).Value = "Primary Care Prescriber";
+            sheet.Cell(1, 6).Value = "Primary Care Prescriber Fax";
+
+            var administeredCell = sheet.Cell(2, 1);
+            administeredCell.Value = new DateTime(2026, 9, 28);
+            administeredCell.Style.DateFormat.Format = "M/d/yyyy h:mm:ss tt";
+
+            sheet.Cell(2, 2).Value = "Synthetic, Sam";
+
+            var dobCell = sheet.Cell(2, 3);
+            dobCell.Value = new DateTime(1980, 1, 15);
+            dobCell.Style.DateFormat.Format = "M/d/yyyy h:mm:ss tt";
+
+            sheet.Cell(2, 4).Value = "Influenza";
+            sheet.Cell(2, 5).Value = "Dr. Synthetic";
+            sheet.Cell(2, 6).Value = "(555) 010-0100";
+            workbook.SaveAs(path);
+        }
+
+        var importer = new ReportImporter(NewLedger(_tempDir));
+        var outcome = importer.ImportFile(path, map);
+
+        Assert.Empty(outcome.RejectedFiles);
+        Assert.Equal(0, outcome.SkippedRowCount);
+        Assert.Single(outcome.NewRecords);
+        Assert.Equal(new DateOnly(2026, 9, 28), outcome.NewRecords[0].AdministeredDate);
+        Assert.Equal(new DateOnly(1980, 1, 15), outcome.NewRecords[0].PatientDob);
+    }
+
+    [Fact]
     public void UnreadableFileIsRejectedWithAClearMessageRatherThanThrowing()
     {
         var path = Path.Combine(_tempDir, "missing.csv");

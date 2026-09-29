@@ -50,9 +50,11 @@ public sealed class TrayIconController : IDisposable
     public event EventHandler? FaxSettingsRequested;
     public event EventHandler? FaxOpenFolderRequested;
 
-    /// <summary>V-T65 (2026-09-29): "Vaccine faxes" — one file picker,
-    /// then immediately process + send — see MainWindow.xaml.cs's
-    /// ImportReportFileAndSendAsync.</summary>
+    /// <summary>V-T65 R4 (2026-09-29): "Vaccines-Send PCP faxes" — opens
+    /// the one file-picker-plus-results window (see MainWindow.xaml.cs's
+    /// ShowFaxSendWindow / Views/FaxSendWindow.xaml). Event name kept as
+    /// FaxImportFileRequested — same tray row, same TrayMenuAction, only
+    /// what it opens changed.</summary>
     public event EventHandler? FaxImportFileRequested;
 
     /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a Navigate row is clicked.</summary>

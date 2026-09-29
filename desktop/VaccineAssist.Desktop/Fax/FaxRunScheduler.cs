@@ -8,8 +8,9 @@ namespace VaccineAssist.Desktop.Fax;
 /// 2026-09-29 — replaces the old daily-timer/"Run now" scheduler: "Get rid
 /// of all the shit ... the automatic pulling and folder ... One file
 /// selector, then send faxes"). Sending is now a direct, one-shot user
-/// action (tray icon -> file picker -> immediately process + send — see
-/// MainWindow.xaml.cs), so the only thing left to own on a recurring timer
+/// action (tray icon -> Views/FaxSendWindow.xaml's file picker + explicit
+/// Send button — see MainWindow.xaml.cs's ShowFaxSendWindow), so the only
+/// thing left to own on a recurring timer
 /// is the background receipt poll that updates Sent/Failed status after a
 /// run. Same "MainWindow constructs it once, Start() on Loaded, Dispose()
 /// on Closed" lifetime as TrayIconController/PioneerOverlayController (see

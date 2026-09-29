@@ -225,6 +225,34 @@ public class ReportRowParserTests
     }
 
     [Fact]
+    public void DefaultMapParsesADateTimeStringWithATrailingTimeOfDayForAdministeredDateAndDob()
+    {
+        // V-T65 R4 (Will, 2026-09-29): "Tried using my sample report and it
+        // didn't send any faxes." Root cause — his report's date columns
+        // are Excel cells formatted with a full date+time number format,
+        // so ClosedXML's Cell.GetString() (ReportRowReader) returns
+        // "9/28/2026 12:00:00 AM" rather than a bare date. DateOnly.TryParse
+        // rejects a trailing time-of-day outright, so every row of his real
+        // report was silently skipped as "missing or unparsable
+        // administered date" — this reproduces that exact string shape.
+        var map = new FaxColumnMap();
+        var row = MakeRow(new Dictionary<string, string>
+        {
+            [map.PatientFullNameHeader!] = "Doe, Jane",
+            [map.VaccineNameHeader] = "Influenza",
+            [map.AdministeredDateHeader] = "9/28/2026 12:00:00 AM",
+            [map.DobHeader!] = "1/15/1980 12:00:00 AM",
+        });
+
+        var (record, reason) = ReportRowParser.Parse(row, map, "report.xlsx");
+
+        Assert.Null(reason);
+        Assert.NotNull(record);
+        Assert.Equal(new System.DateOnly(2026, 9, 28), record!.AdministeredDate);
+        Assert.Equal(new System.DateOnly(1980, 1, 15), record.PatientDob);
+    }
+
+    [Fact]
     public void DefaultMapReadsDispensedItemNameAndPrimaryCarePrescriberColumns()
     {
         var map = new FaxColumnMap();

@@ -1,0 +1,94 @@
+<Window x:Class="VaccineAssist.Desktop.Views.FaxSendWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:common="clr-namespace:VaccineAssist.Desktop.Common"
+        Title="Vaccine Assist — Send PCP faxes"
+        Width="960" Height="620"
+        MinWidth="720" MinHeight="440"
+        WindowStartupLocation="CenterScreen">
+    <!--
+        V-T65 R4 (Will, verbatim, 2026-09-29): "make the menu be called
+        'Vaccines-Send PCP faxes', have that open a dialogue window where
+        you can selec tht efile then push send then see the results
+        below." Replaces the old immediate-send-on-pick flow and the
+        separate FaxRunSummaryWindow — one window, top = file picker +
+        Send, bottom = results grid, nothing sends until Send is pressed.
+
+        Sizing follows the same clamp-to-work-area convention the old
+        FaxRunSummaryWindow used (see FaxSendWindow.xaml.cs / Common/WindowSizing.cs).
+    -->
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <common:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
+    </Window.Resources>
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="6"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Send PCP faxes" FontSize="18" FontWeight="Bold"/>
+
+        <!-- File selector -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Grid.Column="0"
+                     Text="{Binding FilePath, Mode=OneWay, TargetNullValue='No file chosen'}"
+                     IsReadOnly="True" VerticalContentAlignment="Center" Padding="6,4"/>
+            <Button Grid.Column="2" Content="Choose file…" Padding="12,4"
+                    Click="ChooseFileButton_OnClick" IsEnabled="{Binding CanChooseFile}"/>
+        </Grid>
+
+        <!-- Send -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal">
+            <Button Content="Send" Padding="20,6" FontWeight="Bold"
+                    Command="{Binding SendCommand}"/>
+            <TextBlock Text="Sending — please wait…" Margin="12,0,0,0" VerticalAlignment="Center"
+                       Foreground="DarkSlateGray"
+                       Visibility="{Binding IsSending, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+        </StackPanel>
+
+        <!-- Rejection (whole file rejected — e.g. missing required column)
+             vs. the plain "Results" section label — exactly one of these
+             two is visible at a time (see FaxSendViewModel.HasRejection's
+             doc comment on why a rejection is surfaced here at all). -->
+        <TextBlock Grid.Row="6" Text="{Binding RejectionMessage}" Foreground="Red" FontWeight="Bold" TextWrapping="Wrap"
+                   Visibility="{Binding HasRejection, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+        <TextBlock Grid.Row="6" Text="Results" FontWeight="Bold"
+                   Visibility="{Binding HasRejection, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
+
+        <DataGrid Grid.Row="8" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Patient" Binding="{Binding PatientInitials}" Width="*"/>
+                <DataGridTextColumn Header="Prescriber" Binding="{Binding PrescriberName}" Width="2*"/>
+                <DataGridTextColumn Header="Fax (last 4)" Binding="{Binding FaxNumberLast4}" Width="*"/>
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"/>
+                <DataGridTextColumn Header="Error" Binding="{Binding Error}" Width="3*"/>
+                <DataGridTemplateColumn Header="" Width="80">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="Retry" Padding="6,1"
+                                    Command="{Binding DataContext.RetryCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                    CommandParameter="{Binding}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock Grid.Row="10" Text="{Binding StatusMessage}" Foreground="DarkSlateGray"/>
+    </Grid>
+</Window>

@@ -1,8 +1,9 @@
 namespace VaccineAssist.Desktop.Fax;
 
 /// <summary>
-/// V-T65 (Will's brief, HQ, 2026-09-29): one file picker (CSV/XLSX) ->
-/// immediately process + send -> summary window. No input folder, no
+/// V-T65 (Will's brief, HQ, 2026-09-29; R4 the same day made Send an
+/// explicit step): one window — file picker (CSV/XLSX) + Send + results
+/// grid (Views/FaxSendWindow.xaml). No input folder, no
 /// scheduled/automatic run, no prescriber-fax directory — the report's own
 /// Primary Care Prescriber Fax column is the only fax-number source.
 /// Everything here is non-secret and lives inside AppSettings/settings.json

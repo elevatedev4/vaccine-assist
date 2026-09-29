@@ -10,10 +10,11 @@ namespace VaccineAssist.Desktop.Tests;
 
 /// <summary>
 /// V-T65 (2026-09-29): FaxRunScheduler no longer owns a daily-run timer or
-/// "Run now" — sending is a direct, one-shot user action now (see
-/// MainWindow.xaml.cs's ImportReportFileAndSendAsync, which calls
-/// FaxRunOrchestrator.RunAsync directly; that method's "already in
-/// progress" behavior is covered by
+/// "Run now" — sending is a direct, explicit user action now (R4,
+/// 2026-09-29: ViewModels/FaxSendViewModel.cs's SendAsync, which calls
+/// FaxRunOrchestrator.RunAsync directly once Will presses Send in
+/// Views/FaxSendWindow.xaml; that method's "already in progress" behavior
+/// is covered by
 /// FaxRunOrchestratorTests.RunsAreSerializedASecondConcurrentRunIsSkipped).
 /// All that's left here is the background receipt-poll timer. FaxRunScheduler
 /// owns a DispatcherTimer, so this test runs on a pumped STA thread via

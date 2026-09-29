@@ -78,17 +78,18 @@ message rather than crashing.
 4. Vaccine/lot/eligibility data itself always goes through the cloud app —
    this project never queries Supabase's Postgrest API directly.
 
-## Vaccine → PCP fax (V-T53, simplified V-T65 2026-09-29)
+## Vaccine → PCP fax (V-T53, simplified V-T65 2026-09-29, R4 same day)
 
 Pioneer Rx won't email PHI, so the pharmacist imports the immunization
 report (CSV/XLSX) into the app directly, no SFTP drop, no cloud pull, no
-scheduled/automatic run: tray icon → **"Vaccine faxes"** opens ONE file
-picker, and picking a report immediately imports it and sends the faxes —
-no intermediate dialogs. The app builds one fax-formatted letter per
-patient/prescriber and faxes it to the prescriber via Notifyre (Will's
-pick — SRFax also still supported, see below), tracks delivery receipts,
-then shows the summary window. Nothing PHI leaves the machine except to
-the fax vendor.
+scheduled/automatic run: tray icon → **"Vaccines-Send PCP faxes"** opens
+ONE window (`Views/FaxSendWindow.xaml`) — choose the file, press **Send**,
+watch the results fill in below. Nothing sends until Send is pressed. The
+app builds one fax-formatted letter per patient/prescriber and faxes it
+to the prescriber via Notifyre (Will's pick — SRFax also still supported,
+see below), tracks delivery receipts, and shows Sent/Failed/Skipped
+counts plus a per-row grid in that same window. Nothing PHI leaves the
+machine except to the fax vendor.
 
 Will, verbatim (V-T65, 2026-09-29): "Add the save button near the
 Notifyre key. Everything else should save as it is typed ... To fax using
@@ -97,6 +98,18 @@ then send faxes. Then you can display the summary of the processing and
 actions and results." This removed the prescriber-fax-number table, the
 input-folder setting, and the daily/scheduled run entirely — the report's
 own Primary Care Prescriber Fax column is now the ONLY fax-number source.
+
+Will, verbatim (V-T65 R4, 2026-09-29 — after the first pass sent nothing
+against his real report): "Tried using my sample report and it didn't
+send any faxes. I would you to make the menu be called 'Vaccines-Send PCP
+faxes', have that open a dialogue window where you can selec tht efile
+then push send then see the results below." Two changes: (1) the file
+picker no longer sends immediately on pick — Send is now an explicit,
+separate step, in the same window as the results; (2) the real bug —
+Pioneer's date columns export with a date+TIME Excel format, which made
+every row of his report look like an unparsable date and get silently
+skipped (0 rows ever reached a fax group) — see
+`Fax/ReportRowParser.cs`'s `TryParseDate` doc comment for the fix.
 
 **Report column map** (fax-report-layout brief, 2026-09-28) — the DEFAULT
 matches Pioneer Rx's real immunization-report export exactly, six
@@ -212,14 +225,37 @@ fax-number source (V-T65).
 The picked report file itself is never moved, renamed, or deleted — it
 stays exactly where you selected it from.
 
-**Run it**: tray icon → **"Vaccine faxes"** — ONE file picker (CSV/XLSX);
-picking a report immediately imports it and sends the faxes, no
-intermediate dialogs. "Open fax folder" jumps straight to the folder
-above. A run shows a summary window (Sent / Queued-In process / Failed /
-Skipped (no prescriber fax) counts + a per-row grid showing patient
-initials, prescriber, fax last-4, and status); a Failed row has an
-explicit Retry button — nothing is ever auto-retried after a
-vendor-reported failure, to avoid a double-send.
+**Run it** (V-T65 R4, Will verbatim, 2026-09-29: "make the menu be called
+'Vaccines-Send PCP faxes', have that open a dialogue window where you can
+select the file then push send then see the results below"): tray icon →
+**"Vaccines-Send PCP faxes"** opens ONE window (`Views/FaxSendWindow.xaml`)
+that owns both the file picker and the results — nothing sends until
+**Send** is pressed:
+
+1. **Choose file…** — picks a CSV/XLSX (same picker as before).
+2. **Send** — enabled only once a file is chosen; runs the import +
+   send pipeline (`FaxRunOrchestrator.RunAsync`) and disables both Choose
+   file and Send again until it finishes.
+3. **Results**, below, fill in once the run completes: a totals line
+   (Sent / Failed / Skipped (no prescriber fax)) plus the per-row grid
+   (patient initials, prescriber, fax last-4, status); a Failed row has
+   an explicit Retry button — nothing is ever auto-retried after a
+   vendor-reported failure, to avoid a double-send. If the whole FILE was
+   rejected (e.g. a missing required column), that reason is shown in red
+   in place of the results grid — a run that imports 0 rows is never
+   silently indistinguishable from "nothing happened."
+
+"Open fax folder" jumps straight to the folder above. Picking a new file
+after a run clears the previous results and starts over.
+
+Replaces the R3 flow (tray click → file picker → immediate send → a
+separate summary window), which is what silently failed on Will's real
+Pioneer export — see the root-cause note in `Fax/ReportRowParser.cs`'s
+`TryParseDate` doc comment: a date+time-formatted Excel cell made every
+row "unparsable," so 0 rows ever reached a fax group and nothing sent.
+The old summary window also never displayed `FaxRunSummary.RejectedFiles`
+at all, so a whole-file rejection (missing required column) looked
+identical to "nothing happened" too — this window now shows that reason.
 
 Adding another fax vendor later means a new `IFaxClient` implementation
 plus one line in `Fax/FaxClientFactory.cs` — nothing else in the app
@@ -229,9 +265,12 @@ names `SrFaxClient` or `NotifyreFaxClient` directly.
 
 `VaccineAssist.Desktop.Tests` (xUnit) covers the auto-login logic above,
 plus the vaccine-fax pipeline (single-file report import/column-map
-validation, patient grouping, PDF generation, SRFax and Notifyre
-request/response handling, the auto-save debounce policy, and ledger
-state) — `dotnet test` from `desktop\` (or open `VaccineAssist.sln`).
+validation — including a synthetic fixture shaped like Will's real
+Pioneer export, date+time-formatted cells and all — patient grouping, PDF
+generation, SRFax and Notifyre request/response handling, the auto-save
+debounce policy, ledger state, and FaxSendViewModel's NoFile → FileChosen
+→ Sending → Done state machine) — `dotnet test` from `desktop\` (or open
+`VaccineAssist.sln`).
 
 ## PioneerEntryAutomation
 
