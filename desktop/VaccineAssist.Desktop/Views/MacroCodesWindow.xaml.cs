@@ -660,9 +660,20 @@ public partial class MacroCodesWindow : Window
     /// "vaccine-assist:macro-cancel" (second Escape), which
     /// CoreWebView2_OnWebMessageReceived already closes the window for.
     /// Only fall back to closing here directly when the page can't be
-    /// trusted to have handled it (not loaded yet, navigation failed, or
-    /// focus isn't actually in the WebView) — the pharmacist must never
-    /// be stuck with a popup no key can dismiss.</summary>
+    /// trusted to have handled it (not loaded yet, or navigation failed)
+    /// — the pharmacist must never be stuck with a popup no key can
+    /// dismiss.
+    ///
+    /// V-T64 FIX (Will, 2026-09-29, verbatim): "Escape is still closing
+    /// the full window, not backing out of Shingrix." The policy used to
+    /// also require WebView.IsKeyboardFocusWithin here — see
+    /// MacroCodesEscapePolicy's doc comment for why that flag is an
+    /// unreliable proxy for whether the page will actually receive this
+    /// keystroke (WPF's own keyboard-focus bookkeeping for the WebView2
+    /// HwndHost, not the browser's real/native focus state) and was
+    /// exactly what caused this window to close itself out from under an
+    /// armed dose even while the pharmacist was actively using the page.
+    /// Once the page has loaded, it is the sole owner of Escape.</summary>
     private void MacroCodesWindow_OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Escape)
@@ -670,7 +681,7 @@ public partial class MacroCodesWindow : Window
             return;
         }
 
-        if (MacroCodesEscapePolicy.ShouldCloseImmediately(_pageReady, WebView.IsKeyboardFocusWithin))
+        if (MacroCodesEscapePolicy.ShouldCloseImmediately(_pageReady))
         {
             Close();
         }

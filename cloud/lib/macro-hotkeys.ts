@@ -311,3 +311,29 @@ export function hotkeyTransition(
 export function armedHotkeyNote(doseCount: number): string {
   return `Press 1–${doseCount} for the dose · Esc to clear`;
 }
+
+/** What app/macro-codes/page.tsx's embed-cancel Escape listener should do
+ * on an Escape keypress, extracted to a pure function so this decision
+ * (V-T64: "Escape is still closing the full window, not backing out of
+ * Shingrix") has its own direct test coverage rather than only being
+ * exercised through a mounted document keydown listener.
+ *
+ * "post-cancel" posts vaccine-assist:macro-cancel and closes the embed
+ * popup (the second-Escape / nothing-armed case). "none" means this
+ * listener has nothing to do — either the lot/exp modal or a ⚙ menu
+ * already owns Escape for their own narrower close (see the modal-close
+ * and menu-close effects in page.tsx), or a product is currently armed,
+ * in which case the SEPARATE hotkeys keydown effect (hotkeyTransition
+ * above) owns this same keypress and clears the armed state instead —
+ * this function must never also post macro-cancel on that same keypress,
+ * which is exactly the invariant this pure split makes testable: exactly
+ * one component decides what Escape does, from the CURRENT armed state
+ * (armedProductKey is read fresh by the caller on every call, not cached). */
+export function decideEmbedEscape(input: {
+  modalOpen: boolean;
+  anyMenuOpen: boolean;
+  armedProductKey: string | null;
+}): "post-cancel" | "none" {
+  if (input.modalOpen || input.anyMenuOpen || input.armedProductKey) return "none";
+  return "post-cancel";
+}

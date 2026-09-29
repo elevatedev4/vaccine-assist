@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   armedHotkeyNote,
+  decideEmbedEscape,
   findArmedProduct,
   hotkeyForProduct,
   hotkeyTransition,
@@ -393,5 +394,27 @@ describe("armedHotkeyNote", () => {
   it("formats the dose-count hint verbatim", () => {
     expect(armedHotkeyNote(2)).toBe("Press 1–2 for the dose · Esc to clear");
     expect(armedHotkeyNote(3)).toBe("Press 1–3 for the dose · Esc to clear");
+  });
+});
+
+describe("decideEmbedEscape (V-T64: Escape must back out of an armed dose, not close the popup)", () => {
+  it("posts macro-cancel when nothing is armed and no modal/menu is open (second Escape)", () => {
+    expect(decideEmbedEscape({ modalOpen: false, anyMenuOpen: false, armedProductKey: null })).toBe("post-cancel");
+  });
+
+  it("does nothing while a product is armed, leaving the keypress to the hotkeys effect's own Escape-clears-armed handling (first Escape)", () => {
+    expect(decideEmbedEscape({ modalOpen: false, anyMenuOpen: false, armedProductKey: "p:shingrix" })).toBe("none");
+  });
+
+  it("does nothing while the lot/exp modal is open (that effect owns Escape for its own close)", () => {
+    expect(decideEmbedEscape({ modalOpen: true, anyMenuOpen: false, armedProductKey: null })).toBe("none");
+  });
+
+  it("does nothing while a ⚙ menu is open (that effect owns Escape for its own close)", () => {
+    expect(decideEmbedEscape({ modalOpen: false, anyMenuOpen: true, armedProductKey: null })).toBe("none");
+  });
+
+  it("armed state wins even if a modal/menu flag is also somehow set", () => {
+    expect(decideEmbedEscape({ modalOpen: true, anyMenuOpen: true, armedProductKey: "p:gardasil" })).toBe("none");
   });
 });

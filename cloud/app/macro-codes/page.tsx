@@ -26,6 +26,7 @@ import {
 } from "@/lib/macro-codes";
 import {
   armedHotkeyNote,
+  decideEmbedEscape,
   findArmedProduct,
   hotkeyForProduct,
   hotkeyTransition,
@@ -1081,7 +1082,12 @@ function MacroCodesPageContent() {
     if (!embed) return;
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      if (modal || anyMenuOpen || hotkeyState.armedProductKey) return;
+      const decision = decideEmbedEscape({
+        modalOpen: modal !== null,
+        anyMenuOpen,
+        armedProductKey: hotkeyState.armedProductKey,
+      });
+      if (decision === "none") return;
       postToHost({ type: "vaccine-assist:macro-cancel" });
       window.close();
     }
