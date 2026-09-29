@@ -158,6 +158,29 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task FreshRunWithNoFaxColumnFallsBackToThePrescriberDirectory()
+    {
+        // Non-blocking reviewer ask (2026-09-28): PrescriberDirectory
+        // fallback already had coverage via RetryAfterAddingAPrescriberFaxNumberSucceeds,
+        // but only on the RETRY path — this covers the same fallback on
+        // a FRESH run, before any fax has ever been attempted.
+        File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
+            "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Synthetic\n");
+        var orchestrator = MakeOrchestrator(out var faxClient, out var prescriberDirectory);
+        prescriberDirectory.Save(new List<PrescriberDirectoryEntry>
+        {
+            new() { Name = "Dr. Synthetic", FaxNumber = "5555550300" },
+        });
+
+        var summary = await orchestrator.RunAsync(MakeSettings());
+
+        Assert.Equal(0, summary!.SkippedNoFax);
+        Assert.Single(faxClient.QueuedRequests);
+        Assert.Equal("5555550300", faxClient.QueuedRequests[0].ToFaxNumber);
+    }
+
+    [Fact]
     public async Task PdfBuildFailureMarksTheEntryFailedAndStillFingerprintsIt()
     {
         WriteReport("report.csv");

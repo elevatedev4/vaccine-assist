@@ -273,13 +273,15 @@ public sealed class FaxSettingsViewModel : ObservableObject
             // here means "keep whatever's already stored", NOT "erase
             // it" — only error out when NOTHING has ever been saved
             // either. A non-blank box always means "replace it with
-            // this".
-            var tokenChanged = !string.IsNullOrWhiteSpace(typedApiToken);
-            var tokenToPersist = tokenChanged ? typedApiToken : _storedNotifyreApiToken;
+            // this". See NotifyreKeyPersistencePolicy.DecideSave (pure,
+            // unit-tested) for the actual decision.
+            var saveDecision = NotifyreKeyPersistencePolicy.DecideSave(typedApiToken, _storedNotifyreApiToken);
+            var tokenChanged = saveDecision.TokenChanged;
+            var tokenToPersist = saveDecision.TokenToPersist;
 
-            if (SelectedProvider == FaxProvider.Notifyre && string.IsNullOrWhiteSpace(tokenToPersist))
+            if (SelectedProvider == FaxProvider.Notifyre && !saveDecision.CanSave)
             {
-                ErrorMessage = "Enter a Notifyre API token.";
+                ErrorMessage = saveDecision.ErrorMessage;
                 return;
             }
 
@@ -373,9 +375,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
         ErrorMessage = null;
         StatusMessage = null;
 
-        var stored = _credentialStore.Load() ?? new FaxCredentials();
-        stored.ApiToken = "";
-        stored.NotifyreTokenSavedAtUtc = null;
+        var stored = NotifyreKeyPersistencePolicy.ApplyForget(_credentialStore.Load() ?? new FaxCredentials());
         _credentialStore.Save(stored);
 
         _storedNotifyreApiToken = "";
@@ -405,25 +405,24 @@ public sealed class FaxSettingsViewModel : ObservableObject
             // BOX when something's typed, otherwise fall back to the
             // STORED key, and say plainly which one was used so Will
             // never has to guess whether an untyped Save is still needed.
+            // See NotifyreKeyPersistencePolicy.DecideTest (pure, unit-
+            // tested) for the actual decision — usingStoredNotifyreKey
+            // below is also what gates whether a successful probe is
+            // safe to persist (see ShouldPersistDiscoveredAuthMode
+            // further down: reviewer fix, 2026-09-28).
             var typedToken = FaxApiTokenNormalizer.Normalize(ApiToken);
             var usingStoredNotifyreKey = false;
             string notifyreTokenToTest;
             if (SelectedProvider == FaxProvider.Notifyre)
             {
-                if (!string.IsNullOrWhiteSpace(typedToken))
+                var testDecision = NotifyreKeyPersistencePolicy.DecideTest(typedToken, _storedNotifyreApiToken);
+                if (!testDecision.CanTest)
                 {
-                    notifyreTokenToTest = typedToken;
-                }
-                else if (!string.IsNullOrWhiteSpace(_storedNotifyreApiToken))
-                {
-                    notifyreTokenToTest = _storedNotifyreApiToken;
-                    usingStoredNotifyreKey = true;
-                }
-                else
-                {
-                    ErrorMessage = "Enter a Notifyre API token to test.";
+                    ErrorMessage = testDecision.ErrorMessage;
                     return;
                 }
+                notifyreTokenToTest = testDecision.TokenToTest;
+                usingStoredNotifyreKey = testDecision.UsingStoredKey;
             }
             else
             {
@@ -454,24 +453,42 @@ public sealed class FaxSettingsViewModel : ObservableObject
             // V-T53 401 follow-up (Will, 2026-09-25): NotifyreFaxClient's
             // probe mutates THIS SAME credentials object's
             // NotifyreAuthMode the moment it finds a non-documented form
-            // that works (see NotifyreFaxClient.ProbeAlternateAuthFormsAsync)
-            // — re-persist right away (merged onto whatever else is
-            // already on disk) so a real send picks it up on the app's
-            // next run without Will having to also click Save, and so
-            // Save itself (see _notifyreAuthMode above) doesn't revert it.
+            // that works (see NotifyreFaxClient.ProbeAlternateAuthFormsAsync).
+            //
+            // Reviewer fix (2026-09-28, blocking): this must NEVER persist
+            // the BOX value — a probe succeeding while testing an unsaved/
+            // candidate token used to silently overwrite the real stored
+            // key and swap the live orchestrator client with no Save
+            // click, contradicting this method's own "not saved yet —
+            // press Save" status line. When testing the STORED key, the
+            // token on disk is unchanged either way, so it's safe to
+            // re-persist the discovered auth mode right away (merged onto
+            // whatever else is already on disk) so a real send picks it
+            // up on the app's next run without an extra Save. When
+            // testing the BOX (unsaved) value, only remember the
+            // discovered mode IN MEMORY — the next real Save (which
+            // already writes _notifyreAuthMode) is what persists it, at
+            // the same moment it persists the token itself.
             if (result.Success && SelectedProvider == FaxProvider.Notifyre && credentials.NotifyreAuthMode != _notifyreAuthMode)
             {
                 _notifyreAuthMode = credentials.NotifyreAuthMode;
-                var stored = _credentialStore.Load() ?? new FaxCredentials();
-                stored.ApiToken = credentials.ApiToken;
-                stored.NotifyreAuthMode = credentials.NotifyreAuthMode;
-                stored.NotifyreTokenSavedAtUtc = DateTime.UtcNow;
-                _credentialStore.Save(stored);
-                _storedNotifyreApiToken = credentials.ApiToken;
-                _storedNotifyreTokenSavedAtUtc = stored.NotifyreTokenSavedAtUtc;
-                OnPropertyChanged(nameof(NotifyreKeyStatusText));
-                OnPropertyChanged(nameof(HasStoredNotifyreKey));
-                CredentialsSaved?.Invoke();
+
+                if (NotifyreKeyPersistencePolicy.ShouldPersistDiscoveredAuthMode(usingStoredNotifyreKey))
+                {
+                    var stored = _credentialStore.Load() ?? new FaxCredentials();
+                    stored.ApiToken = credentials.ApiToken;
+                    stored.NotifyreAuthMode = credentials.NotifyreAuthMode;
+                    stored.NotifyreTokenSavedAtUtc = DateTime.UtcNow;
+                    _credentialStore.Save(stored);
+                    _storedNotifyreApiToken = credentials.ApiToken;
+                    _storedNotifyreTokenSavedAtUtc = stored.NotifyreTokenSavedAtUtc;
+                    OnPropertyChanged(nameof(NotifyreKeyStatusText));
+                    OnPropertyChanged(nameof(HasStoredNotifyreKey));
+                    CredentialsSaved?.Invoke();
+                }
+                // else: box/unsaved value — nothing written to disk,
+                // nothing rebuilt live. _notifyreAuthMode above still
+                // carries the discovered mode into the next Save.
             }
         }
         catch (Exception ex)
