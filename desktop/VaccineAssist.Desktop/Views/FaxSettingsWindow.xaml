@@ -5,24 +5,39 @@
         Width="720" Height="720"
         WindowStartupLocation="CenterScreen">
     <!--
-        V-T53 (vaccine -> PCP fax, Will's brief): fax vendor credentials,
-        sender email, pharmacy identity/caller-id, input folder, daily run
-        time, column-map editor, and the prescriber-fax-number table — see
-        ViewModels/FaxSettingsViewModel.cs. Notifyre added as a second
-        vendor (Will's pick, default for a fresh install) alongside SRFax
-        — the "Fax account" panel below shows either credential field set
-        depending on the Provider dropdown (BooleanToVisibilityConverter
-        bound to IsSrFaxSelected/IsNotifyreSelected). Both the SRFax
-        password and the Notifyre API token are read from their PasswordBox
-        in code-behind on Save/Test connection, same pattern as
+        V-T65 (Will's brief, verbatim, 2026-09-29): "Everything else should
+        save as it is typed ... very unintuitive to have a hidden save
+        button where you have to scroll all the way to the bottom." Every
+        field below EXCEPT the provider credentials auto-saves (see
+        ViewModels/FaxSettingsViewModel.cs's AutoSaveFieldsAsync,
+        debounced ~300ms) — there is no bottom Save button anymore. The
+        credentials group (SRFax access id/password, Notifyre API token —
+        both PasswordBox-backed, read from code-behind, so they can't
+        auto-save the way a plain bound TextBox can) keeps its OWN
+        explicit Save button right below the key box, alongside Test
+        connection and (Notifyre only) Forget key — same pattern as
         LoginWindow's PasswordInput (PasswordBox.Password isn't bindable).
+        No prescriber-fax table and no input-folder/daily-run section
+        anymore — the report's own Primary Care Prescriber Fax column is
+        the only fax-number source, and sending is a direct one-shot tray
+        action (see MainWindow.xaml.cs's ImportReportFileAndSendAsync).
     -->
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
     </Window.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
         <StackPanel>
-            <TextBlock Text="Vaccine → PCP fax settings" FontSize="18" FontWeight="Bold" Margin="0,0,0,12"/>
+            <TextBlock Text="Vaccine → PCP fax settings" FontSize="18" FontWeight="Bold" Margin="0,0,0,4"/>
+
+            <!-- Always-visible auto-save feedback (Will's brief: "Show a
+                 small 'Saved' hint that appears briefly after an
+                 auto-save") — placed right under the title, not buried at
+                 the bottom, so it's never scrolled out of view. -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="Saved" Foreground="Green" FontStyle="Italic"
+                           Visibility="{Binding IsSavedHintVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                <TextBlock Text="{Binding AutoSaveErrorMessage}" Foreground="Red" Margin="10,0,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
 
             <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
                 <StackPanel>
@@ -85,8 +100,13 @@
                         <PasswordBox Grid.Row="2" Grid.Column="1" x:Name="AccessPasswordBox" MinHeight="26" Padding="4,2"/>
                     </Grid>
 
+                    <!-- V-T65: the explicit Save button lives HERE, directly
+                         under the key box, next to Test connection — the
+                         only field group on this window that doesn't
+                         auto-save (see class doc comment). -->
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <Button Content="Test connection" Click="TestConnectionButton_OnClick" Padding="8,2"/>
+                        <Button Content="Save" Click="SaveCredentialsButton_OnClick" Padding="8,2"/>
+                        <Button Content="Test connection" Click="TestConnectionButton_OnClick" Padding="8,2" Margin="8,0,0,0"/>
                         <TextBlock Text="{Binding StatusMessage}" Foreground="Green" Margin="10,0,0,0" VerticalAlignment="Center"/>
                         <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" Margin="10,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
@@ -151,35 +171,6 @@
 
             <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
                 <StackPanel>
-                    <TextBlock Text="Report import" FontWeight="Bold" Margin="0,0,0,6"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="140"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="4"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="4"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Input folder" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding InputFolder, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
-                        <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Click="BrowseInputFolder_OnClick" Padding="8,2" Margin="6,0,0,0"/>
-
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Daily run time (HH:mm)" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding DailyRunTime, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2" Width="80" HorizontalAlignment="Left"/>
-
-                        <CheckBox Grid.Row="4" Grid.Column="1" Content="Automatic daily run" IsChecked="{Binding DailyRunEnabled}" VerticalAlignment="Center"/>
-                    </Grid>
-                </StackPanel>
-            </Border>
-
-            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
-                <StackPanel>
                     <TextBlock Text="Report column map — type the report's actual header for each field" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
                     <DataGrid ItemsSource="{Binding ColumnMap}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" MaxHeight="260">
                         <DataGrid.Columns>
@@ -190,33 +181,6 @@
                     </DataGrid>
                 </StackPanel>
             </Border>
-
-            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
-                <StackPanel>
-                    <TextBlock Text="Prescriber fax numbers" FontWeight="Bold" Margin="0,0,0,6"/>
-                    <DataGrid ItemsSource="{Binding Prescribers}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" MaxHeight="220">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Name" Binding="{Binding Name, UpdateSourceTrigger=LostFocus}" Width="2*"/>
-                            <DataGridTextColumn Header="NPI" Binding="{Binding Npi, UpdateSourceTrigger=LostFocus}" Width="*"/>
-                            <DataGridTextColumn Header="Fax number" Binding="{Binding FaxNumber, UpdateSourceTrigger=LostFocus}" Width="*"/>
-                            <DataGridTemplateColumn Header="" Width="70">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Button Content="Remove" Padding="4,1"
-                                                Command="{Binding DataContext.DeletePrescriberCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                CommandParameter="{Binding}"/>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <Button Content="Add prescriber" Command="{Binding AddPrescriberCommand}" Padding="8,2" Margin="0,6,0,0" HorizontalAlignment="Left"/>
-                </StackPanel>
-            </Border>
-
-            <StackPanel Orientation="Horizontal">
-                <Button Content="Save" Click="SaveButton_OnClick" Padding="14,4" MinWidth="90"/>
-            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </Window>

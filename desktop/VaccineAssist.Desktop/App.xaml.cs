@@ -37,7 +37,6 @@ public partial class App : Application
     // V-T53 (vaccine -> PCP fax, Will's brief).
     private HttpClient _faxHttpClient = null!;
     private IFaxCredentialStore _faxCredentialStore = null!;
-    private IPrescriberDirectory _prescriberDirectory = null!;
     private FaxRunOrchestrator _faxRunOrchestrator = null!;
     private FaxRunScheduler _faxRunScheduler = null!;
 
@@ -118,15 +117,12 @@ public partial class App : Application
         // this too.
         _faxHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         _faxCredentialStore = new FaxCredentialStore();
-        _prescriberDirectory = new PrescriberDirectory();
         var importLedger = new ImportLedger();
         var reportImporter = new ReportImporter(importLedger);
         var pdfBuilder = new VaccineRecordPdfBuilder();
         var faxLedger = new FaxLedger();
-        var faxRunMarker = new FaxRunMarker();
         // LocalApplicationData (not the roaming ApplicationData used by
-        // FaxLedger/ImportLedger/PrescriberDirectory/FaxRunMarker above) —
-        // reviewer fix (V-T53): this root holds outbox\/sent\/failed\, i.e.
+        // FaxLedger/ImportLedger above) — reviewer fix (V-T53): this root holds outbox\/sent\/failed\, i.e.
         // actual patient PDFs, plus runs\ summaries. On a domain-joined PC
         // with roaming profiles, anything under ApplicationData replicates
         // to a profile server; PHI-bearing PDFs must never do that. Same
@@ -151,8 +147,8 @@ public partial class App : Application
         var faxClient = FaxClientFactory.Create(_settings.Fax.Provider, _faxHttpClient, faxCredentials);
 
         _faxRunOrchestrator = new FaxRunOrchestrator(
-            reportImporter, _prescriberDirectory, pdfBuilder, faxClient, faxLedger, importLedger, faxRootDir);
-        _faxRunScheduler = new FaxRunScheduler(_faxRunOrchestrator, () => _settings, faxRunMarker);
+            reportImporter, pdfBuilder, faxClient, faxLedger, importLedger, faxRootDir);
+        _faxRunScheduler = new FaxRunScheduler(_faxRunOrchestrator);
 
         _ = StartSignInFlowAsync();
     }
@@ -730,7 +726,7 @@ public partial class App : Application
         var mainWindow = new MainWindow(
             _authService, _vaccineApiService, _clipboardService,
             _pioneerEntrySequence, cloudPageView, _localSettingsService, _settings,
-            _faxRunScheduler, _faxRunOrchestrator, _faxCredentialStore, _prescriberDirectory, _faxHttpClient);
+            _faxRunScheduler, _faxRunOrchestrator, _faxCredentialStore, _faxHttpClient);
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>

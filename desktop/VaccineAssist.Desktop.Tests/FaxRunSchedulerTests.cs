@@ -1,15 +1,23 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using VaccineAssist.Desktop.Fax;
-using VaccineAssist.Desktop.Settings;
 using Xunit;
 
 namespace VaccineAssist.Desktop.Tests;
 
 /// <summary>
-/// FaxRunScheduler owns DispatcherTimers, so tests run on a pumped STA
-/// thread via StaTestRunner — same convention as
+/// V-T65 (2026-09-29): FaxRunScheduler no longer owns a daily-run timer or
+/// "Run now" — sending is a direct, one-shot user action now (see
+/// MainWindow.xaml.cs's ImportReportFileAndSendAsync, which calls
+/// FaxRunOrchestrator.RunAsync directly; that method's "already in
+/// progress" behavior is covered by
+/// FaxRunOrchestratorTests.RunsAreSerializedASecondConcurrentRunIsSkipped).
+/// All that's left here is the background receipt-poll timer. FaxRunScheduler
+/// owns a DispatcherTimer, so this test runs on a pumped STA thread via
+/// StaTestRunner — same convention as
 /// StartupSignInCoordinatorTests/RelayCommandRequeryTests (see
 /// StaTestRunner.cs's own doc comment for why a plain xunit MTA thread
 /// isn't enough for anything Dispatcher-adjacent).
@@ -17,15 +25,13 @@ namespace VaccineAssist.Desktop.Tests;
 public class FaxRunSchedulerTests : IDisposable
 {
     private readonly string _tempDir;
-    private readonly string _inputDir;
     private readonly string _faxRootDir;
 
     public FaxRunSchedulerTests()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "vaccine-assist-tests", Guid.NewGuid().ToString("n"));
-        _inputDir = Path.Combine(_tempDir, "input");
         _faxRootDir = Path.Combine(_tempDir, "fax");
-        Directory.CreateDirectory(_inputDir);
+        Directory.CreateDirectory(_tempDir);
     }
 
     public void Dispose()
@@ -34,87 +40,52 @@ public class FaxRunSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void RunNowWhileARunIsAlreadyInFlightRaisesRunAlreadyInProgressInsteadOfSilentlyDoingNothing()
+    public void ReceiptPollTimerPeriodicallyPollsOutstandingLedgerEntries()
     {
         StaTestRunner.RunStaAsync(async () =>
         {
-            // Headers match FaxColumnMap's DEFAULT (Pioneer's real export,
-            // V-T53 401/column-map follow-up, DOB added as a required
-            // column by the fax-report-layout brief, 2026-09-28) since
-            // this test's FaxSettings doesn't override ColumnMap below.
-            File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
-                "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
-                "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Synthetic,5555550200\n");
-
             var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
             var reportImporter = new ReportImporter(importLedger);
-            var prescriberDirectory = new PrescriberDirectory(Path.Combine(_tempDir, "prescribers.json"));
             var faxClient = new FakeFaxClient();
             var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
+            faxLedger.Save(new List<FaxLedgerEntry>
+            {
+                new() { FaxId = "fax-1", Status = FaxLedgerStatus.InProcess },
+            });
+            faxClient.StatusResults["fax-1"] = new FaxStatusResult(true, FaxSendStatus.Sent, null, null);
+
             var orchestrator = new FaxRunOrchestrator(
-                reportImporter, prescriberDirectory, new VaccineRecordPdfBuilder(),
+                reportImporter, new VaccineRecordPdfBuilder(),
                 faxClient, faxLedger, importLedger, _faxRootDir);
-            var runMarker = new FaxRunMarker(Path.Combine(_tempDir, "last-run.json"));
 
-            var settings = new AppSettings
+            // Short injectable interval — production's real cadence is 10
+            // minutes (see FaxRunScheduler's single-arg constructor).
+            var scheduler = new FaxRunScheduler(orchestrator, TimeSpan.FromMilliseconds(20));
+
+            try
             {
-                Fax = new FaxSettings
+                scheduler.Start();
+
+                var waited = TimeSpan.Zero;
+                var pollInterval = TimeSpan.FromMilliseconds(10);
+                while (faxClient.StatusChecks.Count == 0)
                 {
-                    InputFolder = _inputDir,
-                    PharmacyName = "Test Pharmacy",
-                    PharmacyPhone = "5555550100",
-                    PharmacyFax = "5555550101",
-                    SenderEmail = "sender@example.com",
-                },
-            };
-
-            // Long intervals — this test never lets the timers actually
-            // tick, it only calls RunNowAsync directly.
-            var scheduler = new FaxRunScheduler(
-                orchestrator, () => settings, runMarker,
-                TimeSpan.FromHours(1), TimeSpan.FromHours(1));
-
-            var alreadyInProgressCount = 0;
-            scheduler.RunAlreadyInProgress += (_, _) => alreadyInProgressCount++;
-            var completedCount = 0;
-            scheduler.RunCompleted += (_, _) => completedCount++;
-
-            // Held in a local, not re-read from faxClient.HoldNextQueueUntil
-            // later — QueueAsync consumes (nulls out) that property the
-            // moment it reads it (see FakeFaxClient's doc comment).
-            var hold = new System.Threading.Tasks.TaskCompletionSource<bool>();
-            faxClient.HoldNextQueueUntil = hold;
-
-            var firstRun = scheduler.RunNowAsync();
-
-            // Bounded wait for the first run to actually reach (and block
-            // inside) QueueAsync, rather than an unconditional spin — see
-            // FaxRunOrchestratorTests.RunsAreSerializedASecondConcurrentRunIsSkipped
-            // for why this matters.
-            var waited = TimeSpan.Zero;
-            var pollInterval = TimeSpan.FromMilliseconds(10);
-            while (faxClient.QueuedRequests.Count == 0)
-            {
-                if (waited > TimeSpan.FromSeconds(10))
-                {
-                    throw new TimeoutException("QueueAsync was never reached — see FaxRunOrchestrator's pipeline for what changed.");
+                    if (waited > TimeSpan.FromSeconds(5))
+                    {
+                        throw new TimeoutException("Receipt-poll timer never ticked.");
+                    }
+                    await Task.Delay(pollInterval);
+                    waited += pollInterval;
                 }
-                await Task.Delay(pollInterval);
-                waited += pollInterval;
+            }
+            finally
+            {
+                scheduler.Dispose();
             }
 
-            // Second "Run now" while the first is still blocked inside
-            // QueueAsync.
-            await scheduler.RunNowAsync();
-
-            Assert.Equal(1, alreadyInProgressCount);
-            Assert.Equal(0, completedCount);
-
-            hold.SetResult(true);
-            await firstRun;
-
-            Assert.Equal(1, completedCount);
-            Assert.Equal(1, alreadyInProgressCount); // unchanged by the first run finishing
+            Assert.Contains("fax-1", faxClient.StatusChecks);
+            var reloaded = faxLedger.Load();
+            Assert.Equal(FaxLedgerStatus.Sent, reloaded.Single().Status);
         });
     }
 }

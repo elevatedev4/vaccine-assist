@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -8,6 +7,11 @@ using Xunit;
 
 namespace VaccineAssist.Desktop.Tests;
 
+/// <summary>V-T65 (2026-09-29): FaxRunOrchestrator now runs against ONE
+/// user-picked report file (RunAsync(reportFilePath, settings)) — no input
+/// folder, no processed\ move, no PrescriberDirectory fallback. The
+/// report's own Primary Care Prescriber Fax column is the only fax-number
+/// source.</summary>
 public class FaxRunOrchestratorTests : IDisposable
 {
     private readonly string _tempDir;
@@ -29,23 +33,20 @@ public class FaxRunOrchestratorTests : IDisposable
 
     private FaxRunOrchestrator MakeOrchestrator(
         out FakeFaxClient faxClient,
-        out IPrescriberDirectory prescriberDirectory,
         IVaccineRecordPdfBuilder? pdfBuilder = null)
     {
         var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
         var reportImporter = new ReportImporter(importLedger);
-        prescriberDirectory = new PrescriberDirectory(Path.Combine(_tempDir, "prescribers.json"));
         faxClient = new FakeFaxClient();
         var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
 
         return new FaxRunOrchestrator(
-            reportImporter, prescriberDirectory, pdfBuilder ?? new VaccineRecordPdfBuilder(),
+            reportImporter, pdfBuilder ?? new VaccineRecordPdfBuilder(),
             faxClient, faxLedger, importLedger, _faxRootDir);
     }
 
-    private FaxSettings MakeSettings() => new()
+    private static FaxSettings MakeSettings() => new()
     {
-        InputFolder = _inputDir,
         PharmacyName = "Test Pharmacy",
         PharmacyPhone = "5555550100",
         PharmacyFax = "5555550101",
@@ -58,26 +59,43 @@ public class FaxRunOrchestratorTests : IDisposable
     // override ColumnMap — "Patient, Test" is one CSV field (quoted,
     // since it has an internal comma) so ReportRowParser splits it into
     // PatientLastName="Patient"/PatientFirstName="Test".
-    private void WriteReport(string fileName, string prescriberFax = "5555550200", string prescriberName = "Dr. Synthetic")
+    private string WriteReport(string fileName, string prescriberFax = "5555550200", string prescriberName = "Dr. Synthetic")
     {
-        File.WriteAllText(Path.Combine(_inputDir, fileName),
+        var path = Path.Combine(_inputDir, fileName);
+        File.WriteAllText(path,
             "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
             $"\"Patient, Test\",1980-01-15,Flu,2026-09-01,{prescriberName},{prescriberFax}\n");
+        return path;
     }
 
     [Fact]
     public async Task SuccessfulRunQueuesTheFaxAndMarksTheLedgerInProcess()
     {
-        WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out var faxClient, out _);
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
 
-        var summary = await orchestrator.RunAsync(MakeSettings());
+        var summary = await orchestrator.RunAsync(reportPath, MakeSettings());
 
         Assert.NotNull(summary);
         Assert.Equal(1, summary!.RowsImported);
         Assert.Equal(1, summary.PatientsProcessed);
         Assert.Single(faxClient.QueuedRequests);
         Assert.Equal("5555550200", faxClient.QueuedRequests[0].ToFaxNumber);
+    }
+
+    [Fact]
+    public async Task SourceFileIsNeverMovedOrDeleted()
+    {
+        // V-T65: no input folder / processed\ subfolder anymore — the
+        // picked file stays exactly where it was (see
+        // FaxRunOrchestrator's own doc comment on removing MoveAcceptedFiles).
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _);
+
+        await orchestrator.RunAsync(reportPath, MakeSettings());
+
+        Assert.True(File.Exists(reportPath));
+        Assert.False(Directory.Exists(Path.Combine(_inputDir, "processed")));
     }
 
     [Fact]
@@ -88,40 +106,29 @@ public class FaxRunOrchestratorTests : IDisposable
         // — a credential/provider change must take effect on the very
         // next run without an app restart, i.e. without rebuilding the
         // whole FaxRunOrchestrator.
-        WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out var originalClient, out _);
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var originalClient);
         var replacementClient = new FakeFaxClient();
 
         orchestrator.UpdateFaxClient(replacementClient);
-        await orchestrator.RunAsync(MakeSettings());
+        await orchestrator.RunAsync(reportPath, MakeSettings());
 
         Assert.Empty(originalClient.QueuedRequests);
         Assert.Single(replacementClient.QueuedRequests);
     }
 
     [Fact]
-    public async Task RunMovesTheSourceFileToProcessedFolder()
-    {
-        WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out _, out _);
-
-        await orchestrator.RunAsync(MakeSettings());
-
-        Assert.False(File.Exists(Path.Combine(_inputDir, "report.csv")));
-        var processedFiles = Directory.GetFiles(Path.Combine(_inputDir, "processed"), "*.csv", SearchOption.AllDirectories);
-        Assert.Single(processedFiles);
-    }
-
-    [Fact]
     public async Task RowWithNoResolvableFaxNumberIsSkippedNotSentAndNotFingerprinted()
     {
-        // No Prescriber Fax column value and nothing in PrescriberDirectory.
-        File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
+        // No Prescriber Fax column value at all — V-T65: the report's own
+        // column is the ONLY source now, no directory fallback.
+        var reportPath = Path.Combine(_inputDir, "report.csv");
+        File.WriteAllText(reportPath,
             "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
             "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Nobody\n");
-        var orchestrator = MakeOrchestrator(out var faxClient, out _);
+        var orchestrator = MakeOrchestrator(out var faxClient);
 
-        var summary = await orchestrator.RunAsync(MakeSettings());
+        var summary = await orchestrator.RunAsync(reportPath, MakeSettings());
 
         Assert.Equal(1, summary!.SkippedNoFax);
         Assert.Empty(faxClient.QueuedRequests);
@@ -130,11 +137,9 @@ public class FaxRunOrchestratorTests : IDisposable
         // Fax-report-layout brief (2026-09-28): never nagged as an error.
         Assert.Null(skippedRow.Error);
 
-        // The row was moved (the FILE is processed regardless), but since
-        // it was never fingerprinted, re-running the same import folder
-        // structure with the SAME source file re-appearing would still
-        // pick it up — verified here by re-importing directly against the
-        // same import ledger the orchestrator used.
+        // Never fingerprinted — re-importing the same file (or a
+        // re-exported one) after the report gains a fax column must still
+        // pick this row up.
         var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
         Assert.Empty(importLedger.LoadFingerprints());
     }
@@ -147,10 +152,10 @@ public class FaxRunOrchestratorTests : IDisposable
         // an empty prescriber name skips even though this row's fax
         // column has a perfectly valid number, since the letter's "To:"
         // block needs someone to address it to.
-        WriteReport("report.csv", prescriberFax: "5555550200", prescriberName: "");
-        var orchestrator = MakeOrchestrator(out var faxClient, out _);
+        var reportPath = WriteReport("report.csv", prescriberFax: "5555550200", prescriberName: "");
+        var orchestrator = MakeOrchestrator(out var faxClient);
 
-        var summary = await orchestrator.RunAsync(MakeSettings());
+        var summary = await orchestrator.RunAsync(reportPath, MakeSettings());
 
         Assert.Equal(1, summary!.SkippedNoFax);
         Assert.Equal(0, summary.Failed);
@@ -158,35 +163,12 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task FreshRunWithNoFaxColumnFallsBackToThePrescriberDirectory()
-    {
-        // Non-blocking reviewer ask (2026-09-28): PrescriberDirectory
-        // fallback already had coverage via RetryAfterAddingAPrescriberFaxNumberSucceeds,
-        // but only on the RETRY path — this covers the same fallback on
-        // a FRESH run, before any fax has ever been attempted.
-        File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
-            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
-            "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Synthetic\n");
-        var orchestrator = MakeOrchestrator(out var faxClient, out var prescriberDirectory);
-        prescriberDirectory.Save(new List<PrescriberDirectoryEntry>
-        {
-            new() { Name = "Dr. Synthetic", FaxNumber = "5555550300" },
-        });
-
-        var summary = await orchestrator.RunAsync(MakeSettings());
-
-        Assert.Equal(0, summary!.SkippedNoFax);
-        Assert.Single(faxClient.QueuedRequests);
-        Assert.Equal("5555550300", faxClient.QueuedRequests[0].ToFaxNumber);
-    }
-
-    [Fact]
     public async Task PdfBuildFailureMarksTheEntryFailedAndStillFingerprintsIt()
     {
-        WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out var faxClient, out _, new FaultyPdfBuilder());
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient, new FaultyPdfBuilder());
 
-        var summary = await orchestrator.RunAsync(MakeSettings());
+        var summary = await orchestrator.RunAsync(reportPath, MakeSettings());
 
         Assert.Equal(1, summary!.Failed);
         Assert.Empty(faxClient.QueuedRequests);
@@ -198,15 +180,15 @@ public class FaxRunOrchestratorTests : IDisposable
     [Fact]
     public async Task RunsAreSerializedASecondConcurrentRunIsSkipped()
     {
-        WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out var faxClient, out _);
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
         // Held in a local, not re-read from faxClient.HoldNextQueueUntil
         // later — QueueAsync consumes (nulls out) that property the
         // moment it reads it, by design (see FakeFaxClient's doc comment).
         var hold = new TaskCompletionSource<bool>();
         faxClient.HoldNextQueueUntil = hold;
 
-        var firstRunTask = orchestrator.RunAsync(MakeSettings());
+        var firstRunTask = orchestrator.RunAsync(reportPath, MakeSettings());
         // Give the first run a chance to reach (and block inside)
         // QueueAsync — bounded rather than an unconditional spin, so a
         // regression that stops the run from ever reaching QueueAsync
@@ -224,7 +206,7 @@ public class FaxRunOrchestratorTests : IDisposable
             waited += pollInterval;
         }
 
-        var secondResult = await orchestrator.RunAsync(MakeSettings());
+        var secondResult = await orchestrator.RunAsync(reportPath, MakeSettings());
         Assert.Null(secondResult); // skipped — a run was already in progress
 
         hold.SetResult(true);
@@ -233,65 +215,24 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task RetryAfterAddingAPrescriberFaxNumberSucceeds()
+    public async Task RetryReSendsToTheSameFaxNumberTheEntryWasOriginallyQueuedTo()
     {
-        // The report has NO fax column at all and no directory entry yet —
-        // this row comes back "needs fax number", not "failed" (a
-        // vendor-level failure), so simulate a genuine Queue_Fax failure
-        // instead by giving a fax number that SRFax rejects.
-        WriteReport("report.csv", prescriberFax: "5555550200");
-        var orchestrator = MakeOrchestrator(out var faxClient, out var prescriberDirectory);
-        faxClient.QueueResults.Enqueue(new FaxQueueResult(false, null, "SRFax rejected the number"));
+        // V-T65: the prescriber-fax directory is gone — RetryFailedAsync
+        // re-sends to FaxLedgerEntry.FaxNumber (captured from the report's
+        // own column at import time), not a re-resolved lookup.
+        var reportPath = WriteReport("report.csv", prescriberFax: "5555550200");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+        faxClient.QueueResults.Enqueue(new FaxQueueResult(false, null, "vendor rejected the number"));
 
-        var summary = await orchestrator.RunAsync(MakeSettings());
+        var summary = await orchestrator.RunAsync(reportPath, MakeSettings());
         Assert.Equal(1, summary!.Failed);
         var failedRow = summary.Rows.Single(r => r.Status == nameof(FaxLedgerStatus.Failed));
-
-        // RetryFailedAsync re-resolves via PrescriberDirectory by name
-        // (see FaxRunOrchestrator.RetryFailedAsync's own doc comment) —
-        // add the prescriber there now, simulating Will fixing it in the
-        // Settings window.
-        prescriberDirectory.Save(new List<PrescriberDirectoryEntry>
-        {
-            new() { Name = "Dr. Synthetic", FaxNumber = "5555550300" },
-        });
+        Assert.Equal("0200", failedRow.FaxNumberLast4);
 
         var retried = await orchestrator.RetryFailedAsync(failedRow.LedgerEntryId, MakeSettings());
 
         Assert.True(retried);
         Assert.Equal(2, faxClient.QueuedRequests.Count);
-        Assert.Equal("5555550300", faxClient.QueuedRequests[1].ToFaxNumber);
-    }
-
-    [Fact]
-    public async Task MoveAcceptedFilesFailureAfterQueueingStillProducesASummaryAndDoesNotThrow()
-    {
-        // Reviewer fix (V-T53): a locked/permission-denied source report
-        // file must not abort the run after faxes were already queued —
-        // it should show up as a Warning in the summary instead, and
-        // RunAsync must still return (never throw) so FaxRunScheduler's
-        // RunCompleted still fires.
-        WriteReport("report.csv");
-        var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
-        var importer = new ThrowingMoveReportImporter(new ReportImporter(importLedger));
-        var prescriberDirectory = new PrescriberDirectory(Path.Combine(_tempDir, "prescribers.json"));
-        var faxClient = new FakeFaxClient();
-        var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
-        var orchestrator = new FaxRunOrchestrator(
-            importer, prescriberDirectory, new VaccineRecordPdfBuilder(),
-            faxClient, faxLedger, importLedger, _faxRootDir);
-
-        var summary = await orchestrator.RunAsync(MakeSettings());
-
-        Assert.NotNull(summary);
-        Assert.Single(faxClient.QueuedRequests); // the fax was queued before the move failure
-        Assert.Single(summary!.Warnings);
-        Assert.Contains("processed", summary.Warnings[0], StringComparison.OrdinalIgnoreCase);
-
-        // The source file was never moved (MoveAcceptedFiles threw before
-        // doing anything) — still sitting in the input folder so the next
-        // run can retry the move (the row itself won't be re-faxed, since
-        // it was already fingerprinted above).
-        Assert.True(File.Exists(Path.Combine(_inputDir, "report.csv")));
+        Assert.Equal("5555550200", faxClient.QueuedRequests[1].ToFaxNumber);
     }
 }

@@ -1,5 +1,4 @@
 using System.Windows;
-using System.Windows.Forms;
 using VaccineAssist.Desktop.ViewModels;
 
 namespace VaccineAssist.Desktop.Views;
@@ -25,13 +24,15 @@ public partial class FaxSettingsWindow : Window
         AccessPasswordBox.Password = _viewModel.AccessPassword;
     }
 
-    private void SaveButton_OnClick(object sender, RoutedEventArgs e)
+    /// <summary>V-T65: the ONLY explicit Save button left on this window —
+    /// everything else auto-saves (see FaxSettingsViewModel.AutoSaveFieldsAsync).</summary>
+    private void SaveCredentialsButton_OnClick(object sender, RoutedEventArgs e)
     {
         _viewModel.AccessPassword = AccessPasswordBox.Password;
         _viewModel.ApiToken = ApiTokenBox.Password;
-        if (_viewModel.SaveCommand.CanExecute(null))
+        if (_viewModel.SaveCredentialsCommand.CanExecute(null))
         {
-            _viewModel.SaveCommand.Execute(null);
+            _viewModel.SaveCredentialsCommand.Execute(null);
         }
 
         // The ViewModel's own ApiToken resets to "" once Save persists it
@@ -73,28 +74,5 @@ public partial class FaxSettingsWindow : Window
         // The box may have had a not-yet-saved paste in it — clear it too
         // so nothing left in the UI implies a key survived the forget.
         ApiTokenBox.Password = "";
-    }
-
-    /// <summary>Uses System.Windows.Forms.FolderBrowserDialog — this
-    /// project already takes a WinForms dependency for the tray icon (see
-    /// the csproj's UseWindowsForms comment); no need for a second
-    /// package just for a folder picker.</summary>
-    private void BrowseInputFolder_OnClick(object sender, RoutedEventArgs e)
-    {
-        using var dialog = new FolderBrowserDialog
-        {
-            Description = "Choose the folder Vaccine Assist should watch for immunization reports",
-            SelectedPath = string.IsNullOrWhiteSpace(_viewModel.InputFolder) ? "" : _viewModel.InputFolder,
-        };
-
-        // Fully qualified: this class derives from System.Windows.Window,
-        // which has its OWN instance property named "DialogResult" (bool?)
-        // — an unqualified "DialogResult" here would bind to THAT
-        // (this.DialogResult), not the System.Windows.Forms.DialogResult
-        // enum type, and fail to compile against ".OK".
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            _viewModel.SetInputFolder(dialog.SelectedPath);
-        }
     }
 }

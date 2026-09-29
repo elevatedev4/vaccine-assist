@@ -100,10 +100,10 @@ public class PioneerColumnMapTests : IDisposable
     [Fact]
     public void DefaultMapImportsAllThreeRowsWithNoRejectionAndCorrectFieldMapping()
     {
-        WriteSyntheticWorkbook();
+        var path = WriteSyntheticWorkbook();
         var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
 
-        var outcome = importer.Import(_tempDir, new FaxColumnMap());
+        var outcome = importer.ImportFile(path, new FaxColumnMap());
 
         Assert.Empty(outcome.RejectedFiles);
         Assert.Equal(0, outcome.SkippedRowCount);
@@ -119,10 +119,10 @@ public class PioneerColumnMapTests : IDisposable
     [Fact]
     public void ExcelSerialAndMSlashDSlashYyyyDatesBothParseCorrectlyForAdministeredOnAndDob()
     {
-        WriteSyntheticWorkbook();
+        var path = WriteSyntheticWorkbook();
         var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
 
-        var outcome = importer.Import(_tempDir, new FaxColumnMap());
+        var outcome = importer.ImportFile(path, new FaxColumnMap());
 
         var janeFlu = outcome.NewRecords.Single(r => r.VaccineName == "Influenza");
         Assert.Equal(new DateOnly(2026, 1, 1), janeFlu.AdministeredDate); // serial 46023
@@ -136,9 +136,9 @@ public class PioneerColumnMapTests : IDisposable
     [Fact]
     public void GroupingMergesTheSamePatientAndPrescriberIntoOnePdfGroup()
     {
-        WriteSyntheticWorkbook();
+        var path = WriteSyntheticWorkbook();
         var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
-        var outcome = importer.Import(_tempDir, new FaxColumnMap());
+        var outcome = importer.ImportFile(path, new FaxColumnMap());
 
         var groups = FaxGrouping.GroupByPatientAndPrescriber(outcome.NewRecords);
 
@@ -154,9 +154,9 @@ public class PioneerColumnMapTests : IDisposable
     [Fact]
     public void UsableFaxNormalizesToE164AndMissingFaxResolvesToNoUsableNumber()
     {
-        WriteSyntheticWorkbook();
+        var path = WriteSyntheticWorkbook();
         var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
-        var outcome = importer.Import(_tempDir, new FaxColumnMap());
+        var outcome = importer.ImportFile(path, new FaxColumnMap());
         var groups = FaxGrouping.GroupByPatientAndPrescriber(outcome.NewRecords);
 
         var janeGroup = groups.Single(g => g.PatientFirstName == "Jane");

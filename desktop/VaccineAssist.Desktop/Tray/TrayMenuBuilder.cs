@@ -17,7 +17,6 @@ public enum TrayMenuAction
     SignOut,
     Exit,
     Separator,
-    FaxRunNow,
     FaxSettings,
     FaxOpenFolder,
     FaxImportFile,
@@ -90,21 +89,15 @@ public static class TrayMenuBuilder
         items.Add(new TrayMenuItemDescriptor("Open Vaccine Assist", true, TrayMenuAction.Open, null, false));
         items.Add(new TrayMenuItemDescriptor("Show Pioneer overlay", true, TrayMenuAction.ToggleOverlay, null, true));
         items.Add(Separator);
-        // V-T53 (vaccine -> PCP fax, Will's brief): "tray menu also gets
-        // 'Vaccine faxes -> Settings' and 'Open fax folder'" — plus
-        // "Run now" (item 7's own wording). Flat rows with the same
-        // "Vaccine faxes — <action>" text style TrayMenuBuilder already
-        // uses for a nav item's hotkey suffix above, rather than a real
-        // WinForms submenu (TrayMenuItemDescriptor has no submenu
-        // concept — not worth adding for three rows).
-        items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Run now", true, TrayMenuAction.FaxRunNow, null, false));
-        // Will, 2026-09-22 (verbatim): "A user will import the report into
-        // the app directly" — no SFTP drop, no cloud pull. Opens a file
-        // picker, copies the chosen CSV/XLSX into the configured input
-        // folder, then runs immediately (same RunNowAsync path/summary
-        // window as "Run now" above) — see MainWindow.xaml.cs's
-        // ImportReportFileAndRunAsync and Fax/FaxImportFileCopier.cs.
-        items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Import report file…", true, TrayMenuAction.FaxImportFile, null, false));
+        // V-T65 (Will's brief, verbatim, 2026-09-29): "One file selector,
+        // then send faxes. Then you can display the summary of the
+        // processing and actions and results." One row, no intermediate
+        // dialogs — picks a CSV/XLSX and immediately imports + sends (see
+        // MainWindow.xaml.cs's ImportReportFileAndSendAsync). Replaces the
+        // old three-row "Run now" / "Import report file…" / daily-scan
+        // pair — there's no input folder or scheduled run to distinguish
+        // those from anymore.
+        items.Add(new TrayMenuItemDescriptor("Vaccine faxes", true, TrayMenuAction.FaxImportFile, null, false));
         items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Settings", true, TrayMenuAction.FaxSettings, null, false));
         items.Add(new TrayMenuItemDescriptor("Open fax folder", true, TrayMenuAction.FaxOpenFolder, null, false));
         items.Add(Separator);

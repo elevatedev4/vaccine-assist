@@ -26,9 +26,9 @@ public sealed class ImmunizationRecord
     public string? PrescriberName { get; init; }
     public string? PrescriberNpi { get; init; }
 
-    /// <summary>Fax number straight from the report column, when
-    /// configured/present — takes priority over PrescriberDirectory (see
-    /// FaxRunOrchestrator.ResolvePrescriberFax).</summary>
+    /// <summary>Fax number straight from the report column — the ONLY
+    /// source (V-T65, 2026-09-29: the prescriber-fax directory fallback is
+    /// gone; see FaxRunOrchestrator's resolvedFax logic).</summary>
     public string? PrescriberFax { get; init; }
 
     /// <summary>Which imported file this row came from — operational only
