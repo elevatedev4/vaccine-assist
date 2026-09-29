@@ -47,6 +47,14 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Native;
 /// since legacy WinForms input handling (exactly what Pioneer's Priority
 /// dialog is) can drop or mis-sequence back-to-back synthetic input with
 /// no settle time between events.
+///
+/// V-T41 ROUND 6 DELTA FIX (reviewer REQUEST_CHANGES, minor): SendChar's
+/// Shift-up and SendAltChord's Alt-up now run in a `finally` block, not as
+/// a plain sequential statement — a thrown exception (not just a `false`
+/// result) between the down send and the release send used to skip the
+/// release entirely, leaving Shift/Alt physically "held" for every
+/// keystroke sent afterward. Mirrors rx-verify's own TypeKeystrokes
+/// try/finally exactly.
 /// </summary>
 public static class NativeKeyboard
 {
@@ -106,7 +114,11 @@ public static class NativeKeyboard
     /// (V-T41 ROUND 6 — this is what fixes the Alt+Down fallback: VK_DOWN
     /// now correctly carries the flag instead of silently depending on
     /// NumLock state), each event separated by
-    /// NativeKeyboardTiming.KeystrokeCharDelay.</summary>
+    /// NativeKeyboardTiming.KeystrokeCharDelay. V-T41 ROUND 6 DELTA FIX
+    /// (reviewer): Alt-up runs in a `finally` — same reasoning as
+    /// SendChar's Shift-up fix — so a thrown exception between Alt-down and
+    /// the key send can never leave Alt physically "held" for every
+    /// keystroke sent afterward.</summary>
     public static bool SendAltChord(ushort virtualKey, Action<string>? log = null, string what = "")
     {
         try
@@ -115,13 +127,29 @@ public static class NativeKeyboard
             var scan = (ushort)MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC);
             var label = $"SendAltChord vk=0x{virtualKey:X2} scan=0x{scan:X2} what=\"{what}\"";
 
-            var altDownOk = SendOneKeyEvent(VK_MENU, altScan, keyUp: false, log, $"{label} (Alt down)");
-            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
-            var keyDownOk = SendOneKeyEvent(virtualKey, scan, keyUp: false, log, $"{label} (key down)");
-            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
-            var keyUpOk = SendOneKeyEvent(virtualKey, scan, keyUp: true, log, $"{label} (key up)");
-            Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
-            var altUpOk = SendOneKeyEvent(VK_MENU, altScan, keyUp: true, log, $"{label} (Alt up)");
+            var altIsDown = false;
+            var altDownOk = true;
+            var keyDownOk = false;
+            var keyUpOk = false;
+            var altUpOk = true;
+            try
+            {
+                altDownOk = SendOneKeyEvent(VK_MENU, altScan, keyUp: false, log, $"{label} (Alt down)");
+                altIsDown = altDownOk;
+                Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+
+                keyDownOk = SendOneKeyEvent(virtualKey, scan, keyUp: false, log, $"{label} (key down)");
+                Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+                keyUpOk = SendOneKeyEvent(virtualKey, scan, keyUp: true, log, $"{label} (key up)");
+                Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
+            }
+            finally
+            {
+                if (altIsDown)
+                {
+                    altUpOk = SendOneKeyEvent(VK_MENU, altScan, keyUp: true, log, $"{label} (Alt up)");
+                }
+            }
 
             return altDownOk && keyDownOk && keyUpOk && altUpOk;
         }
@@ -139,7 +167,14 @@ public static class NativeKeyboard
     /// NativeKeyboardTiming.KeystrokeCharDelay once after the character is
     /// fully sent (V-T41 ROUND 6) — same granularity as rx-verify's own
     /// TypeKeystrokes. Returns false (no events sent) when VkKeyScanW
-    /// can't map the character at all.</summary>
+    /// can't map the character at all. V-T41 ROUND 6 DELTA FIX (reviewer):
+    /// Shift-up runs in a `finally` — a boolean `false` from SendOneKeyEvent
+    /// already let Shift-up run (no early return), but if SendOneKeyEvent
+    /// itself THROWS between Shift-down and Shift-up, execution used to
+    /// jump straight to the outer `catch` and skip Shift-up entirely,
+    /// leaving Shift physically "held" for every keystroke sent afterward
+    /// — the exact scenario rx-verify's own TypeKeystrokes guards against
+    /// with a real try/finally.</summary>
     public static bool SendChar(char ch, Action<string>? log = null)
     {
         try
@@ -158,22 +193,28 @@ public static class NativeKeyboard
             var shiftScan = (ushort)MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC);
             var label = $"SendChar '{ch}' vk=0x{vk:X2} scan=0x{scan:X2} shift={needsShift}";
 
+            var shiftIsDown = false;
             var shiftDownOk = true;
-            if (needsShift)
-            {
-                shiftDownOk = SendOneKeyEvent(VK_SHIFT, shiftScan, keyUp: false, log, $"{label} (Shift down)");
-            }
-
-            var charDownOk = SendOneKeyEvent(vk, scan, keyUp: false, log, $"{label} (down)");
-            var charUpOk = SendOneKeyEvent(vk, scan, keyUp: true, log, $"{label} (up)");
-
+            var charDownOk = false;
+            var charUpOk = false;
             var shiftUpOk = true;
-            if (needsShift)
+            try
             {
-                // Always released, even if the char down/up above failed —
-                // a failed send must never leave Shift physically "held"
-                // for every keystroke sent afterward.
-                shiftUpOk = SendOneKeyEvent(VK_SHIFT, shiftScan, keyUp: true, log, $"{label} (Shift up)");
+                if (needsShift)
+                {
+                    shiftDownOk = SendOneKeyEvent(VK_SHIFT, shiftScan, keyUp: false, log, $"{label} (Shift down)");
+                    shiftIsDown = shiftDownOk;
+                }
+
+                charDownOk = SendOneKeyEvent(vk, scan, keyUp: false, log, $"{label} (down)");
+                charUpOk = SendOneKeyEvent(vk, scan, keyUp: true, log, $"{label} (up)");
+            }
+            finally
+            {
+                if (shiftIsDown)
+                {
+                    shiftUpOk = SendOneKeyEvent(VK_SHIFT, shiftScan, keyUp: true, log, $"{label} (Shift up)");
+                }
             }
 
             Thread.Sleep(NativeKeyboardTiming.KeystrokeCharDelay);
