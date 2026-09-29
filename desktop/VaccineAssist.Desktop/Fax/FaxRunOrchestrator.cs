@@ -36,7 +36,6 @@ public sealed class FaxRunOrchestrator
     private const string SkippedNoFaxStatus = "Skipped (no prescriber fax)";
 
     private readonly IReportImporter _importer;
-    private readonly IPrescriberDirectory _prescriberDirectory;
     private readonly IVaccineRecordPdfBuilder _pdfBuilder;
 
     /// <summary>NOT readonly (Notifyre-key-visibility follow-up, Will
@@ -57,7 +56,6 @@ public sealed class FaxRunOrchestrator
 
     public FaxRunOrchestrator(
         IReportImporter importer,
-        IPrescriberDirectory prescriberDirectory,
         IVaccineRecordPdfBuilder pdfBuilder,
         IFaxClient faxClient,
         IFaxLedger ledger,
@@ -65,7 +63,6 @@ public sealed class FaxRunOrchestrator
         string faxRootDir)
     {
         _importer = importer;
-        _prescriberDirectory = prescriberDirectory;
         _pdfBuilder = pdfBuilder;
         _faxClient = faxClient;
         _ledger = ledger;
@@ -87,9 +84,11 @@ public sealed class FaxRunOrchestrator
     /// single run is short-lived).</summary>
     public void UpdateFaxClient(IFaxClient faxClient) => _faxClient = faxClient;
 
-    /// <summary>Runs the full pipeline once. Returns null (a no-op,
-    /// logged, never thrown) if a run is already in progress.</summary>
-    public async Task<FaxRunSummary?> RunAsync(FaxSettings settings, CancellationToken ct = default)
+    /// <summary>Runs the full pipeline once against ONE user-picked report
+    /// file (V-T65: tray icon -> one file selector -> immediately process
+    /// + send — no input folder, no scan). Returns null (a no-op, logged,
+    /// never thrown) if a run is already in progress.</summary>
+    public async Task<FaxRunSummary?> RunAsync(string reportFilePath, FaxSettings settings, CancellationToken ct = default)
     {
         if (!await _runLock.WaitAsync(0, ct))
         {
@@ -99,7 +98,7 @@ public sealed class FaxRunOrchestrator
 
         try
         {
-            return await RunCoreAsync(settings, ct);
+            return await RunCoreAsync(reportFilePath, settings, ct);
         }
         finally
         {
@@ -129,13 +128,12 @@ public sealed class FaxRunOrchestrator
     }
 
     /// <summary>Failed faxes get a Retry action in the summary window
-    /// (Will's brief: "explicit user click only"). Re-resolves the fax
-    /// number via PrescriberDirectory by the ledger entry's stored
-    /// prescriber name (the ledger itself only ever stores the last 4
-    /// digits — see FaxLedgerEntry's own doc comment — so a fax number
-    /// that came from the REPORT column rather than prescribers.json
-    /// can't be recovered here; add it to prescribers.json first if
-    /// retrying that case).</summary>
+    /// (Will's brief: "explicit user click only"). Re-sends to the SAME
+    /// fax number this entry was originally queued to (FaxLedgerEntry.
+    /// FaxNumber — V-T65: the prescriber-fax directory is gone, the
+    /// report's own column was the only source at import time, so the
+    /// number is captured on the ledger entry itself rather than
+    /// re-resolved here).</summary>
     public async Task<bool> RetryFailedAsync(string ledgerEntryId, FaxSettings settings, CancellationToken ct = default)
     {
         var entries = _ledger.Load();
@@ -143,10 +141,10 @@ public sealed class FaxRunOrchestrator
         if (entry is null || entry.Status != FaxLedgerStatus.Failed) return false;
         if (string.IsNullOrWhiteSpace(entry.PdfPath) || !File.Exists(entry.PdfPath)) return false;
 
-        var faxNumber = FaxNumberNormalizer.ToDialableOrNull(_prescriberDirectory.TryGetFaxNumber(entry.PrescriberName, null));
+        var faxNumber = FaxNumberNormalizer.ToDialableOrNull(entry.FaxNumber);
         if (faxNumber is null)
         {
-            entry.Error = "Retry failed: no fax number on file for this prescriber — add one in Fax settings first.";
+            entry.Error = "Retry failed: no fax number on file for this entry.";
             _ledger.Save(entries);
             return false;
         }
@@ -183,7 +181,7 @@ public sealed class FaxRunOrchestrator
         return result.Success;
     }
 
-    private async Task<FaxRunSummary> RunCoreAsync(FaxSettings settings, CancellationToken ct)
+    private async Task<FaxRunSummary> RunCoreAsync(string reportFilePath, FaxSettings settings, CancellationToken ct)
     {
         var runAtUtc = DateTime.UtcNow;
         var runDate = DateOnly.FromDateTime(DateTime.Now);
@@ -193,7 +191,7 @@ public sealed class FaxRunOrchestrator
         // start of each run."
         await poller.PollAsync(ct);
 
-        var importOutcome = _importer.Import(settings.InputFolder, settings.ColumnMap);
+        var importOutcome = _importer.ImportFile(reportFilePath, settings.ColumnMap);
         var groups = FaxGrouping.GroupByPatientAndPrescriber(importOutcome.NewRecords);
 
         var summary = new FaxRunSummary
@@ -215,15 +213,18 @@ public sealed class FaxRunOrchestrator
 
         foreach (var group in groups)
         {
-            // Fax-report-layout brief (Will, 2026-09-28): "rows with an
-            // empty prescriber OR empty/invalid fax are skipped silently"
-            // — an empty prescriber NAME skips even if the report
-            // somehow still had a fax number column value, since the
-            // letter's "To:" block needs someone to address it to.
+            // Fax-report-layout brief (Will, 2026-09-28), narrowed further
+            // by V-T65 (2026-09-29, "One file selector, then send faxes" —
+            // no prescriber-fax directory anymore): "rows with an empty
+            // prescriber OR empty/invalid fax are skipped silently" — an
+            // empty prescriber NAME skips even if the report somehow still
+            // had a fax number column value, since the letter's "To:"
+            // block needs someone to address it to. The report's own
+            // Primary Care Prescriber Fax column is the ONLY source now —
+            // no directory fallback.
             var hasPrescriberName = !string.IsNullOrWhiteSpace(group.PrescriberName);
             var resolvedFax = hasPrescriberName
-                ? FaxNumberNormalizer.ToDialableOrNull(group.PrescriberFaxFromReport) ??
-                  FaxNumberNormalizer.ToDialableOrNull(_prescriberDirectory.TryGetFaxNumber(group.PrescriberName, group.PrescriberNpi))
+                ? FaxNumberNormalizer.ToDialableOrNull(group.PrescriberFaxFromReport)
                 : null;
 
             if (resolvedFax is null)
@@ -251,6 +252,7 @@ public sealed class FaxRunOrchestrator
                 PatientInitials = group.PatientInitials,
                 RowFingerprints = group.Records.Select(r => r.Fingerprint).ToList(),
                 PrescriberName = group.PrescriberName,
+                FaxNumber = resolvedFax,
                 FaxNumberLast4 = FaxNumberNormalizer.Last4(resolvedFax),
                 QueuedAtUtc = DateTime.UtcNow,
                 Status = FaxLedgerStatus.Queued,
@@ -322,28 +324,16 @@ public sealed class FaxRunOrchestrator
             _importLedger.AddFingerprints(newFingerprints);
         }
 
-        // Only after every group above has been attempted — see
-        // ReportImporter's own doc comment. Wrapped (reviewer fix,
-        // V-T53): a locked/permission-denied source file must not abort
-        // the run after faxes have already been queued — the run still
-        // needs to reach WriteRunSummaryFile/RunCompleted below so Will
-        // sees what DID send instead of silence; the source file is just
-        // left in the input folder (never deleted) and will be retried
-        // on the next run.
-        try
-        {
-            _importer.MoveAcceptedFiles(importOutcome.AcceptedFilePaths, settings.InputFolder, runDate);
-        }
-        catch (Exception ex)
-        {
-            AppFileLog.LogException("FaxRunOrchestrator.MoveAcceptedFiles", ex);
-            summary.Warnings.Add($"Couldn't move imported report file(s) to processed\\: {ex.Message}");
-        }
+        // V-T65: no input folder / processed\ subfolder anymore — the
+        // picked report file is left exactly where Will selected it from
+        // (see MainWindow's file picker); the fingerprint ledger above is
+        // what stops the same administration being re-faxed if he
+        // re-imports the same file.
 
         // A second poll pass right after queuing — a nicer first-look
         // summary if SRFax resolves a fast fax immediately; the
-        // scheduler's own 10-minute timer is what carries the rest of
-        // the way to Sent/Failed (see FaxRunScheduler).
+        // receipt-poll timer is what carries the rest of the way to
+        // Sent/Failed (see FaxRunScheduler).
         await poller.PollAsync(ct);
 
         var finalLedger = _ledger.Load();

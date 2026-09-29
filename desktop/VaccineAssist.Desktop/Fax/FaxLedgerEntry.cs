@@ -33,6 +33,14 @@ public sealed class FaxLedgerEntry
     public List<string> RowFingerprints { get; set; } = new();
 
     public string? PrescriberName { get; set; }
+
+    /// <summary>The full dialable (digits-only) fax number this fax was
+    /// sent to — needed so Retry (V-T65: the prescriber-fax directory is
+    /// gone, the report's own column is the only source) can re-queue
+    /// without re-importing the report. Not patient data, so storing the
+    /// full number (unlike PatientInitials-only) is fine.</summary>
+    public string FaxNumber { get; set; } = "";
+
     public string FaxNumberLast4 { get; set; } = "";
 
     public string? PdfPath { get; set; }

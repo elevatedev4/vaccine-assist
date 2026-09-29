@@ -54,7 +54,7 @@ public sealed class FaxRunSummaryViewModel : ObservableObject
         }
         else
         {
-            StatusMessage = $"Retry failed for {row.PatientInitials} — check the prescriber's fax number in Fax settings.";
+            StatusMessage = $"Retry failed for {row.PatientInitials} — no fax number on file for this entry.";
         }
 
         // Rebuild the row so the DataGrid (bound to Rows, not directly to

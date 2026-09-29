@@ -1,13 +1,14 @@
 namespace VaccineAssist.Desktop.Fax;
 
 /// <summary>
-/// V-T53 (Will's brief, HQ): "the desktop app will read an immunization
-/// report file from a LOCAL FOLDER ... build ONE PDF PER PATIENT ...
-/// fax each via SRFax's API to the patient's PCP ... track delivery
-/// receipts, run automatically daily." Everything here is non-secret and
-/// lives inside AppSettings/settings.json — SRFax's access id/password
-/// are the one exception (see Fax/FaxCredentialStore.cs, DPAPI-protected,
-/// a separate file, never here).
+/// V-T65 (Will's brief, HQ, 2026-09-29): one file picker (CSV/XLSX) ->
+/// immediately process + send -> summary window. No input folder, no
+/// scheduled/automatic run, no prescriber-fax directory — the report's own
+/// Primary Care Prescriber Fax column is the only fax-number source.
+/// Everything here is non-secret and lives inside AppSettings/settings.json
+/// — the SRFax/Notifyre credentials are the one exception (see
+/// Fax/FaxCredentialStore.cs, DPAPI-protected, a separate file, never
+/// here).
 /// </summary>
 public sealed class FaxSettings
 {
@@ -15,11 +16,6 @@ public sealed class FaxSettings
     /// V-T53 follow-up) — SRFax stays available for any install that was
     /// already configured with it. See FaxProvider's own doc comment.</summary>
     public FaxProvider Provider { get; set; } = FaxProvider.Notifyre;
-
-    /// <summary>Folder ReportImporter scans for new *.csv/*.xlsx files. Blank
-    /// on a fresh checkout — FaxRunOrchestrator treats a blank/missing
-    /// folder as "nothing to import" rather than throwing.</summary>
-    public string InputFolder { get; set; } = "";
 
     /// <summary>Column header names in the immunization report — see
     /// FaxColumnMap's own doc comment for defaults/required fields.</summary>
@@ -54,19 +50,6 @@ public sealed class FaxSettings
     /// <summary>Optional SRFax sub-account code (sAccountCode). Blank is
     /// valid — most SRFax accounts don't use sub-accounts.</summary>
     public string? AccountCode { get; set; }
-
-    /// <summary>Local time-of-day (HH:mm, 24h) the daily run fires — see
-    /// Fax/FaxScheduleDecision.cs. Default matches the brief's "default
-    /// 18:30".</summary>
-    public string DailyRunTime { get; set; } = "18:30";
-
-    /// <summary>Tray menu's "Vaccine faxes" daily timer on/off switch —
-    /// "Run now" and "Import report file…" always work regardless of this.
-    /// Default flipped to OFF (Will, 2026-09-22: "A user will import the
-    /// report into the app directly" — the workflow is now manual-trigger
-    /// by default; a pharmacy that DOES want the automatic folder-watch
-    /// daily run can still switch this back on in Fax settings).</summary>
-    public bool DailyRunEnabled { get; set; } = false;
 
     /// <summary>Printed under "Sincerely," on the letter (fax-report-
     /// layout brief, 2026-09-28) — defaults to Will's own current

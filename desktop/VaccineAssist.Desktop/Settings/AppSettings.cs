@@ -47,10 +47,14 @@ public sealed class AppSettings
     public bool ShowPioneerOverlay { get; set; } = true;
 
     /// <summary>
-    /// V-T53 (Will's brief): vaccine -> PCP fax configuration — input
-    /// folder, column map, pharmacy identity, run schedule. SRFax
-    /// access id/password are NEVER stored here (see
-    /// Fax/FaxCredentialStore.cs, DPAPI-protected, a separate file).
+    /// V-T53/V-T65 (Will's briefs): vaccine -> PCP fax configuration —
+    /// column map, pharmacy identity. SRFax/Notifyre credentials are
+    /// NEVER stored here (see Fax/FaxCredentialStore.cs, DPAPI-protected,
+    /// a separate file). An older settings.json's now-removed fields
+    /// (InputFolder, DailyRunTime, DailyRunEnabled — the pre-V-T65
+    /// automatic-run settings) are simply ignored by System.Text.Json's
+    /// default unknown-member handling; see
+    /// FaxSettingsRoundTripTests.OldSettingsJsonWithRemovedFieldsStillLoads.
     /// </summary>
     public FaxSettings Fax { get; set; } = new();
 }

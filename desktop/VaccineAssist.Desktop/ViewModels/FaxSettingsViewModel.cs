@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Net.Http;
 using System.Windows.Input;
+using System.Windows.Threading;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Fax;
 using VaccineAssist.Desktop.Settings;
@@ -8,23 +10,35 @@ using VaccineAssist.Desktop.Settings;
 namespace VaccineAssist.Desktop.ViewModels;
 
 /// <summary>
-/// Backs Views/FaxSettingsWindow.xaml — Will's brief: "SRFax access id /
-/// password (password box; saved via DPAPI store; 'Test connection' calls
-/// Get_FaxUsage), sender email, pharmacy name/phone/fax (caller id), input
-/// folder (browse), run time, enable/disable daily run, column map editor
-/// (simple key -> header grid), prescriber fax table grid. Saving
-/// validates fax numbers (digits, 10-11)." Extended for Notifyre (Will's
-/// pick): a Provider dropdown selects SRFax or Notifyre, each with its own
-/// credential field(s) shown/hidden via IsSrFaxSelected/IsNotifyreSelected
-/// — see FaxSettingsWindow.xaml's Visibility bindings.
+/// Backs Views/FaxSettingsWindow.xaml. V-T65 (Will's brief, verbatim,
+/// 2026-09-29): "Add the save button near the Notifyre key. Everything
+/// else should save as it is typed ... It's very unintuitive to have a
+/// hidden save button where you have to scroll all the way to the
+/// bottom." So every field EXCEPT the provider credentials (SRFax access
+/// id/password, Notifyre API token — both PasswordBox-backed, read from
+/// code-behind, so they can't debounce-save the way a plain bound
+/// TextBox can) auto-saves via AutoSaveFieldsAsync, debounced ~300ms on a
+/// text change and immediately on a selection change (Provider dropdown)
+/// — see FaxSettingsAutoSavePolicy (pure, unit-tested) for the actual
+/// delay decision. The credentials group keeps its own explicit
+/// SaveCredentialsCommand (rendered right next to the key box in the
+/// XAML), Test connection, and Forget key — unchanged from before this
+/// brief.
+///
+/// Also V-T65: the prescriber-fax directory and the automatic/scheduled
+/// run are gone entirely — see FaxRunOrchestrator/FaxRunScheduler's own
+/// doc comments. This ViewModel no longer has an IPrescriberDirectory
+/// dependency, a Prescribers grid, or InputFolder/DailyRun* fields.
 /// </summary>
 public sealed class FaxSettingsViewModel : ObservableObject
 {
     private readonly AppSettings _settings;
     private readonly ILocalSettingsService _localSettingsService;
     private readonly IFaxCredentialStore _credentialStore;
-    private readonly IPrescriberDirectory _prescriberDirectory;
     private readonly HttpClient _httpClient;
+
+    private readonly DispatcherTimer _autoSaveDebounceTimer;
+    private readonly DispatcherTimer _savedHintTimer;
 
     private FaxProvider _selectedProvider = FaxProvider.Notifyre;
     private string _accessId = "";
@@ -38,22 +52,21 @@ public sealed class FaxSettingsViewModel : ObservableObject
     private string _pharmacyCityStateZip = "";
     private string _signatureName = "";
     private string _accountCode = "";
-    private string _inputFolder = "";
-    private string _dailyRunTime = "18:30";
-    private bool _dailyRunEnabled = true;
     private bool _isBusy;
     private string? _statusMessage;
     private string? _errorMessage;
+    private string? _autoSaveErrorMessage;
+    private bool _isSavedHintVisible;
 
     /// <summary>The Notifyre token actually on disk right now (from
     /// FaxCredentialStore) — kept separate from the bindable ApiToken
     /// property, which is ONLY ever "whatever's typed in the box THIS
     /// session" (starts blank even when a key IS stored — Notifyre-key-
     /// visibility follow-up, Will 2026-09-28: "leave the token box empty
-    /// ... never display the full token"). SaveAsync falls back to this
-    /// when the box is left blank, so re-saving unrelated fields (e.g.
-    /// pharmacy phone) can never accidentally blank out an already-saved
-    /// key.</summary>
+    /// ... never display the full token"). SaveCredentialsAsync falls
+    /// back to this when the box is left blank, so re-saving unrelated
+    /// fields (e.g. pharmacy phone) can never accidentally blank out an
+    /// already-saved key.</summary>
     private string _storedNotifyreApiToken = "";
     private DateTime? _storedNotifyreTokenSavedAtUtc;
 
@@ -61,47 +74,53 @@ public sealed class FaxSettingsViewModel : ObservableObject
     /// token in — loaded from the credential store on window open,
     /// updated (and immediately re-persisted, see TestConnectionAsync
     /// below) the moment a Test connection probe finds a non-documented
-    /// form works, and carried into SaveAsync's credentials write so a
-    /// later Save never silently reverts a discovered mode back to the
-    /// documented default. See FaxCredentials.NotifyreAuthMode's own doc
-    /// comment (V-T53 401 follow-up, 2026-09-25).</summary>
+    /// form works, and carried into SaveCredentialsAsync's credentials
+    /// write so a later Save never silently reverts a discovered mode
+    /// back to the documented default. See FaxCredentials.NotifyreAuthMode's
+    /// own doc comment (V-T53 401 follow-up, 2026-09-25).</summary>
     private NotifyreAuthMode _notifyreAuthMode = NotifyreAuthMode.XApiToken;
 
     public FaxSettingsViewModel(
         AppSettings settings,
         ILocalSettingsService localSettingsService,
         IFaxCredentialStore credentialStore,
-        IPrescriberDirectory prescriberDirectory,
         HttpClient httpClient)
     {
         _settings = settings;
         _localSettingsService = localSettingsService;
         _credentialStore = credentialStore;
-        _prescriberDirectory = prescriberDirectory;
         _httpClient = httpClient;
 
-        SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsBusy);
-        TestConnectionCommand = new AsyncRelayCommand(TestConnectionAsync, () => !IsBusy);
-        AddPrescriberCommand = new RelayCommand(() => Prescribers.Add(new PrescriberRow()));
-        DeletePrescriberCommand = new RelayCommandOfT<PrescriberRow>(row =>
+        _autoSaveDebounceTimer = new DispatcherTimer();
+        _autoSaveDebounceTimer.Tick += async (_, _) =>
         {
-            if (row is not null) Prescribers.Remove(row);
-        });
+            _autoSaveDebounceTimer.Stop();
+            await AutoSaveFieldsAsync();
+        };
+
+        _savedHintTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+        _savedHintTimer.Tick += (_, _) =>
+        {
+            _savedHintTimer.Stop();
+            IsSavedHintVisible = false;
+        };
+
+        SaveCredentialsCommand = new AsyncRelayCommand(SaveCredentialsAsync, () => !IsBusy);
+        TestConnectionCommand = new AsyncRelayCommand(TestConnectionAsync, () => !IsBusy);
         ForgetKeyCommand = new AsyncRelayCommand(ForgetKeyAsync, () => !IsBusy && HasStoredNotifyreKey);
 
         LoadFromCurrentState();
     }
 
-    /// <summary>Raised right after SaveAsync (or ForgetKeyAsync)
-    /// persists a Notifyre credential/provider change — MainWindow
-    /// subscribes to rebuild FaxRunOrchestrator's IFaxClient from the
-    /// freshly-stored credentials, so a real send never uses a stale
-    /// in-memory token from before this save (see
+    /// <summary>Raised right after SaveCredentialsAsync (or
+    /// ForgetKeyAsync) persists a Notifyre credential/provider change —
+    /// MainWindow subscribes to rebuild FaxRunOrchestrator's IFaxClient
+    /// from the freshly-stored credentials, so a real send never uses a
+    /// stale in-memory token from before this save (see
     /// FaxRunOrchestrator.UpdateFaxClient's own doc comment).</summary>
     public event Action? CredentialsSaved;
 
     public ObservableCollection<FaxColumnMapRow> ColumnMap { get; } = new();
-    public ObservableCollection<PrescriberRow> Prescribers { get; } = new();
 
     /// <summary>Backs the Settings window's provider dropdown.</summary>
     public IReadOnlyList<FaxProvider> Providers { get; } = Enum.GetValues<FaxProvider>();
@@ -115,6 +134,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
             {
                 OnPropertyChanged(nameof(IsSrFaxSelected));
                 OnPropertyChanged(nameof(IsNotifyreSelected));
+                ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Selection);
             }
         }
     }
@@ -127,6 +147,9 @@ public sealed class FaxSettingsViewModel : ObservableObject
     /// FaxSettingsWindow.xaml.</summary>
     public bool IsNotifyreSelected => SelectedProvider == FaxProvider.Notifyre;
 
+    /// <summary>SRFax access id — part of the explicit credentials Save
+    /// group (same PasswordBox-adjacent group as AccessPassword/ApiToken),
+    /// not auto-saved.</summary>
     public string AccessId { get => _accessId; set => SetProperty(ref _accessId, value); }
     public string AccessPassword { get => _accessPassword; set => SetProperty(ref _accessPassword, value); }
 
@@ -135,25 +158,74 @@ public sealed class FaxSettingsViewModel : ObservableObject
     /// bindable pattern as AccessPassword.</summary>
     public string ApiToken { get => _apiToken; set => SetProperty(ref _apiToken, value); }
 
-    public string SenderEmail { get => _senderEmail; set => SetProperty(ref _senderEmail, value); }
-    public string PharmacyName { get => _pharmacyName; set => SetProperty(ref _pharmacyName, value); }
-    public string PharmacyPhone { get => _pharmacyPhone; set => SetProperty(ref _pharmacyPhone, value); }
-    public string PharmacyFax { get => _pharmacyFax; set => SetProperty(ref _pharmacyFax, value); }
-    public string PharmacyAddressLine1 { get => _pharmacyAddressLine1; set => SetProperty(ref _pharmacyAddressLine1, value); }
-    public string PharmacyCityStateZip { get => _pharmacyCityStateZip; set => SetProperty(ref _pharmacyCityStateZip, value); }
+    public string SenderEmail
+    {
+        get => _senderEmail;
+        set { if (SetProperty(ref _senderEmail, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
+
+    public string PharmacyName
+    {
+        get => _pharmacyName;
+        set { if (SetProperty(ref _pharmacyName, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
+
+    public string PharmacyPhone
+    {
+        get => _pharmacyPhone;
+        set { if (SetProperty(ref _pharmacyPhone, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
+
+    public string PharmacyFax
+    {
+        get => _pharmacyFax;
+        set { if (SetProperty(ref _pharmacyFax, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
+
+    public string PharmacyAddressLine1
+    {
+        get => _pharmacyAddressLine1;
+        set { if (SetProperty(ref _pharmacyAddressLine1, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
+
+    public string PharmacyCityStateZip
+    {
+        get => _pharmacyCityStateZip;
+        set { if (SetProperty(ref _pharmacyCityStateZip, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
 
     /// <summary>Printed under "Sincerely," on the letter — see
     /// FaxSettings.SignatureName's own doc comment for the default.</summary>
-    public string SignatureName { get => _signatureName; set => SetProperty(ref _signatureName, value); }
+    public string SignatureName
+    {
+        get => _signatureName;
+        set { if (SetProperty(ref _signatureName, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
 
-    public string AccountCode { get => _accountCode; set => SetProperty(ref _accountCode, value); }
-    public string InputFolder { get => _inputFolder; set => SetProperty(ref _inputFolder, value); }
-    public string DailyRunTime { get => _dailyRunTime; set => SetProperty(ref _dailyRunTime, value); }
-    public bool DailyRunEnabled { get => _dailyRunEnabled; set => SetProperty(ref _dailyRunEnabled, value); }
+    public string AccountCode
+    {
+        get => _accountCode;
+        set { if (SetProperty(ref _accountCode, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
+    }
 
     public bool IsBusy { get => _isBusy; private set => SetProperty(ref _isBusy, value); }
+
+    /// <summary>Status/error line for the credentials group only (Save/
+    /// Test connection/Forget key) — unchanged from before this brief.</summary>
     public string? StatusMessage { get => _statusMessage; private set => SetProperty(ref _statusMessage, value); }
     public string? ErrorMessage { get => _errorMessage; private set => SetProperty(ref _errorMessage, value); }
+
+    /// <summary>Inline validation message for the auto-saved fields (only
+    /// the pharmacy fax number is validated) — separate from
+    /// ErrorMessage/StatusMessage above so it never fights with the
+    /// credentials group's own status line. Never blocks typing or the
+    /// auto-save of every OTHER field — see AutoSaveFieldsAsync.</summary>
+    public string? AutoSaveErrorMessage { get => _autoSaveErrorMessage; private set => SetProperty(ref _autoSaveErrorMessage, value); }
+
+    /// <summary>Drives a small "Saved" hint that appears briefly after an
+    /// auto-save and fades on its own — Will's brief: "Show a small
+    /// 'Saved' hint that appears briefly after an auto-save."</summary>
+    public bool IsSavedHintVisible { get => _isSavedHintVisible; private set => SetProperty(ref _isSavedHintVisible, value); }
 
     /// <summary>"No key saved" / "Notifyre key saved (ends …1234, saved
     /// …)" — see FaxKeyStatus.Describe. Bound read-only next to the API
@@ -166,16 +238,9 @@ public sealed class FaxSettingsViewModel : ObservableObject
     /// visibility.</summary>
     public bool HasStoredNotifyreKey => !string.IsNullOrWhiteSpace(_storedNotifyreApiToken);
 
-    public ICommand SaveCommand { get; }
+    public ICommand SaveCredentialsCommand { get; }
     public ICommand TestConnectionCommand { get; }
-    public ICommand AddPrescriberCommand { get; }
-    public ICommand DeletePrescriberCommand { get; }
     public ICommand ForgetKeyCommand { get; }
-
-    /// <summary>Set by the code-behind's folder-browse dialog (a WPF/
-    /// Win32 concern that doesn't belong in this ViewModel) — see
-    /// FaxSettingsWindow.xaml.cs's Browse button handler.</summary>
-    public void SetInputFolder(string folder) => InputFolder = folder;
 
     private void LoadFromCurrentState()
     {
@@ -189,9 +254,6 @@ public sealed class FaxSettingsViewModel : ObservableObject
         PharmacyCityStateZip = fax.PharmacyCityStateZip;
         SignatureName = fax.SignatureName;
         AccountCode = fax.AccountCode ?? "";
-        InputFolder = fax.InputFolder;
-        DailyRunTime = fax.DailyRunTime;
-        DailyRunEnabled = fax.DailyRunEnabled;
 
         var credentials = _credentialStore.Load();
         AccessId = credentials?.AccessId ?? "";
@@ -210,6 +272,10 @@ public sealed class FaxSettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(NotifyreKeyStatusText));
         OnPropertyChanged(nameof(HasStoredNotifyreKey));
 
+        foreach (var row in ColumnMap)
+        {
+            row.PropertyChanged -= OnColumnMapRowPropertyChanged;
+        }
         ColumnMap.Clear();
         var map = fax.ColumnMap;
         // Pioneer's report (V-T53 401/column-map follow-up) has ONE
@@ -218,49 +284,104 @@ public sealed class FaxSettingsViewModel : ObservableObject
         // FaxColumnMap.PatientFullNameHeader's own doc comment); the two
         // separate-column rows below stay in the grid as a fallback for a
         // workstation whose export uses them instead.
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient full name (Last, First)", Required = true, Header = map.PatientFullNameHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient first name", Header = map.PatientFirstNameHeader });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Patient last name", Header = map.PatientLastNameHeader });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Vaccine name", Required = true, Header = map.VaccineNameHeader });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Administered date", Required = true, Header = map.AdministeredDateHeader });
+        AddColumnMapRow("Patient full name (Last, First)", true, map.PatientFullNameHeader ?? "");
+        AddColumnMapRow("Patient first name", false, map.PatientFirstNameHeader);
+        AddColumnMapRow("Patient last name", false, map.PatientLastNameHeader);
+        AddColumnMapRow("Vaccine name", true, map.VaccineNameHeader);
+        AddColumnMapRow("Administered date", true, map.AdministeredDateHeader);
         // REQUIRED (fax-report-layout brief, 2026-09-28) — see
         // FaxColumnMap.DobHeader's own doc comment.
-        ColumnMap.Add(new FaxColumnMapRow { Field = "DOB", Required = true, Header = map.DobHeader });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Lot", Header = map.LotHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Manufacturer", Header = map.ManufacturerHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Dose", Header = map.DoseHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Route", Header = map.RouteHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Site", Header = map.SiteHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Administering pharmacist", Header = map.PharmacistHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Prescriber name", Header = map.PrescriberNameHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Prescriber NPI", Header = map.PrescriberNpiHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "Prescriber fax", Header = map.PrescriberFaxHeader ?? "" });
-        ColumnMap.Add(new FaxColumnMapRow { Field = "VIS date", Header = map.VisDateHeader ?? "" });
+        AddColumnMapRow("DOB", true, map.DobHeader);
+        AddColumnMapRow("Lot", false, map.LotHeader ?? "");
+        AddColumnMapRow("Manufacturer", false, map.ManufacturerHeader ?? "");
+        AddColumnMapRow("Dose", false, map.DoseHeader ?? "");
+        AddColumnMapRow("Route", false, map.RouteHeader ?? "");
+        AddColumnMapRow("Site", false, map.SiteHeader ?? "");
+        AddColumnMapRow("Administering pharmacist", false, map.PharmacistHeader ?? "");
+        AddColumnMapRow("Prescriber name", false, map.PrescriberNameHeader ?? "");
+        AddColumnMapRow("Prescriber NPI", false, map.PrescriberNpiHeader ?? "");
+        AddColumnMapRow("Prescriber fax", false, map.PrescriberFaxHeader ?? "");
+        AddColumnMapRow("VIS date", false, map.VisDateHeader ?? "");
+    }
 
-        Prescribers.Clear();
-        foreach (var entry in _prescriberDirectory.Load())
+    private void AddColumnMapRow(string field, bool required, string header)
+    {
+        var row = new FaxColumnMapRow { Field = field, Required = required, Header = header };
+        row.PropertyChanged += OnColumnMapRowPropertyChanged;
+        ColumnMap.Add(row);
+    }
+
+    /// <summary>A column-map grid cell edit is a text change like any
+    /// other field (Will's brief: "Everything else should save as it is
+    /// typed") — debounced the same way.</summary>
+    private void OnColumnMapRowPropertyChanged(object? sender, PropertyChangedEventArgs e) =>
+        ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text);
+
+    /// <summary>Restarts (Text) or bypasses (Selection) the debounce
+    /// timer per FaxSettingsAutoSavePolicy.DebounceDelayFor — called from
+    /// every auto-saved property's setter and from a column-map row edit.</summary>
+    private void ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind kind)
+    {
+        _autoSaveDebounceTimer.Stop();
+        var delay = FaxSettingsAutoSavePolicy.DebounceDelayFor(kind);
+        if (delay <= TimeSpan.Zero)
         {
-            Prescribers.Add(new PrescriberRow { Name = entry.Name, Npi = entry.Npi ?? "", FaxNumber = entry.FaxNumber });
+            _ = AutoSaveFieldsAsync();
+            return;
+        }
+
+        _autoSaveDebounceTimer.Interval = delay;
+        _autoSaveDebounceTimer.Start();
+    }
+
+    /// <summary>Persists every field except the provider credentials
+    /// (SRFax id/password, Notifyre API token) — see class doc comment.
+    /// Validation still runs (pharmacy fax number, 10-11 digits) but
+    /// NEVER blocks saving the rest of the settings or further typing —
+    /// Will's brief verbatim: "Keep validation, but never block
+    /// typing."</summary>
+    private async Task AutoSaveFieldsAsync()
+    {
+        try
+        {
+            AutoSaveErrorMessage = !string.IsNullOrWhiteSpace(PharmacyFax) && !FaxNumberNormalizer.IsValid(PharmacyFax)
+                ? "Pharmacy fax number must be 10 or 11 digits."
+                : null;
+
+            var fax = _settings.Fax;
+            fax.Provider = SelectedProvider;
+            fax.SenderEmail = SenderEmail.Trim();
+            fax.PharmacyName = PharmacyName.Trim();
+            fax.PharmacyPhone = PharmacyPhone.Trim();
+            fax.PharmacyFax = PharmacyFax.Trim();
+            fax.PharmacyAddressLine1 = PharmacyAddressLine1.Trim();
+            fax.PharmacyCityStateZip = PharmacyCityStateZip.Trim();
+            fax.SignatureName = SignatureName.Trim();
+            fax.AccountCode = string.IsNullOrWhiteSpace(AccountCode) ? null : AccountCode.Trim();
+            fax.ColumnMap = BuildColumnMap();
+
+            _localSettingsService.Save(_settings);
+
+            IsSavedHintVisible = true;
+            _savedHintTimer.Stop();
+            _savedHintTimer.Start();
+        }
+        catch (Exception ex)
+        {
+            AutoSaveErrorMessage = $"Couldn't save: {ex.Message}";
         }
     }
 
-    private async Task SaveAsync()
+    /// <summary>The Notifyre key's (and SRFax's) explicit "Save" button
+    /// (Will's brief: "Add the save button near the Notifyre key") —
+    /// everything else on this window auto-saves, see AutoSaveFieldsAsync.</summary>
+    private async Task SaveCredentialsAsync()
     {
         IsBusy = true;
         ErrorMessage = null;
         StatusMessage = null;
         try
         {
-            // Will's brief: "Saving validates fax numbers (digits, 10-11)."
-            // Applies to the pharmacy's own caller-id fax AND every
-            // prescriber row with something typed into it (a still-blank
-            // row is fine — Will just hasn't filled it in yet).
-            if (!string.IsNullOrWhiteSpace(PharmacyFax) && !FaxNumberNormalizer.IsValid(PharmacyFax))
-            {
-                ErrorMessage = "Pharmacy fax number must be 10 or 11 digits.";
-                return;
-            }
-
             // V-T53 follow-up (Will, 2026-09-25): normalize BEFORE the
             // blank check too — a token that's nothing but whitespace/
             // zero-width characters/quotes should read as "not entered",
@@ -285,42 +406,6 @@ public sealed class FaxSettingsViewModel : ObservableObject
                 return;
             }
 
-            foreach (var row in Prescribers)
-            {
-                if (!string.IsNullOrWhiteSpace(row.FaxNumber) && !FaxNumberNormalizer.IsValid(row.FaxNumber))
-                {
-                    ErrorMessage = $"Fax number for \"{row.Name}\" must be 10 or 11 digits.";
-                    return;
-                }
-            }
-
-            var fax = _settings.Fax;
-            fax.Provider = SelectedProvider;
-            fax.SenderEmail = SenderEmail.Trim();
-            fax.PharmacyName = PharmacyName.Trim();
-            fax.PharmacyPhone = PharmacyPhone.Trim();
-            fax.PharmacyFax = PharmacyFax.Trim();
-            fax.PharmacyAddressLine1 = PharmacyAddressLine1.Trim();
-            fax.PharmacyCityStateZip = PharmacyCityStateZip.Trim();
-            fax.SignatureName = SignatureName.Trim();
-            fax.AccountCode = string.IsNullOrWhiteSpace(AccountCode) ? null : AccountCode.Trim();
-            fax.InputFolder = InputFolder.Trim();
-            fax.DailyRunTime = DailyRunTime.Trim();
-            fax.DailyRunEnabled = DailyRunEnabled;
-            fax.ColumnMap = BuildColumnMap();
-
-            _localSettingsService.Save(_settings);
-
-            // Carries forward whatever NotifyreAuthMode Test connection
-            // last discovered (_notifyreAuthMode) — otherwise Save would
-            // silently overwrite a discovered non-documented mode back
-            // to the documented default every time Will edits anything
-            // else in this window. tokenToPersist is either the newly
-            // typed token or (box left blank) whatever was already
-            // stored — see its own comment above; NotifyreTokenSavedAtUtc
-            // only advances when the token actually changed, so
-            // re-saving unrelated fields doesn't make an unchanged key
-            // look freshly re-entered.
             if (tokenChanged)
             {
                 _storedNotifyreTokenSavedAtUtc = DateTime.UtcNow;
@@ -339,16 +424,6 @@ public sealed class FaxSettingsViewModel : ObservableObject
             ApiToken = "";
             OnPropertyChanged(nameof(NotifyreKeyStatusText));
             OnPropertyChanged(nameof(HasStoredNotifyreKey));
-
-            _prescriberDirectory.Save(Prescribers
-                .Where(r => !string.IsNullOrWhiteSpace(r.Name) || !string.IsNullOrWhiteSpace(r.Npi))
-                .Select(r => new PrescriberDirectoryEntry
-                {
-                    Name = r.Name.Trim(),
-                    Npi = string.IsNullOrWhiteSpace(r.Npi) ? null : r.Npi.Trim(),
-                    FaxNumber = r.FaxNumber.Trim(),
-                })
-                .ToList());
 
             StatusMessage = "Saved.";
             // MainWindow rebuilds FaxRunOrchestrator's IFaxClient from

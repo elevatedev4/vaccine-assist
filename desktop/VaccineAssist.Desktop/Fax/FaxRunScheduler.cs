@@ -1,57 +1,35 @@
 using System.Windows.Threading;
 using VaccineAssist.Desktop.Logging;
-using VaccineAssist.Desktop.Settings;
 
 namespace VaccineAssist.Desktop.Fax;
 
 /// <summary>
-/// WPF-adjacent wiring around FaxRunOrchestrator — Will's brief: "an
-/// in-app timer fires at a configured local time (default 18:30) once
-/// per day, plus tray menu 'Vaccine faxes -> Run now'." Owns two
-/// DispatcherTimers for the whole signed-in session, same "MainWindow
-/// constructs it once, Start() on Loaded, Dispose() on Closed" lifetime
-/// as TrayIconController/PioneerOverlayController (see MainWindow.xaml.cs).
+/// WPF-adjacent wiring around FaxRunOrchestrator's receipt poller (V-T65,
+/// 2026-09-29 — replaces the old daily-timer/"Run now" scheduler: "Get rid
+/// of all the shit ... the automatic pulling and folder ... One file
+/// selector, then send faxes"). Sending is now a direct, one-shot user
+/// action (tray icon -> file picker -> immediately process + send — see
+/// MainWindow.xaml.cs), so the only thing left to own on a recurring timer
+/// is the background receipt poll that updates Sent/Failed status after a
+/// run. Same "MainWindow constructs it once, Start() on Loaded, Dispose()
+/// on Closed" lifetime as TrayIconController/PioneerOverlayController (see
+/// MainWindow.xaml.cs).
 /// </summary>
 public sealed class FaxRunScheduler : IDisposable
 {
     private readonly FaxRunOrchestrator _orchestrator;
-    private readonly Func<AppSettings> _settingsProvider;
-    private readonly IFaxRunMarker _runMarker;
-    private readonly DispatcherTimer _dailyCheckTimer;
     private readonly DispatcherTimer _receiptPollTimer;
 
-    /// <summary>Raised on the UI thread whenever a run (scheduled or
-    /// manual) actually executed — MainWindow shows FaxRunSummaryWindow
-    /// and a tray balloon from this.</summary>
-    public event EventHandler<FaxRunSummary>? RunCompleted;
-
-    /// <summary>Raised on the UI thread when RunNowAsync (or the daily
-    /// timer) fired but FaxRunOrchestrator.RunAsync returned null because
-    /// a run was already in progress — reviewer fix (V-T53): tray "Run
-    /// now" must not silently do nothing. MainWindow shows a tray balloon
-    /// from this.</summary>
-    public event EventHandler? RunAlreadyInProgress;
-
-    public FaxRunScheduler(FaxRunOrchestrator orchestrator, Func<AppSettings> settingsProvider, IFaxRunMarker runMarker)
-        : this(orchestrator, settingsProvider, runMarker, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(10))
+    public FaxRunScheduler(FaxRunOrchestrator orchestrator)
+        : this(orchestrator, TimeSpan.FromMinutes(10))
     {
     }
 
     /// <summary>Injectable interval seam for tests that need a shorter
-    /// tick than production's real 1-minute/10-minute cadence.</summary>
-    public FaxRunScheduler(
-        FaxRunOrchestrator orchestrator,
-        Func<AppSettings> settingsProvider,
-        IFaxRunMarker runMarker,
-        TimeSpan dailyCheckInterval,
-        TimeSpan receiptPollInterval)
+    /// tick than production's real 10-minute cadence.</summary>
+    public FaxRunScheduler(FaxRunOrchestrator orchestrator, TimeSpan receiptPollInterval)
     {
         _orchestrator = orchestrator;
-        _settingsProvider = settingsProvider;
-        _runMarker = runMarker;
-
-        _dailyCheckTimer = new DispatcherTimer { Interval = dailyCheckInterval };
-        _dailyCheckTimer.Tick += async (_, _) => await SafeAsync(CheckDailyRunAsync, "FaxRunScheduler.CheckDailyRun");
 
         _receiptPollTimer = new DispatcherTimer { Interval = receiptPollInterval };
         _receiptPollTimer.Tick += async (_, _) => await SafeAsync(() => _orchestrator.PollReceiptsOnlyAsync(), "FaxRunScheduler.ReceiptPoll");
@@ -59,42 +37,7 @@ public sealed class FaxRunScheduler : IDisposable
 
     public void Start()
     {
-        _dailyCheckTimer.Start();
         _receiptPollTimer.Start();
-    }
-
-    /// <summary>Tray menu's "Vaccine faxes -> Run now" — always works
-    /// regardless of FaxSettings.DailyRunEnabled, per the brief.</summary>
-    public async Task RunNowAsync()
-    {
-        await SafeAsync(RunAndRecordAsync, "FaxRunScheduler.RunNow");
-    }
-
-    private async Task CheckDailyRunAsync()
-    {
-        var settings = _settingsProvider();
-        if (!settings.Fax.DailyRunEnabled) return;
-
-        var runTime = FaxScheduleDecision.ParseRunTime(settings.Fax.DailyRunTime);
-        var lastRun = _runMarker.LoadLastRunLocalDate();
-        if (!FaxScheduleDecision.ShouldRunNow(runTime, lastRun, DateTime.Now)) return;
-
-        await RunAndRecordAsync();
-    }
-
-    private async Task RunAndRecordAsync()
-    {
-        var settings = _settingsProvider();
-        var summary = await _orchestrator.RunAsync(settings.Fax);
-        if (summary is null)
-        {
-            // Already running — see FaxRunOrchestrator.RunAsync.
-            RunAlreadyInProgress?.Invoke(this, EventArgs.Empty);
-            return;
-        }
-
-        _runMarker.SaveLastRunLocalDate(DateOnly.FromDateTime(DateTime.Now));
-        RunCompleted?.Invoke(this, summary);
     }
 
     private static async Task SafeAsync(Func<Task> action, string context)
@@ -116,7 +59,6 @@ public sealed class FaxRunScheduler : IDisposable
 
     public void Dispose()
     {
-        _dailyCheckTimer.Stop();
         _receiptPollTimer.Stop();
     }
 }

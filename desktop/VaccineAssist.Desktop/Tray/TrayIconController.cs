@@ -46,14 +46,13 @@ public sealed class TrayIconController : IDisposable
     public event EventHandler? DataEntryRequested;
     public event EventHandler? MacroCodesRequested;
 
-    /// <summary>V-T53: "Vaccine faxes — Run now" / "— Settings" / "Open
-    /// fax folder" tray rows.</summary>
-    public event EventHandler? FaxRunNowRequested;
+    /// <summary>V-T53: "— Settings" / "Open fax folder" tray rows.</summary>
     public event EventHandler? FaxSettingsRequested;
     public event EventHandler? FaxOpenFolderRequested;
 
-    /// <summary>2026-09-22: "Vaccine faxes — Import report file…" — see
-    /// MainWindow.xaml.cs's ImportReportFileAndRunAsync.</summary>
+    /// <summary>V-T65 (2026-09-29): "Vaccine faxes" — one file picker,
+    /// then immediately process + send — see MainWindow.xaml.cs's
+    /// ImportReportFileAndSendAsync.</summary>
     public event EventHandler? FaxImportFileRequested;
 
     /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a Navigate row is clicked.</summary>
@@ -127,9 +126,6 @@ public sealed class TrayIconController : IDisposable
                 break;
             case TrayMenuAction.MacroCodes:
                 MacroCodesRequested?.Invoke(this, EventArgs.Empty);
-                break;
-            case TrayMenuAction.FaxRunNow:
-                FaxRunNowRequested?.Invoke(this, EventArgs.Empty);
                 break;
             case TrayMenuAction.FaxSettings:
                 FaxSettingsRequested?.Invoke(this, EventArgs.Empty);

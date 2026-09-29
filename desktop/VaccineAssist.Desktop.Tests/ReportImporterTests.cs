@@ -11,7 +11,8 @@ namespace VaccineAssist.Desktop.Tests;
 /// Exercises ReportImporter against REAL temp-directory files (CsvHelper/
 /// ClosedXML round-trip on disk is cheap and more representative than
 /// faking the file system for this one class) — synthetic data only,
-/// matching the brief's PHI rule.
+/// matching the brief's PHI rule. V-T65 (2026-09-29): ImportFile reads
+/// ONE user-picked file — no folder scan, no move-to-processed.
 /// </summary>
 public class ReportImporterTests : IDisposable
 {
@@ -20,7 +21,7 @@ public class ReportImporterTests : IDisposable
     // Separate first/last-name columns — decoupled from FaxColumnMap's own
     // default (Pioneer's combined "Last, First" column, see
     // PioneerColumnMapTests) so these generic importer-mechanics tests
-    // (dedupe/rejection/move) keep working regardless of what the default
+    // (dedupe/rejection) keep working regardless of what the default
     // column map looks like.
     private readonly FaxColumnMap _map = new()
     {
@@ -46,23 +47,26 @@ public class ReportImporterTests : IDisposable
 
     private static ImportLedger NewLedger(string dir) => new(Path.Combine(dir, "imported.json"));
 
-    private void WriteCsv(string fileName, string contents) =>
-        File.WriteAllText(Path.Combine(_tempDir, fileName), contents);
+    private string WriteCsv(string fileName, string contents)
+    {
+        var path = Path.Combine(_tempDir, fileName);
+        File.WriteAllText(path, contents);
+        return path;
+    }
 
     [Fact]
     public void ValidCsvIsImported()
     {
-        WriteCsv("report.csv",
+        var path = WriteCsv("report.csv",
             "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
-        var outcome = importer.Import(_tempDir, _map);
+        var outcome = importer.ImportFile(path, _map);
 
         Assert.Single(outcome.NewRecords);
         Assert.Equal("Test", outcome.NewRecords[0].PatientFirstName);
         Assert.Empty(outcome.RejectedFiles);
-        Assert.Equal(new[] { Path.Combine(_tempDir, "report.csv") }, outcome.AcceptedFilePaths);
     }
 
     [Fact]
@@ -70,29 +74,28 @@ public class ReportImporterTests : IDisposable
     {
         // No "Vaccine" column at all (DOB present, so this isolates the
         // ONE missing header the test is about).
-        WriteCsv("report.csv",
+        var path = WriteCsv("report.csv",
             "Patient First Name,Patient Last Name,Date Administered,DOB\n" +
             "Test,Patient,2026-09-01,1980-01-15\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
-        var outcome = importer.Import(_tempDir, _map);
+        var outcome = importer.ImportFile(path, _map);
 
         Assert.Empty(outcome.NewRecords);
         Assert.Single(outcome.RejectedFiles);
         Assert.Contains("vaccine name", outcome.RejectedFiles[0].Reason);
-        Assert.Empty(outcome.AcceptedFilePaths);
     }
 
     [Fact]
     public void OneBadRowIsSkippedWithoutRejectingTheWholeFile()
     {
-        WriteCsv("report.csv",
+        var path = WriteCsv("report.csv",
             "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15\n" +
             ",MissingFirstName,Flu,2026-09-01,1980-01-15\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
-        var outcome = importer.Import(_tempDir, _map);
+        var outcome = importer.ImportFile(path, _map);
 
         Assert.Single(outcome.NewRecords);
         Assert.Equal(1, outcome.SkippedRowCount);
@@ -102,13 +105,13 @@ public class ReportImporterTests : IDisposable
     [Fact]
     public void DuplicateFingerprintWithinOneRunIsCountedOnceNotFaxedTwice()
     {
-        WriteCsv("report.csv",
+        var path = WriteCsv("report.csv",
             "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
-        var outcome = importer.Import(_tempDir, _map);
+        var outcome = importer.ImportFile(path, _map);
 
         Assert.Single(outcome.NewRecords);
         Assert.Equal(1, outcome.DuplicateRowCount);
@@ -117,21 +120,21 @@ public class ReportImporterTests : IDisposable
     [Fact]
     public void RowAlreadyInTheImportLedgerIsDedupedAcrossRuns()
     {
-        WriteCsv("report.csv",
+        var path = WriteCsv("report.csv",
             "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
         var ledger = NewLedger(_tempDir);
         var importer = new ReportImporter(ledger);
 
-        var firstRun = importer.Import(_tempDir, _map);
+        var firstRun = importer.ImportFile(path, _map);
         Assert.Single(firstRun.NewRecords);
-        // Import() itself never writes to the ledger (see its own doc
+        // ImportFile() itself never writes to the ledger (see its own doc
         // comment) — the orchestrator does, after a row is actually
         // resolved/queued. Simulate that here.
         ledger.AddFingerprints(firstRun.NewRecords.Select(r => r.Fingerprint));
 
-        var secondRun = importer.Import(_tempDir, _map);
+        var secondRun = importer.ImportFile(path, _map);
 
         Assert.Empty(secondRun.NewRecords);
         Assert.Equal(1, secondRun.DuplicateRowCount);
@@ -140,6 +143,7 @@ public class ReportImporterTests : IDisposable
     [Fact]
     public void ValidXlsxIsImported()
     {
+        var path = Path.Combine(_tempDir, "report.xlsx");
         using (var workbook = new XLWorkbook())
         {
             var sheet = workbook.Worksheets.Add("Report");
@@ -153,30 +157,26 @@ public class ReportImporterTests : IDisposable
             sheet.Cell(2, 3).Value = "Flu";
             sheet.Cell(2, 4).Value = "2026-09-01";
             sheet.Cell(2, 5).Value = "1980-01-15";
-            workbook.SaveAs(Path.Combine(_tempDir, "report.xlsx"));
+            workbook.SaveAs(path);
         }
 
         var importer = new ReportImporter(NewLedger(_tempDir));
-        var outcome = importer.Import(_tempDir, _map);
+        var outcome = importer.ImportFile(path, _map);
 
         Assert.Single(outcome.NewRecords);
         Assert.Equal("Test", outcome.NewRecords[0].PatientFirstName);
     }
 
     [Fact]
-    public void MoveAcceptedFilesMovesToProcessedDateFolder()
+    public void UnreadableFileIsRejectedWithAClearMessageRatherThanThrowing()
     {
-        WriteCsv("report.csv",
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB\n" +
-            "Test,Patient,Flu,2026-09-01,1980-01-15\n");
+        var path = Path.Combine(_tempDir, "missing.csv");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
-        var outcome = importer.Import(_tempDir, _map);
+        var outcome = importer.ImportFile(path, _map);
 
-        importer.MoveAcceptedFiles(outcome.AcceptedFilePaths, _tempDir, new DateOnly(2026, 9, 22));
-
-        var expectedPath = Path.Combine(_tempDir, "processed", "2026-09-22", "report.csv");
-        Assert.True(File.Exists(expectedPath));
-        Assert.False(File.Exists(Path.Combine(_tempDir, "report.csv")));
+        Assert.Empty(outcome.NewRecords);
+        Assert.Single(outcome.RejectedFiles);
+        Assert.Equal(path, outcome.RejectedFiles[0].FilePath);
     }
 }

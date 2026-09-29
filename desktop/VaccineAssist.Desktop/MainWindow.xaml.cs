@@ -91,7 +91,6 @@ public partial class MainWindow : Window
     private readonly FaxRunScheduler _faxRunScheduler;
     private readonly FaxRunOrchestrator _faxRunOrchestrator;
     private readonly IFaxCredentialStore _faxCredentialStore;
-    private readonly IPrescriberDirectory _prescriberDirectory;
     private readonly HttpClient _faxHttpClient;
 
     /// <summary>At most one Fax settings window at a time — same
@@ -215,7 +214,6 @@ public partial class MainWindow : Window
         FaxRunScheduler faxRunScheduler,
         FaxRunOrchestrator faxRunOrchestrator,
         IFaxCredentialStore faxCredentialStore,
-        IPrescriberDirectory prescriberDirectory,
         HttpClient faxHttpClient)
     {
         _authService = authService;
@@ -228,7 +226,6 @@ public partial class MainWindow : Window
         _faxRunScheduler = faxRunScheduler;
         _faxRunOrchestrator = faxRunOrchestrator;
         _faxCredentialStore = faxCredentialStore;
-        _prescriberDirectory = prescriberDirectory;
         _faxHttpClient = faxHttpClient;
 
         InitializeComponent();
@@ -265,12 +262,6 @@ public partial class MainWindow : Window
 
         MainContent.Content = _cloudPageView;
 
-        _faxRunScheduler.RunCompleted += FaxRunScheduler_OnRunCompleted;
-        // Reviewer fix (V-T53): tray "Run now" while a run is already in
-        // flight must say so instead of silently doing nothing.
-        _faxRunScheduler.RunAlreadyInProgress += (_, _) => _trayIconController?.ShowBalloonTip(
-            "Vaccine faxes", "A run is already in progress.");
-
         try
         {
             var trayIconController = new TrayIconController(_settings.ShowPioneerOverlay);
@@ -281,10 +272,9 @@ public partial class MainWindow : Window
             trayIconController.MacroCodesRequested += (_, _) => ShowMacroCodesPopup();
             trayIconController.NavigationRequested += (_, path) => NavigateTo(path);
             trayIconController.ShowOverlayToggled += (_, isChecked) => SetShowPioneerOverlay(isChecked);
-            trayIconController.FaxRunNowRequested += async (_, _) => await _faxRunScheduler.RunNowAsync();
             trayIconController.FaxSettingsRequested += (_, _) => ShowFaxSettings();
             trayIconController.FaxOpenFolderRequested += (_, _) => OpenFaxFolder();
-            trayIconController.FaxImportFileRequested += async (_, _) => await ImportReportFileAndRunAsync();
+            trayIconController.FaxImportFileRequested += async (_, _) => await ImportReportFileAndSendAsync();
             _trayIconController = trayIconController;
         }
         catch (Exception ex)
@@ -754,7 +744,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var viewModel = new FaxSettingsViewModel(_settings, _localSettingsService, _faxCredentialStore, _prescriberDirectory, _faxHttpClient);
+        var viewModel = new FaxSettingsViewModel(_settings, _localSettingsService, _faxCredentialStore, _faxHttpClient);
         // Notifyre-key-visibility follow-up (Will, 2026-09-28): rebuild
         // the orchestrator's live IFaxClient from whatever's now on disk
         // every time Settings persists a credential/provider change — see
@@ -811,25 +801,24 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 2026-09-22 (Will, verbatim): "A user will import the report into the
-    /// app directly" — no SFTP drop, no cloud pull. Opens a file picker for
-    /// a CSV/XLSX report, copies it into the configured Fax.InputFolder
-    /// (Fax/FaxImportFileCopier.cs — the pure/testable half of this), then
-    /// runs the SAME RunNowAsync path "Run now" already uses — the copied
-    /// file is picked up by the normal ReportImporter folder scan, so
-    /// nothing about import/dedup/PDF/queue/ledger/summary-window needed to
-    /// change for this to work. Cancelling the file picker is a silent
-    /// no-op; a copy failure (most commonly: no input folder configured
-    /// yet) surfaces via MessageBox, same pattern as the hotkey-registration
-    /// failures in MainWindow_OnSourceInitialized above, since this is a
-    /// directly user-triggered action that just showed a dialog — a silent
-    /// failure here would look like the click did nothing.
+    /// V-T65 (Will, verbatim, 2026-09-29): "To fax using a report, I want
+    /// to just import the file myself ... One file selector, then send
+    /// faxes. Then you can display the summary of the processing and
+    /// actions and results." Tray icon -> "Vaccine faxes" -> ONE file
+    /// picker (CSV/XLSX) -> immediately process + send -> summary window —
+    /// no intermediate dialogs, no input folder, no automatic/scheduled
+    /// run (see FaxRunOrchestrator/FaxRunScheduler's own doc comments).
+    /// Cancelling the file picker is a silent no-op; a run already in
+    /// progress (RunAsync returns null) or an unexpected failure surfaces
+    /// via MessageBox, since this is a directly user-triggered action that
+    /// just showed a dialog — a silent failure here would look like the
+    /// click did nothing.
     /// </summary>
-    private async System.Threading.Tasks.Task ImportReportFileAndRunAsync()
+    private async System.Threading.Tasks.Task ImportReportFileAndSendAsync()
     {
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "Import immunization report",
+            Title = "Import immunization report and send faxes",
             Filter = "Immunization reports (*.csv;*.xlsx)|*.csv;*.xlsx|All files (*.*)|*.*",
             CheckFileExists = true,
         };
@@ -839,31 +828,37 @@ public partial class MainWindow : Window
             return;
         }
 
+        FaxRunSummary? summary;
         try
         {
-            FaxImportFileCopier.CopyIntoInputFolder(dialog.FileName, _settings.Fax.InputFolder);
+            summary = await _faxRunOrchestrator.RunAsync(dialog.FileName, _settings.Fax);
         }
         catch (Exception ex)
         {
-            AppFileLog.LogException("MainWindow.ImportReportFileAndRunAsync", ex);
+            AppFileLog.LogException("MainWindow.ImportReportFileAndSendAsync", ex);
             MessageBox.Show(
                 this,
-                $"Couldn't import that file: {ex.Message}",
+                $"Couldn't process that file: {ex.Message}",
                 "Vaccine Assist",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             return;
         }
 
-        await _faxRunScheduler.RunNowAsync();
+        if (summary is null)
+        {
+            // A run was already in progress — see FaxRunOrchestrator.RunAsync.
+            _trayIconController?.ShowBalloonTip("Vaccine faxes", "A run is already in progress.");
+            return;
+        }
+
+        ShowFaxRunSummary(summary);
     }
 
-    /// <summary>V-T53: shows FaxRunSummaryWindow plus a tray balloon after
-    /// every completed run (scheduled or "Run now") — Will's brief: "tray
-    /// balloon 'Vaccine faxes: 12 sent, 1 failed, 2 skipped (no
-    /// prescriber fax)'" (renamed from "need a fax number" per the
-    /// 2026-09-28 fax-report-layout brief).</summary>
-    private void FaxRunScheduler_OnRunCompleted(object? sender, FaxRunSummary summary)
+    /// <summary>V-T53 (renamed "need a fax number" -> "skipped (no
+    /// prescriber fax)" per the 2026-09-28 fax-report-layout brief): shows
+    /// FaxRunSummaryWindow plus a tray balloon after a run.</summary>
+    private void ShowFaxRunSummary(FaxRunSummary summary)
     {
         _trayIconController?.ShowBalloonTip(
             "Vaccine faxes",
