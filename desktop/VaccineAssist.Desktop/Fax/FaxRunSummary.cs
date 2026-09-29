@@ -19,10 +19,11 @@ public sealed class FaxRunRowSummary
 
 /// <summary>
 /// Will's brief: "write runs\<timestamp>.json summary and show
-/// FaxRunSummaryWindow (counts: imported rows, patients, sent, in-process,
+/// [a results window] (counts: imported rows, patients, sent, in-process,
 /// failed, needs-fax-number, with a per-row grid)." Written verbatim to
 /// %LocalAppData%\VaccineAssist\fax\runs\<timestamp>.json by
-/// FaxRunOrchestrator and bound directly by FaxRunSummaryWindow.
+/// FaxRunOrchestrator and bound directly by Views/FaxSendWindow.xaml
+/// (V-T65 R4 — replaces the old standalone FaxRunSummaryWindow).
 /// </summary>
 public sealed class FaxRunSummary
 {

@@ -16,9 +16,10 @@ namespace VaccineAssist.Desktop.Common;
 /// "never exceed a smaller monitor's visible work area, 40px margin on
 /// each side" rule can be reused (and tested) everywhere a window sets a
 /// fixed default Width/Height in its constructor — MainWindow and
-/// FaxRunSummaryWindow as of this pass (2026-09-25, Will: "make sure the
-/// widths of all the screens are enough ... like I just looked at the
-/// lots page and it wasn't wide enough").
+/// FaxSendWindow (2026-09-25, Will: "make sure the widths of all the
+/// screens are enough ... like I just looked at the lots page and it
+/// wasn't wide enough"; FaxSendWindow replaced FaxRunSummaryWindow in
+/// V-T65 R4, keeping the same clamp).
 /// </summary>
 public static class WindowSizing
 {

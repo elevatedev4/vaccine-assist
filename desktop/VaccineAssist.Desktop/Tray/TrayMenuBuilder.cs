@@ -89,15 +89,16 @@ public static class TrayMenuBuilder
         items.Add(new TrayMenuItemDescriptor("Open Vaccine Assist", true, TrayMenuAction.Open, null, false));
         items.Add(new TrayMenuItemDescriptor("Show Pioneer overlay", true, TrayMenuAction.ToggleOverlay, null, true));
         items.Add(Separator);
-        // V-T65 (Will's brief, verbatim, 2026-09-29): "One file selector,
-        // then send faxes. Then you can display the summary of the
-        // processing and actions and results." One row, no intermediate
-        // dialogs — picks a CSV/XLSX and immediately imports + sends (see
-        // MainWindow.xaml.cs's ImportReportFileAndSendAsync). Replaces the
-        // old three-row "Run now" / "Import report file…" / daily-scan
-        // pair — there's no input folder or scheduled run to distinguish
-        // those from anymore.
-        items.Add(new TrayMenuItemDescriptor("Vaccine faxes", true, TrayMenuAction.FaxImportFile, null, false));
+        // V-T65 R4 (Will's brief, verbatim, 2026-09-29): "make the menu be
+        // called 'Vaccines-Send PCP faxes', have that open a dialogue
+        // window where you can selec tht efile then push send then see
+        // the results below." One row, opens ONE window (Views/
+        // FaxSendWindow.xaml) that owns both the file picker and the
+        // results grid — nothing sends until Send is pressed inside it
+        // (see MainWindow.xaml.cs's ShowFaxSendWindow). Replaces the R3
+        // "Vaccine faxes" row, which sent immediately on file pick with no
+        // Send step and no visible file-rejection reason.
+        items.Add(new TrayMenuItemDescriptor("Vaccines-Send PCP faxes", true, TrayMenuAction.FaxImportFile, null, false));
         items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Settings", true, TrayMenuAction.FaxSettings, null, false));
         items.Add(new TrayMenuItemDescriptor("Open fax folder", true, TrayMenuAction.FaxOpenFolder, null, false));
         items.Add(Separator);

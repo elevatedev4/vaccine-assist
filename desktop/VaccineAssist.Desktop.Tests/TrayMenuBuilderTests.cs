@@ -40,7 +40,7 @@ public class TrayMenuBuilderTests
                 TrayMenuAction.Open,
                 TrayMenuAction.ToggleOverlay,
                 TrayMenuAction.Separator,
-                TrayMenuAction.FaxImportFile, // V-T65 (2026-09-29): "Vaccine faxes" — one picker, immediately process + send
+                TrayMenuAction.FaxImportFile, // V-T65 R4 (2026-09-29): "Vaccines-Send PCP faxes" — opens the file-picker-plus-results window
                 TrayMenuAction.FaxSettings,
                 TrayMenuAction.FaxOpenFolder,
                 TrayMenuAction.Separator,
@@ -57,6 +57,17 @@ public class TrayMenuBuilderTests
 
         Assert.Contains(items, i => i.Text == "Data entry — Ctrl+NumPad7");
         Assert.Contains(items, i => i.Text == "Macro codes — Ctrl+Keypad 8");
+    }
+
+    [Fact]
+    public void FaxRowIsLabeledVaccinesSendPcpFaxesPerVT65R4()
+    {
+        // Will, verbatim (V-T65 R4, 2026-09-29): "make the menu be called
+        // 'Vaccines-Send PCP faxes'".
+        var items = TrayMenuBuilder.Build();
+
+        var faxRow = items.Single(i => i.Action == TrayMenuAction.FaxImportFile);
+        Assert.Equal("Vaccines-Send PCP faxes", faxRow.Text);
     }
 
     [Fact]

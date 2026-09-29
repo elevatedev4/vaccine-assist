@@ -19,8 +19,9 @@
         LoginWindow's PasswordInput (PasswordBox.Password isn't bindable).
         No prescriber-fax table and no input-folder/daily-run section
         anymore — the report's own Primary Care Prescriber Fax column is
-        the only fax-number source, and sending is a direct one-shot tray
-        action (see MainWindow.xaml.cs's ImportReportFileAndSendAsync).
+        the only fax-number source, and sending is a direct, explicit
+        action from the tray's "Vaccines-Send PCP faxes" window (R4,
+        2026-09-29 — see Views/FaxSendWindow.xaml).
     -->
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>

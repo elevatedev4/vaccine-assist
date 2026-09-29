@@ -108,6 +108,25 @@ public static class ReportRowParser
         if (DateOnly.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out value)) return true;
         if (DateOnly.TryParse(raw, CultureInfo.CurrentCulture, DateTimeStyles.None, out value)) return true;
 
+        // V-T65 R4 fix (Will, 2026-09-29 — "didn't send any faxes" against
+        // his real Pioneer export): a cell whose Excel number format
+        // includes a time component (e.g. "M/d/yyyy h:mm:ss tt") makes
+        // ClosedXML's Cell.GetString() (ReportRowReader) return something
+        // like "9/28/2026 12:00:00 AM" — DateOnly.TryParse flatly rejects
+        // any trailing time-of-day text (it only accepts a bare date), so
+        // EVERY row of Will's actual report was silently skipped as
+        // "missing or unparsable administered date"/DOB before this fix,
+        // even though the date itself was perfectly readable.
+        // DateTime.TryParse accepts the same string fine; take just its
+        // date part. Tried before the raw-serial fallback below since a
+        // date+time string is not purely numeric anyway.
+        if (DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt) ||
+            DateTime.TryParse(raw, CultureInfo.CurrentCulture, DateTimeStyles.None, out dt))
+        {
+            value = DateOnly.FromDateTime(dt);
+            return true;
+        }
+
         // Excel sometimes hands back a serial date as plain text when a
         // column isn't formatted as a date (ClosedXML normally avoids
         // this via Cell.GetDateTime(), but ReportRowReader stringifies

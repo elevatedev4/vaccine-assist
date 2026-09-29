@@ -97,6 +97,10 @@ public partial class MainWindow : Window
     /// re-activate-not-stack rule as _openDataEntryPopup/_openMacroCodesPopup.</summary>
     private FaxSettingsWindow? _openFaxSettingsWindow;
 
+    /// <summary>At most one Send PCP faxes window at a time (V-T65 R4) —
+    /// same re-activate-not-stack rule as _openFaxSettingsWindow.</summary>
+    private FaxSendWindow? _openFaxSendWindow;
+
     /// <summary>
     /// BUG FIX (Will, 2026-09-14): null when TrayIconController's
     /// constructor (WinForms NotifyIcon + ContextMenuStrip) throws — e.g. a
@@ -274,7 +278,7 @@ public partial class MainWindow : Window
             trayIconController.ShowOverlayToggled += (_, isChecked) => SetShowPioneerOverlay(isChecked);
             trayIconController.FaxSettingsRequested += (_, _) => ShowFaxSettings();
             trayIconController.FaxOpenFolderRequested += (_, _) => OpenFaxFolder();
-            trayIconController.FaxImportFileRequested += async (_, _) => await ImportReportFileAndSendAsync();
+            trayIconController.FaxImportFileRequested += (_, _) => ShowFaxSendWindow();
             _trayIconController = trayIconController;
         }
         catch (Exception ex)
@@ -524,6 +528,9 @@ public partial class MainWindow : Window
 
         _openFaxSettingsWindow?.Close();
         _openFaxSettingsWindow = null;
+
+        _openFaxSendWindow?.Close();
+        _openFaxSendWindow = null;
 
         // Covers both exit paths: MainWindow closing directly (chrome/
         // Alt+F4, or the tray's Exit — both only reach here now via
@@ -801,71 +808,33 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// V-T65 (Will, verbatim, 2026-09-29): "To fax using a report, I want
-    /// to just import the file myself ... One file selector, then send
-    /// faxes. Then you can display the summary of the processing and
-    /// actions and results." Tray icon -> "Vaccine faxes" -> ONE file
-    /// picker (CSV/XLSX) -> immediately process + send -> summary window —
-    /// no intermediate dialogs, no input folder, no automatic/scheduled
-    /// run (see FaxRunOrchestrator/FaxRunScheduler's own doc comments).
-    /// Cancelling the file picker is a silent no-op; a run already in
-    /// progress (RunAsync returns null) or an unexpected failure surfaces
-    /// via MessageBox, since this is a directly user-triggered action that
-    /// just showed a dialog — a silent failure here would look like the
-    /// click did nothing.
+    /// V-T65 R4 (Will, verbatim, 2026-09-29): "make the menu be called
+    /// 'Vaccines-Send PCP faxes', have that open a dialogue window where
+    /// you can selec tht efile then push send then see the results
+    /// below." Tray icon -> ONE window (FaxSendWindow) that owns BOTH the
+    /// file picker AND the results grid — nothing sends until Will
+    /// presses Send inside it (replaces the old immediate-send-on-pick
+    /// flow and the separate FaxRunSummaryWindow). Same
+    /// re-activate-not-stack rule as ShowFaxSettings.
     /// </summary>
-    private async System.Threading.Tasks.Task ImportReportFileAndSendAsync()
+    private void ShowFaxSendWindow()
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog
+        if (_openFaxSendWindow is not null)
         {
-            Title = "Import immunization report and send faxes",
-            Filter = "Immunization reports (*.csv;*.xlsx)|*.csv;*.xlsx|All files (*.*)|*.*",
-            CheckFileExists = true,
+            _openFaxSendWindow.Activate();
+            return;
+        }
+
+        var viewModel = new FaxSendViewModel(_faxRunOrchestrator, _settings);
+        var window = new FaxSendWindow(viewModel);
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_openFaxSendWindow, window))
+            {
+                _openFaxSendWindow = null;
+            }
         };
-
-        if (dialog.ShowDialog(this) != true)
-        {
-            return;
-        }
-
-        FaxRunSummary? summary;
-        try
-        {
-            summary = await _faxRunOrchestrator.RunAsync(dialog.FileName, _settings.Fax);
-        }
-        catch (Exception ex)
-        {
-            AppFileLog.LogException("MainWindow.ImportReportFileAndSendAsync", ex);
-            MessageBox.Show(
-                this,
-                $"Couldn't process that file: {ex.Message}",
-                "Vaccine Assist",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-
-        if (summary is null)
-        {
-            // A run was already in progress — see FaxRunOrchestrator.RunAsync.
-            _trayIconController?.ShowBalloonTip("Vaccine faxes", "A run is already in progress.");
-            return;
-        }
-
-        ShowFaxRunSummary(summary);
-    }
-
-    /// <summary>V-T53 (renamed "need a fax number" -> "skipped (no
-    /// prescriber fax)" per the 2026-09-28 fax-report-layout brief): shows
-    /// FaxRunSummaryWindow plus a tray balloon after a run.</summary>
-    private void ShowFaxRunSummary(FaxRunSummary summary)
-    {
-        _trayIconController?.ShowBalloonTip(
-            "Vaccine faxes",
-            $"{summary.Sent} sent, {summary.Failed} failed, {summary.SkippedNoFax} skipped (no prescriber fax)");
-
-        var viewModel = new FaxRunSummaryViewModel(summary, _faxRunOrchestrator, _settings);
-        var window = new FaxRunSummaryWindow(viewModel);
+        _openFaxSendWindow = window;
         window.Show();
     }
 

@@ -9,7 +9,7 @@ namespace VaccineAssist.Desktop.Fax;
 /// The whole "one daily run" pipeline (Will's brief): import -> build one
 /// PDF per (patient, prescriber) group -> queue each via IFaxClient ->
 /// ledger -> poll receipts -> write runs\<timestamp>.json -> return the
-/// summary FaxRunSummaryWindow displays. FaxRunScheduler (WPF-adjacent:
+/// summary Views/FaxSendWindow.xaml displays. FaxRunScheduler (WPF-adjacent:
 /// DispatcherTimer + tray/summary-window plumbing) is the only production
 /// caller.
 ///
@@ -85,8 +85,9 @@ public sealed class FaxRunOrchestrator
     public void UpdateFaxClient(IFaxClient faxClient) => _faxClient = faxClient;
 
     /// <summary>Runs the full pipeline once against ONE user-picked report
-    /// file (V-T65: tray icon -> one file selector -> immediately process
-    /// + send — no input folder, no scan). Returns null (a no-op, logged,
+    /// file (V-T65: tray icon -> Views/FaxSendWindow.xaml's file picker,
+    /// then this runs only once Will presses Send there — R4, 2026-09-29;
+    /// no input folder, no scan). Returns null (a no-op, logged,
     /// never thrown) if a run is already in progress.</summary>
     public async Task<FaxRunSummary?> RunAsync(string reportFilePath, FaxSettings settings, CancellationToken ct = default)
     {
@@ -238,7 +239,7 @@ public sealed class FaxRunOrchestrator
                     // Never surfaced as an Error (brief: "not listed as
                     // errors/Needs fax number nags") — the Status text
                     // above already says exactly what happened, in a
-                    // neutral colour (see FaxRunSummaryWindow.xaml).
+                    // neutral colour (see Views/FaxSendWindow.xaml).
                     Error = null,
                 });
                 // NOT fingerprinted — see ReportImporter's doc comment on
