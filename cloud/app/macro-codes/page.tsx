@@ -26,6 +26,7 @@ import {
 } from "@/lib/macro-codes";
 import {
   armedHotkeyNote,
+  decideEmbedEscape,
   findArmedProduct,
   hotkeyForProduct,
   hotkeyTransition,
@@ -1077,11 +1078,20 @@ function MacroCodesPageContent() {
   // macro-cancel" — this effect yields to the hotkeys effect below
   // (which clears the armed state on the SAME keypress) whenever a
   // product is currently armed.
+  // SOURCE-ORDER DEPENDENCY: this effect must stay declared (and so
+  // registered on `document`) BEFORE the hotkeys effect below — same-event
+  // keydown listeners on one target fire in registration order, and this
+  // one's own armedProductKey check depends on running first.
   useEffect(() => {
     if (!embed) return;
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      if (modal || anyMenuOpen || hotkeyState.armedProductKey) return;
+      const decision = decideEmbedEscape({
+        modalOpen: modal !== null,
+        anyMenuOpen,
+        armedProductKey: hotkeyState.armedProductKey,
+      });
+      if (decision === "none") return;
       postToHost({ type: "vaccine-assist:macro-cancel" });
       window.close();
     }
