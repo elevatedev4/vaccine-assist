@@ -53,15 +53,16 @@ public class FaxRunOrchestratorTests : IDisposable
     };
 
     // Headers match FaxColumnMap's DEFAULT (Pioneer's real export, V-T53
-    // 401/column-map follow-up) since MakeSettings() doesn't override
-    // ColumnMap — "Patient, Test" is one CSV field (quoted, since it has
-    // an internal comma) so ReportRowParser splits it into
+    // 401/column-map follow-up, DOB added as a required column by the
+    // fax-report-layout brief, 2026-09-28) since MakeSettings() doesn't
+    // override ColumnMap — "Patient, Test" is one CSV field (quoted,
+    // since it has an internal comma) so ReportRowParser splits it into
     // PatientLastName="Patient"/PatientFirstName="Test".
-    private void WriteReport(string fileName, string prescriberFax = "5555550200")
+    private void WriteReport(string fileName, string prescriberFax = "5555550200", string prescriberName = "Dr. Synthetic")
     {
         File.WriteAllText(Path.Combine(_inputDir, fileName),
-            "Patient Full Name Last then First,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
-            $"\"Patient, Test\",Flu,2026-09-01,Dr. Synthetic,{prescriberFax}\n");
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
+            $"\"Patient, Test\",1980-01-15,Flu,2026-09-01,{prescriberName},{prescriberFax}\n");
     }
 
     [Fact]
@@ -80,6 +81,25 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateFaxClientSwapsWhichClientTheNextRunUses()
+    {
+        // Notifyre-key-visibility follow-up (Will, 2026-09-28): confirms
+        // the fix for App.xaml.cs's documented "not done for phase 1" gap
+        // — a credential/provider change must take effect on the very
+        // next run without an app restart, i.e. without rebuilding the
+        // whole FaxRunOrchestrator.
+        WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var originalClient, out _);
+        var replacementClient = new FakeFaxClient();
+
+        orchestrator.UpdateFaxClient(replacementClient);
+        await orchestrator.RunAsync(MakeSettings());
+
+        Assert.Empty(originalClient.QueuedRequests);
+        Assert.Single(replacementClient.QueuedRequests);
+    }
+
+    [Fact]
     public async Task RunMovesTheSourceFileToProcessedFolder()
     {
         WriteReport("report.csv");
@@ -93,18 +113,22 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task RowWithNoResolvableFaxNumberIsNotSentAndNotFingerprinted()
+    public async Task RowWithNoResolvableFaxNumberIsSkippedNotSentAndNotFingerprinted()
     {
         // No Prescriber Fax column value and nothing in PrescriberDirectory.
         File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
-            "Patient Full Name Last then First,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
-            "\"Patient, Test\",Flu,2026-09-01,Dr. Nobody\n");
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
+            "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Nobody\n");
         var orchestrator = MakeOrchestrator(out var faxClient, out _);
 
         var summary = await orchestrator.RunAsync(MakeSettings());
 
-        Assert.Equal(1, summary!.NeedsFaxNumber);
+        Assert.Equal(1, summary!.SkippedNoFax);
         Assert.Empty(faxClient.QueuedRequests);
+        var skippedRow = summary.Rows.Single();
+        Assert.Equal("Skipped (no prescriber fax)", skippedRow.Status);
+        // Fax-report-layout brief (2026-09-28): never nagged as an error.
+        Assert.Null(skippedRow.Error);
 
         // The row was moved (the FILE is processed regardless), but since
         // it was never fingerprinted, re-running the same import folder
@@ -113,6 +137,47 @@ public class FaxRunOrchestratorTests : IDisposable
         // same import ledger the orchestrator used.
         var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
         Assert.Empty(importLedger.LoadFingerprints());
+    }
+
+    [Fact]
+    public async Task RowWithBlankPrescriberNameIsSkippedEvenWithAUsableFaxNumberInTheReport()
+    {
+        // Fax-report-layout brief (2026-09-28, verbatim): "rows with an
+        // empty prescriber OR empty/invalid fax are skipped silently" —
+        // an empty prescriber name skips even though this row's fax
+        // column has a perfectly valid number, since the letter's "To:"
+        // block needs someone to address it to.
+        WriteReport("report.csv", prescriberFax: "5555550200", prescriberName: "");
+        var orchestrator = MakeOrchestrator(out var faxClient, out _);
+
+        var summary = await orchestrator.RunAsync(MakeSettings());
+
+        Assert.Equal(1, summary!.SkippedNoFax);
+        Assert.Equal(0, summary.Failed);
+        Assert.Empty(faxClient.QueuedRequests);
+    }
+
+    [Fact]
+    public async Task FreshRunWithNoFaxColumnFallsBackToThePrescriberDirectory()
+    {
+        // Non-blocking reviewer ask (2026-09-28): PrescriberDirectory
+        // fallback already had coverage via RetryAfterAddingAPrescriberFaxNumberSucceeds,
+        // but only on the RETRY path — this covers the same fallback on
+        // a FRESH run, before any fax has ever been attempted.
+        File.WriteAllText(Path.Combine(_inputDir, "report.csv"),
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
+            "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Synthetic\n");
+        var orchestrator = MakeOrchestrator(out var faxClient, out var prescriberDirectory);
+        prescriberDirectory.Save(new List<PrescriberDirectoryEntry>
+        {
+            new() { Name = "Dr. Synthetic", FaxNumber = "5555550300" },
+        });
+
+        var summary = await orchestrator.RunAsync(MakeSettings());
+
+        Assert.Equal(0, summary!.SkippedNoFax);
+        Assert.Single(faxClient.QueuedRequests);
+        Assert.Equal("5555550300", faxClient.QueuedRequests[0].ToFaxNumber);
     }
 
     [Fact]

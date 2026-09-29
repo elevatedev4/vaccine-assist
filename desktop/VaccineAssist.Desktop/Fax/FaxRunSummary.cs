@@ -6,7 +6,13 @@ public sealed class FaxRunRowSummary
 {
     public string PatientInitials { get; set; } = "";
     public string PrescriberName { get; set; } = "";
-    public string Status { get; set; } = ""; // FaxLedgerStatus.ToString()
+
+    /// <summary>Last 4 digits of the fax number this row was (or would
+    /// have been) sent to — blank for a "Skipped (no prescriber fax)" row,
+    /// since there is none (fax-report-layout brief, 2026-09-28).</summary>
+    public string FaxNumberLast4 { get; set; } = "";
+
+    public string Status { get; set; } = ""; // FaxLedgerStatus.ToString(), or FaxRunOrchestrator.SkippedNoFaxStatus
     public string? Error { get; set; }
     public string LedgerEntryId { get; set; } = "";
 }
@@ -30,7 +36,12 @@ public sealed class FaxRunSummary
     public int Sent { get; set; }
     public int InProcess { get; set; }
     public int Failed { get; set; }
-    public int NeedsFaxNumber { get; set; }
+
+    /// <summary>Rows skipped because the prescriber name and/or a usable
+    /// fax number couldn't be resolved (fax-report-layout brief,
+    /// 2026-09-28: "Skipped (no prescriber fax)" — never counted as a
+    /// failure, and never nagged as an error in the per-row grid).</summary>
+    public int SkippedNoFax { get; set; }
 
     public List<FaxRunRowSummary> Rows { get; set; } = new();
 

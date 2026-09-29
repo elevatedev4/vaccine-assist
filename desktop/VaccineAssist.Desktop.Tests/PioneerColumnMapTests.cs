@@ -167,7 +167,7 @@ public class PioneerColumnMapTests : IDisposable
         // Will's brief: "reject rows with no usable fax (report them in
         // the summary as 'no fax on file')" — this is the same check
         // FaxRunOrchestrator.RunCoreAsync makes before queuing a group
-        // (see its NeedsFaxNumber branch).
+        // (see its "Skipped (no prescriber fax)" branch).
         var samGroup = groups.Single(g => g.PatientFirstName == "Sam");
         Assert.Null(FaxNumberNormalizer.ToDialableOrNull(samGroup.PrescriberFaxFromReport));
     }

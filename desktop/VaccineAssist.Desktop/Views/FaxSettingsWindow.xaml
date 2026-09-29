@@ -41,9 +41,30 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="140"/>
                             <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="API token" VerticalAlignment="Center"/>
-                        <PasswordBox Grid.Column="1" x:Name="ApiTokenBox" MinHeight="26" Padding="4,2"/>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <!--
+                            Notifyre-key-visibility follow-up (Will,
+                            2026-09-28): the box always starts BLANK (never
+                            shows the saved token — see FaxSettingsViewModel/
+                            FaxSettingsWindow.xaml.cs) with a "paste a new
+                            key to replace" hint instead of a real
+                            placeholder (PasswordBox has no native
+                            watermark). "Forget key" only enables once a
+                            key is actually stored.
+                        -->
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="API token" VerticalAlignment="Center"/>
+                        <PasswordBox Grid.Row="0" Grid.Column="1" x:Name="ApiTokenBox" MinHeight="26" Padding="4,2"/>
+                        <Button Grid.Row="0" Grid.Column="2" Content="Forget key" Click="ForgetKeyButton_OnClick"
+                                Padding="8,2" Margin="6,0,0,0"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding NotifyreKeyStatusText}" FontStyle="Italic" Foreground="DarkSlateGray" TextWrapping="Wrap"/>
                     </Grid>
 
                     <Grid Visibility="{Binding IsSrFaxSelected, Converter={StaticResource BooleanToVisibilityConverter}}">
@@ -90,22 +111,40 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="4"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="4"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Pharmacy name" VerticalAlignment="Center"/>
                         <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding PharmacyName, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Phone" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PharmacyPhone, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+                        <!-- Fax-report-layout brief (2026-09-28): the
+                             letter's pharmacy block needs an address, not
+                             just name/phone/fax. -->
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Address line 1" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PharmacyAddressLine1, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Fax (caller ID)" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding PharmacyFax, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="City, ST ZIP" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding PharmacyCityStateZip, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Sender email" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding SenderEmail, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Phone" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding PharmacyPhone, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
 
-                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Account code (optional)" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding AccountCode, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Fax (caller ID)" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding PharmacyFax, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="10" Grid.Column="0" Text="Sender email" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="10" Grid.Column="1" Text="{Binding SenderEmail, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="12" Grid.Column="0" Text="Account code (optional)" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="12" Grid.Column="1" Text="{Binding AccountCode, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
+
+                        <TextBlock Grid.Row="14" Grid.Column="0" Text="Signature name" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="14" Grid.Column="1" Text="{Binding SignatureName, UpdateSourceTrigger=PropertyChanged}" MinHeight="26" Padding="4,2"/>
                     </Grid>
                 </StackPanel>
             </Border>

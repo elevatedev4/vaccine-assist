@@ -135,16 +135,18 @@ public partial class App : Application
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "VaccineAssist", "fax");
 
-        // The IFaxClient used for the WHOLE signed-in session is built
-        // from whatever credentials are on disk right now — the Settings
-        // window's Save re-persists FaxCredentialStore, but picking up a
-        // credential CHANGE without a restart would need this to be
-        // rebuilt; not done for phase 1 (matches _pioneerEntrySequence's
-        // own "settings.json change needs a restart" posture above for
-        // PriorityValue). FaxSettingsViewModel's own Test-connection
-        // button builds its own short-lived IFaxClient from whatever is
-        // currently TYPED (see that class), so testing never needs a
-        // restart even though a saved-and-resumed session does.
+        // The IFaxClient used for the WHOLE signed-in session STARTS from
+        // whatever credentials are on disk at launch. Notifyre-key-
+        // visibility follow-up (Will, 2026-09-28: "the real send path ...
+        // must read the STORED token, never a transient textbox value"):
+        // a credential change no longer needs a restart to take effect —
+        // MainWindow.RebuildFaxClient swaps _faxRunOrchestrator's client
+        // for a freshly-built one (via FaxRunOrchestrator.UpdateFaxClient)
+        // right after Fax settings saves anything, using this SAME
+        // FaxClientFactory.Create call. FaxSettingsViewModel's own
+        // Test-connection button still builds its own short-lived
+        // IFaxClient from whatever is currently typed/stored (see that
+        // class), so testing never depends on this startup client either.
         var faxCredentials = _faxCredentialStore.Load() ?? new FaxCredentials();
         var faxClient = FaxClientFactory.Create(_settings.Fax.Provider, _faxHttpClient, faxCredentials);
 

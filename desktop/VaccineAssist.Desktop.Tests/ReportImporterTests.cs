@@ -29,6 +29,7 @@ public class ReportImporterTests : IDisposable
         PatientLastNameHeader = "Patient Last Name",
         VaccineNameHeader = "Vaccine",
         AdministeredDateHeader = "Date Administered",
+        DobHeader = "DOB",
         LotHeader = "Lot Number",
     };
 
@@ -52,8 +53,8 @@ public class ReportImporterTests : IDisposable
     public void ValidCsvIsImported()
     {
         WriteCsv("report.csv",
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered,Lot Number\n" +
-            "Test,Patient,Flu,2026-09-01,LOT1\n");
+            "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
+            "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
         var outcome = importer.Import(_tempDir, _map);
@@ -67,10 +68,11 @@ public class ReportImporterTests : IDisposable
     [Fact]
     public void MissingRequiredColumnRejectsTheWholeFileWithAClearMessage()
     {
-        // No "Vaccine" column at all.
+        // No "Vaccine" column at all (DOB present, so this isolates the
+        // ONE missing header the test is about).
         WriteCsv("report.csv",
-            "Patient First Name,Patient Last Name,Date Administered\n" +
-            "Test,Patient,2026-09-01\n");
+            "Patient First Name,Patient Last Name,Date Administered,DOB\n" +
+            "Test,Patient,2026-09-01,1980-01-15\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
         var outcome = importer.Import(_tempDir, _map);
@@ -85,9 +87,9 @@ public class ReportImporterTests : IDisposable
     public void OneBadRowIsSkippedWithoutRejectingTheWholeFile()
     {
         WriteCsv("report.csv",
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered\n" +
-            "Test,Patient,Flu,2026-09-01\n" +
-            ",MissingFirstName,Flu,2026-09-01\n");
+            "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB\n" +
+            "Test,Patient,Flu,2026-09-01,1980-01-15\n" +
+            ",MissingFirstName,Flu,2026-09-01,1980-01-15\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
         var outcome = importer.Import(_tempDir, _map);
@@ -101,9 +103,9 @@ public class ReportImporterTests : IDisposable
     public void DuplicateFingerprintWithinOneRunIsCountedOnceNotFaxedTwice()
     {
         WriteCsv("report.csv",
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered,Lot Number\n" +
-            "Test,Patient,Flu,2026-09-01,LOT1\n" +
-            "Test,Patient,Flu,2026-09-01,LOT1\n");
+            "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
+            "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n" +
+            "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
         var outcome = importer.Import(_tempDir, _map);
@@ -116,8 +118,8 @@ public class ReportImporterTests : IDisposable
     public void RowAlreadyInTheImportLedgerIsDedupedAcrossRuns()
     {
         WriteCsv("report.csv",
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered,Lot Number\n" +
-            "Test,Patient,Flu,2026-09-01,LOT1\n");
+            "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
+            "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
         var ledger = NewLedger(_tempDir);
         var importer = new ReportImporter(ledger);
@@ -145,10 +147,12 @@ public class ReportImporterTests : IDisposable
             sheet.Cell(1, 2).Value = "Patient Last Name";
             sheet.Cell(1, 3).Value = "Vaccine";
             sheet.Cell(1, 4).Value = "Date Administered";
+            sheet.Cell(1, 5).Value = "DOB";
             sheet.Cell(2, 1).Value = "Test";
             sheet.Cell(2, 2).Value = "Patient";
             sheet.Cell(2, 3).Value = "Flu";
             sheet.Cell(2, 4).Value = "2026-09-01";
+            sheet.Cell(2, 5).Value = "1980-01-15";
             workbook.SaveAs(Path.Combine(_tempDir, "report.xlsx"));
         }
 
@@ -163,8 +167,8 @@ public class ReportImporterTests : IDisposable
     public void MoveAcceptedFilesMovesToProcessedDateFolder()
     {
         WriteCsv("report.csv",
-            "Patient First Name,Patient Last Name,Vaccine,Date Administered\n" +
-            "Test,Patient,Flu,2026-09-01\n");
+            "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB\n" +
+            "Test,Patient,Flu,2026-09-01,1980-01-15\n");
 
         var importer = new ReportImporter(NewLedger(_tempDir));
         var outcome = importer.Import(_tempDir, _map);
