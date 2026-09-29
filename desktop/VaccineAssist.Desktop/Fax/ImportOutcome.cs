@@ -25,6 +25,13 @@ public sealed class ImportOutcome
     /// NewRecords, not an error.</summary>
     public int DuplicateRowCount { get; init; }
 
+    /// <summary>The actual duplicate rows (same count as DuplicateRowCount)
+    /// — V-T65 R5 (Will, verbatim, 2026-09-29: "make sure that things don't
+    /// get re-sent if somebody reuploads the same file"): FaxRunOrchestrator
+    /// groups these and shows "Skipped — already sent &lt;date&gt;" per
+    /// patient/prescriber instead of the old silent drop.</summary>
+    public IReadOnlyList<ImmunizationRecord> DuplicateRecords { get; init; } = Array.Empty<ImmunizationRecord>();
+
     /// <summary>Zero (accepted) or one (rejected) entry — kept as a list
     /// so FaxRunSummary.RejectedFiles doesn't need to change shape.</summary>
     public IReadOnlyList<RejectedFile> RejectedFiles { get; init; } = Array.Empty<RejectedFile>();

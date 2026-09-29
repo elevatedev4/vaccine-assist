@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VaccineAssist.Desktop.Fax;
 
 /// <summary>One row of a FaxRunSummary's grid — never a patient's full
@@ -29,6 +31,34 @@ public sealed class FaxRunSummary
 {
     public DateTime RunAtUtc { get; set; }
 
+    /// <summary>RunAtUtc converted to local time — V-T65 R5 follow-up
+    /// (coordinator, 2026-09-29): the Send History section's Date column
+    /// binds this instead of RunAtUtc directly, since a plain XAML
+    /// StringFormat binding has no way to call ToLocalTime() itself and
+    /// was showing UTC. Computed, not persisted (JsonIgnore) — always
+    /// derived fresh from RunAtUtc, including for an older runs\*.json
+    /// file read back that predates this property.</summary>
+    [JsonIgnore]
+    public DateTime RunAtLocal => RunAtUtc.ToLocalTime();
+
+    /// <summary>File NAME only (never a full path) — V-T65 R5's Send
+    /// History section (Views/FaxSendWindow.xaml) lists past batches by
+    /// this + RunAtUtc.</summary>
+    public string FileName { get; set; } = "";
+
+    /// <summary>SHA-256 hex of the picked file's raw bytes — see
+    /// FaxFileHasher/FaxFileLedger. Blank when the file couldn't be read
+    /// at all (the import step right after will surface that as a
+    /// RejectedFiles entry).</summary>
+    public string FileHash { get; set; } = "";
+
+    /// <summary>Set instead of running the pipeline at all when
+    /// FaxRunOrchestrator determines every row in this exact file (by
+    /// FileHash) has already been fully sent — V-T65 R5 (Will, verbatim:
+    /// "make sure that things don't get re-sent if somebody reuploads the
+    /// same file"). Every count below stays zero on this path.</summary>
+    public string? AlreadySentMessage { get; set; }
+
     public int RowsImported { get; set; }
     public int SkippedRows { get; set; }
     public int DuplicateRows { get; set; }
@@ -43,6 +73,12 @@ public sealed class FaxRunSummary
     /// 2026-09-28: "Skipped (no prescriber fax)" — never counted as a
     /// failure, and never nagged as an error in the per-row grid).</summary>
     public int SkippedNoFax { get; set; }
+
+    /// <summary>Patient/prescriber groups skipped because every row in the
+    /// group already has a Sent/InProcess/Queued ledger entry — V-T65 R5,
+    /// shown per-row as "Skipped — already sent &lt;date&gt;" rather than
+    /// silently dropped (see ImportOutcome.DuplicateRecords).</summary>
+    public int SkippedAlreadySent { get; set; }
 
     public List<FaxRunRowSummary> Rows { get; set; } = new();
 

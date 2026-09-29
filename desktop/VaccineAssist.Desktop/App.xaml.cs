@@ -39,6 +39,10 @@ public partial class App : Application
     private IFaxCredentialStore _faxCredentialStore = null!;
     private FaxRunOrchestrator _faxRunOrchestrator = null!;
     private FaxRunScheduler _faxRunScheduler = null!;
+    // V-T65 R5 (Will, verbatim, 2026-09-29): the singleton the send
+    // queue/live status/history now live on — see
+    // Services/FaxSendCoordinator's own doc comment.
+    private FaxSendCoordinator _faxSendCoordinator = null!;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -146,9 +150,21 @@ public partial class App : Application
         var faxCredentials = _faxCredentialStore.Load() ?? new FaxCredentials();
         var faxClient = FaxClientFactory.Create(_settings.Fax.Provider, _faxHttpClient, faxCredentials);
 
+        // V-T65 R5: sent-files.json — same roaming root as faxLedger/
+        // importLedger/logs above (see FaxFileLedger's own doc comment) —
+        // backs the whole-file "already fully sent" re-upload check.
+        var faxFileLedger = new FaxFileLedger();
+
         _faxRunOrchestrator = new FaxRunOrchestrator(
-            reportImporter, pdfBuilder, faxClient, faxLedger, importLedger, faxRootDir);
+            reportImporter, pdfBuilder, faxClient, faxLedger, importLedger, faxRootDir, faxFileLedger);
         _faxRunScheduler = new FaxRunScheduler(_faxRunOrchestrator);
+
+        // fax\runs\ lives under the SAME LocalApplicationData root
+        // FaxRunOrchestrator.FaxRootDir exposes (see that property's doc
+        // comment) — Send History reads whatever WriteRunSummaryFile has
+        // already written there.
+        var faxHistoryStore = new FaxRunHistoryStore(System.IO.Path.Combine(_faxRunOrchestrator.FaxRootDir, "runs"));
+        _faxSendCoordinator = new FaxSendCoordinator(_faxRunOrchestrator, _settings, faxLedger, faxHistoryStore);
 
         _ = StartSignInFlowAsync();
     }
@@ -726,7 +742,8 @@ public partial class App : Application
         var mainWindow = new MainWindow(
             _authService, _vaccineApiService, _clipboardService,
             _pioneerEntrySequence, cloudPageView, _localSettingsService, _settings,
-            _faxRunScheduler, _faxRunOrchestrator, _faxCredentialStore, _faxHttpClient);
+            _faxRunScheduler, _faxRunOrchestrator, _faxCredentialStore, _faxHttpClient,
+            _faxSendCoordinator);
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>

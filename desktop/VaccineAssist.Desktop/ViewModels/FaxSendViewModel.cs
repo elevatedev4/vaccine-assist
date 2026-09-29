@@ -1,10 +1,10 @@
+using System;
 using System.Collections.ObjectModel;
-using System.IO;
+using System.ComponentModel;
 using System.Windows.Input;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Fax;
-using VaccineAssist.Desktop.Logging;
-using VaccineAssist.Desktop.Settings;
+using VaccineAssist.Desktop.Services;
 
 namespace VaccineAssist.Desktop.ViewModels;
 
@@ -13,215 +13,118 @@ namespace VaccineAssist.Desktop.ViewModels;
 /// "Tried using my sample report and it didn't send any faxes. I would
 /// you to make the menu be called 'Vaccines-Send PCP faxes', have that
 /// open a dialogue window where you can selec tht efile then push send
-/// then see the results below." Replaces the old immediate-send-on-pick
-/// flow (MainWindow.ImportReportFileAndSendAsync) and the separate
-/// FaxRunSummaryWindow — one window now owns file selection AND results,
-/// and nothing sends until Send is explicitly pressed.
+/// then see the results below." One window owns file selection AND
+/// results, and nothing sends until Send is explicitly pressed.
 ///
-/// Reuses FaxRunOrchestrator.RunAsync verbatim (no new pipeline
-/// abstraction) — this ViewModel only adds the NoFile -> FileChosen ->
-/// Sending -> Done state machine (see FaxSendState) around that one call,
-/// plus the same per-row RetryCommand FaxRunSummaryViewModel had.
+/// V-T65 R5 (Will, verbatim, 2026-09-29: "allow the app to work from the
+/// background to send faxes ... make sure the status is displayed
+/// correctly"): this class is now a THIN pass-through over
+/// FaxSendCoordinator, a singleton App.xaml.cs constructs once and
+/// MainWindow reuses for every FaxSendViewModel it builds (see
+/// MainWindow.xaml.cs's ShowFaxSendWindow) — the actual state (Rows,
+/// Summary, the send queue, background status polling) lives on the
+/// coordinator so it survives FaxSendWindow being closed and reopened.
+/// Every property/command here simply forwards to it; PropertyChanged is
+/// relayed 1:1 so existing bindings in FaxSendWindow.xaml need no change.
 ///
-/// Also surfaces RejectedFiles (V-T65 R4 Task A finding): the old summary
-/// window never displayed FaxRunSummary.RejectedFiles at all, so a
-/// missing-required-column rejection showed as an all-zero summary with
-/// no visible explanation — indistinguishable from "nothing happened."
-/// RejectionMessage below is bound in the window whenever a run comes
-/// back with a rejected file.
+/// LEAK FIX (reviewer, V-T65 R5 REQUEST_CHANGES, 2026-09-29): FaxSendCoordinator
+/// is a session-long singleton, but MainWindow.ShowFaxSendWindow builds a
+/// brand-new FaxSendViewModel on every open — the _openFaxSendWindow guard
+/// only stops two windows existing AT ONCE, it does nothing once the
+/// window closes. Without unsubscribing, every open/close cycle rooted one
+/// more VM (via the coordinator's PropertyChanged invocation list)
+/// forever. IDisposable + a field-stored handler (not a lambda, so -=
+/// actually removes it) fixes that; MainWindow's FaxSendWindow.Closed
+/// handler calls Dispose() alongside its existing _openFaxSendWindow reset.
 /// </summary>
-public sealed class FaxSendViewModel : ObservableObject
+public sealed class FaxSendViewModel : ObservableObject, IDisposable
 {
-    private readonly FaxRunOrchestrator _orchestrator;
-    private readonly AppSettings _settings;
+    private readonly FaxSendCoordinator _coordinator;
+    private readonly PropertyChangedEventHandler _coordinatorPropertyChangedHandler;
+    private bool _disposed;
 
-    private FaxSendState _state = FaxSendState.NoFile;
-    private string? _filePath;
-    private string? _statusMessage;
-    private string? _rejectionMessage;
-    private FaxRunSummary? _summary;
-
-    public FaxSendViewModel(FaxRunOrchestrator orchestrator, AppSettings settings)
+    public FaxSendViewModel(FaxSendCoordinator coordinator)
     {
-        _orchestrator = orchestrator;
-        _settings = settings;
-
-        Rows = new ObservableCollection<FaxRunRowSummary>();
-        SendCommand = new AsyncRelayCommand(SendAsync, () => State == FaxSendState.FileChosen);
-        RetryCommand = new AsyncRelayCommand<FaxRunRowSummary>(RetryAsync, row =>
-            row is not null && string.Equals(row.Status, nameof(FaxLedgerStatus.Failed), System.StringComparison.OrdinalIgnoreCase));
+        _coordinator = coordinator;
+        // Stored in a field (not inlined as a lambda passed directly to
+        // +=) specifically so Dispose() below has a delegate instance it
+        // can pass to -= — an inline lambda can never be unsubscribed,
+        // which was exactly the leak.
+        _coordinatorPropertyChangedHandler = (_, e) => OnPropertyChanged(e.PropertyName);
+        _coordinator.PropertyChanged += _coordinatorPropertyChangedHandler;
     }
 
-    public FaxSendState State
+    /// <summary>Detaches from the coordinator's PropertyChanged — called
+    /// from FaxSendWindow's Closed handler (MainWindow.xaml.cs). The
+    /// coordinator itself is untouched (it's the session-long singleton;
+    /// only this per-window VM's subscription to it is torn down).
+    /// Idempotent — safe to call more than once.</summary>
+    public void Dispose()
     {
-        get => _state;
-        private set
-        {
-            if (SetProperty(ref _state, value))
-            {
-                OnPropertyChanged(nameof(CanChooseFile));
-                OnPropertyChanged(nameof(IsSending));
-                (SendCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-            }
-        }
+        if (_disposed) return;
+        _disposed = true;
+        _coordinator.PropertyChanged -= _coordinatorPropertyChangedHandler;
     }
+
+    public FaxSendState State => _coordinator.State;
 
     /// <summary>Full path of the currently-picked report file, or null
     /// before Will has chosen one — shown read-only in the file-path
     /// box.</summary>
-    public string? FilePath
-    {
-        get => _filePath;
-        private set => SetProperty(ref _filePath, value);
-    }
+    public string? FilePath => _coordinator.FilePath;
 
     /// <summary>Just the file name, for the totals/status line — never the
     /// full path (which can carry a Windows profile username).</summary>
-    public string? FileName => string.IsNullOrEmpty(FilePath) ? null : Path.GetFileName(FilePath);
+    public string? FileName => _coordinator.FileName;
 
     /// <summary>False while a run is in flight, so "Choose file…" can't
     /// swap the file (or start a second OpenFileDialog) mid-send.</summary>
-    public bool CanChooseFile => State != FaxSendState.Sending;
+    public bool CanChooseFile => _coordinator.CanChooseFile;
 
-    public bool IsSending => State == FaxSendState.Sending;
+    public bool IsSending => _coordinator.IsSending;
 
-    public string? StatusMessage
-    {
-        get => _statusMessage;
-        private set => SetProperty(ref _statusMessage, value);
-    }
+    public string? StatusMessage => _coordinator.StatusMessage;
 
     /// <summary>Non-null only when the last run's file was rejected
-    /// outright (missing required column, unreadable file, etc.) — see
-    /// class doc comment.</summary>
-    public string? RejectionMessage
-    {
-        get => _rejectionMessage;
-        private set
-        {
-            if (SetProperty(ref _rejectionMessage, value))
-            {
-                OnPropertyChanged(nameof(HasRejection));
-            }
-        }
-    }
+    /// outright (missing required column, unreadable file, etc.).</summary>
+    public string? RejectionMessage => _coordinator.RejectionMessage;
 
-    /// <summary>Drives Visibility bindings in the window (no null-check
-    /// converter needed) — true only when a run's whole FILE was
-    /// rejected (see class doc comment on why this is surfaced at all).</summary>
-    public bool HasRejection => !string.IsNullOrEmpty(RejectionMessage);
+    public bool HasRejection => _coordinator.HasRejection;
 
-    public FaxRunSummary? Summary
-    {
-        get => _summary;
-        private set => SetProperty(ref _summary, value);
-    }
+    /// <summary>V-T65 R5: non-null when the picked file was already fully
+    /// sent (by content hash) — see FaxRunSummary.AlreadySentMessage.</summary>
+    public string? AlreadySentMessage => _coordinator.AlreadySentMessage;
 
-    /// <summary>Per-row results — filled in once RunAsync returns (empty
-    /// during Sending; FaxRunOrchestrator.RunAsync has no progress
-    /// callback to report rows incrementally, and this brief is explicit
-    /// about reusing it as-is with no new abstraction).</summary>
-    public ObservableCollection<FaxRunRowSummary> Rows { get; }
+    public bool HasAlreadySentMessage => _coordinator.HasAlreadySentMessage;
 
-    public ICommand SendCommand { get; }
+    /// <summary>V-T65 R5 (Will, verbatim: "the summary should show number
+    /// in process and then when it is done show the result") — "N in
+    /// process · N sent · N failed" while anything is in flight, "Done: N
+    /// sent, N failed" once it isn't.</summary>
+    public string SummaryLine => _coordinator.SummaryLine;
 
-    public ICommand RetryCommand { get; }
+    public FaxRunSummary? Summary => _coordinator.Summary;
+
+    /// <summary>Per-row results — live-updated by the coordinator's
+    /// background refresh, not just a one-time snapshot from Send.</summary>
+    public ObservableCollection<FaxRunRowSummary> Rows => _coordinator.Rows;
+
+    /// <summary>V-T65 R5's Send History section — past batches, newest
+    /// first.</summary>
+    public ObservableCollection<FaxRunSummary> History => _coordinator.History;
+
+    public ICommand SendCommand => _coordinator.SendCommand;
+
+    public ICommand RetryCommand => _coordinator.RetryCommand;
 
     /// <summary>Called by FaxSendWindow's code-behind right after
-    /// OpenFileDialog returns a path. Re-picking a file after a run has
-    /// completed (or failed) clears the previous run's results, exactly
-    /// like starting over.</summary>
-    public void SetChosenFile(string path)
-    {
-        if (State == FaxSendState.Sending) return; // Choose file is disabled during Sending anyway — defence in depth.
+    /// OpenFileDialog returns a path.</summary>
+    public void SetChosenFile(string path) => _coordinator.SetChosenFile(path);
 
-        FilePath = path;
-        OnPropertyChanged(nameof(FileName));
-        Rows.Clear();
-        Summary = null;
-        RejectionMessage = null;
-        StatusMessage = null;
-        State = FaxSendState.FileChosen;
-    }
+    /// <summary>Public (rather than only wrapped in SendCommand) so tests
+    /// can await it directly, same convention as this codebase's other
+    /// ViewModels' *Async methods.</summary>
+    public Task SendAsync() => _coordinator.SendAsync();
 
-    /// <summary>The Send button's handler — public (rather than private,
-    /// wrapped only in SendCommand) so tests can await it directly instead
-    /// of polling an async-void ICommand.Execute, same convention as this
-    /// codebase's other ViewModels' *Async methods (e.g.
-    /// PhysiciansViewModel.LoadAsync).</summary>
-    public async Task SendAsync()
-    {
-        if (string.IsNullOrWhiteSpace(FilePath)) return;
-
-        State = FaxSendState.Sending;
-        Rows.Clear();
-        Summary = null;
-        RejectionMessage = null;
-        StatusMessage = "Sending…";
-
-        FaxRunSummary? summary;
-        try
-        {
-            summary = await _orchestrator.RunAsync(FilePath, _settings.Fax);
-        }
-        catch (System.Exception ex)
-        {
-            AppFileLog.LogException("FaxSendViewModel.SendAsync", ex);
-            StatusMessage = $"Couldn't process that file: {ex.Message}";
-            // Back to FileChosen (not NoFile) — the file is still picked,
-            // Will can just press Send again after fixing whatever broke.
-            State = FaxSendState.FileChosen;
-            return;
-        }
-
-        if (summary is null)
-        {
-            // A run was already in progress — see FaxRunOrchestrator.RunAsync.
-            StatusMessage = "A run is already in progress. Try again in a moment.";
-            State = FaxSendState.FileChosen;
-            return;
-        }
-
-        Summary = summary;
-        foreach (var row in summary.Rows)
-        {
-            Rows.Add(row);
-        }
-
-        if (summary.RejectedFiles.Count > 0)
-        {
-            RejectionMessage = string.Join(" ", summary.RejectedFiles);
-        }
-
-        StatusMessage = $"{summary.Sent} sent, {summary.Failed} failed, {summary.SkippedNoFax} skipped (no prescriber fax)";
-        State = FaxSendState.Done;
-    }
-
-    /// <summary>Public for the same test-await reason as SendAsync above.</summary>
-    public async Task RetryAsync(FaxRunRowSummary? row)
-    {
-        if (row is null) return;
-
-        var succeeded = await _orchestrator.RetryFailedAsync(row.LedgerEntryId, _settings.Fax);
-        if (succeeded)
-        {
-            row.Status = nameof(FaxLedgerStatus.InProcess);
-            row.Error = null;
-            StatusMessage = $"Requeued fax for {row.PatientInitials}.";
-        }
-        else
-        {
-            StatusMessage = $"Retry failed for {row.PatientInitials} — no fax number on file for this entry.";
-        }
-
-        // Rebuild the row so the DataGrid (bound to Rows, not directly to
-        // Summary.Rows) picks up the mutated Status/Error — same
-        // FaxRunRowSummary-is-a-plain-mutable-class reasoning as
-        // FaxRunSummaryViewModel's own RetryAsync had.
-        var index = Rows.IndexOf(row);
-        if (index >= 0)
-        {
-            Rows[index] = row;
-        }
-    }
+    public Task RetryAsync(FaxRunRowSummary? row) => _coordinator.RetryAsync(row);
 }

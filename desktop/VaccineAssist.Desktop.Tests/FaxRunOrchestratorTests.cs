@@ -35,14 +35,24 @@ public class FaxRunOrchestratorTests : IDisposable
         out FakeFaxClient faxClient,
         IVaccineRecordPdfBuilder? pdfBuilder = null)
     {
+        return MakeOrchestrator(out faxClient, out _, out _, pdfBuilder);
+    }
+
+    private FaxRunOrchestrator MakeOrchestrator(
+        out FakeFaxClient faxClient,
+        out FaxLedger faxLedger,
+        out FaxFileLedger fileLedger,
+        IVaccineRecordPdfBuilder? pdfBuilder = null)
+    {
         var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
         var reportImporter = new ReportImporter(importLedger);
         faxClient = new FakeFaxClient();
-        var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
+        faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
+        fileLedger = new FaxFileLedger(Path.Combine(_tempDir, "sent-files.json"));
 
         return new FaxRunOrchestrator(
             reportImporter, pdfBuilder ?? new VaccineRecordPdfBuilder(),
-            faxClient, faxLedger, importLedger, _faxRootDir);
+            faxClient, faxLedger, importLedger, _faxRootDir, fileLedger);
     }
 
     private static FaxSettings MakeSettings() => new()
@@ -234,5 +244,101 @@ public class FaxRunOrchestratorTests : IDisposable
         Assert.True(retried);
         Assert.Equal(2, faxClient.QueuedRequests.Count);
         Assert.Equal("5555550200", faxClient.QueuedRequests[1].ToFaxNumber);
+    }
+
+    // ---- V-T65 R5 (Will, verbatim, 2026-09-29): "Fax went through.
+    // Received it perfectly. But it still shows status 'InProcess' in the
+    // app. Need to make sure this stuff updates. Need to also ...  make
+    // sure that things don't get re-sent if somebody reuploads the same
+    // file." ----
+
+    [Fact]
+    public async Task ReimportingTheSameReportShowsSkippedAlreadySentInsteadOfSilentlyDroppingTheRow()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+
+        var first = await orchestrator.RunAsync(reportPath, MakeSettings());
+        Assert.Equal(1, first!.InProcess);
+
+        var second = await orchestrator.RunAsync(reportPath, MakeSettings());
+
+        Assert.NotNull(second);
+        Assert.Equal(1, second!.SkippedAlreadySent);
+        Assert.Equal(0, second.RowsImported);
+        var skippedRow = second.Rows.Single();
+        Assert.StartsWith("Skipped — already sent", skippedRow.Status);
+        // Still only ONE fax ever queued — the duplicate never re-sent.
+        Assert.Single(faxClient.QueuedRequests);
+    }
+
+    [Fact]
+    public async Task AVendorQueueFailureIsNotFingerprintedSoReimportingRetriesIt()
+    {
+        // Will, verbatim: "failed ones are retried." Distinct from
+        // PdfBuildFailureMarksTheEntryFailedAndStillFingerprintsIt — THAT
+        // failure is a template/code problem a resend can't fix; a vendor
+        // QUEUE failure (e.g. a bad fax number that Will then corrects) is
+        // exactly the case re-uploading the report should retry.
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+        faxClient.QueueResults.Enqueue(new FaxQueueResult(false, null, "vendor rejected the number"));
+
+        var first = await orchestrator.RunAsync(reportPath, MakeSettings());
+        Assert.Equal(1, first!.Failed);
+
+        // Re-import the SAME file/row — a genuine vendor failure must not
+        // be permanently excluded like a real duplicate would be.
+        var second = await orchestrator.RunAsync(reportPath, MakeSettings());
+
+        Assert.Equal(0, second!.SkippedAlreadySent);
+        Assert.Equal(1, second.RowsImported);
+        Assert.Equal(2, faxClient.QueuedRequests.Count);
+    }
+
+    [Fact]
+    public async Task ReuploadingAFullySentFileIsSkippedBeforeSendingAnythingElse()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+        // FakeFaxClient assigns "fax-1" to the first queued request
+        // (1-based on QueuedRequests.Count) — pre-configuring its status
+        // means the second poll pass inside RunAsync resolves it to Sent
+        // before RunAsync even returns, no background polling needed.
+        faxClient.StatusResults["fax-1"] = new FaxStatusResult(true, FaxSendStatus.Sent, null, null);
+
+        var first = await orchestrator.RunAsync(reportPath, MakeSettings());
+        Assert.Equal(1, first!.Sent);
+
+        var second = await orchestrator.RunAsync(reportPath, MakeSettings());
+
+        Assert.NotNull(second!.AlreadySentMessage);
+        Assert.Contains("already fully sent", second.AlreadySentMessage);
+        Assert.Equal(0, second.Sent);
+        Assert.Empty(second.Rows);
+        // No second attempt to queue anything for this file.
+        Assert.Single(faxClient.QueuedRequests);
+    }
+
+    [Fact]
+    public async Task ADifferentFileWithDifferentContentIsNotTreatedAsAlreadySent()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+        faxClient.StatusResults["fax-1"] = new FaxStatusResult(true, FaxSendStatus.Sent, null, null);
+        await orchestrator.RunAsync(reportPath, MakeSettings());
+
+        // A different patient/DOB/vaccine/date -> a different row
+        // fingerprint AND different file bytes -> a different file hash.
+        var otherPath = Path.Combine(_inputDir, "report2.csv");
+        File.WriteAllText(otherPath,
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
+            "\"Other, Person\",1990-05-20,Flu,2026-09-02,Dr. Synthetic,5555550200\n");
+
+        var second = await orchestrator.RunAsync(otherPath, MakeSettings());
+
+        Assert.Null(second!.AlreadySentMessage);
+        Assert.Equal(1, second.RowsImported);
+        Assert.Equal(2, faxClient.QueuedRequests.Count);
     }
 }

@@ -3,8 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:common="clr-namespace:VaccineAssist.Desktop.Common"
         Title="Vaccine Assist — Send PCP faxes"
-        Width="960" Height="620"
-        MinWidth="720" MinHeight="440"
+        Width="960" Height="700"
+        MinWidth="720" MinHeight="480"
         WindowStartupLocation="CenterScreen">
     <!--
         V-T65 R4 (Will, verbatim, 2026-09-29): "make the menu be called
@@ -31,8 +31,14 @@
             <RowDefinition Height="10"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="6"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="6"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="6"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -61,16 +67,26 @@
                        Visibility="{Binding IsSending, Converter={StaticResource BooleanToVisibilityConverter}}"/>
         </StackPanel>
 
+        <!-- V-T65 R5: the picked file was already fully sent (by content
+             hash) — see FaxSendViewModel.AlreadySentMessage's doc comment. -->
+        <TextBlock Grid.Row="6" Text="{Binding AlreadySentMessage}" Foreground="DarkOrange" FontWeight="Bold" TextWrapping="Wrap"
+                   Visibility="{Binding HasAlreadySentMessage, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+
         <!-- Rejection (whole file rejected — e.g. missing required column)
              vs. the plain "Results" section label — exactly one of these
              two is visible at a time (see FaxSendViewModel.HasRejection's
              doc comment on why a rejection is surfaced here at all). -->
-        <TextBlock Grid.Row="6" Text="{Binding RejectionMessage}" Foreground="Red" FontWeight="Bold" TextWrapping="Wrap"
+        <TextBlock Grid.Row="8" Text="{Binding RejectionMessage}" Foreground="Red" FontWeight="Bold" TextWrapping="Wrap"
                    Visibility="{Binding HasRejection, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-        <TextBlock Grid.Row="6" Text="Results" FontWeight="Bold"
+        <TextBlock Grid.Row="8" Text="Results" FontWeight="Bold"
                    Visibility="{Binding HasRejection, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
 
-        <DataGrid Grid.Row="8" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
+        <!-- V-T65 R5 (Will, verbatim: "the summary should show number in
+             process and then when it is done show the result") — live
+             counts, not a one-time snapshot; see FaxSendViewModel.SummaryLine. -->
+        <TextBlock Grid.Row="10" Text="{Binding SummaryLine}" FontWeight="SemiBold" Foreground="#333333"/>
+
+        <DataGrid Grid.Row="12" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Patient" Binding="{Binding PatientInitials}" Width="*"/>
                 <DataGridTextColumn Header="Prescriber" Binding="{Binding PrescriberName}" Width="2*"/>
@@ -89,6 +105,36 @@
             </DataGrid.Columns>
         </DataGrid>
 
-        <TextBlock Grid.Row="10" Text="{Binding StatusMessage}" Foreground="DarkSlateGray"/>
+        <TextBlock Grid.Row="14" Text="{Binding StatusMessage}" Foreground="DarkSlateGray"/>
+
+        <!-- V-T65 R5 (Will, verbatim: "Need to also be able to get back to
+             send history") — past batches from fax\runs\*.json, newest
+             first; selecting one shows its own rows below it. No new
+             window — collapsed by default, in place under the results. -->
+        <Expander Grid.Row="16" Header="Send history">
+            <StackPanel Margin="0,8,0,0">
+                <DataGrid x:Name="HistoryGrid" ItemsSource="{Binding History}" AutoGenerateColumns="False"
+                          IsReadOnly="True" CanUserAddRows="False" MaxHeight="140" SelectionMode="Single">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Date" Binding="{Binding RunAtLocal, StringFormat='MM/dd/yyyy h:mm tt'}" Width="1.6*"/>
+                        <DataGridTextColumn Header="File" Binding="{Binding FileName}" Width="2*"/>
+                        <DataGridTextColumn Header="Sent" Binding="{Binding Sent}" Width="*"/>
+                        <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="*"/>
+                        <DataGridTextColumn Header="Skipped" Binding="{Binding SkippedAlreadySent}" Width="*"/>
+                        <DataGridTextColumn Header="In process" Binding="{Binding InProcess}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+                <TextBlock Text="Selected batch:" FontWeight="Bold" Margin="0,8,0,4"/>
+                <DataGrid ItemsSource="{Binding SelectedItem.Rows, ElementName=HistoryGrid}" AutoGenerateColumns="False"
+                          IsReadOnly="True" CanUserAddRows="False" MaxHeight="140">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Patient" Binding="{Binding PatientInitials}" Width="*"/>
+                        <DataGridTextColumn Header="Prescriber" Binding="{Binding PrescriberName}" Width="2*"/>
+                        <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="2*"/>
+                        <DataGridTextColumn Header="Error" Binding="{Binding Error}" Width="2*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </StackPanel>
+        </Expander>
     </Grid>
 </Window>
