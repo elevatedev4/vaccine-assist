@@ -29,4 +29,27 @@ public static class PriorityInputGuard
         if (!dialogAliveAndVisible) return false;
         return dialogIsForeground || foregroundIsSameProcessComboLBoxPopup;
     }
+
+    /// <summary>
+    /// V-T41 ROUND 5 (Will's 2026-09-29 follow-up: F12 still doesn't save
+    /// the Priority dialog): the ComboLBox-popup allowance above exists
+    /// ONLY for input that legitimately targets the combo's own
+    /// drop-down (Alt+Down to open it, a click/type-ahead inside it) —
+    /// see CanSendInput's own doc comment. A Save/confirm keystroke
+    /// (F12, Enter, Alt+O) is never meant for that popup; PioneerRx's
+    /// ComboLBox list simply ignores F12, which is exactly why it "does
+    /// nothing" — the OLD single guard let the F12 send through anyway
+    /// as long as SOME same-process ComboLBox popup was foreground,
+    /// whether or not it had actually been closed after the value was
+    /// set. This is the STRICT sibling used for every confirm-step send
+    /// (see SendF3AndDismissPreEntryDialogsStep.TryAuthorizeConfirmInput):
+    /// the dialog itself must be the literal foreground window — no
+    /// popup exception — so a confirm keystroke is only ever sent once
+    /// the dropdown has actually been closed and the dialog has regained
+    /// focus.
+    /// </summary>
+    public static bool CanConfirmDialog(bool dialogAliveAndVisible, bool dialogIsForeground)
+    {
+        return dialogAliveAndVisible && dialogIsForeground;
+    }
 }

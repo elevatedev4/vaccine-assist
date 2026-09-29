@@ -19,7 +19,12 @@ namespace VaccineAssist.Desktop.Overlay;
 /// (PioneerMainWindowLocator), computes where the icon belongs
 /// (OverlayPlacement), and repositions/shows/hides it
 /// (NativeOverlayPositioning) — hidden whenever no Pioneer window exists,
-/// Pioneer is minimized, or the "Show Pioneer overlay" setting is off.
+/// Pioneer is minimized, the "Show Pioneer overlay" setting is off, or
+/// (V-T41, Will's 2026-09-29 thread message: "When pioneer is not
+/// focused, hide the blue icon, just like we do with RxVerify.")
+/// PioneerRx isn't the OS foreground application right now — see
+/// PioneerOverlayVisibilityGate.ShouldShow, the pure decision Tick()
+/// below feeds.
 ///
 /// Never lets a Tick() failure escape to the Dispatcher (which would hit
 /// App.xaml.cs's DispatcherUnhandledException backstop and pop a
@@ -69,14 +74,21 @@ public sealed class PioneerOverlayController : IDisposable
     {
         try
         {
-            if (!_settings.ShowPioneerOverlay)
-            {
-                HideIfShown();
-                _loggedFailure = false;
-                return;
-            }
+            // V-T41 (Will's 2026-09-29 thread message: "When pioneer is
+            // not focused, hide the blue icon, just like we do with
+            // RxVerify.") — hasMainWindow/isMinimized still drive the
+            // icon's POSITION (via bounds below, unchanged, maximized-
+            // only per PioneerWindowAnchorRule); isPioneerForegroundApp
+            // is the broader, separate "hide unless Pioneer is the app
+            // currently in front" signal — see
+            // PioneerOverlayVisibilityGate's own doc comment for why
+            // that's a different question from which window to anchor
+            // to. Both are always gathered so the gate has everything it
+            // needs regardless of which condition ends up failing.
+            var hasMainWindow = PioneerMainWindowLocator.TryGetMainWindow(out var bounds, out var isMinimized);
+            var isPioneerForeground = PioneerMainWindowLocator.IsPioneerForegroundApp();
 
-            if (!PioneerMainWindowLocator.TryGetMainWindow(out var bounds, out var isMinimized) || isMinimized)
+            if (!PioneerOverlayVisibilityGate.ShouldShow(_settings.ShowPioneerOverlay, hasMainWindow, isMinimized, isPioneerForeground))
             {
                 HideIfShown();
                 _loggedFailure = false;

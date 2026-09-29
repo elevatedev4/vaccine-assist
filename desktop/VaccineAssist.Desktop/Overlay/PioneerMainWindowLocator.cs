@@ -126,6 +126,37 @@ public static class PioneerMainWindowLocator
         }
     }
 
+    /// <summary>
+    /// V-T41 (Will's 2026-09-29 thread message, verbatim: "When pioneer is
+    /// not focused, hide the blue icon, just like we do with RxVerify."):
+    /// the BROADER "is PioneerRx the app the pharmacist is currently
+    /// looking at" signal — matched by owning PROCESS, not window title or
+    /// maximized state — deliberately looser than TryGetMainWindow's own
+    /// maximized-only anchor rule (see PioneerWindowAnchorRule's doc for
+    /// why that stays maximized-only: pure POSITIONING, so a mini popup
+    /// can't steal the anchor). This is rx-verify's own
+    /// IsForegroundWindowOwnedByPioneerRx, ported: single uncached
+    /// Process.GetProcessById lookup on the one current foreground hwnd
+    /// (cheap — this is not the up-to-one-call-per-top-level-window
+    /// EnumWindows scan IsPioneerProcessId below is optimized for). Feeds
+    /// PioneerOverlayVisibilityGate.ShouldShow via PioneerOverlayController.
+    /// Tick. Never throws.
+    /// </summary>
+    public static bool IsPioneerForegroundApp()
+    {
+        try
+        {
+            var hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return false;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            return IsPioneerProcessId(pid);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool IsSaneRect(NativeRect rect) => rect.Right > rect.Left && rect.Bottom > rect.Top;
 
     private static Rectangle ToRectangle(NativeRect rect) => Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
