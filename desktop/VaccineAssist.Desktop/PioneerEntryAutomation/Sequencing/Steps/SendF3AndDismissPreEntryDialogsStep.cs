@@ -13,6 +13,7 @@ using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
+using VaccineAssist.Desktop.PioneerEntryAutomation.Native;
 using VaccineAssist.Desktop.Uia;
 
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
@@ -297,6 +298,49 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 ///      tick, since a pass either resolves or throws within a single
 ///      synchronous call — see TryHandlePriorityIfShowing's own doc
 ///      comment.
+///
+/// ROUND 5 — F12 STILL DOESN'T SAVE (Will's 2026-09-29 follow-up,
+/// verbatim: "I have given you the exact keystrokes that are needed in
+/// the original macro file and explained the problem in full detail and
+/// you still haven't gotten it ... Fix it."): ROUND 4/78a2607 put F12
+/// first in TryConfirmDialog, but it still silently did nothing live.
+/// Root cause: TryAuthorizeDialogInput's ComboLBox-popup allowance (see
+/// PriorityInputGuard.CanSendInput's own doc — LEGITIMATE for typing
+/// into an open combo) was ALSO being used to authorize the F12 send
+/// itself. Both remaining strategies open a real drop-down before
+/// selecting (TryUiaSelectStrategy expands+collapses it; the renamed
+/// TryKeyboardStrategy opens it with Alt+Down and never explicitly
+/// closed it again) — if the popup was still foreground the instant F12
+/// fired, the guard happily allowed it, F12 went to Pioneer's ComboLBox
+/// LIST (which ignores F12 entirely), and the dialog never saved. Four
+/// cumulative fixes:
+///   A. TryConfirmDialog now calls EnsureDropdownClosedAndDialogForeground
+///      first (collapse any expanded ComboBox, Escape a stray same-
+///      process ComboLBox popup, re-assert the dialog as foreground), and
+///      every confirm keystroke (F12/Enter/Alt+O) is authorized through
+///      the NEW, STRICT TryAuthorizeConfirmInput / PriorityInputGuard.
+///      CanConfirmDialog — no popup exception; the dialog itself must be
+///      the literal foreground window.
+///   B. A NEW strategy, TryKeyboardNoDropdownStrategy, mirrors the
+///      original Macro Express script directly (see docs/data-entry-
+///      macro.md) — focus the combo, TYPE the value, never open the
+///      drop-down at all — and now runs FIRST in ResolvePriorityDialog's
+///      strategy list, sidestepping the whole stray-popup problem rather
+///      than merely cleaning up after it. TryUiaSelectStrategy and
+///      TryKeyboardStrategy stay as fallbacks, both benefiting from fix A.
+///   C. Every confirm-path keystroke (F12, the type-ahead characters,
+///      Enter, Alt+O) now goes through NativeKeyboard (raw SendInput with
+///      BOTH virtual-key and hardware scan code on every KEYBDINPUT — see
+///      that class's own doc comment) instead of FlaUI's Keyboard.Type,
+///      which always leaves wScan at 0; some legacy WinForms hotkey
+///      handling is picky about a zero-scan-code synthetic key event.
+///   D. TryAuthorizeConfirmInput logs, on EVERY call (not just a
+///      refusal): the foreground window's class/title (NO PHI —
+///      truncated at " - "), all three guard booleans, and
+///      NativeKeyboard's own SendInput-return-value log line; TryConfirm-
+///      Dialog additionally logs the combo's value read back immediately
+///      before the F12 attempt — so the next real app.log is conclusive
+///      about exactly what had focus and what was sent.
 /// </summary>
 public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 {
@@ -939,10 +983,21 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     {
         var dialogHandle = SafeNativeHandle(dialog);
 
+        // V-T41 ROUND 5 (Will's 2026-09-29 follow-up — see class doc
+        // comment's ROUND 5 section): the macro-fidelity strategy runs
+        // FIRST now. It never opens the dropdown at all (no Alt+Down),
+        // which is what strategies (a)/(b) below both do and neither
+        // ever explicitly closes again before confirming — see
+        // TryKeyboardNoDropdownStrategy's own doc comment for why that
+        // matters. The two previously-shipped strategies stay as
+        // fallbacks, unchanged in shape, but now share the SAME fixed
+        // TryConfirmDialog (dropdown-close + strict foreground guard +
+        // raw-scan-code F12) this round also fixed.
         var strategies = new List<PriorityStrategyStep>
         {
+            new("keyboard type-ahead (no dropdown, macro-fidelity)", () => TryKeyboardNoDropdownStrategy(dialog, dialogHandle, mainProcessId, log)),
             new("UIA raw-view select", () => TryUiaSelectStrategy(dialog, dialogHandle, mainProcessId, log)),
-            new("keyboard type-ahead", () => TryKeyboardStrategy(dialog, dialogHandle, mainProcessId, log)),
+            new("keyboard type-ahead (Alt+Down)", () => TryKeyboardStrategy(dialog, dialogHandle, mainProcessId, log)),
         };
 
         var resolvedBy = PriorityDialogStrategyRunner.Run(strategies, (n, total, name, outcome) =>
@@ -1015,6 +1070,78 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 $"alive={aliveAndVisible}, dialogForeground={isDialogForeground}, comboPopupForeground={isComboPopupForeground}.");
         }
         return authorized;
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 5 (Will's 2026-09-29 follow-up; brief points A + D):
+    /// the STRICT sibling of TryAuthorizeDialogInput used ONLY for the
+    /// Priority dialog's Save/confirm keystrokes (F12, Enter-on-button,
+    /// Enter-on-dialog, Alt+O) — see PriorityInputGuard.CanConfirmDialog's
+    /// own doc comment for why a same-process ComboLBox popup being
+    /// foreground must NOT authorize a confirm send the way it
+    /// legitimately does for combo-typing input: Pioneer's ComboLBox list
+    /// silently ignores F12, which is the actual root cause of "F12 does
+    /// nothing." Every boolean is re-gathered fresh (never cached/reused
+    /// across sends), same posture as TryAuthorizeDialogInput. Logs on
+    /// EVERY call — not just a refusal (brief point D: "log ... the guard
+    /// decision with its three booleans" on every attempt) — including
+    /// the foreground window's class/title so the next real app.log
+    /// answers "was F12 even sent, and what had the focus when it was."
+    /// Title is truncated at the first " - " (NO PHI — same truncation
+    /// PioneerMainWindowLocator.ReadWindowTitleForLog uses), since the
+    /// foreground could in principle be Pioneer's own Rx screen carrying
+    /// a patient name after that delimiter. Never throws.
+    /// </summary>
+    private bool TryAuthorizeConfirmInput(IntPtr dialogHandle, int mainProcessId, string what, Action<string> log)
+    {
+        bool aliveAndVisible;
+        try { aliveAndVisible = !Win32WindowEnumerator.IsWindowGone(dialogHandle); }
+        catch { aliveAndVisible = false; }
+
+        IntPtr foreground;
+        try { foreground = Win32WindowEnumerator.GetForegroundWindowHandle(); }
+        catch { foreground = IntPtr.Zero; }
+
+        var isDialogForeground = aliveAndVisible && foreground != IntPtr.Zero && foreground == dialogHandle;
+
+        var isComboPopupForeground = false;
+        var foregroundClass = "";
+        var foregroundTitle = "";
+        if (foreground != IntPtr.Zero)
+        {
+            try
+            {
+                var info = Win32WindowEnumerator.Describe(foreground);
+                foregroundClass = info.ClassName;
+                foregroundTitle = RedactWindowTitleForLog(info.Title);
+                if (aliveAndVisible && !isDialogForeground)
+                {
+                    isComboPopupForeground =
+                        info.ProcessId == mainProcessId &&
+                        string.Equals(info.ClassName, "ComboLBox", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch
+            {
+                // Best-effort — diagnostic fields stay blank/false.
+            }
+        }
+
+        var authorized = PriorityInputGuard.CanConfirmDialog(aliveAndVisible, isDialogForeground);
+        log($"[{Name}] \"Priority\" dialog: confirm-input guard for \"{what}\" -> {(authorized ? "OK" : "REFUSED")} — " +
+            $"alive={aliveAndVisible}, dialogForeground={isDialogForeground}, comboPopupForeground={isComboPopupForeground}, " +
+            $"foregroundHandle=0x{foreground:X}, foregroundClass=\"{foregroundClass}\", foregroundTitle=\"{foregroundTitle}\".");
+        return authorized;
+    }
+
+    /// <summary>NO PHI: same first-" - "-only truncation
+    /// PioneerMainWindowLocator.ReadWindowTitleForLog uses, since a
+    /// Pioneer window title can carry a patient name after that
+    /// delimiter. Never throws.</summary>
+    private static string RedactWindowTitleForLog(string title)
+    {
+        if (string.IsNullOrEmpty(title)) return "";
+        return title.Split(new[] { " - " }, 2, StringSplitOptions.None)[0];
     }
 
     /// <summary>
@@ -1305,6 +1432,98 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     }
 
     /// <summary>
+    /// STRATEGY (macro-fidelity, V-T41 ROUND 5) — tried FIRST (see
+    /// ResolvePriorityDialog). Mirrors Will's original Macro Express
+    /// script's own Priority step, which is keyboard-only and never
+    /// opens the drop-down at all: focus the combo, TYPE the value
+    /// (Win32 combo type-ahead resolves the item without ever showing
+    /// the list), verify it read back correctly, then confirm — no
+    /// Alt+Down, no expand/collapse. This sidesteps ROUND 5's actual root
+    /// cause instead of merely working around it: TryUiaSelectStrategy
+    /// and TryKeyboardStrategy (below) both open a real drop-down (via
+    /// ExpandCollapsePattern.Expand or Alt+Down) before selecting, so
+    /// EITHER can still legitimately need to close a stray combo popup
+    /// right before confirming — TryConfirmDialog now does that itself
+    /// (see its own doc comment) as defense-in-depth, but this strategy
+    /// simply never creates the problem. Characters are sent via
+    /// NativeKeyboard.SendText (real scan codes — same reasoning as the
+    /// F12 send; some legacy WinForms combo type-ahead handling is picky
+    /// about zero-scan-code synthetic input same as the Save shortcut
+    /// is) rather than FlaUI's Keyboard.Type. Verifies the control's
+    /// resulting value actually starts with `_priorityValue`
+    /// (ReadControlValue) before ever attempting to confirm. Outcome
+    /// reflects VerifyDialogGone, never merely "an action was
+    /// attempted."
+    /// </summary>
+    private PriorityStrategyOutcome TryKeyboardNoDropdownStrategy(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log)
+    {
+        if (!Win32WindowEnumerator.IsForegroundWindow(dialogHandle))
+        {
+            log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — dialog isn't the foreground window; bringing it forward.");
+            Win32WindowEnumerator.TryBringToForeground(dialogHandle);
+        }
+
+        List<AutomationElement> candidates;
+        try { candidates = FindSelectionControlCandidates(dialog); }
+        catch { candidates = new List<AutomationElement>(); }
+
+        var control = candidates.FirstOrDefault();
+        if (control is null)
+        {
+            log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — no selection control found to focus.");
+            return PriorityStrategyOutcome.NotFound;
+        }
+
+        try
+        {
+            // Deliberately NO Alt+Down / Expand here — the whole point of
+            // this strategy is to never open the drop-down (brief point
+            // B / the macro itself never does either).
+            var rect = control.BoundingRectangle;
+            if (!rect.IsEmpty)
+            {
+                if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, "click selection control (no-dropdown)", log))
+                {
+                    return PriorityStrategyOutcome.StillOpen;
+                }
+                Mouse.LeftClick(new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2));
+            }
+            else
+            {
+                control.FocusNative();
+            }
+
+            if (!TryAuthorizeDialogInput(dialogHandle, mainProcessId, $"type \"{_priorityValue}\" (no-dropdown)", log))
+            {
+                return PriorityStrategyOutcome.StillOpen;
+            }
+
+            var sentAll = NativeKeyboard.SendText(_priorityValue, msg => log($"[{Name}] \"Priority\" dialog: {msg}"));
+            if (!sentAll)
+            {
+                log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — NativeKeyboard.SendText did not report every character sent for \"{_priorityValue}\".");
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — error focusing/typing: {ex.Message}.");
+            return PriorityStrategyOutcome.StillOpen;
+        }
+
+        var currentValue = ReadControlValue(control);
+        if (!PriorityValueMatcher.StartsWith(currentValue, _priorityValue))
+        {
+            log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — type-ahead \"{_priorityValue}\" did not select it " +
+                $"(current value length {currentValue?.Length ?? 0}).");
+            return PriorityStrategyOutcome.StillOpen;
+        }
+
+        log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — type-ahead selected \"{_priorityValue}\"; confirming...");
+        TryConfirmDialog(dialog, dialogHandle, mainProcessId, log);
+        return VerifyDialogGone(dialogHandle) ? PriorityStrategyOutcome.Resolved : PriorityStrategyOutcome.StillOpen;
+    }
+
+    /// <summary>
     /// STRATEGY (b) — keyboard type-ahead into the FOCUSED dialog only
     /// (brief point 2b). Verifies foreground == dialog hwnd first (bringing
     /// it forward if not — Windows delivers keystrokes to whichever window
@@ -1353,7 +1572,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                 {
                     return PriorityStrategyOutcome.StillOpen;
                 }
-                Keyboard.TypeSimultaneously(new[] { VirtualKeyShort.ALT, VirtualKeyShort.DOWN });
+                // V-T41 ROUND 5 (brief point C, cumulative): real scan
+                // codes here too, not just on the confirm path — same
+                // NativeKeyboard reasoning as F12.
+                NativeKeyboard.SendAltChord(VK_DOWN, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Alt+Down (open combo)");
             }
 
             var rect = control.BoundingRectangle;
@@ -1374,7 +1596,7 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             {
                 return PriorityStrategyOutcome.StillOpen;
             }
-            Keyboard.Type("V");
+            NativeKeyboard.SendChar('V', msg => log($"[{Name}] \"Priority\" dialog: {msg}"));
         }
         catch (Exception ex)
         {
@@ -1481,6 +1703,15 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// throws.</summary>
     private static readonly string[] ConfirmButtonNames = { "OK", "Select", "Save", "Continue", "Accept" };
 
+    // Raw virtual-key codes for NativeKeyboard — see that class's own doc
+    // comment for why F12/Enter/Alt+O now go through it (real scan codes)
+    // instead of FlaUI's Keyboard.Type (wScan always 0).
+    private const ushort VK_F12 = 0x7B;
+    private const ushort VK_RETURN = 0x0D;
+    private const ushort VK_ESCAPE = 0x1B;
+    private const ushort VK_O = 0x4F;
+    private const ushort VK_DOWN = 0x28;
+
     private bool TryConfirmDialog(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log)
     {
         if (Win32WindowEnumerator.IsWindowGone(dialogHandle))
@@ -1489,14 +1720,29 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             return true;
         }
 
+        // V-T41 ROUND 5 root cause: whichever strategy set the value may
+        // have left a ComboLBox drop-down popup as the OS foreground —
+        // TryAuthorizeDialogInput legitimately allows that popup while
+        // TYPING into the combo, which is exactly what let it slip
+        // through undetected all the way to the Save keystroke (Pioneer
+        // silently ignores F12 sent to that popup). Close it and put the
+        // dialog itself back in front BEFORE any confirm keystroke.
+        EnsureDropdownClosedAndDialogForeground(dialog, dialogHandle, mainProcessId, log);
+
+        // V-T41 ROUND 5 (brief point D): log the combo's value as read
+        // back right before F12 is attempted, regardless of outcome.
+        var comboBeforeF12 = FindSelectionControlCandidates(dialog).FirstOrDefault();
+        var comboValueBeforeF12 = comboBeforeF12 is null ? "<no selection control found>" : (ReadControlValue(comboBeforeF12) ?? "<null>");
+        log($"[{Name}] \"Priority\" dialog: combo value read back before F12 = \"{comboValueBeforeF12}\".");
+
         try
         {
-            if (TryAuthorizeDialogInput(dialogHandle, mainProcessId, "F12 (Save)", log))
+            if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "F12 (Save)", log))
             {
                 dialog.FocusNative();
-                Keyboard.Type(VirtualKeyShort.F12);
+                var sendOk = NativeKeyboard.SendKey(VK_F12, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "F12 (Save)");
                 var closedAfterF12 = VerifyDialogGone(dialogHandle);
-                log($"[{Name}] \"Priority\" dialog: sent F12 (Save) -> {(closedAfterF12 ? "closed" : "still open")}.");
+                log($"[{Name}] \"Priority\" dialog: sent F12 (Save), SendInput reported ok={sendOk} -> {(closedAfterF12 ? "closed" : "still open")}.");
                 if (closedAfterF12) return true;
             }
         }
@@ -1531,10 +1777,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
                     return true;
                 }
 
-                if (TryAuthorizeDialogInput(dialogHandle, mainProcessId, "Enter on confirm button", log))
+                if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "Enter on confirm button", log))
                 {
                     button.FocusNative();
-                    Keyboard.Type(VirtualKeyShort.RETURN);
+                    NativeKeyboard.SendKey(VK_RETURN, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Enter on confirm button");
                     return true;
                 }
                 return false;
@@ -1553,10 +1799,10 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         try
         {
-            if (TryAuthorizeDialogInput(dialogHandle, mainProcessId, "Enter on dialog", log))
+            if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "Enter on dialog", log))
             {
                 dialog.FocusNative();
-                Keyboard.Type(VirtualKeyShort.RETURN);
+                NativeKeyboard.SendKey(VK_RETURN, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Enter on dialog");
                 return true;
             }
         }
@@ -1567,9 +1813,9 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
 
         try
         {
-            if (TryAuthorizeDialogInput(dialogHandle, mainProcessId, "Alt+O", log))
+            if (TryAuthorizeConfirmInput(dialogHandle, mainProcessId, "Alt+O", log))
             {
-                Keyboard.TypeSimultaneously(new[] { VirtualKeyShort.ALT, VirtualKeyShort.KEY_O });
+                NativeKeyboard.SendAltChord(VK_O, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Alt+O");
                 return true;
             }
         }
@@ -1578,6 +1824,79 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
             // Treated as "couldn't confirm" below.
         }
         return false;
+    }
+
+    /// <summary>
+    /// V-T41 ROUND 5 root-cause fix — see TryConfirmDialog's own doc
+    /// comment for why this runs first. Best-effort, three independent
+    /// steps, never throws (a failure partway through still lets the
+    /// rest of TryConfirmDialog run — TryAuthorizeConfirmInput's strict
+    /// guard is the real safety net if this doesn't fully succeed):
+    /// (1) collapse every currently-expanded ComboBox under `dialog` via
+    /// ExpandCollapsePattern (COM-targeted, not gated by
+    /// TryAuthorizeDialogInput); (2) if a same-process 'ComboLBox' popup
+    /// is STILL the OS foreground (a legacy WinForms combo whose popup
+    /// doesn't respond to (1)), send a raw Escape to it — the standard
+    /// Win32 way to close a combo drop-down without touching the dialog
+    /// underneath; (3) re-assert the dialog itself as the foreground
+    /// window if it isn't already.
+    /// </summary>
+    private void EnsureDropdownClosedAndDialogForeground(AutomationElement dialog, IntPtr dialogHandle, int mainProcessId, Action<string> log)
+    {
+        try
+        {
+            foreach (var control in FindSelectionControlCandidates(dialog))
+            {
+                if (SafeControlType(control) != ControlType.ComboBox) continue;
+                try
+                {
+                    if (control.Patterns.ExpandCollapse.IsSupported &&
+                        control.Patterns.ExpandCollapse.Pattern.ExpandCollapseState.ValueOrDefault == ExpandCollapseState.Expanded)
+                    {
+                        control.Patterns.ExpandCollapse.Pattern.Collapse();
+                        log($"[{Name}] \"Priority\" dialog: confirm — collapsed an expanded ComboBox before confirming.");
+                    }
+                }
+                catch
+                {
+                    // Best-effort.
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort.
+        }
+
+        try
+        {
+            var foreground = Win32WindowEnumerator.GetForegroundWindowHandle();
+            if (foreground != IntPtr.Zero && foreground != dialogHandle)
+            {
+                var info = Win32WindowEnumerator.Describe(foreground);
+                if (info.ProcessId == mainProcessId && string.Equals(info.ClassName, "ComboLBox", StringComparison.OrdinalIgnoreCase))
+                {
+                    log($"[{Name}] \"Priority\" dialog: confirm — a ComboLBox popup still has the foreground; sending Escape to close it.");
+                    NativeKeyboard.SendKey(VK_ESCAPE, msg => log($"[{Name}] \"Priority\" dialog: {msg}"), "Escape (close stray combo popup)");
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort.
+        }
+
+        try
+        {
+            if (!Win32WindowEnumerator.IsForegroundWindow(dialogHandle))
+            {
+                Win32WindowEnumerator.TryBringToForeground(dialogHandle);
+            }
+        }
+        catch
+        {
+            // Best-effort.
+        }
     }
 
     private static string SafeAutomationId(AutomationElement element)
