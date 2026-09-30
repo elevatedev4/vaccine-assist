@@ -54,7 +54,14 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 ///      — placeholder AutomationId, not yet confirmed against a live UIA
 ///      dump; see that step's own doc comment).
 ///   7. InputLotAndExpirationStep — lot + expiration, plain text entry.
-///   8. ConfirmEntryStep — locates PioneerRx's Save &amp; Continue button
+///   8. InputOriginAndDaysSupplyStep — origin ("Other") + days supply
+///      ("1") (NEW, V-T41 R6, Will's answer 2026-09-30 1:11pm: "Origin
+///      needs to be set to Other and Days supply needs to be set to 1" —
+///      run last among the field-entry steps, i.e. AFTER lot/expiration,
+///      matching "Then we just need to..."; neither field's AutomationId
+///      is fully confirmed against a live dump — see that step's own doc
+///      comment for why it never fails the whole entry over either one).
+///   9. ConfirmEntryStep — locates PioneerRx's Save &amp; Continue button
 ///      but does not click it (safety stop before the real Rx save).
 ///
 /// PRIORITY POPUP FIX (2026-09-13): `priorityValue` (optional, default
@@ -80,6 +87,7 @@ public sealed class PlaceholderVaccineEntrySequence : IPioneerEntrySequence
             new InputQuantityStep(),
             new InputDirectionsStep(),
             new InputLotAndExpirationStep(),
+            new InputOriginAndDaysSupplyStep(),
             new ConfirmEntryStep(),
         };
     }
