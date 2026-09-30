@@ -50,6 +50,14 @@ public sealed class FaxLedger : IFaxLedger
         }
     }
 
+    /// <summary>V-T65 R7 review follow-up (non-blocking note from R5:
+    /// "non-atomic JSON writes in the Fax ledgers"): writes to a temp file
+    /// next to the real one, then File.Move(overwrite:true) — a single
+    /// filesystem rename, so a crash/power-loss/AV-scan mid-write can
+    /// never leave ledger.json half-written (the old plain
+    /// File.WriteAllText could, and the receipt poller's own tick — 15s
+    /// while a fax is under 5 min old — makes that window come up
+    /// often).</summary>
     public void Save(List<FaxLedgerEntry> entries)
     {
         var directory = Path.GetDirectoryName(_filePath);
@@ -59,6 +67,8 @@ public sealed class FaxLedger : IFaxLedger
         }
 
         var json = JsonSerializer.Serialize(entries, JsonOptions);
-        File.WriteAllText(_filePath, json);
+        var tempPath = _filePath + ".tmp-" + Guid.NewGuid().ToString("n");
+        File.WriteAllText(tempPath, json);
+        File.Move(tempPath, _filePath, overwrite: true);
     }
 }

@@ -79,4 +79,22 @@ public class FaxLedgerTests : IDisposable
 
         Assert.Empty(ledger.Load());
     }
+
+    [Fact]
+    public void SaveLeavesNoTempFileBehindAndTheRealFileHasTheNewContent()
+    {
+        // V-T65 R7 review follow-up (non-blocking note from R5:
+        // "non-atomic JSON writes in the Fax ledgers") — Save now writes
+        // to a temp file and renames it into place; confirm that leaves
+        // exactly the target file, not a stray .tmp-* sibling.
+        var ledger = new FaxLedger(_filePath);
+
+        ledger.Save(new List<FaxLedgerEntry> { new() { PatientInitials = "TP", FaxId = "abc" } });
+
+        var directory = Path.GetDirectoryName(_filePath)!;
+        var siblings = Directory.GetFiles(directory, Path.GetFileName(_filePath) + "*");
+        Assert.Single(siblings);
+        Assert.Equal(_filePath, siblings[0]);
+        Assert.Equal("abc", ledger.Load().Single().FaxId);
+    }
 }

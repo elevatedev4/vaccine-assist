@@ -148,6 +148,11 @@ public sealed class FaxFileLedger : IFaxFileLedger
         return migrated;
     }
 
+    /// <summary>Same atomic-write treatment as FaxLedger.Save (V-T65 R7
+    /// review follow-up, non-blocking note from R5: "non-atomic JSON
+    /// writes in the Fax ledgers") — write-to-temp then
+    /// File.Move(overwrite:true) so a crash mid-write never leaves
+    /// sent-files.json half-written.</summary>
     private void Save(List<FaxSentRunEntry> runs)
     {
         var directory = Path.GetDirectoryName(_filePath);
@@ -157,7 +162,9 @@ public sealed class FaxFileLedger : IFaxFileLedger
         }
 
         var json = JsonSerializer.Serialize(runs, JsonOptions);
-        File.WriteAllText(_filePath, json);
+        var tempPath = _filePath + ".tmp-" + Guid.NewGuid().ToString("n");
+        File.WriteAllText(tempPath, json);
+        File.Move(tempPath, _filePath, overwrite: true);
     }
 
     /// <summary>The pre-R6 shape — kept ONLY so Load() can deserialize and

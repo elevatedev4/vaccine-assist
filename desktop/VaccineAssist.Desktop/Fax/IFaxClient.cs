@@ -19,8 +19,15 @@ public sealed record FaxRequest(
 /// IFaxClient.QueueAsync's own doc comment).</summary>
 public sealed record FaxQueueResult(bool Success, string? FaxId, string? ErrorMessage);
 
-/// <summary>Result of checking one queued fax's delivery status.</summary>
-public sealed record FaxStatusResult(bool Success, FaxSendStatus Status, string? ErrorMessage, int? Pages);
+/// <summary>Result of checking one queued fax's delivery status.
+/// <paramref name="RawStatus"/> is the vendor's own, unmapped status text
+/// (e.g. Notifyre's "successful"/"in_progress") — null when the vendor
+/// call itself failed (no status text to show) — kept only so callers can
+/// log "vendor said X, we mapped it to Y" (V-T65 R7: Will, 2026-09-30,
+/// "never reports back a successful fax" — this is the poll-result log
+/// line FaxReceiptPoller writes on every check) without re-deriving vendor
+/// text from the already-mapped enum.</summary>
+public sealed record FaxStatusResult(bool Success, FaxSendStatus Status, string? ErrorMessage, int? Pages, string? RawStatus = null);
 
 /// <summary>Result of a "test connection" call — Will's brief: "also
 /// implement Get_FaxUsage for a 'test connection' button," generalized
