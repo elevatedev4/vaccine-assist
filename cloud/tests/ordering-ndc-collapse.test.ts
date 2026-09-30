@@ -65,24 +65,23 @@ describe("collapseVaccinesByNdc", () => {
     expect(groups.map((g) => g.key)).toEqual(["vaccine:v1", "vaccine:v2"]);
   });
 
-  // V-T66 round 2 (reviewer finding 2026-09-30, Shingrix-on-Ordering
-  // follow-up): SUPERSEDES this test's old "keeps separate" expectation.
-  // Two rows sharing one EXACT (stripped, case-insensitive) name now
-  // merge into one group regardless of differing NDCs, mirroring
-  // lib/lots-grouping.ts's own same-name mismatched-NDC merge (added for
-  // the identical Shingrix shape) — see this file's header comment.
-  it("merges two different NDCs sharing an identical name into one group, primary NDC picked by the smallest-NDC tie-break", () => {
+  // V-T66 round 3 (reviewer REQUEST_CHANGES 2026-09-30): this is the
+  // ORIGINAL test, restored — round 2 briefly flipped it to "merges" for
+  // ANY same-name pair, which the reviewer correctly flagged as broader
+  // than Ordering has ever allowed (this file's own header quotes Will's
+  // rule, be8b2e7: "Each one in the ordering recommendations queue
+  // should be for the product itself, NDC specific"). Afluria has no
+  // lib/canonical-ndc.ts CANONICAL_NDC entry, so two rows that merely
+  // share its name but carry genuinely different NDCs (two package
+  // sizes) stay separate — only a CANONICAL_NDC-vetted name (Shingrix,
+  // see the tests below) merges across mismatched NDCs.
+  it("keeps two different NDCs separate even with an identical name", () => {
     const catalog: CollapsibleVaccine[] = [
       { id: "v1", name: "Afluria 2025-2026 Syr (3yr Up)", ndc: "33332-0025-03", active: true },
       { id: "v2", name: "Afluria 2025-2026 Syr (3yr Up)", ndc: "33332-0025-04", active: true },
     ];
     const groups = collapseVaccinesByNdc(catalog);
-    expect(groups).toHaveLength(1);
-    expect(groups[0]).toMatchObject({
-      key: "33332002503",
-      ndc: "33332002503",
-      vaccineIds: ["v1", "v2"],
-    });
+    expect(groups).toHaveLength(2);
   });
 
   it("active is true if ANY constituent vaccine is active", () => {

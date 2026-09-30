@@ -32,25 +32,35 @@
  * NDC-less rows are the same product unless one of them has a sibling
  * that proves it via a shared NDC.
  *
- * MISMATCHED NDC series (V-T66 round 2 follow-up, reviewer finding
- * 2026-09-30: the lots-page Shingrix fix didn't reach Ordering — Shingrix's
- * two dose rows carry DIFFERENT, both non-null, NDCs, so before this
- * change each dose started its OWN NDC-keyed group here and Ordering
- * showed two Shingrix rows). Mirrors lib/lots-grouping.ts's own
- * mismatched-NDC merge (added for the same Shingrix case): a later
- * NDC-bearing row whose (stripped, case-insensitive) product name matches
- * a group already seen joins THAT group instead of starting a second one,
- * as long as the exact NDC it carries hasn't already claimed its own
- * group under a different name (same collision guard lots-grouping.ts
- * uses). The merged group's ONE primary NDC is then lib/canonical-ndc.ts's
- * CANONICAL_NDC override when it applies (see that file), else the
- * lexicographically-smallest of the group's recorded NDCs — again mirroring
- * lots-grouping.ts, and for the same reason: `key`/`ndc` must depend only
- * on the SET of NDCs a product's dose rows carry, never on which row
- * GET's `.order("name")` happens to return first. upcoming7d/given7d/onHand
- * math downstream (app/api/ordering/recommendation/route.ts) is all summed
- * over `group.vaccineIds`, so once both dose rows land in one group here
- * the math path is identical to the existing null-NDC-merge case — no
+ * MISMATCHED NDC series, CANONICAL-ONLY (V-T66 round 2/3 follow-up,
+ * reviewer findings 2026-09-30: round 2 — the lots-page Shingrix fix
+ * didn't reach Ordering, since Shingrix's two dose rows carry DIFFERENT,
+ * both non-null, NDCs, so before that round each dose started its OWN
+ * NDC-keyed group here and Ordering showed two Shingrix rows; round 3 —
+ * the first fix merged ANY same-name rows regardless of NDC, which is
+ * broader than Ordering has ever allowed). This file's very own opening
+ * rule (Will msg 908, be8b2e7, verbatim: "Each one in the ordering
+ * recommendations queue should be for the product itself, NDC specific")
+ * means two rows merely SHARING A NAME but carrying genuinely different
+ * NDCs must stay separate — e.g. two Afluria package sizes really are
+ * different orderable products even though they share a display name.
+ * lib/lots-grouping.ts's /lots-page merge has no such guard (a /lots row
+ * merges on name alone, no allowlist), so this file does NOT just mirror
+ * it unconditionally: a later NDC-bearing row whose (stripped,
+ * case-insensitive) product name matches a group already seen joins THAT
+ * group ONLY when lib/canonical-ndc.ts's CANONICAL_NDC has an entry for
+ * that exact name key (Shingrix today, and nothing else) — i.e. only for
+ * a product Will has explicitly told us has one real identity split
+ * across NDCs. A same-name collision with no CANONICAL_NDC entry still
+ * produces two separate Ordering rows, same as always. (The merge is
+ * additionally guarded, same as before, against stealing an NDC another
+ * unrelated product already claimed under a different name.) The merged
+ * group's ONE primary NDC is then the CANONICAL_NDC value itself (it's
+ * how the merge fired in the first place) — see lib/canonical-ndc.ts.
+ * upcoming7d/given7d/onHand math downstream
+ * (app/api/ordering/recommendation/route.ts) is all summed over
+ * `group.vaccineIds`, so once both dose rows land in one group here the
+ * math path is identical to the existing null-NDC-merge case — no
  * changes needed there.
  */
 
@@ -145,10 +155,15 @@ function normalizeCollapseNameKey(name: string): string {
  *     members share its (normalized) product name.
  *   - An NDC-bearing row whose NDC differs from a sibling dose's NDC, but
  *     whose (dose-marker-stripped) name matches a group already seen,
- *     joins THAT group instead of starting a second NDC group (the
- *     Shingrix case) — unless that exact NDC already has its own group
- *     with DIFFERENT-named members, in which case the merge is skipped
- *     so an unrelated product's own grouping is never disturbed.
+ *     joins THAT group instead of starting a second NDC group — ONLY
+ *     when lib/canonical-ndc.ts's CANONICAL_NDC has an entry for that
+ *     product's name key (the Shingrix case; nothing else today).
+ *     Still skipped, same as the null-NDC case, when that exact NDC
+ *     already has its own group with DIFFERENT-named members, so an
+ *     unrelated product's own grouping is never disturbed. A same-name
+ *     collision with NO CANONICAL_NDC entry stays two separate groups
+ *     — see this file's header comment for why (Will's "NDC specific"
+ *     rule).
  *
  * Two passes over `catalog`: NDC-bearing rows first (so every possible
  * NDC group, and its name, exists before any null-NDC row needs to look
@@ -174,11 +189,25 @@ export function collapseVaccinesByNdc(catalog: CollapsibleVaccine[]): CollapsedV
     const key = ndc;
     const existingGroupKeyForName = nameKeyToNdcGroupKey.get(nameKey);
 
-    if (existingGroupKeyForName && existingGroupKeyForName !== key && !groups.has(key)) {
+    if (
+      existingGroupKeyForName &&
+      existingGroupKeyForName !== key &&
+      !groups.has(key) &&
+      CANONICAL_NDC[nameKey] !== undefined
+    ) {
       // Same product family by name, different NDC than its sibling
       // dose(s) — join rather than starting a second group. Guarded by
       // `!groups.has(key)` so this never steals an unrelated product
-      // that already claimed this exact NDC under a different name.
+      // that already claimed this exact NDC under a different name, AND
+      // by `CANONICAL_NDC[nameKey] !== undefined` (reviewer fix, V-T66
+      // round 3, REQUEST_CHANGES 2026-09-30) so this merge fires ONLY for
+      // a product explicitly vetted in lib/canonical-ndc.ts (Shingrix
+      // today) — Will's original Ordering rule (be8b2e7, verbatim: "Each
+      // one in the ordering recommendations queue should be for the
+      // product itself, NDC specific") still holds for every other
+      // product: two rows that merely SHARE a name but carry genuinely
+      // different, un-vetted NDCs (e.g. two Afluria package sizes) stay
+      // separate, same as before this file ever gained a Shingrix fix.
       const target = groups.get(existingGroupKeyForName) as { ndcs: string[]; vaccines: CollapsibleVaccine[] };
       target.vaccines.push(vaccine);
       if (!target.ndcs.includes(ndc)) target.ndcs.push(ndc);
