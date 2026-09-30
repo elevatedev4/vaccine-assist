@@ -76,12 +76,22 @@ public sealed class PlaceholderVaccineEntrySequence : IPioneerEntrySequence
 
     public IReadOnlyList<IPioneerEntryStep> Steps { get; }
 
-    public PlaceholderVaccineEntrySequence(string priorityValue = "Vaccine")
+    // V-T41 R7 item 2: enableAutoSuggestDiagnostics threads down to step 2
+    // (SendF3AndDismissPreEntryDialogsStep's own opt-in flag — see its doc
+    // comment) — defaults to false (off) so an existing caller/test built
+    // with no arguments still gets the fast path. NOT yet wired to a real
+    // AppSettings/settings.json field or to App.xaml.cs's composition root
+    // — this coder's brief scoped changes to PioneerEntryAutomation/** only,
+    // and those two files live outside it. Someone with access to App.xaml.cs
+    // + Settings/AppSettings.cs needs to add an AppSettings bool (same
+    // pattern as PriorityValue) and pass it through here to make this
+    // actually reachable from settings.json.
+    public PlaceholderVaccineEntrySequence(string priorityValue = "Vaccine", bool enableAutoSuggestDiagnostics = false)
     {
         Steps = new IPioneerEntryStep[]
         {
             new FocusPioneerWindowStep(),
-            new SendF3AndDismissPreEntryDialogsStep(priorityValue),
+            new SendF3AndDismissPreEntryDialogsStep(priorityValue, enableAutoSuggestDiagnostics),
             new SelectPrescriberStep(),
             new InputVaccineCodeStep(),
             new InputQuantityStep(),
