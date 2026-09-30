@@ -31,9 +31,31 @@
  * any NDC-bearing sibling — there's still no positive evidence two
  * NDC-less rows are the same product unless one of them has a sibling
  * that proves it via a shared NDC.
+ *
+ * MISMATCHED NDC series (V-T66 round 2 follow-up, reviewer finding
+ * 2026-09-30: the lots-page Shingrix fix didn't reach Ordering — Shingrix's
+ * two dose rows carry DIFFERENT, both non-null, NDCs, so before this
+ * change each dose started its OWN NDC-keyed group here and Ordering
+ * showed two Shingrix rows). Mirrors lib/lots-grouping.ts's own
+ * mismatched-NDC merge (added for the same Shingrix case): a later
+ * NDC-bearing row whose (stripped, case-insensitive) product name matches
+ * a group already seen joins THAT group instead of starting a second one,
+ * as long as the exact NDC it carries hasn't already claimed its own
+ * group under a different name (same collision guard lots-grouping.ts
+ * uses). The merged group's ONE primary NDC is then lib/canonical-ndc.ts's
+ * CANONICAL_NDC override when it applies (see that file), else the
+ * lexicographically-smallest of the group's recorded NDCs — again mirroring
+ * lots-grouping.ts, and for the same reason: `key`/`ndc` must depend only
+ * on the SET of NDCs a product's dose rows carry, never on which row
+ * GET's `.order("name")` happens to return first. upcoming7d/given7d/onHand
+ * math downstream (app/api/ordering/recommendation/route.ts) is all summed
+ * over `group.vaccineIds`, so once both dose rows land in one group here
+ * the math path is identical to the existing null-NDC-merge case — no
+ * changes needed there.
  */
 
 import { normalizeNdc } from "@/lib/ndc";
+import { CANONICAL_NDC } from "@/lib/canonical-ndc";
 
 const DOSE_MARKER_PATTERNS: RegExp[] = [
   /\s*\(\s*\d+\s*of\s*\d+\s*\)\s*$/i, // "(2 of 3)"
@@ -75,15 +97,26 @@ export type CollapsibleVaccine = {
 };
 
 export type CollapsedVaccineGroup = {
-  /** Digits-only NDC (when the group has one — including a null-NDC
-   * dose row that joined an NDC-bearing sibling by name, see this
-   * file's header comment), or "vaccine:<id>" for a null-NDC vaccine
-   * with no NDC-bearing same-name sibling to join. Two null-NDC
+  /** The group's primary digits-only NDC (when it has one — including a
+   * null-NDC dose row that joined an NDC-bearing sibling by name, see
+   * this file's header comment), or "vaccine:<id>" for a null-NDC
+   * vaccine with no NDC-bearing same-name sibling to join. Two null-NDC
    * vaccines are still NEVER collapsed with EACH OTHER — there's no
    * positive evidence they're the same product without a shared NDC
-   * somewhere in the group. */
+   * somewhere in the group. When a group's dose rows carry more than one
+   * distinct NDC (the Shingrix case — see this file's header comment),
+   * this is the SAME primary NDC as `ndc` below, not any of the other
+   * NDCs the group's rows also carry. */
   key: string;
-  /** Digits-only NDC shared by every vaccine in this group, or null. */
+  /** The group's ONE primary NDC — lib/canonical-ndc.ts's CANONICAL_NDC
+   * override when one applies (see this file's header comment), else the
+   * lexicographically-smallest of every distinct NDC the group's dose
+   * rows carry, else null when no member has an NDC at all. This is the
+   * only NDC Ordering displays or keys on for a multi-NDC product; any
+   * other NDC(s) the group's rows carry are folded into `vaccineIds`
+   * (and hence upcoming7d/given7d/onHand sums) but not separately
+   * exposed here — this file has no lots-page-style altNdcs display, so
+   * there's nothing downstream that needs them listed. */
   ndc: string | null;
   vaccineName: string;
   /** true if ANY constituent vaccine is active — an active dose keeps
@@ -105,9 +138,17 @@ function normalizeCollapseNameKey(name: string): string {
 /**
  * Groups a flat catalog list into one CollapsedVaccineGroup per product:
  * keyed by digits-only NDC when any member has one, else by vaccine id.
- * A null-NDC dose row joins an existing NDC-bearing group whose members
- * share its (normalized) product name — see this file's header comment
- * — rather than always starting its own single-row group.
+ * Two ways a row joins an existing NDC-bearing group instead of starting
+ * its own (see this file's header comment for both):
+ *
+ *   - A null-NDC dose row joins an existing NDC-bearing group whose
+ *     members share its (normalized) product name.
+ *   - An NDC-bearing row whose NDC differs from a sibling dose's NDC, but
+ *     whose (dose-marker-stripped) name matches a group already seen,
+ *     joins THAT group instead of starting a second NDC group (the
+ *     Shingrix case) — unless that exact NDC already has its own group
+ *     with DIFFERENT-named members, in which case the merge is skipped
+ *     so an unrelated product's own grouping is never disturbed.
  *
  * Two passes over `catalog`: NDC-bearing rows first (so every possible
  * NDC group, and its name, exists before any null-NDC row needs to look
@@ -119,26 +160,41 @@ function normalizeCollapseNameKey(name: string): string {
  */
 export function collapseVaccinesByNdc(catalog: CollapsibleVaccine[]): CollapsedVaccineGroup[] {
   const order: string[] = [];
-  const groups = new Map<string, { ndc: string | null; vaccines: CollapsibleVaccine[] }>();
+  const groups = new Map<string, { ndcs: string[]; vaccines: CollapsibleVaccine[] }>();
   // First NDC-bearing group key seen for a given normalized product
   // name — lets a later null-NDC sibling dose (e.g. Vaqta adult's dose
-  // 2, which carries no NDC at all) join that group instead of starting
-  // its own single-row group.
+  // 2, which carries no NDC at all), or a later row with a DIFFERENT NDC
+  // (Shingrix), join that group instead of starting its own.
   const nameKeyToNdcGroupKey = new Map<string, string>();
 
   for (const vaccine of catalog) {
     const ndc = normalizeNdc(vaccine.ndc);
     if (!ndc) continue;
-    const key = ndc;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.vaccines.push(vaccine);
-    } else {
-      groups.set(key, { ndc, vaccines: [vaccine] });
-      order.push(key);
-    }
     const nameKey = normalizeCollapseNameKey(vaccine.name);
-    if (!nameKeyToNdcGroupKey.has(nameKey)) nameKeyToNdcGroupKey.set(nameKey, key);
+    const key = ndc;
+    const existingGroupKeyForName = nameKeyToNdcGroupKey.get(nameKey);
+
+    if (existingGroupKeyForName && existingGroupKeyForName !== key && !groups.has(key)) {
+      // Same product family by name, different NDC than its sibling
+      // dose(s) — join rather than starting a second group. Guarded by
+      // `!groups.has(key)` so this never steals an unrelated product
+      // that already claimed this exact NDC under a different name.
+      const target = groups.get(existingGroupKeyForName) as { ndcs: string[]; vaccines: CollapsibleVaccine[] };
+      target.vaccines.push(vaccine);
+      if (!target.ndcs.includes(ndc)) target.ndcs.push(ndc);
+      continue;
+    }
+
+    let group = groups.get(key);
+    if (!group) {
+      group = { ndcs: [ndc], vaccines: [] };
+      groups.set(key, group);
+      order.push(key);
+      if (!nameKeyToNdcGroupKey.has(nameKey)) nameKeyToNdcGroupKey.set(nameKey, key);
+    } else if (!group.ndcs.includes(ndc)) {
+      group.ndcs.push(ndc);
+    }
+    group.vaccines.push(vaccine);
   }
 
   for (const vaccine of catalog) {
@@ -146,24 +202,44 @@ export function collapseVaccinesByNdc(catalog: CollapsibleVaccine[]): CollapsedV
     if (ndc) continue; // already placed above
 
     const nameKey = normalizeCollapseNameKey(vaccine.name);
+    // Deliberately NOT registered into nameKeyToNdcGroupKey when this
+    // creates a fresh `vaccine:<id>` orphan group — two null-NDC rows are
+    // never collapsed with EACH OTHER absent an NDC-bearing sibling (see
+    // this file's header comment and the "never collapses two null-NDC
+    // vaccines together" test), unlike lib/lots-grouping.ts's equivalent
+    // second pass, which intentionally does register its name-only
+    // fallback group.
     const key = nameKeyToNdcGroupKey.get(nameKey) ?? `vaccine:${vaccine.id}`;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.vaccines.push(vaccine);
-    } else {
-      groups.set(key, { ndc: null, vaccines: [vaccine] });
+    let group = groups.get(key);
+    if (!group) {
+      group = { ndcs: [], vaccines: [] };
+      groups.set(key, group);
       order.push(key);
     }
+    group.vaccines.push(vaccine);
   }
 
   return order.map((key) => {
-    const { ndc, vaccines } = groups.get(key) as { ndc: string | null; vaccines: CollapsibleVaccine[] };
+    const group = groups.get(key) as { ndcs: string[]; vaccines: CollapsibleVaccine[] };
+    // Same reasoning as lib/lots-grouping.ts's identical step: sort the
+    // group's recorded NDCs so the primary pick depends only on the SET
+    // of NDCs the product's dose rows carry, never on catalog/array
+    // order (see the "order-independent" test in
+    // tests/ordering-ndc-collapse.test.ts). CANONICAL_NDC (V-T66 round 2,
+    // Will 2026-09-30: "This is the correct NDC for Shingrix:
+    // 58160084952. Don't list both.") wins over that tie-break when it
+    // applies AND the canonical value is actually one of this group's
+    // own recorded NDCs — never invents an NDC nobody seeded.
+    const sortedNdcs = [...group.ndcs].sort();
+    const vaccineName = chooseCollapsedName(group.vaccines.map((v) => v.name));
+    const canonicalNdc = CANONICAL_NDC[normalizeCollapseNameKey(vaccineName)];
+    const primaryNdc = canonicalNdc && sortedNdcs.includes(canonicalNdc) ? canonicalNdc : (sortedNdcs[0] ?? null);
     return {
-      key,
-      ndc,
-      vaccineName: chooseCollapsedName(vaccines.map((v) => v.name)),
-      active: vaccines.some((v) => v.active),
-      vaccineIds: vaccines.map((v) => v.id),
+      key: primaryNdc ?? key,
+      ndc: primaryNdc,
+      vaccineName,
+      active: group.vaccines.some((v) => v.active),
+      vaccineIds: group.vaccines.map((v) => v.id),
     };
   });
 }
