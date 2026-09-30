@@ -179,6 +179,69 @@ describe("groupVaccinesIntoProducts", () => {
     expect(adult?.altNdcs).toEqual([]);
   });
 
+  // --- V-T66 round 2 (Will 2026-09-30 1:16pm verbatim: "This is the
+  // correct NDC for Shingrix: 58160084952. Don't list both.") —
+  // production's real second Shingrix NDC ("58160-0823-11") sorts BEFORE
+  // the canonical kit NDC ("58160-0849-52") lexicographically, so the
+  // plain smallest-NDC rule alone would pick the wrong one. ---
+  it("uses the CANONICAL_NDC override as primary, even when it is not the lexicographically-smallest NDC (Shingrix)", () => {
+    const vaccines = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+    ];
+    const groups = groupVaccinesIntoProducts(vaccines);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].ndc).toBe("58160084952");
+    expect(groups[0].key).toBe("ndc:58160084952");
+    // The non-canonical NDC is still tracked internally for matching/
+    // dedup (see lib/product-view.ts's altNdcs doc) — it's the caller
+    // (app/lots/page.tsx) that stops rendering it, not this function.
+    expect(groups[0].altNdcs).toEqual(["58160082311"]);
+  });
+
+  it("still applies the canonical override regardless of which mismatched-NDC row is seen first", () => {
+    const vaccines = [
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+    ];
+    const groups = groupVaccinesIntoProducts(vaccines);
+    expect(groups[0].ndc).toBe("58160084952");
+    expect(groups[0].altNdcs).toEqual(["58160082311"]);
+  });
+
+  it("merges Shingrix lots recorded under either the canonical or the alt NDC into the single Shingrix row", () => {
+    const vaccines = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+    ];
+    const groups = groupVaccinesIntoProducts(vaccines);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].vaccineIds.sort()).toEqual(["sh1", "sh2"]);
+  });
+
+  it("falls back to the smallest-NDC rule for a product with no CANONICAL_NDC entry", () => {
+    const vaccines = [
+      { id: "x1", name: "Some Unmapped Product", ndc: "00009-9999-99", active: true },
+      { id: "x2", name: "Some Unmapped Product", ndc: "00001-1111-11", active: true },
+    ];
+    const groups = groupVaccinesIntoProducts(vaccines);
+    expect(groups[0].ndc).toBe("00001111111");
+    expect(groups[0].altNdcs).toEqual(["00009999999"]);
+  });
+
+  it("falls back to the smallest-NDC rule when the canonical value isn't actually among the product's recorded NDCs", () => {
+    // Defensive: CANONICAL_NDC.shingrix is "58160084952" — a Shingrix
+    // product whose seeded rows don't actually carry that NDC (e.g. a
+    // re-seed or bad data) must never have an NDC invented for it.
+    const vaccines = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0821-52", active: true },
+    ];
+    const groups = groupVaccinesIntoProducts(vaccines);
+    expect(groups[0].ndc).toBe("58160082152");
+    expect(groups[0].altNdcs).toEqual(["58160082311"]);
+  });
+
   it("does not steal an unrelated product's rows just because a mismatched-NDC dose happens to share that NDC", () => {
     // "Other Product" legitimately owns ndc B. A later Shingrix dose row
     // that ALSO happens to carry ndc B must not pull "Other Product"

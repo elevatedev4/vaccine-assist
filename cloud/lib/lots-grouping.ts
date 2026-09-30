@@ -24,6 +24,7 @@
  */
 
 import { normalizeNdc } from "@/lib/ndc";
+import { CANONICAL_NDC } from "@/lib/canonical-ndc";
 
 const DOSE_MARKER_PATTERNS: RegExp[] = [
   /\s*\(\s*\d+\s*of\s*\d+\s*\)\s*$/i, // "(2 of 3)"
@@ -85,7 +86,9 @@ export type LotsCatalogVaccine = {
 export type LotsProductGroup = {
   /** Stable grouping key: `ndc:<digits>` when any member has an NDC,
    * else `name:<normalized name>`. When a product's dose rows carry more
-   * than one distinct NDC (see `altNdcs`), this is built from the
+   * than one distinct NDC (see `altNdcs`), this is built from
+   * lib/canonical-ndc.ts's CANONICAL_NDC override when the product has
+   * one AND that value is among its own recorded NDCs, else the
    * LEXICOGRAPHICALLY-SMALLEST one — deliberately NOT "whichever NDC
    * this function saw first" (reviewer fix, post-Shingrix-fix review):
    * GET /api/vaccines only orders by `name`, so Postgres doesn't
@@ -98,10 +101,14 @@ export type LotsProductGroup = {
   key: string;
   /** Digits-only NDC shared by the group, or null if no member has one.
    * When the group's dose rows carry more than one distinct NDC (see
-   * `altNdcs`), this is the lexicographically-smallest one (see `key`'s
-   * doc above for why) — kept as a single value so existing NDC-matching
-   * callers (Ordering's on-hand reconciliation, lib/product-view.ts)
-   * don't need to change. */
+   * `altNdcs`), this is lib/canonical-ndc.ts's CANONICAL_NDC override
+   * when one applies (see `key`'s doc above), else the
+   * lexicographically-smallest one — kept as a single value so existing
+   * NDC-matching callers (Ordering's on-hand reconciliation,
+   * lib/product-view.ts) don't need to change. This is the ONLY NDC any
+   * page renders for the product (V-T66 round 2, Will 2026-09-30:
+   * "Don't list both") — `altNdcs` below is kept for internal
+   * matching/dedup only, never displayed. */
   ndc: string | null;
   /** Any ADDITIONAL distinct NDCs found among this product's dose rows,
    * beyond the primary `ndc` (V-T lots Shingrix fix, Will 2026-09-29:
@@ -109,9 +116,12 @@ export type LotsProductGroup = {
    * rows carry mismatched NDCs in production, per lib/dose-family.ts's
    * and scripts/backfill-entry-directions.ts's existing notes on this
    * exact case). Empty when every member shares one NDC (the normal
-   * case) or has none. Digits-only, lexicographically sorted (ascending,
-   * matching `ndc`'s own tie-break — see its doc above), never including
-   * `ndc` itself. */
+   * case) or has none. Digits-only, sorted ascending, never including
+   * `ndc` itself (regardless of whether `ndc` came from the
+   * lexicographic tie-break or a CANONICAL_NDC override). Internal only
+   * — no page renders this list (V-T66 round 2, Will: "Don't list
+   * both"); it exists purely so on-hand/lot matching against either
+   * recorded NDC keeps working. */
   altNdcs: string[];
   /** Display name (see chooseProductDisplayName). */
   name: string;
@@ -228,12 +238,21 @@ export function groupVaccinesIntoProducts(vaccines: readonly LotsCatalogVaccine[
     // secondary `.order("id")` as belt-and-suspenders, but this function
     // no longer depends on that for a stable key.)
     const sortedNdcs = [...group.ndcs].sort();
-    const primaryNdc = sortedNdcs[0] ?? null;
+    const name = chooseProductDisplayName(group.vaccines.map((v) => v.name));
+    // Canonical-NDC override (V-T66 round 2, Will 2026-09-30: "This is
+    // the correct NDC for Shingrix: 58160084952. Don't list both.") — a
+    // product listed in lib/canonical-ndc.ts's CANONICAL_NDC wins the
+    // primary slot over the plain lexicographic tie-break above, but
+    // ONLY when that canonical value is actually one of THIS product's
+    // own recorded NDCs; otherwise nothing here ever invents an NDC that
+    // wasn't seeded, and the normal smallest-NDC rule still applies.
+    const canonicalNdc = CANONICAL_NDC[normalizeProductNameKey(name)];
+    const primaryNdc = canonicalNdc && sortedNdcs.includes(canonicalNdc) ? canonicalNdc : (sortedNdcs[0] ?? null);
     return {
       key: primaryNdc ? `ndc:${primaryNdc}` : key,
       ndc: primaryNdc,
-      altNdcs: sortedNdcs.slice(1),
-      name: chooseProductDisplayName(group.vaccines.map((v) => v.name)),
+      altNdcs: sortedNdcs.filter((ndc) => ndc !== primaryNdc),
+      name,
       active: group.vaccines.some((v) => v.active),
       vaccineIds: group.vaccines.map((v) => v.id),
     };
