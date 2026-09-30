@@ -45,8 +45,21 @@ namespace VaccineAssist.Desktop.Fax;
 public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
 {
     private const double MarginPoints = 40;
-    private const double RowHeight = 18;
+
+    /// <summary>V-T65 R6 (Will, verbatim, 2026-09-29): "it was coming
+    /// across a little hazy on the fax I printed out" — bumped from 9pt
+    /// alongside TableBodyFontSize below (a fax is rasterized at ~200dpi
+    /// and loses small/thin detail); RowHeight grew to match so rows never
+    /// overlap.</summary>
+    private const double RowHeight = 22;
+
     private const double HeaderRowHeight = 20;
+
+    /// <summary>Company logo (Fax settings, V-T65 R6): max box it's
+    /// scaled into, aspect preserved — see the "To:"/title-block layout
+    /// below.</summary>
+    private const double MaxLogoWidth = 160;
+    private const double MaxLogoHeight = 60;
 
     private static readonly string[] ColumnHeaders =
         { "Patient Name", "Birth Date", "Vaccination", "Date Administered" };
@@ -76,7 +89,10 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         var labelFont = new XFont("Arial", 11, XFontStyleEx.Bold);
         var bodyFont = new XFont("Arial", 11, XFontStyleEx.Regular);
         var tableHeaderFont = new XFont("Arial", 9, XFontStyleEx.Bold);
-        var tableBodyFont = new XFont("Arial", 9, XFontStyleEx.Regular);
+        // V-T65 R6 (Will, verbatim, 2026-09-29): "make the text on the
+        // patient info rows easier to read ... it was coming across a
+        // little hazy on the fax I printed out." Bumped from 9pt.
+        var tableBodyFont = new XFont("Arial", 10.5, XFontStyleEx.Regular);
         var footerFont = new XFont("Arial", 8, XFontStyleEx.Italic);
 
         var page = NewPage(document);
@@ -88,11 +104,51 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
 
         var y = MarginPoints;
 
+        // Company logo (Fax settings, V-T65 R6: "Add a place in settings
+        // for me to upload company logo") — top-left, max
+        // MaxLogoWidth x MaxLogoHeight with aspect preserved; the title
+        // block shifts right of it. No logo (the default, and any bad/
+        // missing logo file) -> textLeft stays `left` and logoBottomY
+        // stays MarginPoints, so the layout below is byte-for-byte what it
+        // was before this setting existed.
+        var textLeft = left;
+        var logoBottomY = MarginPoints;
+        if (!string.IsNullOrWhiteSpace(faxSettings.LogoPath) && File.Exists(faxSettings.LogoPath))
+        {
+            try
+            {
+                using var logoImage = XImage.FromFile(faxSettings.LogoPath);
+                var aspect = logoImage.PixelHeight > 0
+                    ? (double)logoImage.PixelWidth / logoImage.PixelHeight
+                    : 1.0;
+                var drawWidth = MaxLogoWidth;
+                var drawHeight = aspect > 0 ? drawWidth / aspect : MaxLogoHeight;
+                if (drawHeight > MaxLogoHeight)
+                {
+                    drawHeight = MaxLogoHeight;
+                    drawWidth = drawHeight * aspect;
+                }
+
+                gfx.DrawImage(logoImage, left, MarginPoints, drawWidth, drawHeight);
+                textLeft = left + drawWidth + 16;
+                logoBottomY = MarginPoints + drawHeight;
+            }
+            catch
+            {
+                // A moved/corrupt logo file must never block the fax
+                // itself — fall back to the no-logo layout.
+            }
+        }
+
         // Title block.
-        gfx.DrawString("Fax", titleFont, XBrushes.Black, new XPoint(left, y + 18));
+        gfx.DrawString("Fax", titleFont, XBrushes.Black, new XPoint(textLeft, y + 18));
         y += 30;
-        gfx.DrawString("Vaccine Administration Notification", subtitleFont, XBrushes.Black, new XPoint(left, y + 14));
+        gfx.DrawString("Vaccine Administration Notification", subtitleFont, XBrushes.Black, new XPoint(textLeft, y + 14));
         y += 26;
+        if (logoBottomY > MarginPoints)
+        {
+            y = Math.Max(y, logoBottomY) + 6;
+        }
         gfx.DrawLine(XPens.Black, left, y, right, y);
         y += 20;
 
@@ -218,18 +274,25 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
     {
         var totalWidth = ColumnWidths[0] + ColumnWidths[1] + ColumnWidths[2] + ColumnWidths[3];
 
-        // Shaded header row (Will's brief: "header row shaded").
+        // Shaded header row (Will's brief: "header row shaded") — a FILL,
+        // not a text-adjacent stroke, so it stays light gray even though
+        // strokes/text below are black (V-T65 R6: a fax loses thin/light
+        // detail, but a shaded background block survives fine).
         gfx.DrawRectangle(XBrushes.LightGray, new XRect(left, y, totalWidth, HeaderRowHeight));
 
         var x = left;
         for (var i = 0; i < ColumnHeaders.Length; i++)
         {
+            // Column headers are bold + black (V-T65 R6: "make the column
+            // header bold" — font is already XFontStyleEx.Bold, see Build).
             gfx.DrawString(ColumnHeaders[i], font, XBrushes.Black, new XPoint(x + 4, y + 14));
             x += ColumnWidths[i];
         }
 
-        // Thin table rules (brief: "thin table rules").
-        gfx.DrawRectangle(XPens.Gray, new XRect(left, y, totalWidth, HeaderRowHeight));
+        // V-T65 R6 (Will, verbatim: "avoid ... thin hairlines under text";
+        // a fax is rasterized at ~200dpi and loses light strokes) — was
+        // XPens.Gray.
+        gfx.DrawRectangle(XPens.Black, new XRect(left, y, totalWidth, HeaderRowHeight));
     }
 
     private static void DrawTableRow(XGraphics gfx, XFont font, double left, double y, IReadOnlyList<string> cells)
@@ -238,10 +301,15 @@ public sealed class VaccineRecordPdfBuilder : IVaccineRecordPdfBuilder
         var x = left;
         for (var i = 0; i < cells.Count && i < ColumnWidths.Length; i++)
         {
-            gfx.DrawString(Truncate(cells[i]), font, XBrushes.Black, new XPoint(x + 4, y + 13));
+            // Body text is black (V-T65 R6: "make sure the font color is
+            // black at least" — was already XBrushes.Black; font just grew
+            // to 10.5pt, see Build).
+            gfx.DrawString(Truncate(cells[i]), font, XBrushes.Black, new XPoint(x + 4, y + 15));
             x += ColumnWidths[i];
         }
-        gfx.DrawLine(XPens.LightGray, left, y + RowHeight, left + totalWidth, y + RowHeight);
+        // V-T65 R6 (Will, verbatim: "avoid ... thin hairlines under
+        // text") — was XPens.LightGray, which a ~200dpi fax loses.
+        gfx.DrawLine(XPens.Black, left, y + RowHeight, left + totalWidth, y + RowHeight);
     }
 
     /// <summary>Cheap length guard so an unexpectedly long report value

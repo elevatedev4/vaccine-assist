@@ -215,6 +215,64 @@ public class VaccineRecordPdfBuilderTests
         Assert.NotEmpty(result.PdfBytes);
     }
 
+    // ---- V-T65 R6 (Will, verbatim, 2026-09-29): "Add a place in settings
+    // for me to upload company logo to use in the report." ----
+
+    /// <summary>A minimal, valid 1x1 transparent PNG — synthetic test data
+    /// only, per the PHI rule (nothing derived from a real logo).</summary>
+    private const string OnePixelPngBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    [Fact]
+    public void BuildWithNoLogoProducesANonEmptyPdfWithoutThrowing()
+    {
+        var builder = new VaccineRecordPdfBuilder();
+        var settingsWithoutLogo = new FaxSettings { PharmacyName = "Test Pharmacy", LogoPath = null };
+
+        var result = builder.Build(MakeGroup(1), settingsWithoutLogo, "5555550200");
+
+        Assert.NotEmpty(result.PdfBytes);
+    }
+
+    [Fact]
+    public void BuildWithALogoProducesANonEmptyPdfWithoutThrowing()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "vaccine-assist-tests", Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempDir);
+        var logoPath = Path.Combine(tempDir, "logo.png");
+        File.WriteAllBytes(logoPath, Convert.FromBase64String(OnePixelPngBase64));
+
+        try
+        {
+            var builder = new VaccineRecordPdfBuilder();
+            var settingsWithLogo = new FaxSettings { PharmacyName = "Test Pharmacy", LogoPath = logoPath };
+
+            var result = builder.Build(MakeGroup(1), settingsWithLogo, "5555550200");
+
+            Assert.NotEmpty(result.PdfBytes);
+            Assert.Equal("%PDF", Encoding.ASCII.GetString(result.PdfBytes, 0, 4));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public void BuildWithAMissingLogoFileFallsBackToNoLogoRatherThanThrowing()
+    {
+        var builder = new VaccineRecordPdfBuilder();
+        var settingsWithBadLogo = new FaxSettings
+        {
+            PharmacyName = "Test Pharmacy",
+            LogoPath = Path.Combine(Path.GetTempPath(), "vaccine-assist-tests", "does-not-exist.png"),
+        };
+
+        var result = builder.Build(MakeGroup(1), settingsWithBadLogo, "5555550200");
+
+        Assert.NotEmpty(result.PdfBytes);
+    }
+
     /// <summary>Decompresses every Flate content stream in the PDF and
     /// pulls out the literal text of every Tj-drawn string, unescaping
     /// PDF's backslash escapes for parens/backslash, joined with spaces

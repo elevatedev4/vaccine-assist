@@ -121,12 +121,11 @@ public partial class App : Application
         // this too.
         _faxHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         _faxCredentialStore = new FaxCredentialStore();
-        var importLedger = new ImportLedger();
-        var reportImporter = new ReportImporter(importLedger);
+        var reportImporter = new ReportImporter();
         var pdfBuilder = new VaccineRecordPdfBuilder();
         var faxLedger = new FaxLedger();
         // LocalApplicationData (not the roaming ApplicationData used by
-        // FaxLedger/ImportLedger above) — reviewer fix (V-T53): this root holds outbox\/sent\/failed\, i.e.
+        // FaxLedger above) — reviewer fix (V-T53): this root holds outbox\/sent\/failed\, i.e.
         // actual patient PDFs, plus runs\ summaries. On a domain-joined PC
         // with roaming profiles, anything under ApplicationData replicates
         // to a profile server; PHI-bearing PDFs must never do that. Same
@@ -150,13 +149,13 @@ public partial class App : Application
         var faxCredentials = _faxCredentialStore.Load() ?? new FaxCredentials();
         var faxClient = FaxClientFactory.Create(_settings.Fax.Provider, _faxHttpClient, faxCredentials);
 
-        // V-T65 R5: sent-files.json — same roaming root as faxLedger/
-        // importLedger/logs above (see FaxFileLedger's own doc comment) —
-        // backs the whole-file "already fully sent" re-upload check.
+        // V-T65 R6: sent-files.json — same roaming root as faxLedger/
+        // logs above (see FaxFileLedger's own doc comment) — backs the
+        // (date, vaccine, count) duplicate check.
         var faxFileLedger = new FaxFileLedger();
 
         _faxRunOrchestrator = new FaxRunOrchestrator(
-            reportImporter, pdfBuilder, faxClient, faxLedger, importLedger, faxRootDir, faxFileLedger);
+            reportImporter, pdfBuilder, faxClient, faxLedger, faxRootDir, faxFileLedger);
         _faxRunScheduler = new FaxRunScheduler(_faxRunOrchestrator);
 
         // fax\runs\ lives under the SAME LocalApplicationData root

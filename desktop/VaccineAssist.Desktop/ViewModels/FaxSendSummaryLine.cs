@@ -37,7 +37,7 @@ public static class FaxSendSummaryLine
         }
 
         var done = $"Done: {sent} sent, {failed} failed";
-        if (skipped > 0) done += $", {skipped} skipped — already sent";
+        if (skipped > 0) done += $", {skipped} skipped — duplicate";
         if (unknown > 0) done += $", {unknown} unknown — check Notifyre";
         return done;
     }
@@ -45,8 +45,8 @@ public static class FaxSendSummaryLine
     private static bool IsInProcess(FaxRunRowSummary row) =>
         row.Status == nameof(FaxLedgerStatus.InProcess) || row.Status == nameof(FaxLedgerStatus.Queued);
 
-    /// <summary>Only the "already sent" dedupe skip (FaxRunOrchestrator's
-    /// "Skipped — already sent &lt;date&gt;" text) — deliberately excludes
+    /// <summary>Only the duplicate-dedupe skip (FaxRunOrchestrator's
+    /// "Skipped — duplicate of &lt;date&gt; batch" text) — deliberately excludes
     /// the unrelated, pre-existing "Skipped (no prescriber fax)" status
     /// (no em dash), which has its own separate counter
     /// (FaxRunSummary.SkippedNoFax) and isn't part of this live line.</summary>

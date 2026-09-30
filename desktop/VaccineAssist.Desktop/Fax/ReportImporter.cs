@@ -4,36 +4,23 @@ namespace VaccineAssist.Desktop.Fax;
 /// V-T65 (Will's brief, 2026-09-29 — replaces the old folder-scanning
 /// pipeline): "One file selector, then send faxes." ImportFile reads the
 /// ONE report file Will picked — missing required column -> file rejected
-/// with a clear message (never silently skip rows); dedupes against the
-/// import ledger's row-fingerprints so re-importing the same (or a
-/// re-exported) report never re-faxes the same administration twice.
+/// with a clear message (never silently skip rows).
 ///
-/// IMPORTANT: ImportFile does NOT write to imported.json itself — it only
-/// READS the ledger (to skip rows already recorded there). Persisting new
-/// fingerprints is FaxRunOrchestrator's job, and only for rows that
-/// actually resolved to a fax number and were queued/sent/failed-at-the-
-/// vendor — a row that comes back "needs fax number" must NOT be
-/// fingerprinted, or it could never be faxed even after the report is
-/// corrected and re-imported. FaxRunOrchestrator's serialized single-
-/// instance run (see its own doc comment) is what prevents two concurrent
-/// runs from double-importing the same row before either one persists
-/// anything.
+/// V-T65 R6 (Will, verbatim, 2026-09-29: "we can't store patient name" —
+/// read to mean no patient-derived data at all, even hashed): this used to
+/// also dedupe rows against a cross-run fingerprint ledger
+/// (imported.json/ImportLedger, keyed by a SHA-256 of patient name+DOB+
+/// vaccine+lot+date). That ledger stored patient-derived hashes forever,
+/// which is exactly what Will's brief rules out — removed entirely, along
+/// with RowFingerprint.cs/ImportLedger.cs/IImportLedger.cs. ImportFile now
+/// just parses every row it can; duplicate detection is a (date, vaccine,
+/// count) check FaxRunOrchestrator runs against FaxFileLedger instead (see
+/// FaxDuplicateDetector) — patient-data-free by construction.
 /// </summary>
 public sealed class ReportImporter : IReportImporter
 {
-    private readonly IImportLedger _importLedger;
-
-    public ReportImporter(IImportLedger importLedger)
-    {
-        _importLedger = importLedger;
-    }
-
     public ImportOutcome ImportFile(string filePath, FaxColumnMap columnMap)
     {
-        // Read-only snapshot — ImportFile() never writes to the ledger
-        // itself, see class doc comment.
-        var seenFingerprints = new HashSet<string>(_importLedger.LoadFingerprints(), StringComparer.OrdinalIgnoreCase);
-
         ReportFileContents contents;
         try
         {
@@ -61,7 +48,6 @@ public sealed class ReportImporter : IReportImporter
         }
 
         var newRecords = new List<ImmunizationRecord>();
-        var duplicateRecords = new List<ImmunizationRecord>();
         var skippedRowCount = 0;
 
         foreach (var row in contents.Rows)
@@ -79,15 +65,6 @@ public sealed class ReportImporter : IReportImporter
                 continue;
             }
 
-            if (!seenFingerprints.Add(record.Fingerprint))
-            {
-                // V-T65 R5: kept (not just counted) — FaxRunOrchestrator
-                // groups these and shows "Skipped — already sent <date>"
-                // instead of the row disappearing with no explanation.
-                duplicateRecords.Add(record);
-                continue;
-            }
-
             newRecords.Add(record);
         }
 
@@ -95,8 +72,6 @@ public sealed class ReportImporter : IReportImporter
         {
             NewRecords = newRecords,
             SkippedRowCount = skippedRowCount,
-            DuplicateRowCount = duplicateRecords.Count,
-            DuplicateRecords = duplicateRecords,
         };
     }
 

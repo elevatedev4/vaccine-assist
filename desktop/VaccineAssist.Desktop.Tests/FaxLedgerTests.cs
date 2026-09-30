@@ -39,7 +39,6 @@ public class FaxLedgerTests : IDisposable
             FaxNumberLast4 = "0100",
             Status = FaxLedgerStatus.InProcess,
             FaxId = "12345",
-            RowFingerprints = new List<string> { "abc123" },
         };
 
         ledger.Save(new List<FaxLedgerEntry> { entry });
@@ -49,7 +48,6 @@ public class FaxLedgerTests : IDisposable
         Assert.Equal("TP", loaded[0].PatientInitials);
         Assert.Equal(FaxLedgerStatus.InProcess, loaded[0].Status);
         Assert.Equal("12345", loaded[0].FaxId);
-        Assert.Equal("abc123", loaded[0].RowFingerprints[0]);
     }
 
     [Fact]

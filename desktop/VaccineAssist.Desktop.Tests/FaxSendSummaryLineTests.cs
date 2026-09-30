@@ -45,28 +45,28 @@ public class FaxSendSummaryLineTests
     }
 
     [Fact]
-    public void SkippedAlreadySentRowsAppendToTheInProcessLine()
+    public void SkippedDuplicateRowsAppendToTheInProcessLine()
     {
         var rows = new List<FaxRunRowSummary>
         {
             Row(nameof(FaxLedgerStatus.InProcess)),
-            Row("Skipped — already sent 09/29/2026"),
+            Row("Skipped — duplicate of 09/29/2026 batch"),
         };
 
         Assert.Equal("1 in process · 0 sent · 0 failed · 1 skipped", FaxSendSummaryLine.Compute(rows));
     }
 
     [Fact]
-    public void SkippedAlreadySentRowsAppendToTheDoneLine()
+    public void SkippedDuplicateRowsAppendToTheDoneLine()
     {
         var rows = new List<FaxRunRowSummary>
         {
             Row(nameof(FaxLedgerStatus.Sent)),
-            Row("Skipped — already sent 09/29/2026"),
-            Row("Skipped — already sent 09/28/2026"),
+            Row("Skipped — duplicate of 09/29/2026 batch"),
+            Row("Skipped — duplicate of 09/28/2026 batch"),
         };
 
-        Assert.Equal("Done: 1 sent, 0 failed, 2 skipped — already sent", FaxSendSummaryLine.Compute(rows));
+        Assert.Equal("Done: 1 sent, 0 failed, 2 skipped — duplicate", FaxSendSummaryLine.Compute(rows));
     }
 
     [Fact]
@@ -115,12 +115,12 @@ public class FaxSendSummaryLineTests
         var rows = new List<FaxRunRowSummary>
         {
             Row(nameof(FaxLedgerStatus.Sent)),
-            Row("Skipped — already sent 09/29/2026"),
+            Row("Skipped — duplicate of 09/29/2026 batch"),
             Row(nameof(FaxLedgerStatus.Unknown)),
         };
 
         Assert.Equal(
-            "Done: 1 sent, 0 failed, 1 skipped — already sent, 1 unknown — check Notifyre",
+            "Done: 1 sent, 0 failed, 1 skipped — duplicate, 1 unknown — check Notifyre",
             FaxSendSummaryLine.Compute(rows));
     }
 }

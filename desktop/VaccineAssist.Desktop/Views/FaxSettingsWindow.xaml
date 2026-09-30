@@ -114,6 +114,26 @@
                 </StackPanel>
             </Border>
 
+            <!-- V-T65 R6 (Will, verbatim, 2026-09-29): "Add a place in
+                 settings for me to upload company logo to use in the
+                 report." Printed top-left of the fax PDF header — see
+                 Fax/VaccineRecordPdfBuilder.cs. -->
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="Company logo" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <TextBlock Text="Printed at the top of the fax PDF. Leave blank for no logo." TextWrapping="Wrap" Foreground="DarkSlateGray" Margin="0,0,0,8"/>
+                    <StackPanel Orientation="Horizontal">
+                        <Border BorderBrush="LightGray" BorderThickness="1" Width="140" Height="55" Margin="0,0,12,0"
+                                Visibility="{Binding HasLogo, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <Image Source="{Binding LogoPath}" Stretch="Uniform" Margin="4"/>
+                        </Border>
+                        <Button Content="Choose…" Click="ChooseLogoButton_OnClick" Padding="8,2" VerticalAlignment="Center"/>
+                        <Button Content="Remove" Click="RemoveLogoButton_OnClick" Padding="8,2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                IsEnabled="{Binding HasLogo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <Border BorderBrush="Gray" BorderThickness="1" Padding="10" Margin="0,0,0,12">
                 <StackPanel>
                     <TextBlock Text="Pharmacy identity" FontWeight="Bold" Margin="0,0,0,6"/>

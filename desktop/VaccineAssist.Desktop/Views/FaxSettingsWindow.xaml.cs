@@ -56,6 +56,30 @@ public partial class FaxSettingsWindow : Window
     /// "Add a 'Forget key' button that clears the stored token (confirm
     /// dialog)." The confirm lives here (a UI concern) — ForgetKeyCommand
     /// itself just does the clearing once confirmed.</summary>
+    /// <summary>V-T65 R6 (Will, verbatim, 2026-09-29): "Add a place in
+    /// settings for me to upload company logo to use in the report."
+    /// OpenFileDialog lives here (same convention as FaxSendWindow's file
+    /// picker) since it needs a real Window as its owner.</summary>
+    private void ChooseLogoButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose a company logo",
+            Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+
+        if (dialog.ShowDialog(this) == true)
+        {
+            _viewModel.SetLogo(dialog.FileName);
+        }
+    }
+
+    private void RemoveLogoButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        _viewModel.RemoveLogo();
+    }
+
     private void ForgetKeyButton_OnClick(object sender, RoutedEventArgs e)
     {
         var result = System.Windows.MessageBox.Show(
