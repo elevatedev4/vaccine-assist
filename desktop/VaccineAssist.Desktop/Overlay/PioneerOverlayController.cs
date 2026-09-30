@@ -44,6 +44,26 @@ public sealed class PioneerOverlayController : IDisposable
     private bool _shown;
     private bool _loggedFailure;
 
+    /// <summary>V-T41 R5 (Will's brief, item 4) — the "Vaccine entry in
+    /// progress…" panel, immediately left of the icon. Lazily created the
+    /// first time a run needs it (EnsureEntryStatusWindow), same pattern as
+    /// _window/EnsureWindow above.</summary>
+    private EntryStatusOverlayWindow? _entryStatusWindow;
+    private bool _entryStatusShown;
+
+    /// <summary>True for the whole life of a Ctrl+Keypad 7 run (ShowEntryStatus
+    /// .. HideEntryStatus) — Tick() only shows/positions the panel while
+    /// this is true, and only when the icon itself would also be shown
+    /// (same PioneerOverlayVisibilityGate.ShouldShow result each tick — a
+    /// run happening with Pioneer minimized/not foreground hides both
+    /// together, consistent with the icon's own visibility rule).</summary>
+    private bool _entryStatusActive;
+    private string _entryStatusStepText = "";
+
+    /// <summary>Raised when the entry-status panel's X is clicked —
+    /// MainWindow cancels the active run's CancellationTokenSource.</summary>
+    public event EventHandler? EntryStatusCancelRequested;
+
     public PioneerOverlayController(
         Action<string> navigateTo,
         Action showDataEntryPopup,
@@ -68,6 +88,43 @@ public sealed class PioneerOverlayController : IDisposable
     {
         _timer.Stop();
         HideIfShown();
+        HideEntryStatusWindowIfShown();
+    }
+
+    /// <summary>V-T41 R5: called once, right before a Ctrl+Keypad 7 run's
+    /// first key is sent to Pioneer — MainWindow.RunVaccineEntryAutomationAsync.
+    /// Makes the entry-status panel eligible to show on the NEXT tick (it
+    /// doesn't force an immediate reposition itself — Tick() already runs
+    /// every ~250ms, which is fast enough that the panel appears
+    /// effectively immediately).</summary>
+    public void ShowEntryStatus(string initialStepText)
+    {
+        _entryStatusActive = true;
+        _entryStatusStepText = initialStepText;
+    }
+
+    /// <summary>Updates the panel's step-name line — called once per step
+    /// as the run progresses (e.g. "Entering quantity"). A no-op if no run
+    /// is currently active (ShowEntryStatus wasn't called, or
+    /// HideEntryStatus already was) — the text is still remembered so a
+    /// LATE call right at the tail end of Tick's own dispatch ordering
+    /// never gets lost.</summary>
+    public void UpdateEntryStatusStep(string stepText)
+    {
+        _entryStatusStepText = stepText;
+        _entryStatusWindow?.SetStepText(stepText);
+    }
+
+    /// <summary>Ends the run — hides the panel (on the very next tick;
+    /// HideIfShown's own immediate-hide posture doesn't apply here since
+    /// there's no separate "stop everything now" caller for this one
+    /// panel) and clears _entryStatusActive so Tick() stops repositioning
+    /// it. Called from a finally block in MainWindow.RunVaccineEntryAutomationAsync
+    /// regardless of how the run ended (completed, failed, or halted).</summary>
+    public void HideEntryStatus()
+    {
+        _entryStatusActive = false;
+        HideEntryStatusWindowIfShown();
     }
 
     private void Tick()
@@ -91,6 +148,7 @@ public sealed class PioneerOverlayController : IDisposable
             if (!PioneerOverlayVisibilityGate.ShouldShow(_settings.ShowPioneerOverlay, hasMainWindow, isMinimized, isPioneerForeground))
             {
                 HideIfShown();
+                HideEntryStatusWindowIfShown();
                 _loggedFailure = false;
                 return;
             }
@@ -100,6 +158,24 @@ public sealed class PioneerOverlayController : IDisposable
             var rect = OverlayPlacement.Compute(bounds, scale);
             NativeOverlayPositioning.Reposition(window.Handle, rect.X, rect.Y, rect.Width, rect.Height, show: true);
             _shown = true;
+
+            // V-T41 R5: the entry-status panel tracks the SAME icon rect
+            // (immediately left of it) and the SAME visibility gate result
+            // above — only its own _entryStatusActive flag decides whether
+            // it's shown at all.
+            if (_entryStatusActive)
+            {
+                var statusWindow = EnsureEntryStatusWindow();
+                statusWindow.SetStepText(_entryStatusStepText);
+                var statusRect = OverlayPlacement.ComputeEntryStatus(rect, scale);
+                NativeOverlayPositioning.Reposition(statusWindow.Handle, statusRect.X, statusRect.Y, statusRect.Width, statusRect.Height, show: true);
+                _entryStatusShown = true;
+            }
+            else
+            {
+                HideEntryStatusWindowIfShown();
+            }
+
             _loggedFailure = false;
         }
         catch (Exception ex)
@@ -132,6 +208,30 @@ public sealed class PioneerOverlayController : IDisposable
         return window;
     }
 
+    private EntryStatusOverlayWindow EnsureEntryStatusWindow()
+    {
+        if (_entryStatusWindow is not null)
+        {
+            return _entryStatusWindow;
+        }
+
+        var window = new EntryStatusOverlayWindow();
+        window.CancelRequested += (_, _) => SafeInvoke(() => EntryStatusCancelRequested?.Invoke(this, EventArgs.Empty));
+        window.Show();
+        _entryStatusWindow = window;
+        return window;
+    }
+
+    private void HideEntryStatusWindowIfShown()
+    {
+        if (!_entryStatusShown || _entryStatusWindow is null)
+        {
+            return;
+        }
+        NativeOverlayPositioning.Reposition(_entryStatusWindow.Handle, 0, 0, 0, 0, show: false);
+        _entryStatusShown = false;
+    }
+
     private void HideIfShown()
     {
         if (!_shown || _window is null)
@@ -159,5 +259,7 @@ public sealed class PioneerOverlayController : IDisposable
         Stop();
         _window?.Close();
         _window = null;
+        _entryStatusWindow?.Close();
+        _entryStatusWindow = null;
     }
 }

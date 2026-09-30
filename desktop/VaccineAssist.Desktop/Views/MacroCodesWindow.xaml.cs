@@ -92,6 +92,19 @@ public partial class MacroCodesWindow : Window
     private readonly IntPtr _previousForegroundWindow;
     private readonly bool _sendCtrlNumPad5OnClose;
 
+    /// <summary>V-T41 R5 (Will's brief, item 3): the Ctrl+Keypad 7 flow
+    /// reuses this same window (age-filtered, same as the Ctrl+Keypad 2
+    /// age-macro flow) but runs this app's OWN PioneerEntryAutomation
+    /// against the picked product instead of sending the synthetic
+    /// Ctrl+NumPad5 keypress sendCtrlNumPad5OnClose triggers — so it needs
+    /// the actual code/label/product a dose button copies, not just a
+    /// clipboard side effect. Invoked from CoreWebView2_OnWebMessageReceived's
+    /// "vaccine-assist:macro-copied" case, in addition to (not instead of)
+    /// the existing clipboard copy — never invoked on cancel/Escape. Null
+    /// (the default) keeps every existing caller (plain Ctrl+Keypad 8,
+    /// Ctrl+Keypad 2 age-macro) unaffected.</summary>
+    private readonly Action<string, string, string>? _onCodeCopied;
+
     /// <summary>
     /// MACRO-POPUP ROUND 3: this window's own non-WebView chrome height
     /// (title bar + borders — see MacroCodesWindowSizing's doc comment
@@ -160,18 +173,21 @@ public partial class MacroCodesWindow : Window
     /// <param name="previousForegroundWindow">The foreground window handle at the moment MainWindow decided to show this popup (captured via GetForegroundWindow() before Show() — for the age-macro flow, before AgePromptWindow, per Will's brief) — restored via SetForegroundWindow when this popup closes, so focus lands back where the pharmacist was, not on this app's MainWindow. IntPtr.Zero is tolerated (just skips the restore) rather than throwing.</param>
     /// <param name="overrideUrl">2026-09-25: the age-macro flow's own AgeMacroCodesUrlBuilder.BuildUrl result (…/macro-codes?embed=1&amp;age=&lt;years&gt;) in place of the plain BuildMacroCodesUrl(cloudApiBaseUrl) below. Null (the default) keeps the existing Ctrl+Keypad 8 behavior unchanged.</param>
     /// <param name="sendCtrlNumPad5OnClose">2026-09-25 round 2: true only for the age-macro flow (see the class doc comment above) — sends a synthetic Ctrl+NumPad5 once this window has closed and focus is restored. False (the default) for the plain Ctrl+Keypad 8 popup.</param>
+    /// <param name="onCodeCopied">V-T41 R5: invoked with (code, label, product) right when a dose is copied — see _onCodeCopied's own doc comment. Null (the default) for every existing caller.</param>
     public MacroCodesWindow(
         string cloudApiBaseUrl,
         IClipboardService clipboardService,
         IntPtr previousForegroundWindow,
         string? overrideUrl = null,
-        bool sendCtrlNumPad5OnClose = false)
+        bool sendCtrlNumPad5OnClose = false,
+        Action<string, string, string>? onCodeCopied = null)
     {
         InitializeComponent();
         _clipboardService = clipboardService ?? throw new ArgumentNullException(nameof(clipboardService));
         _previousForegroundWindow = previousForegroundWindow;
         _macroCodesUrl = overrideUrl ?? BuildMacroCodesUrl(cloudApiBaseUrl);
         _sendCtrlNumPad5OnClose = sendCtrlNumPad5OnClose;
+        _onCodeCopied = onCodeCopied;
 
         // MACRO-POPUP ROUND 3 (Will, verbatim, 2026-09-25): "Make it
         // wider... and make the height fit only what it needs..." Width
@@ -574,6 +590,24 @@ public partial class MacroCodesWindow : Window
                         {
                             _codeCopiedInAgeMacroFlow = true;
                             AppFileLog.Log($"[AgeMacro] copied {code}");
+                        }
+
+                        // V-T41 R5 (item 3): fires REGARDLESS of
+                        // _sendCtrlNumPad5OnClose — the Ctrl+Keypad 7 flow
+                        // wants the picked code/label/product to run its OWN
+                        // PioneerEntryAutomation, not the synthetic
+                        // Ctrl+NumPad5 keypress that flag controls. label/
+                        // product default to "" (never null) when the page
+                        // ever sends a malformed message missing them.
+                        if (_onCodeCopied is not null)
+                        {
+                            var label = message.RootElement.TryGetProperty("label", out var labelElement)
+                                ? labelElement.GetString() ?? ""
+                                : "";
+                            var product = message.RootElement.TryGetProperty("product", out var productElement)
+                                ? productElement.GetString() ?? ""
+                                : "";
+                            _onCodeCopied(code, label, product);
                         }
                     }
                     Close();
