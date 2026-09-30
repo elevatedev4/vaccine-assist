@@ -91,6 +91,27 @@ public class SendF3AndDismissPreEntryDialogsStepTests
         Assert.Contains("Vaccine", result.Message);
     }
 
+    /// <summary>V-T41 R7 item 2: the new enableAutoSuggestDiagnostics
+    /// constructor parameter (default false) must not change dry-run
+    /// behavior at all — it only gates a live-UIA poll deep inside
+    /// TryKeyboardNoDropdownStrategy, which dry run never reaches. Covers
+    /// both the default (omitted) and explicit-true cases so the
+    /// constructor accepts the new parameter without breaking the
+    /// pre-existing dry-run description.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EnableAutoSuggestDiagnosticsFlagDoesNotAffectDryRunDescription(bool enableAutoSuggestDiagnostics)
+    {
+        var step = new SendF3AndDismissPreEntryDialogsStep("Vaccine", enableAutoSuggestDiagnostics);
+        var context = new PioneerEntryStepContext(SamplePayload(), dryRun: true, _ => { });
+
+        var result = await step.ExecuteAsync(context);
+
+        Assert.True(result.Success);
+        Assert.Contains("F3", result.Message);
+    }
+
     [Fact]
     public async Task LiveModeFailsWithNoAttachedWindow()
     {

@@ -37,6 +37,14 @@ public static class PioneerEntrySequenceRunner
     {
         var results = new List<PioneerEntryStepResult>();
 
+        // V-T41 R7 (Will's 2026-09-30 ask: "make it more efficient and
+        // speed it up" — item 1, timing instrumentation): a total-elapsed
+        // line for the whole run, on top of the per-step "(took Nms)"
+        // lines RunOneStepAsync already logs, so a single glance at the
+        // log shows both where time went AND how much overall — no patient
+        // data in either, just step names and durations.
+        var sequenceStopwatch = Stopwatch.StartNew();
+
         foreach (var step in sequence.Steps)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -49,6 +57,14 @@ public static class PioneerEntrySequenceRunner
                 break;
             }
         }
+
+        // Deliberately NOT bracket-prefixed ("[sequence] ...") — MainWindow.
+        // LogVaccineEntryStep parses a leading "[StepName] " prefix off
+        // every logged line to track "which step is the overlay currently
+        // on" (_vaccineEntryCurrentStepName); a bracketed total line here
+        // would get misread as a step named "sequence" for the instant
+        // between the run finishing and the overlay being hidden.
+        context.Log($"Sequence total (took {sequenceStopwatch.ElapsedMilliseconds}ms) — {results.Count} step(s) ran.");
 
         return new PioneerEntrySequenceResult(results);
     }
@@ -138,24 +154,25 @@ public static class PioneerEntrySequenceRunner
             result = new PioneerEntryStepResult(step.Name, Success: false, context.DryRun, $"Unexpected error: {ex.Message}");
         }
 
-        // V-..., 2026-09-11 ("Show where time goes" — Will's feedback
-        // that the delay between steps felt bigger than it should):
-        // every OK line now carries how long the step actually took,
-        // UNLESS the step's own message already reports timing itself
-        // (e.g. QuickSearchFieldEntry.WaitForFieldCoreAsync's "waited
-        // Nms for 'x' to appear") — appending a second, redundant
-        // elapsed figure there would just be noise. FAILED lines are
-        // left as-is; a failure's own message (field-not-found dumps,
-        // stalled-retry summaries, etc.) already names what happened,
-        // and the log line right above already shows how long the
-        // failing attempt ran before this line prints.
-        var okMessage = result.Success && !result.Message.Contains("(took ", StringComparison.OrdinalIgnoreCase)
+        // V-..., 2026-09-11 ("Show where time goes" — Will's feedback that
+        // the delay between steps felt bigger than it should) + V-T41 R7
+        // item 1 (2026-09-30, same ask continued): every OK or FAILED line
+        // now carries how long the step actually took, UNLESS the step's
+        // own message already reports timing itself (e.g.
+        // QuickSearchFieldEntry.WaitForFieldCoreAsync's "waited Nms for 'x'
+        // to appear") — appending a second, redundant elapsed figure there
+        // would just be noise. FAILED lines used to be left without a
+        // timing suffix (the reasoning then: a failure's own message
+        // already names what happened) — widened to match OK lines so a
+        // failing step also names how long it ran before failing, not just
+        // the happy path.
+        var timedMessage = !result.Message.Contains("(took ", StringComparison.OrdinalIgnoreCase)
             ? $"{result.Message} (took {stepStopwatch.ElapsedMilliseconds}ms)"
             : result.Message;
 
         context.Log(result.Success
-            ? $"[{result.StepName}] OK — {okMessage}"
-            : $"[{result.StepName}] FAILED — {result.Message}");
+            ? $"[{result.StepName}] OK — {timedMessage}"
+            : $"[{result.StepName}] FAILED — {timedMessage}");
 
         return result;
     }

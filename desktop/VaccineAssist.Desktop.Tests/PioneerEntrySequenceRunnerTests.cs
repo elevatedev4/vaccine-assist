@@ -77,6 +77,43 @@ public class PioneerEntrySequenceRunnerTests
         Assert.Contains(log, line => line.Contains("only-step") && line.Contains("OK"));
     }
 
+    /// <summary>V-T41 R7 item 1 (Will's 2026-09-30 "make it more efficient
+    /// and speed it up" ask — timing instrumentation): RunAsync now logs
+    /// ONE extra "Sequence total (took Nms)" line after every step has
+    /// run, on top of each step's own OK/FAILED line, so a single log
+    /// shows both per-step AND overall timing with no extra plumbing from
+    /// callers. Deliberately NOT bracket-prefixed — see the log call's own
+    /// comment in PioneerEntrySequenceRunner.cs (MainWindow.LogVaccineEntryStep
+    /// would otherwise misparse it as a step named "sequence").</summary>
+    [Fact]
+    public async Task LogsATotalElapsedLineAfterEveryStepHasRun()
+    {
+        var log = new List<string>();
+        var context = MakeContext(dryRun: false, log);
+        var sequence = new FakeSequence(new FakeStep("one", success: true), new FakeStep("two", success: true));
+
+        await PioneerEntrySequenceRunner.RunAsync(sequence, context);
+
+        Assert.Contains(log, line => line.StartsWith("Sequence total") && line.Contains("took") && line.Contains("2 step(s) ran"));
+    }
+
+    /// <summary>V-T41 R7 item 1: a FAILED step's log line used to carry no
+    /// timing at all (only a successful step's "OK" line reported "(took
+    /// Nms)") — extended to every step so a failing step names how long it
+    /// ran before failing too, same as RunsEveryStepInOrderWhenAllSucceed's
+    /// sibling OK-line assertion above.</summary>
+    [Fact]
+    public async Task AFailedStepsLogLineAlsoReportsHowLongItTook()
+    {
+        var log = new List<string>();
+        var context = MakeContext(dryRun: false, log);
+        var sequence = new FakeSequence(new FakeStep("bad-step", success: false, message: "no field target"));
+
+        await PioneerEntrySequenceRunner.RunAsync(sequence, context);
+
+        Assert.Contains(log, line => line.Contains("bad-step") && line.Contains("FAILED") && line.Contains("took"));
+    }
+
     [Fact]
     public async Task DryRunFlagIsPassedThroughToEveryStep()
     {

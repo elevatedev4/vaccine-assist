@@ -487,9 +487,26 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// behavior Will asked for.</summary>
     private readonly string _priorityValue;
 
-    public SendF3AndDismissPreEntryDialogsStep(string priorityValue = "Vaccine")
+    /// <summary>V-T41 R7 (Will's 2026-09-30 "make it more efficient and
+    /// speed it up" ask, item 2): the Auto-Suggest Dropdown popup poll
+    /// below (TryKeyboardNoDropdownStrategy) is diagnostic-only — its own
+    /// doc comment says it never gates behaviour, it just logs whether the
+    /// popup showed up. That's a genuine ~1s worst case (10 ticks x
+    /// 100ms) paid on every single "Priority" dialog pass for information
+    /// nobody consumes by default. Defaults to OFF (false) so a normal run
+    /// skips it entirely. This constructor parameter is the opt-in switch;
+    /// PlaceholderVaccineEntrySequence threads it straight through with
+    /// the same default. It is NOT YET reachable from settings.json — that
+    /// needs an AppSettings bool (same pattern as PriorityValue) plus a
+    /// one-line App.xaml.cs composition-root change, both outside this
+    /// change's scope (PioneerEntryAutomation/** only) — see
+    /// PlaceholderVaccineEntrySequence's own constructor comment.</summary>
+    private readonly bool _enableAutoSuggestDiagnostics;
+
+    public SendF3AndDismissPreEntryDialogsStep(string priorityValue = "Vaccine", bool enableAutoSuggestDiagnostics = false)
     {
         _priorityValue = string.IsNullOrWhiteSpace(priorityValue) ? "Vaccine" : priorityValue;
+        _enableAutoSuggestDiagnostics = enableAutoSuggestDiagnostics;
     }
 
     /// <summary>V-..., 2026-09-10: ONE overall cap for the whole
@@ -501,11 +518,16 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// just a smaller number.</summary>
     public static readonly TimeSpan CombinedPreEntryLoopTimeout = TimeSpan.FromSeconds(15);
 
-    /// <summary>V-..., 2026-09-10: widened from 200ms to Will's requested
-    /// ~250ms — the exact tick interval barely matters next to the real
-    /// fix (one loop with an early exit instead of three unconditional
-    /// phases), but this matches the brief verbatim.</summary>
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
+    /// <summary>V-T41 R7 (Will's 2026-09-30 "make it more efficient and
+    /// speed it up" ask, item 3): narrowed from 250ms to 100ms. The 250ms
+    /// value only ever cost real time when a wait was satisfied mid-tick
+    /// (the happy path resolves on the first check regardless of interval)
+    /// — a finer tick shaves up to ~150ms off any wait that finishes
+    /// between ticks, with zero change to CombinedPreEntryLoopTimeout
+    /// (15s): MaxTicks below is derived from the timeout / PollInterval
+    /// ratio, so the overall budget is unchanged, only how often it's
+    /// checked.</summary>
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
     public string Name => "Start Add New Rx (F3) and dismiss pre-entry dialogs";
 
@@ -1935,12 +1957,19 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         // own 'Auto-Suggest Dropdown' popup to become visible so the next
         // real app.log says whether it showed up (and its size) instead of
         // guessing.
-        var popupAppeared = SynchronousPoll.WaitUntil(
-            () => IsAutoSuggestPopupVisible(mainProcessId),
-            maxTicks: 10,
-            () => Thread.Sleep(100));
-        log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — after typing, visible popups: " +
-            $"{DescribeVisiblePopupsForLog(mainProcessId)} (Auto-Suggest Dropdown appeared={popupAppeared}).");
+        // V-T41 R7 item 2: gated behind _enableAutoSuggestDiagnostics
+        // (default off) — see that field's doc comment. Off by default,
+        // this whole ~1s-worst-case poll is skipped and no popup-detail
+        // line is logged at all (there's nothing to report).
+        if (_enableAutoSuggestDiagnostics)
+        {
+            var popupAppeared = SynchronousPoll.WaitUntil(
+                () => IsAutoSuggestPopupVisible(mainProcessId),
+                maxTicks: 10,
+                () => Thread.Sleep(100));
+            log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — after typing, visible popups: " +
+                $"{DescribeVisiblePopupsForLog(mainProcessId)} (Auto-Suggest Dropdown appeared={popupAppeared}).");
+        }
 
         var currentValue = ReadControlValue(control);
         if (!PriorityValueMatcher.StartsWith(currentValue, _priorityValue))
@@ -2134,13 +2163,16 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     }
 
     /// <summary>V-T41 ROUND 4 point 1: "make 'OK' mean VERIFIED" — waits up
-    /// to ~1.5s (15 ticks * 100ms) for the dialog's own HWND to actually be
-    /// gone (Win32WindowEnumerator.IsWindowGone — IsWindow false, or no
-    /// longer visible) before a strategy is allowed to report Resolved.
-    /// Synchronous (Thread.Sleep, not the async WaitTick used elsewhere in
-    /// this step) — see SynchronousPoll's own doc comment for why.</summary>
+    /// to ~1.5s (30 ticks * 50ms — narrowed from 15 ticks * 100ms in V-T41
+    /// R7 item 4, same 1.5s cap, finer granularity so a dialog that closes
+    /// between ticks is noticed sooner) for the dialog's own HWND to
+    /// actually be gone (Win32WindowEnumerator.IsWindowGone — IsWindow
+    /// false, or no longer visible) before a strategy is allowed to report
+    /// Resolved. Synchronous (Thread.Sleep, not the async WaitTick used
+    /// elsewhere in this step) — see SynchronousPoll's own doc comment for
+    /// why.</summary>
     private static bool VerifyDialogGone(IntPtr dialogHandle) =>
-        SynchronousPoll.WaitUntil(() => Win32WindowEnumerator.IsWindowGone(dialogHandle), maxTicks: 15, () => Thread.Sleep(100));
+        SynchronousPoll.WaitUntil(() => Win32WindowEnumerator.IsWindowGone(dialogHandle), maxTicks: 30, () => Thread.Sleep(50));
 
     /// <summary>Step (c) — Confirm. V-T41 (Will's 2026-09-28 report): "It
     /// makes it to the priority screen and enters 'Vaccine' as the

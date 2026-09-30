@@ -68,7 +68,15 @@ public static class QuickSearchFieldEntry
     /// </summary>
     public static readonly TimeSpan DefaultFieldWaitTimeout = TimeSpan.FromSeconds(15);
 
-    private static readonly TimeSpan FieldWaitPollInterval = TimeSpan.FromMilliseconds(250);
+    // V-T41 R7 (Will's 2026-09-30 "make it more efficient and speed it
+    // up" ask, item 3): narrowed from 250ms to 100ms, same reasoning as
+    // SendF3AndDismissPreEntryDialogsStep.PollInterval — a field that's
+    // already rendered resolves on the first check regardless of interval,
+    // so this only shaves time off a wait that finishes mid-poll.
+    // DefaultFieldWaitTimeout/LotFieldWaitTimeout (15s) are UNCHANGED —
+    // maxEmptyTicks below is derived from timeout / this interval, so the
+    // correctness budget stays the same, only the check frequency changes.
+    private static readonly TimeSpan FieldWaitPollInterval = TimeSpan.FromMilliseconds(100);
 
     /// <summary>V-T41 (Will, 2026-09-13 night): "still getting stuck on the
     /// pre-data entry popup windows" — once a quick-search field has been
