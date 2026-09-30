@@ -10,6 +10,7 @@ using VaccineAssist.Desktop.PioneerEntryAutomation;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
+using VaccineAssist.Desktop.VelopackIntegration;
 using VaccineAssist.Desktop.ViewModels;
 using VaccineAssist.Desktop.Views;
 
@@ -166,6 +167,17 @@ public partial class App : Application
         _faxSendCoordinator = new FaxSendCoordinator(_faxRunOrchestrator, _settings, faxLedger, faxHistoryStore);
 
         _ = StartSignInFlowAsync();
+
+        // Velopack installer channel (G-Q5, Will 2026-09-29): fire-and-
+        // forget, AFTER every other startup step above, so a slow/failed
+        // network check can never delay sign-in or main-window launch.
+        // VelopackUpdater.CheckAndApplyAsync gates itself on
+        // UpdateManager.IsInstalled and no-ops entirely for this same
+        // process when it wasn't installed by Setup.exe — see that
+        // class's own doc comment — so this call is a no-op for every
+        // existing update-and-run.ps1 + shortcut launch.
+        _ = VelopackUpdater.CheckAndApplyAsync(
+            message => AppFileLog.Log(message));
     }
 
     /// <summary>
