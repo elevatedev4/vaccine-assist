@@ -27,8 +27,22 @@
       own, calling VelopackApp.Build().Run() first. See Program.cs's doc
       comment for the full explanation of this — Microsoft's own documented
       mechanism for a custom WPF entry point, not a hack.
+
+      CI FIX (desktop-release build, 2026-09-29): DefineConstants alone
+      wasn't enough — the WPF markup compiler's *_wpftmp intermediate
+      project still saw two Main() methods (its own generated one plus
+      Program.cs's) and failed with CS0017 "Program has more than one
+      entry point defined. Compile with /main to specify the type that
+      contains the entry point." StartupObject is MSBuild's equivalent of
+      that /main compiler flag — it tells the compiler which Main() to
+      use as the actual entry point instead of erroring on the ambiguity.
+      Both are needed together: DISABLE_XAML_GENERATED_MAIN alone doesn't
+      reliably suppress the generated Main in every build (the *_wpftmp
+      project apparently doesn't always honor it), so StartupObject is the
+      belt-and-suspenders fix that makes the intent unambiguous either way.
     -->
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <StartupObject>VaccineAssist.Desktop.Program</StartupObject>
   </PropertyGroup>
 
   <!--
