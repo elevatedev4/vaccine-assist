@@ -65,6 +65,16 @@ describe("collapseVaccinesByNdc", () => {
     expect(groups.map((g) => g.key)).toEqual(["vaccine:v1", "vaccine:v2"]);
   });
 
+  // V-T66 round 3 (reviewer REQUEST_CHANGES 2026-09-30): this is the
+  // ORIGINAL test, restored — round 2 briefly flipped it to "merges" for
+  // ANY same-name pair, which the reviewer correctly flagged as broader
+  // than Ordering has ever allowed (this file's own header quotes Will's
+  // rule, be8b2e7: "Each one in the ordering recommendations queue
+  // should be for the product itself, NDC specific"). Afluria has no
+  // lib/canonical-ndc.ts CANONICAL_NDC entry, so two rows that merely
+  // share its name but carry genuinely different NDCs (two package
+  // sizes) stay separate — only a CANONICAL_NDC-vetted name (Shingrix,
+  // see the tests below) merges across mismatched NDCs.
   it("keeps two different NDCs separate even with an identical name", () => {
     const catalog: CollapsibleVaccine[] = [
       { id: "v1", name: "Afluria 2025-2026 Syr (3yr Up)", ndc: "33332-0025-03", active: true },
@@ -152,5 +162,82 @@ describe("collapseVaccinesByNdc", () => {
     const groups = collapseVaccinesByNdc(catalog);
     expect(groups).toHaveLength(1);
     expect(groups[0].active).toBe(true); // ANY member active (dose 2) keeps the group active
+  });
+
+  // --- V-T66 round 2 (reviewer finding 2026-09-30: the lots-page
+  // Shingrix fix didn't reach Ordering — Shingrix's two dose rows carry
+  // DIFFERENT, both non-null, NDCs, so Ordering showed two Shingrix
+  // rows). Mirrors tests/lots-grouping.test.ts's equivalent cases. ---
+  it("merges Shingrix's two mismatched-NDC dose rows into one Ordering group, using the CANONICAL_NDC override as primary", () => {
+    const catalog: CollapsibleVaccine[] = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+    ];
+    const groups = collapseVaccinesByNdc(catalog);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      key: "58160084952",
+      ndc: "58160084952",
+      vaccineName: "Shingrix",
+      vaccineIds: ["sh1", "sh2"],
+    });
+  });
+
+  it("merges Shingrix's mismatched-NDC dose rows regardless of catalog order (order-independent)", () => {
+    const rowsFirstOrder: CollapsibleVaccine[] = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+    ];
+    const rowsSecondOrder: CollapsibleVaccine[] = [
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+    ];
+    const [groupFirst] = collapseVaccinesByNdc(rowsFirstOrder);
+    const [groupSecond] = collapseVaccinesByNdc(rowsSecondOrder);
+    expect(groupFirst.key).toBe(groupSecond.key);
+    expect(groupFirst.ndc).toBe(groupSecond.ndc);
+    expect(groupFirst.key).toBe("58160084952");
+  });
+
+  it("sums upcoming7d/given7d-style per-vaccine quantities across Shingrix's merged dose rows (the math path route.ts relies on)", () => {
+    // Mirrors how app/api/ordering/recommendation/route.ts actually
+    // computes upcoming7d/given7d/onHand: sum a per-vaccine-id quantity
+    // map over group.vaccineIds. Once both dose rows land in one group
+    // (asserted above), that sum is automatically correct — this test
+    // verifies the vaccineIds list is exactly the set route.ts would
+    // reduce over, for both the canonical-primary and reversed-order cases.
+    const catalog: CollapsibleVaccine[] = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+    ];
+    const quantityByVaccineId = new Map([
+      ["sh1", 4],
+      ["sh2", 7],
+    ]);
+    const [group] = collapseVaccinesByNdc(catalog);
+    const summed = group.vaccineIds.reduce((sum, id) => sum + (quantityByVaccineId.get(id) ?? 0), 0);
+    expect(summed).toBe(11);
+  });
+
+  it("falls back to the smallest-NDC rule when the canonical value isn't among the group's own recorded NDCs", () => {
+    const catalog: CollapsibleVaccine[] = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0821-52", active: true },
+    ];
+    const groups = collapseVaccinesByNdc(catalog);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].ndc).toBe("58160082152");
+  });
+
+  it("does not steal an unrelated product's own NDC group just because a mismatched-NDC Shingrix row happens to share it", () => {
+    const catalog: CollapsibleVaccine[] = [
+      { id: "o1", name: "Other Product", ndc: "00003-3333-33", active: true },
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "00003-3333-33", active: true },
+    ];
+    const groups = collapseVaccinesByNdc(catalog);
+    const groupOf = (id: string) => groups.find((g) => g.vaccineIds.includes(id));
+    expect(groupOf("o1")).not.toBe(groupOf("sh1"));
+    expect(groupOf("o1")?.vaccineIds).toContain("sh2");
   });
 });

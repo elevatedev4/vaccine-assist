@@ -68,6 +68,19 @@ describe("buildProductViews", () => {
     expect(views[0].active).toBe(true);
   });
 
+  it("shows only the canonical Shingrix NDC, not the alt one (V-T66 round 2, Will: \"Don't list both\")", () => {
+    const vaccines = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0849-52", active: true },
+    ];
+    const views = buildProductViews(vaccines);
+    expect(views).toHaveLength(1);
+    expect(views[0].ndc).toBe("58160084952");
+    expect(views[0].ndcSource).toBe("db");
+    expect(views[0].altNdcs).toEqual(["58160082311"]);
+    expect(views[0].vaccineIds.sort()).toEqual(["sh1", "sh2"]);
+  });
+
   it("returned views can be grouped/ordered COVID, Flu, Other via lib/ordering-group.ts's display order", () => {
     const vaccines = [
       { id: "v-shingrix", name: "Shingrix", ndc: "58160-0823-11", active: true },

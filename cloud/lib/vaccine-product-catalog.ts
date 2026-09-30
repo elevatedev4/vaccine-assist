@@ -244,11 +244,24 @@ const CATALOG: ProductCatalogEntry[] = [
     source: "CDC Adult price list",
   },
   {
-    match: { ndc: "58160082311", name: "Shingrix" },
+    // V-T66 round 2 (Will 2026-09-30 1:16pm verbatim: "This is the
+    // correct NDC for Shingrix: 58160084952. Don't list both.") —
+    // previously "58160082311", the OTHER of Shingrix's two real
+    // production NDCs (see lib/canonical-ndc.ts's CANONICAL_NDC, which
+    // both lib/lots-grouping.ts and lib/ordering-ndc-collapse.ts consult
+    // to pick this same canonical NDC as primary for a `vaccine` row
+    // whose dose rows carry either code). altNdcs here is consumed only
+    // by lib/on-hand/ndc-reconcile.ts's NDC-adoption guards
+    // (isKnownAltNdcForProduct) — it stops a future Pioneer BOH sync from
+    // re-adopting the now-retired "58160082311" onto vaccine.ndc, NOT
+    // on-hand quantity attribution (that's unaffected either way, since
+    // it's keyed by vaccine_id, not ndc — see
+    // lib/ordering-ndc-collapse.ts's header comment on the math path).
+    match: { ndc: "58160084952", name: "Shingrix", altNdcs: ["58160082311"] },
     productName: "Shingrix",
     ageRange: "50+; 19+ immunocompromised",
     dosesPerPackage: 10,
-    packageNdc: "58160-0823-11",
+    packageNdc: "58160-0849-52",
     source: "CDC Adult price list",
   },
   {
