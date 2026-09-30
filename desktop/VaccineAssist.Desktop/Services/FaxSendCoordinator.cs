@@ -53,7 +53,6 @@ public sealed class FaxSendCoordinator : ObservableObject
     private string? _filePath;
     private string? _statusMessage;
     private string? _rejectionMessage;
-    private string? _alreadySentMessage;
     private FaxRunSummary? _summary;
     private int _lastInProcessCount;
 
@@ -132,22 +131,16 @@ public sealed class FaxSendCoordinator : ObservableObject
 
     public bool HasRejection => !string.IsNullOrEmpty(RejectionMessage);
 
-    /// <summary>V-T65 R5: set instead of a normal run when the picked file
-    /// (by SHA-256, see FaxFileLedger) was already fully sent — see
-    /// FaxRunSummary.AlreadySentMessage's own doc comment.</summary>
-    public string? AlreadySentMessage
-    {
-        get => _alreadySentMessage;
-        private set
-        {
-            if (SetProperty(ref _alreadySentMessage, value))
-            {
-                OnPropertyChanged(nameof(HasAlreadySentMessage));
-            }
-        }
-    }
-
-    public bool HasAlreadySentMessage => !string.IsNullOrEmpty(AlreadySentMessage);
+    /// <summary>V-T65 R6 (Will, verbatim, 2026-09-29): set by MainWindow
+    /// right after constructing this coordinator — shows the "duplicates
+    /// found" dialog (a real WPF Window, so it can't live here; see
+    /// Views/FaxDuplicateConfirmWindow) and returns Will's choice, or null
+    /// if he closed/cancelled it without choosing. Left null in tests that
+    /// don't exercise the duplicate path — SendAsync only calls this when
+    /// Preview actually found duplicates, and every test uses a fresh temp
+    /// FaxFileLedger with nothing in it yet, so there's never anything to
+    /// confirm.</summary>
+    public Func<IReadOnlyList<FaxDuplicateMatch>, FaxDuplicateChoice?>? ConfirmDuplicates { get; set; }
 
     public FaxRunSummary? Summary
     {
@@ -187,7 +180,6 @@ public sealed class FaxSendCoordinator : ObservableObject
         Rows.Clear();
         Summary = null;
         RejectionMessage = null;
-        AlreadySentMessage = null;
         StatusMessage = null;
         State = FaxSendState.FileChosen;
         StopRefreshIfIdle();
@@ -201,13 +193,43 @@ public sealed class FaxSendCoordinator : ObservableObject
         Rows.Clear();
         Summary = null;
         RejectionMessage = null;
-        AlreadySentMessage = null;
         StatusMessage = "Sending…";
+
+        // V-T65 R6: read-only (date, vaccine, count) duplicate check
+        // BEFORE anything is actually sent — see FaxRunOrchestrator.Preview
+        // and FaxDuplicateDetector.
+        FaxDuplicateCheckResult preview;
+        try
+        {
+            preview = _orchestrator.Preview(FilePath, _settings.Fax.ColumnMap);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("FaxSendCoordinator.SendAsync.Preview", ex);
+            StatusMessage = $"Couldn't process that file: {ex.Message}";
+            State = FaxSendState.FileChosen;
+            return;
+        }
+
+        var duplicateChoice = FaxDuplicateChoice.SendAll;
+        if (preview.Duplicates.Count > 0)
+        {
+            var decision = ConfirmDuplicates?.Invoke(preview.Duplicates);
+            if (decision is null)
+            {
+                // Cancelled (or, defensively, no confirmation UI wired at
+                // all) — never send duplicates without Will's say-so.
+                StatusMessage = null;
+                State = FaxSendState.FileChosen;
+                return;
+            }
+            duplicateChoice = decision.Value;
+        }
 
         FaxRunSummary? summary;
         try
         {
-            summary = await _orchestrator.RunAsync(FilePath, _settings.Fax);
+            summary = await _orchestrator.RunAsync(FilePath, _settings.Fax, duplicateChoice);
         }
         catch (Exception ex)
         {
@@ -225,15 +247,6 @@ public sealed class FaxSendCoordinator : ObservableObject
         }
 
         Summary = summary;
-
-        if (!string.IsNullOrEmpty(summary.AlreadySentMessage))
-        {
-            AlreadySentMessage = summary.AlreadySentMessage;
-            StatusMessage = null;
-            State = FaxSendState.Done;
-            LoadHistory();
-            return;
-        }
 
         foreach (var row in summary.Rows)
         {

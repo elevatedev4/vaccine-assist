@@ -6,7 +6,7 @@ namespace VaccineAssist.Desktop.Fax;
 /// stuff updates." Split out of FaxReceiptPoller so the backoff/give-up
 /// math is directly unit-testable with plain DateTime values, no ledger/
 /// IFaxClient involved (same "pure logic separately testable" convention
-/// as FaxGrouping/RowFingerprint).
+/// as FaxGrouping/FaxDuplicateDetector).
 ///
 /// Schedule: check every 15s for the first 5 minutes after queuing, then
 /// back off to every 60s, and give up entirely 2 hours after queuing

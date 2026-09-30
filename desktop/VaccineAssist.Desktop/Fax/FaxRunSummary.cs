@@ -46,22 +46,8 @@ public sealed class FaxRunSummary
     /// this + RunAtUtc.</summary>
     public string FileName { get; set; } = "";
 
-    /// <summary>SHA-256 hex of the picked file's raw bytes — see
-    /// FaxFileHasher/FaxFileLedger. Blank when the file couldn't be read
-    /// at all (the import step right after will surface that as a
-    /// RejectedFiles entry).</summary>
-    public string FileHash { get; set; } = "";
-
-    /// <summary>Set instead of running the pipeline at all when
-    /// FaxRunOrchestrator determines every row in this exact file (by
-    /// FileHash) has already been fully sent — V-T65 R5 (Will, verbatim:
-    /// "make sure that things don't get re-sent if somebody reuploads the
-    /// same file"). Every count below stays zero on this path.</summary>
-    public string? AlreadySentMessage { get; set; }
-
     public int RowsImported { get; set; }
     public int SkippedRows { get; set; }
-    public int DuplicateRows { get; set; }
     public int PatientsProcessed { get; set; }
 
     public int Sent { get; set; }
@@ -74,10 +60,11 @@ public sealed class FaxRunSummary
     /// failure, and never nagged as an error in the per-row grid).</summary>
     public int SkippedNoFax { get; set; }
 
-    /// <summary>Patient/prescriber groups skipped because every row in the
-    /// group already has a Sent/InProcess/Queued ledger entry — V-T65 R5,
-    /// shown per-row as "Skipped — already sent &lt;date&gt;" rather than
-    /// silently dropped (see ImportOutcome.DuplicateRecords).</summary>
+    /// <summary>Patient/prescriber groups skipped because Will chose "Send
+    /// only new rows" on the duplicate-confirmation dialog and every row in
+    /// the group matched an (AdministeredDate, VaccineName) pair already in
+    /// FaxFileLedger — V-T65 R6, shown per-row as "Skipped — duplicate of
+    /// &lt;date&gt; batch" (see FaxDuplicateDetector).</summary>
     public int SkippedAlreadySent { get; set; }
 
     public List<FaxRunRowSummary> Rows { get; set; } = new();

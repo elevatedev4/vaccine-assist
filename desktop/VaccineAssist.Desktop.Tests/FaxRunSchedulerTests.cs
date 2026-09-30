@@ -45,8 +45,7 @@ public class FaxRunSchedulerTests : IDisposable
     {
         StaTestRunner.RunStaAsync(async () =>
         {
-            var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
-            var reportImporter = new ReportImporter(importLedger);
+            var reportImporter = new ReportImporter();
             var faxClient = new FakeFaxClient();
             var faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
             faxLedger.Save(new List<FaxLedgerEntry>
@@ -62,7 +61,7 @@ public class FaxRunSchedulerTests : IDisposable
             var fileLedger = new FaxFileLedger(Path.Combine(_tempDir, "sent-files.json"));
             var orchestrator = new FaxRunOrchestrator(
                 reportImporter, new VaccineRecordPdfBuilder(),
-                faxClient, faxLedger, importLedger, _faxRootDir, fileLedger);
+                faxClient, faxLedger, _faxRootDir, fileLedger);
 
             // Short injectable interval — production's real cadence is 15
             // seconds (see FaxRunScheduler's single-arg constructor).

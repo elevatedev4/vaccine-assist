@@ -91,12 +91,6 @@ public sealed class FaxSendViewModel : ObservableObject, IDisposable
 
     public bool HasRejection => _coordinator.HasRejection;
 
-    /// <summary>V-T65 R5: non-null when the picked file was already fully
-    /// sent (by content hash) — see FaxRunSummary.AlreadySentMessage.</summary>
-    public string? AlreadySentMessage => _coordinator.AlreadySentMessage;
-
-    public bool HasAlreadySentMessage => _coordinator.HasAlreadySentMessage;
-
     /// <summary>V-T65 R5 (Will, verbatim: "the summary should show number
     /// in process and then when it is done show the result") — "N in
     /// process · N sent · N failed" while anything is in flight, "Done: N

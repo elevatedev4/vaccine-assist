@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Net.Http;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -52,6 +53,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
     private string _pharmacyCityStateZip = "";
     private string _signatureName = "";
     private string _accountCode = "";
+    private string? _logoPath;
     private bool _isBusy;
     private string? _statusMessage;
     private string? _errorMessage;
@@ -208,6 +210,26 @@ public sealed class FaxSettingsViewModel : ObservableObject
         set { if (SetProperty(ref _accountCode, value)) ScheduleAutoSave(FaxSettingsAutoSavePolicy.ChangeKind.Text); }
     }
 
+    /// <summary>Full path to the stored logo image, or null — set ONLY by
+    /// SetLogo/RemoveLogo (a file pick/remove is a discrete action from
+    /// FaxSettingsWindow.xaml.cs's code-behind, not a debounced keystroke
+    /// like the properties above), never bound as a writable TextBox.</summary>
+    public string? LogoPath
+    {
+        get => _logoPath;
+        private set
+        {
+            if (SetProperty(ref _logoPath, value))
+            {
+                OnPropertyChanged(nameof(HasLogo));
+            }
+        }
+    }
+
+    /// <summary>Drives the logo preview Image's visibility and the Remove
+    /// button's enabled state.</summary>
+    public bool HasLogo => !string.IsNullOrWhiteSpace(LogoPath) && File.Exists(LogoPath);
+
     public bool IsBusy { get => _isBusy; private set => SetProperty(ref _isBusy, value); }
 
     /// <summary>Status/error line for the credentials group only (Save/
@@ -254,6 +276,7 @@ public sealed class FaxSettingsViewModel : ObservableObject
         PharmacyCityStateZip = fax.PharmacyCityStateZip;
         SignatureName = fax.SignatureName;
         AccountCode = fax.AccountCode ?? "";
+        LogoPath = fax.LogoPath;
 
         var credentials = _credentialStore.Load();
         AccessId = credentials?.AccessId ?? "";
@@ -370,6 +393,86 @@ public sealed class FaxSettingsViewModel : ObservableObject
         {
             AutoSaveErrorMessage = $"Couldn't save: {ex.Message}";
         }
+    }
+
+    /// <summary>"Company logo" -> Choose… (Will, verbatim, 2026-09-29:
+    /// "Add a place in settings for me to upload company logo to use in
+    /// the report"). Called from FaxSettingsWindow.xaml.cs right after its
+    /// OpenFileDialog returns a path — copies the file into
+    /// %AppData%\VaccineAssist\fax\logo.&lt;ext&gt; (same roaming root as
+    /// FaxLedger/FaxFileLedger) and persists the new path immediately: a
+    /// file pick is a discrete action, not a debounced keystroke, so this
+    /// bypasses ScheduleAutoSave and saves right away.</summary>
+    public void SetLogo(string sourceFilePath)
+    {
+        try
+        {
+            var extension = Path.GetExtension(sourceFilePath);
+            if (string.IsNullOrWhiteSpace(extension))
+            {
+                extension = ".png";
+            }
+
+            var faxDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "VaccineAssist", "fax");
+            Directory.CreateDirectory(faxDir);
+            var destinationPath = Path.Combine(faxDir, $"logo{extension}");
+
+            // Remove any previously-stored logo with a DIFFERENT extension
+            // first, so picking a .jpg after a .png doesn't leave the old
+            // file behind forever.
+            DeleteStoredLogoFile();
+
+            File.Copy(sourceFilePath, destinationPath, overwrite: true);
+
+            _settings.Fax.LogoPath = destinationPath;
+            _localSettingsService.Save(_settings);
+            LogoPath = destinationPath;
+
+            ShowSavedHint();
+        }
+        catch (Exception ex)
+        {
+            AutoSaveErrorMessage = $"Couldn't save logo: {ex.Message}";
+        }
+    }
+
+    /// <summary>"Remove" next to the logo preview — clears the stored file
+    /// and setting.</summary>
+    public void RemoveLogo()
+    {
+        try
+        {
+            DeleteStoredLogoFile();
+            _settings.Fax.LogoPath = null;
+            _localSettingsService.Save(_settings);
+            LogoPath = null;
+
+            ShowSavedHint();
+        }
+        catch (Exception ex)
+        {
+            AutoSaveErrorMessage = $"Couldn't remove logo: {ex.Message}";
+        }
+    }
+
+    private void DeleteStoredLogoFile()
+    {
+        if (!string.IsNullOrWhiteSpace(LogoPath) && File.Exists(LogoPath))
+        {
+            File.Delete(LogoPath);
+        }
+    }
+
+    /// <summary>Same "Saved" hint AutoSaveFieldsAsync shows — SetLogo/
+    /// RemoveLogo persist immediately rather than through that method, but
+    /// Will should see the same confirmation either way.</summary>
+    private void ShowSavedHint()
+    {
+        IsSavedHintVisible = true;
+        _savedHintTimer.Stop();
+        _savedHintTimer.Start();
     }
 
     /// <summary>The Notifyre key's (and SRFax's) explicit "Save" button

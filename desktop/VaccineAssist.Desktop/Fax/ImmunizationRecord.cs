@@ -63,12 +63,4 @@ public sealed class ImmunizationRecord
     /// one PDF.</summary>
     public string PatientKey =>
         $"{PatientFirstName.Trim().ToUpperInvariant()}|{PatientLastName.Trim().ToUpperInvariant()}|{PatientDob:yyyy-MM-dd}";
-
-    /// <summary>Stable hash of (patient + vaccine + date + lot) — the
-    /// dedupe key ReportImporter's imported.json ledger uses to make sure
-    /// the same administration is never faxed twice across runs (Will's
-    /// brief). Deliberately excludes prescriber/manufacturer/etc. — those
-    /// can be corrected in a re-export without the row being treated as a
-    /// new administration.</summary>
-    public string Fingerprint => RowFingerprint.Compute(this);
 }

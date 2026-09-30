@@ -239,6 +239,11 @@ public partial class MainWindow : Window
         _faxCredentialStore = faxCredentialStore;
         _faxHttpClient = faxHttpClient;
         _faxSendCoordinator = faxSendCoordinator;
+        // V-T65 R6 (Will, verbatim, 2026-09-29): "show an alert, allowing
+        // them to continue and potentially send duplicates, cancel
+        // altogether, or only send non-duplicates" — the coordinator can't
+        // show a real WPF Window itself, so MainWindow supplies this.
+        _faxSendCoordinator.ConfirmDuplicates = ShowFaxDuplicateConfirmDialog;
 
         InitializeComponent();
 
@@ -865,6 +870,19 @@ public partial class MainWindow : Window
         };
         _openFaxSendWindow = window;
         window.Show();
+    }
+
+    /// <summary>V-T65 R6 (Will, verbatim, 2026-09-29): the "duplicates
+    /// found" alert FaxSendCoordinator.ConfirmDuplicates invokes right
+    /// before a send actually starts. Owned by this window (whichever is
+    /// currently frontmost — the tray-launched FaxSendWindow is always a
+    /// child action from here) so it's centered sensibly instead of
+    /// popping up unowned.</summary>
+    private FaxDuplicateChoice? ShowFaxDuplicateConfirmDialog(IReadOnlyList<FaxDuplicateMatch> duplicates)
+    {
+        var dialog = new FaxDuplicateConfirmWindow(duplicates) { Owner = this };
+        dialog.ShowDialog();
+        return dialog.Choice;
     }
 
     /// <summary>

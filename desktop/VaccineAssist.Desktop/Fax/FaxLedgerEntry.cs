@@ -24,22 +24,24 @@ public enum FaxLedgerStatus
 
 /// <summary>
 /// One row of %AppData%\VaccineAssist\fax\ledger.json — Will's brief:
-/// "one entry per fax (id, patient initials only + our internal row
-/// hashes, prescriber, fax last-4, pdf path, queuedAt, faxDetailsId,
-/// status, lastCheckedAt, error)." NEVER a patient's full name or DOB —
-/// PatientInitials + RowFingerprints are the only patient-identifying
-/// fields, matching AppFileLog's own "initials + last-4 only" rule.
+/// "one entry per fax (id, patient initials only, prescriber, fax
+/// last-4, pdf path, queuedAt, faxDetailsId, status, lastCheckedAt,
+/// error)." NEVER a patient's full name or DOB — PatientInitials is the
+/// only patient-identifying field, matching AppFileLog's own "initials +
+/// last-4 only" rule. V-T65 R6 (Will, verbatim, 2026-09-29: "we can't
+/// store patient name" — extended to mean not even a patient-derived
+/// hash): this used to also carry RowFingerprints (a SHA-256 of patient
+/// name+DOB+vaccine+lot+date per row) for duplicate-detection and Retry
+/// bookkeeping — removed entirely, along with RowFingerprint.cs. Retry
+/// doesn't need it (PdfPath/FaxNumber are enough — see RetryFailedAsync),
+/// and duplicate detection now runs against FaxFileLedger's date/vaccine/
+/// count ledger instead (see FaxDuplicateDetector).
 /// </summary>
 public sealed class FaxLedgerEntry
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("n");
 
     public string PatientInitials { get; set; } = "";
-
-    /// <summary>ImmunizationRecord.Fingerprint for every row this one fax
-    /// covers — lets a failed/retried fax be traced back to its source
-    /// rows without ever storing the patient's name here.</summary>
-    public List<string> RowFingerprints { get; set; } = new();
 
     public string? PrescriberName { get; set; }
 

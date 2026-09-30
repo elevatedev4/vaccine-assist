@@ -57,4 +57,13 @@ public sealed class FaxSettings
     /// signature (his brief's own default text), editable per
     /// workstation/pharmacist in Fax settings.</summary>
     public string SignatureName { get; set; } = "Will Anderson, Pharm.D.";
+
+    /// <summary>Full path to the company logo image (%AppData%\
+    /// VaccineAssist\fax\logo.&lt;ext&gt; — see FaxSettingsViewModel.SetLogo),
+    /// or null for no logo. Will, verbatim, 2026-09-29: "Add a place in
+    /// settings for me to upload company logo to use in the report."
+    /// Printed top-left of the fax PDF header (VaccineRecordPdfBuilder) —
+    /// no logo means the layout is exactly what it was before this
+    /// setting existed.</summary>
+    public string? LogoPath { get; set; }
 }

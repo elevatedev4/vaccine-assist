@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Linq;
 using ClosedXML.Excel;
 using VaccineAssist.Desktop.Fax;
 using Xunit;
@@ -45,8 +44,6 @@ public class ReportImporterTests : IDisposable
         try { Directory.Delete(_tempDir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
-    private static ImportLedger NewLedger(string dir) => new(Path.Combine(dir, "imported.json"));
-
     private string WriteCsv(string fileName, string contents)
     {
         var path = Path.Combine(_tempDir, fileName);
@@ -61,7 +58,7 @@ public class ReportImporterTests : IDisposable
             "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
-        var importer = new ReportImporter(NewLedger(_tempDir));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, _map);
 
         Assert.Single(outcome.NewRecords);
@@ -78,7 +75,7 @@ public class ReportImporterTests : IDisposable
             "Patient First Name,Patient Last Name,Date Administered,DOB\n" +
             "Test,Patient,2026-09-01,1980-01-15\n");
 
-        var importer = new ReportImporter(NewLedger(_tempDir));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, _map);
 
         Assert.Empty(outcome.NewRecords);
@@ -94,7 +91,7 @@ public class ReportImporterTests : IDisposable
             "Test,Patient,Flu,2026-09-01,1980-01-15\n" +
             ",MissingFirstName,Flu,2026-09-01,1980-01-15\n");
 
-        var importer = new ReportImporter(NewLedger(_tempDir));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, _map);
 
         Assert.Single(outcome.NewRecords);
@@ -103,41 +100,41 @@ public class ReportImporterTests : IDisposable
     }
 
     [Fact]
-    public void DuplicateFingerprintWithinOneRunIsCountedOnceNotFaxedTwice()
+    public void RowsWithTheSameDataAreAllImportedNoLongerDedupedAtImportTime()
     {
+        // V-T65 R6 (Will, verbatim, 2026-09-29): "we can't store patient
+        // name" — ImportFile no longer dedupes rows against a cross-run
+        // fingerprint ledger at all (that whole mechanism, including
+        // ImportLedger/imported.json, is gone). Duplicate detection now
+        // happens one layer up (FaxRunOrchestrator, via
+        // FaxDuplicateDetector against FaxFileLedger's date/vaccine/count
+        // shape) — see FaxDuplicateDetectorTests and
+        // FaxRunOrchestratorTests.
         var path = WriteCsv("report.csv",
             "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
-        var importer = new ReportImporter(NewLedger(_tempDir));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, _map);
 
-        Assert.Single(outcome.NewRecords);
-        Assert.Equal(1, outcome.DuplicateRowCount);
+        Assert.Equal(2, outcome.NewRecords.Count);
     }
 
     [Fact]
-    public void RowAlreadyInTheImportLedgerIsDedupedAcrossRuns()
+    public void ReimportingTheSameFileTwiceReturnsTheSameRowsBothTimes()
     {
         var path = WriteCsv("report.csv",
             "Patient First Name,Patient Last Name,Vaccine,Date Administered,DOB,Lot Number\n" +
             "Test,Patient,Flu,2026-09-01,1980-01-15,LOT1\n");
 
-        var ledger = NewLedger(_tempDir);
-        var importer = new ReportImporter(ledger);
+        var importer = new ReportImporter();
 
         var firstRun = importer.ImportFile(path, _map);
-        Assert.Single(firstRun.NewRecords);
-        // ImportFile() itself never writes to the ledger (see its own doc
-        // comment) — the orchestrator does, after a row is actually
-        // resolved/queued. Simulate that here.
-        ledger.AddFingerprints(firstRun.NewRecords.Select(r => r.Fingerprint));
-
         var secondRun = importer.ImportFile(path, _map);
 
-        Assert.Empty(secondRun.NewRecords);
-        Assert.Equal(1, secondRun.DuplicateRowCount);
+        Assert.Single(firstRun.NewRecords);
+        Assert.Single(secondRun.NewRecords);
     }
 
     [Fact]
@@ -160,7 +157,7 @@ public class ReportImporterTests : IDisposable
             workbook.SaveAs(path);
         }
 
-        var importer = new ReportImporter(NewLedger(_tempDir));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, _map);
 
         Assert.Single(outcome.NewRecords);
@@ -209,7 +206,7 @@ public class ReportImporterTests : IDisposable
             workbook.SaveAs(path);
         }
 
-        var importer = new ReportImporter(NewLedger(_tempDir));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, map);
 
         Assert.Empty(outcome.RejectedFiles);
@@ -224,7 +221,7 @@ public class ReportImporterTests : IDisposable
     {
         var path = Path.Combine(_tempDir, "missing.csv");
 
-        var importer = new ReportImporter(NewLedger(_tempDir));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, _map);
 
         Assert.Empty(outcome.NewRecords);

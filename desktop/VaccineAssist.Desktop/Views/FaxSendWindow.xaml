@@ -67,11 +67,6 @@
                        Visibility="{Binding IsSending, Converter={StaticResource BooleanToVisibilityConverter}}"/>
         </StackPanel>
 
-        <!-- V-T65 R5: the picked file was already fully sent (by content
-             hash) — see FaxSendViewModel.AlreadySentMessage's doc comment. -->
-        <TextBlock Grid.Row="6" Text="{Binding AlreadySentMessage}" Foreground="DarkOrange" FontWeight="Bold" TextWrapping="Wrap"
-                   Visibility="{Binding HasAlreadySentMessage, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-
         <!-- Rejection (whole file rejected — e.g. missing required column)
              vs. the plain "Results" section label — exactly one of these
              two is visible at a time (see FaxSendViewModel.HasRejection's

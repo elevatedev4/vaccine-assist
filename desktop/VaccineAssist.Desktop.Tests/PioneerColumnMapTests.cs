@@ -101,7 +101,7 @@ public class PioneerColumnMapTests : IDisposable
     public void DefaultMapImportsAllThreeRowsWithNoRejectionAndCorrectFieldMapping()
     {
         var path = WriteSyntheticWorkbook();
-        var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
+        var importer = new ReportImporter();
 
         var outcome = importer.ImportFile(path, new FaxColumnMap());
 
@@ -120,7 +120,7 @@ public class PioneerColumnMapTests : IDisposable
     public void ExcelSerialAndMSlashDSlashYyyyDatesBothParseCorrectlyForAdministeredOnAndDob()
     {
         var path = WriteSyntheticWorkbook();
-        var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
+        var importer = new ReportImporter();
 
         var outcome = importer.ImportFile(path, new FaxColumnMap());
 
@@ -137,7 +137,7 @@ public class PioneerColumnMapTests : IDisposable
     public void GroupingMergesTheSamePatientAndPrescriberIntoOnePdfGroup()
     {
         var path = WriteSyntheticWorkbook();
-        var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, new FaxColumnMap());
 
         var groups = FaxGrouping.GroupByPatientAndPrescriber(outcome.NewRecords);
@@ -155,7 +155,7 @@ public class PioneerColumnMapTests : IDisposable
     public void UsableFaxNormalizesToE164AndMissingFaxResolvesToNoUsableNumber()
     {
         var path = WriteSyntheticWorkbook();
-        var importer = new ReportImporter(new ImportLedger(Path.Combine(_tempDir, "imported.json")));
+        var importer = new ReportImporter();
         var outcome = importer.ImportFile(path, new FaxColumnMap());
         var groups = FaxGrouping.GroupByPatientAndPrescriber(outcome.NewRecords);
 

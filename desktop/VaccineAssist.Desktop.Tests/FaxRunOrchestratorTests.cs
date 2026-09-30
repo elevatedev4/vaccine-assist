@@ -44,15 +44,14 @@ public class FaxRunOrchestratorTests : IDisposable
         out FaxFileLedger fileLedger,
         IVaccineRecordPdfBuilder? pdfBuilder = null)
     {
-        var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
-        var reportImporter = new ReportImporter(importLedger);
+        var reportImporter = new ReportImporter();
         faxClient = new FakeFaxClient();
         faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
         fileLedger = new FaxFileLedger(Path.Combine(_tempDir, "sent-files.json"));
 
         return new FaxRunOrchestrator(
             reportImporter, pdfBuilder ?? new VaccineRecordPdfBuilder(),
-            faxClient, faxLedger, importLedger, _faxRootDir, fileLedger);
+            faxClient, faxLedger, _faxRootDir, fileLedger);
     }
 
     private static FaxSettings MakeSettings() => new()
@@ -128,7 +127,7 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task RowWithNoResolvableFaxNumberIsSkippedNotSentAndNotFingerprinted()
+    public async Task RowWithNoResolvableFaxNumberIsSkippedNotSentAndNeverRecordedAsSent()
     {
         // No Prescriber Fax column value at all — V-T65: the report's own
         // column is the ONLY source now, no directory fallback.
@@ -136,7 +135,7 @@ public class FaxRunOrchestratorTests : IDisposable
         File.WriteAllText(reportPath,
             "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber\n" +
             "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Nobody\n");
-        var orchestrator = MakeOrchestrator(out var faxClient);
+        var orchestrator = MakeOrchestrator(out var faxClient, out _, out var fileLedger);
 
         var summary = await orchestrator.RunAsync(reportPath, MakeSettings());
 
@@ -147,11 +146,10 @@ public class FaxRunOrchestratorTests : IDisposable
         // Fax-report-layout brief (2026-09-28): never nagged as an error.
         Assert.Null(skippedRow.Error);
 
-        // Never fingerprinted — re-importing the same file (or a
+        // Never recorded as sent — re-importing the same file (or a
         // re-exported one) after the report gains a fax column must still
-        // pick this row up.
-        var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
-        Assert.Empty(importLedger.LoadFingerprints());
+        // pick this row up, not look like a duplicate.
+        Assert.Empty(fileLedger.Load());
     }
 
     [Fact]
@@ -173,18 +171,20 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task PdfBuildFailureMarksTheEntryFailedAndStillFingerprintsIt()
+    public async Task PdfBuildFailureMarksTheEntryFailedAndIsNotRecordedAsSent()
     {
+        // V-T65 R6: nothing was actually sent here — a PDF-build failure
+        // (e.g. a broken template) must NOT be recorded to FaxFileLedger,
+        // or a future re-upload (after the template's fixed) would look
+        // like a duplicate of a fax that never went out.
         var reportPath = WriteReport("report.csv");
-        var orchestrator = MakeOrchestrator(out var faxClient, new FaultyPdfBuilder());
+        var orchestrator = MakeOrchestrator(out var faxClient, out _, out var fileLedger, new FaultyPdfBuilder());
 
         var summary = await orchestrator.RunAsync(reportPath, MakeSettings());
 
         Assert.Equal(1, summary!.Failed);
         Assert.Empty(faxClient.QueuedRequests);
-
-        var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
-        Assert.Single(importLedger.LoadFingerprints());
+        Assert.Empty(fileLedger.Load());
     }
 
     [Fact]
@@ -252,8 +252,18 @@ public class FaxRunOrchestratorTests : IDisposable
     // sure that things don't get re-sent if somebody reuploads the same
     // file." ----
 
+    // ---- V-T65 R6 (Will, verbatim, 2026-09-29): "How is the app
+    // determining what has already been sent? We can't store patient
+    // name, and right now I tried to upload a report with the same
+    // vaccines and patient name and different dates (which should be
+    // different) and it skipped it and said it was already done ... we
+    // should just store the administration dates, quantity on each date,
+    // and look for duplicates that way, then show an alert, allowing them
+    // to continue and potentially send duplicates, cancel altogether, or
+    // only send non-duplicates." ----
+
     [Fact]
-    public async Task ReimportingTheSameReportShowsSkippedAlreadySentInsteadOfSilentlyDroppingTheRow()
+    public async Task ReimportingTheSameReportWithSendOnlyNewRowsSkipsTheDuplicateAndDoesNotResend()
     {
         var reportPath = WriteReport("report.csv");
         var orchestrator = MakeOrchestrator(out var faxClient);
@@ -261,25 +271,78 @@ public class FaxRunOrchestratorTests : IDisposable
         var first = await orchestrator.RunAsync(reportPath, MakeSettings());
         Assert.Equal(1, first!.InProcess);
 
-        var second = await orchestrator.RunAsync(reportPath, MakeSettings());
+        var second = await orchestrator.RunAsync(reportPath, MakeSettings(), FaxDuplicateChoice.SendOnlyNew);
 
         Assert.NotNull(second);
         Assert.Equal(1, second!.SkippedAlreadySent);
-        Assert.Equal(0, second.RowsImported);
+        Assert.Equal(0, second.Sent + second.Failed + second.InProcess);
         var skippedRow = second.Rows.Single();
-        Assert.StartsWith("Skipped — already sent", skippedRow.Status);
+        Assert.StartsWith("Skipped — duplicate of", skippedRow.Status);
         // Still only ONE fax ever queued — the duplicate never re-sent.
         Assert.Single(faxClient.QueuedRequests);
     }
 
     [Fact]
+    public async Task ReimportingTheSameReportWithSendAllAnywayResendsTheDuplicate()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+
+        await orchestrator.RunAsync(reportPath, MakeSettings());
+        var second = await orchestrator.RunAsync(reportPath, MakeSettings(), FaxDuplicateChoice.SendAll);
+
+        Assert.Equal(0, second!.SkippedAlreadySent);
+        Assert.Equal(2, faxClient.QueuedRequests.Count);
+    }
+
+    [Fact]
+    public async Task DefaultDuplicateChoiceSendsEverythingWhenCallerNeverPreviews()
+    {
+        // RunAsync's duplicateChoice defaults to SendAll so a caller that
+        // never calls Preview (every test below RetryFailedAsync, and
+        // anything before FaxSendCoordinator wired Preview in) behaves
+        // exactly as it always has — "just send it."
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+
+        await orchestrator.RunAsync(reportPath, MakeSettings());
+        var second = await orchestrator.RunAsync(reportPath, MakeSettings());
+
+        Assert.Equal(2, faxClient.QueuedRequests.Count);
+    }
+
+    [Fact]
+    public async Task DifferentAdministeredDatesForTheSamePatientAndVaccineAreNeverTreatedAsDuplicates()
+    {
+        // The exact repro from Will's report: same patient, same vaccine,
+        // genuinely different administered dates must never be skipped.
+        var firstPath = Path.Combine(_inputDir, "report1.csv");
+        File.WriteAllText(firstPath,
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
+            "\"Patient, Test\",1980-01-15,Shingrix,2026-09-12,Dr. Synthetic,5555550200\n");
+        var secondPath = Path.Combine(_inputDir, "report2.csv");
+        File.WriteAllText(secondPath,
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
+            "\"Patient, Test\",1980-01-15,Shingrix,2026-09-29,Dr. Synthetic,5555550200\n");
+        var orchestrator = MakeOrchestrator(out var faxClient);
+
+        await orchestrator.RunAsync(firstPath, MakeSettings());
+        var preview = orchestrator.Preview(secondPath, MakeSettings().ColumnMap);
+        var second = await orchestrator.RunAsync(secondPath, MakeSettings(), FaxDuplicateChoice.SendOnlyNew);
+
+        Assert.Empty(preview.Duplicates);
+        Assert.Equal(0, second!.SkippedAlreadySent);
+        Assert.Equal(2, faxClient.QueuedRequests.Count);
+    }
+
+    [Fact]
     public async Task AVendorQueueFailureIsNotFingerprintedSoReimportingRetriesIt()
     {
-        // Will, verbatim: "failed ones are retried." Distinct from
-        // PdfBuildFailureMarksTheEntryFailedAndStillFingerprintsIt — THAT
-        // failure is a template/code problem a resend can't fix; a vendor
-        // QUEUE failure (e.g. a bad fax number that Will then corrects) is
-        // exactly the case re-uploading the report should retry.
+        // Will, verbatim: "failed ones are retried." Neither this nor a
+        // PDF-build failure (see PdfBuildFailureMarksTheEntryFailedAndIsNotRecordedAsSent)
+        // gets recorded to FaxFileLedger — a vendor QUEUE failure (e.g. a
+        // bad fax number that Will then corrects) is exactly the case
+        // re-uploading the report should retry.
         var reportPath = WriteReport("report.csv");
         var orchestrator = MakeOrchestrator(out var faxClient);
         faxClient.QueueResults.Enqueue(new FaxQueueResult(false, null, "vendor rejected the number"));
@@ -297,7 +360,7 @@ public class FaxRunOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task ReuploadingAFullySentFileIsSkippedBeforeSendingAnythingElse()
+    public async Task PreviewFindsADuplicateAfterAFullySentRunAndRunAsyncHonorsSendOnlyNew()
     {
         var reportPath = WriteReport("report.csv");
         var orchestrator = MakeOrchestrator(out var faxClient);
@@ -310,35 +373,61 @@ public class FaxRunOrchestratorTests : IDisposable
         var first = await orchestrator.RunAsync(reportPath, MakeSettings());
         Assert.Equal(1, first!.Sent);
 
-        var second = await orchestrator.RunAsync(reportPath, MakeSettings());
+        // FaxSendCoordinator calls Preview BEFORE RunAsync so it knows
+        // whether to show the duplicate-confirmation dialog at all.
+        var preview = orchestrator.Preview(reportPath, MakeSettings().ColumnMap);
+        Assert.Single(preview.Duplicates);
+        Assert.Equal("Flu", preview.Duplicates[0].VaccineName);
+        Assert.Equal(1, preview.Duplicates[0].PreviouslySentCount);
 
-        Assert.NotNull(second!.AlreadySentMessage);
-        Assert.Contains("already fully sent", second.AlreadySentMessage);
-        Assert.Equal(0, second.Sent);
-        Assert.Empty(second.Rows);
-        // No second attempt to queue anything for this file.
+        var second = await orchestrator.RunAsync(reportPath, MakeSettings(), FaxDuplicateChoice.SendOnlyNew);
+
+        Assert.Equal(1, second!.SkippedAlreadySent);
+        // No second attempt to queue anything for this (date, vaccine).
         Assert.Single(faxClient.QueuedRequests);
     }
 
     [Fact]
-    public async Task ADifferentFileWithDifferentContentIsNotTreatedAsAlreadySent()
+    public async Task ADifferentReportWithNoOverlappingDatesOrVaccinesHasNoDuplicates()
     {
         var reportPath = WriteReport("report.csv");
         var orchestrator = MakeOrchestrator(out var faxClient);
         faxClient.StatusResults["fax-1"] = new FaxStatusResult(true, FaxSendStatus.Sent, null, null);
         await orchestrator.RunAsync(reportPath, MakeSettings());
 
-        // A different patient/DOB/vaccine/date -> a different row
-        // fingerprint AND different file bytes -> a different file hash.
+        // A different patient AND a different administered date/vaccine —
+        // no (date, vaccine) overlap with what was already sent.
         var otherPath = Path.Combine(_inputDir, "report2.csv");
         File.WriteAllText(otherPath,
             "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
-            "\"Other, Person\",1990-05-20,Flu,2026-09-02,Dr. Synthetic,5555550200\n");
+            "\"Other, Person\",1990-05-20,Shingrix,2026-09-02,Dr. Synthetic,5555550200\n");
 
-        var second = await orchestrator.RunAsync(otherPath, MakeSettings());
+        var preview = orchestrator.Preview(otherPath, MakeSettings().ColumnMap);
+        var second = await orchestrator.RunAsync(otherPath, MakeSettings(), FaxDuplicateChoice.SendOnlyNew);
 
-        Assert.Null(second!.AlreadySentMessage);
-        Assert.Equal(1, second.RowsImported);
+        Assert.Empty(preview.Duplicates);
+        Assert.Equal(0, second!.SkippedAlreadySent);
         Assert.Equal(2, faxClient.QueuedRequests.Count);
+    }
+
+    [Fact]
+    public async Task RecordRunOnlyHappensForRowsThatEndUpQueuedOrSentNotForSkippedNoFaxRows()
+    {
+        // A file with one usable row and one unusable (no prescriber fax)
+        // row — only the usable one should ever reach FaxFileLedger.
+        var reportPath = Path.Combine(_inputDir, "report.csv");
+        File.WriteAllText(reportPath,
+            "Patient Full Name Last then First,Patient Date of Birth,Dispensed Item Name,Immunization Administered On,Primary Care Prescriber,Primary Care Prescriber Fax\n" +
+            "\"Patient, Test\",1980-01-15,Flu,2026-09-01,Dr. Synthetic,5555550200\n" +
+            "\"Nobody, Patient\",1980-01-15,Shingrix,2026-09-02,,\n");
+        var orchestrator = MakeOrchestrator(out _, out _, out var fileLedger);
+
+        await orchestrator.RunAsync(reportPath, MakeSettings());
+
+        var runs = fileLedger.Load();
+        var entry = Assert.Single(runs);
+        var dateEntry = Assert.Single(entry.Entries);
+        Assert.Equal("Flu", dateEntry.VaccineName);
+        Assert.Equal(1, dateEntry.Count);
     }
 }

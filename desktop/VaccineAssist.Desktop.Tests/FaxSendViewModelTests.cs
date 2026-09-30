@@ -47,15 +47,14 @@ public class FaxSendViewModelTests : IDisposable
 
     private FaxRunOrchestrator MakeOrchestrator(out FakeFaxClient faxClient, out FaxLedger faxLedger)
     {
-        var importLedger = new ImportLedger(Path.Combine(_tempDir, "imported.json"));
-        var reportImporter = new ReportImporter(importLedger);
+        var reportImporter = new ReportImporter();
         faxClient = new FakeFaxClient();
         faxLedger = new FaxLedger(Path.Combine(_tempDir, "ledger.json"));
         var fileLedger = new FaxFileLedger(Path.Combine(_tempDir, "sent-files.json"));
 
         return new FaxRunOrchestrator(
             reportImporter, new VaccineRecordPdfBuilder(),
-            faxClient, faxLedger, importLedger, _faxRootDir, fileLedger);
+            faxClient, faxLedger, _faxRootDir, fileLedger);
     }
 
     private FaxSendViewModel MakeViewModel(FaxRunOrchestrator orchestrator, FaxLedger faxLedger) =>

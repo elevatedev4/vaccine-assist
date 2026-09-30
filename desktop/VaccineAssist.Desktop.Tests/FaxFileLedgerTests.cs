@@ -1,45 +1,18 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Text;
+using System.Text.Json;
 using VaccineAssist.Desktop.Fax;
 using Xunit;
 
 namespace VaccineAssist.Desktop.Tests;
 
-/// <summary>V-T65 R5 (Will, verbatim, 2026-09-29): "make sure that things
-/// don't get re-sent if somebody reuploads the same file" — file-hash
-/// stability (FaxFileHasher) and the ledger's upsert/merge behavior
-/// (FaxFileLedger).</summary>
-public class FaxFileHasherTests
-{
-    [Fact]
-    public void SameBytesProduceTheSameHash()
-    {
-        var bytes = Encoding.UTF8.GetBytes("same content");
-
-        Assert.Equal(FaxFileHasher.ComputeHex(bytes), FaxFileHasher.ComputeHex(bytes));
-    }
-
-    [Fact]
-    public void DifferentBytesProduceDifferentHashes()
-    {
-        var a = FaxFileHasher.ComputeHex(Encoding.UTF8.GetBytes("content A"));
-        var b = FaxFileHasher.ComputeHex(Encoding.UTF8.GetBytes("content B"));
-
-        Assert.NotEqual(a, b);
-    }
-
-    [Fact]
-    public void HashIsLowercaseHex()
-    {
-        var hash = FaxFileHasher.ComputeHex(Encoding.UTF8.GetBytes("x"));
-
-        Assert.Equal(64, hash.Length); // SHA-256 -> 32 bytes -> 64 hex chars
-        Assert.Equal(hash, hash.ToLowerInvariant());
-    }
-}
-
+/// <summary>V-T65 R6 (Will, verbatim, 2026-09-29): "We can't store patient
+/// name ... we should just store the administration dates, quantity on
+/// each date, and look for duplicates that way." FaxFileLedger's new
+/// shape (a flat list of runs, each holding only (date, vaccine, count)
+/// entries — never a patient identifier) plus migration from the old
+/// per-file-hash shape.</summary>
 public class FaxFileLedgerTests : IDisposable
 {
     private readonly string _filePath;
@@ -55,7 +28,7 @@ public class FaxFileLedgerTests : IDisposable
     }
 
     [Fact]
-    public void MissingFileHasNoEntries()
+    public void MissingFileHasNoRuns()
     {
         var ledger = new FaxFileLedger(_filePath);
 
@@ -63,37 +36,120 @@ public class FaxFileLedgerTests : IDisposable
     }
 
     [Fact]
-    public void RecordPersistsAcrossInstances()
+    public void CorruptFileLoadsAsEmptyListRatherThanThrowing()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+        File.WriteAllText(_filePath, "not valid json {{{");
+
+        var ledger = new FaxFileLedger(_filePath);
+
+        Assert.Empty(ledger.Load());
+    }
+
+    [Fact]
+    public void RecordRunPersistsAcrossInstances()
     {
         var first = new FaxFileLedger(_filePath);
-        first.Record("hash1", "report.csv", new[] { "fp1", "fp2" });
+        var runAt = new DateTime(2026, 9, 29, 18, 0, 0, DateTimeKind.Utc);
+        first.RecordRun(runAt, new List<FaxSentDateEntry>
+        {
+            new() { AdministeredDate = "2026-09-12", VaccineName = "Shingrix", Count = 3 },
+        });
 
         var second = new FaxFileLedger(_filePath);
-        var entry = Assert.Single(second.Load());
+        var run = Assert.Single(second.Load());
 
-        Assert.Equal("hash1", entry.FileHash);
-        Assert.Equal("report.csv", entry.FileName);
-        Assert.Equal(new[] { "fp1", "fp2" }, entry.RowFingerprints.OrderBy(f => f));
+        Assert.Equal(runAt, run.RunAtUtc);
+        var entry = Assert.Single(run.Entries);
+        Assert.Equal("2026-09-12", entry.AdministeredDate);
+        Assert.Equal("Shingrix", entry.VaccineName);
+        Assert.Equal(3, entry.Count);
     }
 
     [Fact]
-    public void RecordingTheSameHashTwiceMergesFingerprintsInsteadOfDuplicatingTheEntry()
+    public void RecordRunWithNoEntriesIsANoOp()
     {
         var ledger = new FaxFileLedger(_filePath);
-        ledger.Record("hash1", "report.csv", new[] { "fp1" });
-        ledger.Record("hash1", "report.csv", new[] { "fp1", "fp2" });
 
-        var entry = Assert.Single(ledger.Load());
-        Assert.Equal(new[] { "fp1", "fp2" }, entry.RowFingerprints.OrderBy(f => f));
+        ledger.RecordRun(DateTime.UtcNow, new List<FaxSentDateEntry>());
+
+        Assert.Empty(ledger.Load());
+        Assert.False(File.Exists(_filePath));
     }
 
     [Fact]
-    public void DifferentHashesAreSeparateEntries()
+    public void EachRecordRunCallAppendsASeparateRunRatherThanMerging()
     {
         var ledger = new FaxFileLedger(_filePath);
-        ledger.Record("hash1", "report1.csv", new[] { "fp1" });
-        ledger.Record("hash2", "report2.csv", new[] { "fp2" });
+        ledger.RecordRun(new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc),
+            new List<FaxSentDateEntry> { new() { AdministeredDate = "2026-09-01", VaccineName = "Flu", Count = 1 } });
+        ledger.RecordRun(new DateTime(2026, 9, 2, 0, 0, 0, DateTimeKind.Utc),
+            new List<FaxSentDateEntry> { new() { AdministeredDate = "2026-09-02", VaccineName = "Flu", Count = 2 } });
 
         Assert.Equal(2, ledger.Load().Count);
+    }
+
+    [Fact]
+    public void OldFileHashShapeMigratesToEmptyEntriesRatherThanCrashing()
+    {
+        // The pre-R6 shape: FileHash/FileName/RecordedAtUtc/RowFingerprints.
+        // Dates aren't recoverable from an old row's SHA-256 fingerprint,
+        // so migration keeps RunAtUtc and gives up an empty Entries list —
+        // it must never crash, and must never fabricate a false duplicate.
+        Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+        var oldShapeJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                FileHash = "abc123",
+                FileName = "report.csv",
+                RecordedAtUtc = new DateTime(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc),
+                RowFingerprints = new[] { "fp1", "fp2" },
+            },
+        });
+        File.WriteAllText(_filePath, oldShapeJson);
+
+        var ledger = new FaxFileLedger(_filePath);
+        var runs = ledger.Load();
+
+        var run = Assert.Single(runs);
+        Assert.Equal(new DateTime(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc), run.RunAtUtc);
+        Assert.Empty(run.Entries);
+    }
+
+    [Fact]
+    public void OldShapeFileIsRewrittenInTheNewShapeAfterMigration()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+        var oldShapeJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                FileHash = "abc123",
+                FileName = "report.csv",
+                RecordedAtUtc = DateTime.UtcNow,
+                RowFingerprints = new[] { "fp1" },
+            },
+        });
+        File.WriteAllText(_filePath, oldShapeJson);
+
+        var ledger = new FaxFileLedger(_filePath);
+        ledger.Load(); // triggers the rewrite
+
+        var rewrittenJson = File.ReadAllText(_filePath);
+        Assert.DoesNotContain("FileHash", rewrittenJson);
+        Assert.DoesNotContain("RowFingerprints", rewrittenJson);
+        Assert.Contains("RunAtUtc", rewrittenJson);
+    }
+
+    [Fact]
+    public void EmptyArrayLoadsAsEmptyListRegardlessOfShape()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+        File.WriteAllText(_filePath, "[]");
+
+        var ledger = new FaxFileLedger(_filePath);
+
+        Assert.Empty(ledger.Load());
     }
 }

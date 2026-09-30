@@ -5,6 +5,12 @@ using VaccineAssist.Desktop.Logging;
 
 namespace VaccineAssist.Desktop.Fax;
 
+/// <summary>Read-only result of FaxRunOrchestrator.Preview — the file
+/// parsed but NOT sent, plus which (date, vaccine) pairs already look
+/// sent per FaxFileLedger. FaxSendCoordinator calls this before RunAsync
+/// so it knows whether to show the duplicate-confirmation dialog.</summary>
+public sealed record FaxDuplicateCheckResult(ImportOutcome ImportOutcome, IReadOnlyList<FaxDuplicateMatch> Duplicates);
+
 /// <summary>
 /// The whole "one daily run" pipeline (Will's brief): import -> build one
 /// PDF per (patient, prescriber) group -> queue each via IFaxClient ->
@@ -20,6 +26,16 @@ namespace VaccineAssist.Desktop.Fax;
 /// once)"). This ALSO doubles as the guard against two runs
 /// double-importing the same report rows before either has persisted
 /// anything — see ReportImporter's own doc comment.
+///
+/// V-T65 R6 (Will, verbatim, 2026-09-29): "How is the app determining
+/// what has already been sent? We can't store patient name ... we should
+/// just store the administration dates, quantity on each date, and look
+/// for duplicates that way, then show an alert, allowing them to continue
+/// and potentially send duplicates, cancel altogether, or only send
+/// non-duplicates." Replaces the old per-row SHA-256 fingerprint dedupe
+/// (RowFingerprint/ImportLedger/the whole-file FaxFileHasher refusal) with
+/// Preview (read-only duplicate check) + RunAsync's duplicateChoice
+/// parameter — see FaxDuplicateDetector for the actual matching logic.
 /// </summary>
 public sealed class FaxRunOrchestrator
 {
@@ -50,7 +66,6 @@ public sealed class FaxRunOrchestrator
     /// in-memory one.</summary>
     private IFaxClient _faxClient;
     private readonly IFaxLedger _ledger;
-    private readonly IImportLedger _importLedger;
     private readonly string _faxRootDir;
     private readonly IFaxFileLedger _fileLedger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
@@ -60,7 +75,6 @@ public sealed class FaxRunOrchestrator
         IVaccineRecordPdfBuilder pdfBuilder,
         IFaxClient faxClient,
         IFaxLedger ledger,
-        IImportLedger importLedger,
         string faxRootDir,
         IFaxFileLedger fileLedger)
     {
@@ -68,7 +82,6 @@ public sealed class FaxRunOrchestrator
         _pdfBuilder = pdfBuilder;
         _faxClient = faxClient;
         _ledger = ledger;
-        _importLedger = importLedger;
         _faxRootDir = faxRootDir;
         _fileLedger = fileLedger;
     }
@@ -93,12 +106,38 @@ public sealed class FaxRunOrchestrator
     /// single run is short-lived).</summary>
     public void UpdateFaxClient(IFaxClient faxClient) => _faxClient = faxClient;
 
+    /// <summary>Read-only: parses <paramref name="reportFilePath"/> (same
+    /// importer RunAsync itself uses) and checks its (date, vaccine)
+    /// summary against FaxFileLedger — no ledger writes, no sending, no
+    /// run-lock. Safe to call as many times as Will re-picks a file.
+    /// FaxSendCoordinator calls this right before RunAsync so it knows
+    /// whether to show the duplicate-confirmation dialog.</summary>
+    public FaxDuplicateCheckResult Preview(string reportFilePath, FaxColumnMap columnMap)
+    {
+        var importOutcome = _importer.ImportFile(reportFilePath, columnMap);
+        var newEntries = FaxDuplicateDetector.Summarize(importOutcome.NewRecords);
+        var duplicates = FaxDuplicateDetector.FindDuplicates(newEntries, _fileLedger.Load());
+        return new FaxDuplicateCheckResult(importOutcome, duplicates);
+    }
+
     /// <summary>Runs the full pipeline once against ONE user-picked report
     /// file (V-T65: tray icon -> Views/FaxSendWindow.xaml's file picker,
     /// then this runs only once Will presses Send there — R4, 2026-09-29;
     /// no input folder, no scan). Returns null (a no-op, logged,
-    /// never thrown) if a run is already in progress.</summary>
-    public async Task<FaxRunSummary?> RunAsync(string reportFilePath, FaxSettings settings, CancellationToken ct = default)
+    /// never thrown) if a run is already in progress.
+    ///
+    /// <paramref name="duplicateChoice"/> (V-T65 R6) — Will's answer on
+    /// FaxSendCoordinator's duplicate-confirmation dialog when Preview
+    /// found any (date, vaccine) pairs already in FaxFileLedger:
+    /// SendAll sends every row including the duplicates; SendOnlyNew
+    /// filters them out first. Defaults to SendAll so a caller that never
+    /// calls Preview (e.g. every existing test/RetryFailedAsync-only
+    /// caller) behaves exactly as before — "just send it."</summary>
+    public async Task<FaxRunSummary?> RunAsync(
+        string reportFilePath,
+        FaxSettings settings,
+        FaxDuplicateChoice duplicateChoice = FaxDuplicateChoice.SendAll,
+        CancellationToken ct = default)
     {
         if (!await _runLock.WaitAsync(0, ct))
         {
@@ -108,7 +147,7 @@ public sealed class FaxRunOrchestrator
 
         try
         {
-            return await RunCoreAsync(reportFilePath, settings, ct);
+            return await RunCoreAsync(reportFilePath, settings, duplicateChoice, ct);
         }
         finally
         {
@@ -191,54 +230,12 @@ public sealed class FaxRunOrchestrator
         return result.Success;
     }
 
-    private async Task<FaxRunSummary> RunCoreAsync(string reportFilePath, FaxSettings settings, CancellationToken ct)
+    private async Task<FaxRunSummary> RunCoreAsync(
+        string reportFilePath, FaxSettings settings, FaxDuplicateChoice duplicateChoice, CancellationToken ct)
     {
         var runAtUtc = DateTime.UtcNow;
         var runDate = DateOnly.FromDateTime(DateTime.Now);
         var fileName = Path.GetFileName(reportFilePath);
-
-        // V-T65 R5 (Will, verbatim, 2026-09-29: "make sure that things
-        // don't get re-sent if somebody reuploads the same file"). Hashed
-        // BEFORE the import/PDF/send pipeline runs at all, so a re-upload
-        // of an already-fully-sent file short-circuits with a clear
-        // message instead of silently no-op'ing through the whole pipeline
-        // (the per-row fingerprint dedupe below would ALSO catch it, but
-        // only after building/attempting a PDF per row — this is a fast,
-        // friendly early exit, not the actual safety gate).
-        string fileHash;
-        try
-        {
-            var fileBytes = await File.ReadAllBytesAsync(reportFilePath, ct);
-            fileHash = FaxFileHasher.ComputeHex(fileBytes);
-        }
-        catch (Exception ex)
-        {
-            // Couldn't even read the file to hash it — leave fileHash
-            // blank and let the normal import step below surface a clear
-            // RejectedFiles reason (it hits the exact same File I/O).
-            fileHash = "";
-            AppFileLog.LogException("FaxRunOrchestrator.HashFile", ex);
-        }
-
-        if (!string.IsNullOrEmpty(fileHash))
-        {
-            var alreadySentAt = CheckAlreadyFullySent(fileHash);
-            if (alreadySentAt is not null)
-            {
-                var skipSummary = new FaxRunSummary
-                {
-                    RunAtUtc = runAtUtc,
-                    FileName = fileName,
-                    FileHash = fileHash,
-                    AlreadySentMessage =
-                        $"{fileName} was already fully sent on {alreadySentAt.Value.ToLocalTime():MM/dd/yyyy h:mm tt} — nothing to send. " +
-                        "Choose a different file, or check Send history below.",
-                };
-                WriteRunSummaryFile(skipSummary);
-                AppFileLog.Log($"[FaxRunOrchestrator] {fileName} already fully sent — skipped re-processing.");
-                return skipSummary;
-            }
-        }
 
         var poller = new FaxReceiptPoller(_ledger, _faxClient);
 
@@ -247,55 +244,88 @@ public sealed class FaxRunOrchestrator
         await poller.PollAsync(ct);
 
         var importOutcome = _importer.ImportFile(reportFilePath, settings.ColumnMap);
-        var groups = FaxGrouping.GroupByPatientAndPrescriber(importOutcome.NewRecords);
+
+        // V-T65 R6: (date, vaccine, count) duplicate check against
+        // FaxFileLedger — see FaxDuplicateDetector. duplicateChoice is
+        // whatever FaxSendCoordinator already got Will to confirm (via
+        // Preview + the duplicate-confirmation dialog) before calling
+        // RunAsync at all; this re-derives the same matches from the
+        // CURRENT ledger rather than trusting a possibly-stale Preview.
+        var newEntries = FaxDuplicateDetector.Summarize(importOutcome.NewRecords);
+        var duplicates = FaxDuplicateDetector.FindDuplicates(newEntries, _fileLedger.Load());
+
+        List<ImmunizationRecord> recordsToSend;
+        List<ImmunizationRecord> recordsSkippedAsDuplicate;
+        if (duplicateChoice == FaxDuplicateChoice.SendOnlyNew && duplicates.Count > 0)
+        {
+            recordsToSend = FaxDuplicateDetector.FilterOutDuplicates(importOutcome.NewRecords, duplicates);
+            var sendKeys = new HashSet<(string Date, string VaccineKey)>(recordsToSend.Select(FaxDuplicateDetector.KeyFor));
+            recordsSkippedAsDuplicate = importOutcome.NewRecords
+                .Where(r => !sendKeys.Contains(FaxDuplicateDetector.KeyFor(r)))
+                .ToList();
+        }
+        else
+        {
+            recordsToSend = importOutcome.NewRecords.ToList();
+            recordsSkippedAsDuplicate = new List<ImmunizationRecord>();
+        }
+
+        var groups = FaxGrouping.GroupByPatientAndPrescriber(recordsToSend);
 
         var summary = new FaxRunSummary
         {
             RunAtUtc = runAtUtc,
             FileName = fileName,
-            FileHash = fileHash,
             RowsImported = importOutcome.NewRecords.Count,
             SkippedRows = importOutcome.SkippedRowCount,
-            DuplicateRows = importOutcome.DuplicateRowCount,
             PatientsProcessed = groups.Count,
             RejectedFiles = importOutcome.RejectedFiles
                 .Select(f => $"{Path.GetFileName(f.FilePath)}: {f.Reason}")
                 .ToList(),
         };
 
-        var ledgerEntries = _ledger.Load();
-
-        // V-T65 R5: duplicate rows (already-fingerprinted administrations)
-        // are shown, not silently dropped — grouped the same way real
-        // sends are, matched back to whichever ledger entry already covers
-        // them for a "since <date>" the group can display.
-        if (importOutcome.DuplicateRecords.Count > 0)
+        // V-T65 R6: rows Will chose to leave out via "Send only new rows"
+        // are still shown, not silently dropped — grouped the same way
+        // real sends are, with the (date, vaccine) match's own
+        // PreviouslySentRunAtUtc as the "batch" date.
+        if (recordsSkippedAsDuplicate.Count > 0)
         {
-            var duplicateGroups = FaxGrouping.GroupByPatientAndPrescriber(importOutcome.DuplicateRecords);
-            foreach (var dupGroup in duplicateGroups)
-            {
-                var groupFingerprints = new HashSet<string>(dupGroup.Records.Select(r => r.Fingerprint));
-                var match = ledgerEntries.FirstOrDefault(e => e.RowFingerprints.Any(fp => groupFingerprints.Contains(fp)));
-                var dateText = match is not null
-                    ? match.QueuedAtUtc.ToLocalTime().ToString("MM/dd/yyyy")
-                    : "an earlier date";
+            var duplicatesByKey = duplicates.ToDictionary(
+                d => (d.AdministeredDate, FaxDuplicateDetector.NormalizeVaccine(d.VaccineName)));
+            var skippedGroups = FaxGrouping.GroupByPatientAndPrescriber(recordsSkippedAsDuplicate);
 
-                summary.SkippedAlreadySent++;
+            foreach (var skippedGroup in skippedGroups)
+            {
+                var matchedRunAtUtc = skippedGroup.Records
+                    .Select(r => duplicatesByKey.TryGetValue(FaxDuplicateDetector.KeyFor(r), out var d) ? d.PreviouslySentRunAtUtc : (DateTime?)null)
+                    .Where(d => d is not null)
+                    .Select(d => d!.Value)
+                    .DefaultIfEmpty()
+                    .Max();
+                var dateText = matchedRunAtUtc == default
+                    ? "an earlier batch"
+                    : matchedRunAtUtc.ToLocalTime().ToString("MM/dd/yyyy");
+
+                summary.SkippedAlreadySent += skippedGroup.Records.Count;
                 summary.Rows.Add(new FaxRunRowSummary
                 {
-                    PatientInitials = dupGroup.PatientInitials,
-                    PrescriberName = dupGroup.PrescriberName ?? "(unknown prescriber)",
-                    FaxNumberLast4 = match?.FaxNumberLast4 ?? "",
-                    Status = $"Skipped — already sent {dateText}",
+                    PatientInitials = skippedGroup.PatientInitials,
+                    PrescriberName = skippedGroup.PrescriberName ?? "(unknown prescriber)",
+                    Status = $"Skipped — duplicate of {dateText} batch",
                     Error = null,
-                    LedgerEntryId = match?.Id ?? "",
                 });
             }
         }
 
-        var newFingerprints = new List<string>();
+        var ledgerEntries = _ledger.Load();
         var thisRunEntryIds = new HashSet<string>();
         var outboxDir = Path.Combine(_faxRootDir, "outbox", runDate.ToString("yyyyMMdd"));
+
+        // V-T65 R6: rows actually sent successfully THIS run — recorded to
+        // FaxFileLedger at the very end (see below). Never a patient
+        // identifier: just the same ImmunizationRecords FaxDuplicateDetector
+        // will reduce to (date, vaccine, count) right before persisting.
+        var sentSuccessfully = new List<ImmunizationRecord>();
 
         foreach (var group in groups)
         {
@@ -327,16 +357,12 @@ public sealed class FaxRunOrchestrator
                     // neutral colour (see Views/FaxSendWindow.xaml).
                     Error = null,
                 });
-                // NOT fingerprinted — see ReportImporter's doc comment on
-                // why: these rows must still be pick-up-able once Will
-                // adds a fax number and the report reappears/re-runs.
                 continue;
             }
 
             var entry = new FaxLedgerEntry
             {
                 PatientInitials = group.PatientInitials,
-                RowFingerprints = group.Records.Select(r => r.Fingerprint).ToList(),
                 PrescriberName = group.PrescriberName,
                 FaxNumber = resolvedFax,
                 FaxNumberLast4 = FaxNumberNormalizer.Last4(resolvedFax),
@@ -355,7 +381,6 @@ public sealed class FaxRunOrchestrator
                 entry.Status = FaxLedgerStatus.Failed;
                 entry.Error = $"Couldn't build PDF: {ex.Message}";
                 ledgerEntries.Add(entry);
-                newFingerprints.AddRange(entry.RowFingerprints);
                 AppFileLog.LogException("FaxRunOrchestrator.BuildPdf", ex);
                 continue;
             }
@@ -396,48 +421,24 @@ public sealed class FaxRunOrchestrator
             }
 
             ledgerEntries.Add(entry);
-            // Fingerprinted once queued (or Sent) — never for a
-            // skipped-no-fax group, see above. V-T65 R5 (Will, verbatim:
-            // "failed ones are retried"): a vendor-side QUEUE failure
-            // (this branch) is deliberately NOT fingerprinted, so
-            // re-uploading the same report (e.g. after correcting the
-            // prescriber's fax number) picks the row back up as new
-            // instead of it being stuck "already sent" forever with no
-            // way back in except the manual Retry button. This is
-            // unrelated to the PDF-build-failure branch above, which IS
-            // still always fingerprinted — that failure is a template/
-            // code problem a resend can't fix, and RetryFailedAsync can't
-            // retry it either (no PdfPath was ever written).
+            // V-T65 R6 (Will, verbatim: "record the run in the ledger only
+            // for rows actually sent successfully"): a vendor-side QUEUE
+            // failure (this branch) never counts — re-uploading the same
+            // report (e.g. after correcting the prescriber's fax number)
+            // must see these rows as new, not duplicates.
             if (entry.Status != FaxLedgerStatus.Failed)
             {
-                newFingerprints.AddRange(entry.RowFingerprints);
+                sentSuccessfully.AddRange(group.Records);
             }
 
             AppFileLog.Log($"[FaxRunOrchestrator] {entry.PatientInitials} -> {entry.PrescriberName ?? "?"} ({entry.FaxNumberLast4}): {entry.Status}");
         }
 
         _ledger.Save(ledgerEntries);
-        if (newFingerprints.Count > 0)
-        {
-            _importLedger.AddFingerprints(newFingerprints);
-        }
-
-        // V-T65 R5: records this file's hash against every row it
-        // actually contributed this run, so a later byte-identical
-        // re-upload can be recognized (see CheckAlreadyFullySent) once
-        // those rows finish resolving to Sent. Skipped when the file
-        // produced nothing new (fileHash blank, or every row was a
-        // duplicate/no-fax skip) — nothing to remember either way.
-        if (!string.IsNullOrEmpty(fileHash) && importOutcome.NewRecords.Count > 0)
-        {
-            _fileLedger.Record(fileHash, fileName, importOutcome.NewRecords.Select(r => r.Fingerprint));
-        }
 
         // V-T65: no input folder / processed\ subfolder anymore — the
         // picked report file is left exactly where Will selected it from
-        // (see MainWindow's file picker); the fingerprint ledger above is
-        // what stops the same administration being re-faxed if he
-        // re-imports the same file.
+        // (see MainWindow's file picker).
 
         // A second poll pass right after queuing — a nicer first-look
         // summary if SRFax resolves a fast fax immediately; the
@@ -465,36 +466,13 @@ public sealed class FaxRunOrchestrator
             });
         }
 
+        // V-T65 R6: record THIS run's (date, vaccine, count) entries — only
+        // for rows actually sent successfully (see sentSuccessfully above).
+        // A no-op when it's empty (FaxFileLedger.RecordRun's own guard).
+        _fileLedger.RecordRun(runAtUtc, FaxDuplicateDetector.Summarize(sentSuccessfully));
+
         WriteRunSummaryFile(summary);
         return summary;
-    }
-
-    /// <summary>V-T65 R5: returns when this file was last recorded (see
-    /// FaxFileLedger.Record) IF every row fingerprint it's ever
-    /// contributed is currently covered by a Sent ledger entry — null
-    /// otherwise (never recorded, or something in it is still
-    /// pending/failed and genuinely needs processing). Re-derives "Sent"
-    /// live from the CURRENT ledger rather than trusting a stale flag, so
-    /// a file that was InProcess yesterday and finished Sent overnight is
-    /// recognized correctly today.</summary>
-    private DateTime? CheckAlreadyFullySent(string fileHash)
-    {
-        var fileEntries = _fileLedger.Load();
-        var match = fileEntries.FirstOrDefault(e => string.Equals(e.FileHash, fileHash, StringComparison.OrdinalIgnoreCase));
-        if (match is null || match.RowFingerprints.Count == 0)
-        {
-            return null;
-        }
-
-        var sentFingerprints = new HashSet<string>(
-            _ledger.Load()
-                .Where(e => e.Status == FaxLedgerStatus.Sent)
-                .SelectMany(e => e.RowFingerprints),
-            StringComparer.OrdinalIgnoreCase);
-
-        return match.RowFingerprints.All(fp => sentFingerprints.Contains(fp))
-            ? match.RecordedAtUtc
-            : null;
     }
 
     private void WriteRunSummaryFile(FaxRunSummary summary)
