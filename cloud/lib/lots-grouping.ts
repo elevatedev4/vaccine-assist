@@ -84,10 +84,35 @@ export type LotsCatalogVaccine = {
 
 export type LotsProductGroup = {
   /** Stable grouping key: `ndc:<digits>` when any member has an NDC,
-   * else `name:<normalized name>`. */
+   * else `name:<normalized name>`. When a product's dose rows carry more
+   * than one distinct NDC (see `altNdcs`), this is built from the
+   * LEXICOGRAPHICALLY-SMALLEST one — deliberately NOT "whichever NDC
+   * this function saw first" (reviewer fix, post-Shingrix-fix review):
+   * GET /api/vaccines only orders by `name`, so Postgres doesn't
+   * guarantee which of two same-named dose rows comes back first across
+   * requests, and app/lots/page.tsx keys persistent per-row UI state
+   * (drafts, savingByKey, rowErrors, budEnabledKeys) by this `key` across
+   * background refetches — an order flip would orphan that state
+   * mid-edit. Sorting makes `key` (and `ndc` below) depend only on the
+   * SET of NDCs the product's rows carry, never on array/catalog order. */
   key: string;
-  /** Digits-only NDC shared by the group, or null if no member has one. */
+  /** Digits-only NDC shared by the group, or null if no member has one.
+   * When the group's dose rows carry more than one distinct NDC (see
+   * `altNdcs`), this is the lexicographically-smallest one (see `key`'s
+   * doc above for why) — kept as a single value so existing NDC-matching
+   * callers (Ordering's on-hand reconciliation, lib/product-view.ts)
+   * don't need to change. */
   ndc: string | null;
+  /** Any ADDITIONAL distinct NDCs found among this product's dose rows,
+   * beyond the primary `ndc` (V-T lots Shingrix fix, Will 2026-09-29:
+   * "It's one vaccine for the two doses" — Shingrix's two seeded dose
+   * rows carry mismatched NDCs in production, per lib/dose-family.ts's
+   * and scripts/backfill-entry-directions.ts's existing notes on this
+   * exact case). Empty when every member shares one NDC (the normal
+   * case) or has none. Digits-only, lexicographically sorted (ascending,
+   * matching `ndc`'s own tie-break — see its doc above), never including
+   * `ndc` itself. */
+  altNdcs: string[];
   /** Display name (see chooseProductDisplayName). */
   name: string;
   /** true if ANY dose row in the group is active. */
@@ -101,11 +126,26 @@ export type LotsProductGroup = {
  * Groups a flat, per-dose vaccine catalog into one LotsProductGroup per
  * PRODUCT: keyed by normalized NDC (first NDC when a row holds a
  * comma-separated list — see lib/ndc.ts's normalizeNdc) when present,
- * else by normalized product name. A null-NDC dose (e.g. Vaqta adult's
- * dose 2 row) joins an existing NDC group whose members share its
- * (normalized) name rather than starting its own name-only group, so the
- * two Vaqta doses collapse to one product row despite only one of them
- * carrying an NDC.
+ * else by normalized product name. Two fallbacks join a dose row to an
+ * existing NDC group rather than starting a second one for the same
+ * product:
+ *
+ *   - A null-NDC dose (e.g. Vaqta adult's dose 2 row) joins an existing
+ *     NDC group whose members share its (normalized) name.
+ *   - A dose row whose NDC differs from a sibling dose's NDC, but whose
+ *     (dose-marker-stripped) name matches a group already seen, joins
+ *     THAT group instead of starting a second NDC group (V-T lots
+ *     Shingrix fix: dose 1 and dose 2 carry mismatched NDCs in
+ *     production, which used to render Shingrix as two rows). The
+ *     merged group's extra NDC(s) surface via `altNdcs` rather than
+ *     silently dropped. This only fires the FIRST time a given NDC is
+ *     seen — if that NDC already has its own group with DIFFERENT-named
+ *     members (an unrelated product coincidentally sharing an NDC with
+ *     this one), the merge is skipped so the unrelated product's own
+ *     grouping is never disturbed; two genuinely different products
+ *     keep their own groups whenever their full names differ (a
+ *     pediatric vs. adult formulation, for example, is never a bare
+ *     dose-marker difference, so it never collides here).
  *
  * Two passes over `vaccines`: NDC-bearing rows first (so every possible
  * NDC group exists, and its name is known, before any null-NDC row needs
@@ -116,24 +156,40 @@ export type LotsProductGroup = {
  */
 export function groupVaccinesIntoProducts(vaccines: readonly LotsCatalogVaccine[]): LotsProductGroup[] {
   const order: string[] = [];
-  const groups = new Map<string, { ndc: string | null; vaccines: LotsCatalogVaccine[] }>();
+  const groups = new Map<string, { ndcs: string[]; vaccines: LotsCatalogVaccine[] }>();
   // First NDC-group key seen for a given normalized name — lets a
-  // later null-NDC row with the same name join that group.
+  // later null-NDC row, or a later row with a DIFFERENT NDC, join that
+  // group by name instead of starting its own.
   const nameKeyToGroupKey = new Map<string, string>();
 
   for (const vaccine of vaccines) {
     const ndc = normalizeNdc(vaccine.ndc);
     if (!ndc) continue;
+    const nameKey = normalizeProductNameKey(vaccine.name);
     const key = `ndc:${ndc}`;
+    const existingGroupKeyForName = nameKeyToGroupKey.get(nameKey);
+
+    if (existingGroupKeyForName && existingGroupKeyForName !== key && !groups.has(key)) {
+      // Same product family by name, different NDC than its sibling
+      // dose(s) — join rather than starting a second group. Guarded by
+      // `!groups.has(key)` so this never steals an unrelated product
+      // that already claimed this exact NDC under a different name.
+      const target = groups.get(existingGroupKeyForName) as { ndcs: string[]; vaccines: LotsCatalogVaccine[] };
+      target.vaccines.push(vaccine);
+      if (!target.ndcs.includes(ndc)) target.ndcs.push(ndc);
+      continue;
+    }
+
     let group = groups.get(key);
     if (!group) {
-      group = { ndc, vaccines: [] };
+      group = { ndcs: [ndc], vaccines: [] };
       groups.set(key, group);
       order.push(key);
+      if (!nameKeyToGroupKey.has(nameKey)) nameKeyToGroupKey.set(nameKey, key);
+    } else if (!group.ndcs.includes(ndc)) {
+      group.ndcs.push(ndc);
     }
     group.vaccines.push(vaccine);
-    const nameKey = normalizeProductNameKey(vaccine.name);
-    if (!nameKeyToGroupKey.has(nameKey)) nameKeyToGroupKey.set(nameKey, key);
   }
 
   for (const vaccine of vaccines) {
@@ -144,7 +200,7 @@ export function groupVaccinesIntoProducts(vaccines: readonly LotsCatalogVaccine[
     const key = nameKeyToGroupKey.get(nameKey) ?? `name:${nameKey}`;
     let group = groups.get(key);
     if (!group) {
-      group = { ndc: null, vaccines: [] };
+      group = { ndcs: [], vaccines: [] };
       groups.set(key, group);
       order.push(key);
       nameKeyToGroupKey.set(nameKey, key);
@@ -153,10 +209,30 @@ export function groupVaccinesIntoProducts(vaccines: readonly LotsCatalogVaccine[
   }
 
   return order.map((key) => {
-    const group = groups.get(key) as { ndc: string | null; vaccines: LotsCatalogVaccine[] };
+    const group = groups.get(key) as { ndcs: string[]; vaccines: LotsCatalogVaccine[] };
+    // Reviewer fix (post-Shingrix-fix review): `group.ndcs` was returned
+    // in FIRST-SEEN order, so the merged group's primary `ndc` (and
+    // hence its `key`/productKey — app/lots/page.tsx keys persistent
+    // per-row UI state, drafts/savingByKey/rowErrors/budEnabledKeys, by
+    // productKey across refetches) depended on which of Shingrix's two
+    // dose rows GET /api/vaccines happened to return first. Postgres's
+    // `.order("name")` alone (app/api/vaccines/route.ts) never
+    // guaranteed that across requests, so a background revalidate could
+    // flip productKey mid-edit and orphan that row's local state.
+    // Sorting `ndcs` lexicographically before picking [0] as primary
+    // makes `ndc`/`altNdcs`/`key` depend only on the SET of NDCs this
+    // product's dose rows carry, never on catalog/array order — see
+    // tests/lots-grouping.test.ts's "is order-independent" case, which
+    // feeds the same two rows in both orders and asserts identical
+    // productKey/ndc/altNdcs. (The vaccines route also now adds a
+    // secondary `.order("id")` as belt-and-suspenders, but this function
+    // no longer depends on that for a stable key.)
+    const sortedNdcs = [...group.ndcs].sort();
+    const primaryNdc = sortedNdcs[0] ?? null;
     return {
-      key,
-      ndc: group.ndc,
+      key: primaryNdc ? `ndc:${primaryNdc}` : key,
+      ndc: primaryNdc,
+      altNdcs: sortedNdcs.slice(1),
       name: chooseProductDisplayName(group.vaccines.map((v) => v.name)),
       active: group.vaccines.some((v) => v.active),
       vaccineIds: group.vaccines.map((v) => v.id),

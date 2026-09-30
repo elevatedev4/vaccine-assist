@@ -10,7 +10,6 @@ import {
   buildMacroRows,
   doseButtonShortLabel,
   filterMacroProductsByAge,
-  filterMacroTopGroups,
   groupMacroRowsBySection,
   groupSectionsByTopGroup,
   macroProductDisplayLabel,
@@ -375,6 +374,26 @@ const styles = {
     fontSize: "0.75rem",
     pointerEvents: "none" as const,
   },
+  // Reviewer fix (non-blocking, same review as the Shingrix/altNdcs
+  // determinism fix): `refreshNote` (a failed-background-refresh
+  // message, e.g. "Session expired…") was still a plain in-flow <p> —
+  // the one other conditionally-mounted element left above
+  // .macro-groups-c besides the age-filter note this ticket already
+  // fixed. Same "pull it out of flow" treatment as refreshIndicator
+  // above (same anchor point — the two never show at once: `revalidating`
+  // is true while a background fetch is in flight, `refreshNote` only
+  // once one has finished AND failed), just styled as an error and
+  // capped so a long message wraps within its own box instead of
+  // stretching arbitrarily wide.
+  refreshNoteFloating: {
+    position: "absolute" as const,
+    top: "0.6rem",
+    right: "1rem",
+    maxWidth: "60%",
+    textAlign: "right" as const,
+    color: "#b00020",
+    fontSize: "0.75rem",
+  },
   groupHeading: {
     fontSize: "1rem",
     fontWeight: 800,
@@ -428,27 +447,39 @@ const styles = {
   label: { display: "block", fontWeight: 600, marginBottom: "0.25rem", fontSize: "0.85rem" },
   checkboxRow: { display: "flex", alignItems: "flex-start", gap: "0.4rem", marginBottom: "0.75rem", fontSize: "0.85rem" },
   button: { padding: "0.3rem 0.6rem", fontSize: "13px" },
-  // Version C's live-filter box, sitting above .macro-groups — same
-  // plain-object convention as everything else here.
-  filterBox: { margin: "0 0 0.6rem", maxWidth: 320 },
-  filterInput: {
-    width: "100%",
-    padding: "0.4rem 0.6rem",
-    fontSize: "13px",
-    border: "1px solid #999",
-    borderRadius: 5,
-    boxSizing: "border-box" as const,
-  },
   // V-macro-age-filter: the "Showing vaccines for age N / Show all" note
   // the desktop's Ctrl+Numpad4 flow relies on — visible in embed mode
   // too (unlike styles.heading above, which embed hides), just smaller
   // so it fits the popup's tight vertical budget.
-  ageFilterNote: { margin: "0 0 0.5rem", fontSize: "0.85rem", color: "#333" },
+  //
+  // V-T macro-codes efficiency fix (Will, 5:57pm/8:22pm: "some kind of
+  // explainer text is appearing and shifting the whole table down...
+  // Turn that shit off or make it so that it doesn't do that"): this was
+  // the one remaining in-flow, conditionally-mounted element sitting
+  // directly above .macro-groups-c — the armed-per-row note and the
+  // "Refreshing…" indicator were already pulled out of flow in earlier
+  // rounds (hotkeys round 3, V-T48), but this note's own <p> only
+  // existed in the DOM while `activeAgeYears !== null`, so clicking
+  // "Show all" (clearing it) removed the node and the grid below it
+  // snapped up. Fixed the same way as those two: ageFilterSlot/
+  // ageFilterSlotEmbed below are rendered whenever this session COULD
+  // ever show the note (`requestedAgeYears !== null` — set once from the
+  // URL's age param at mount, never becomes non-null later), so the
+  // wrapper's own presence never toggles; only the <p> INSIDE it
+  // conditionally shows/hides on "Show all", and the wrapper's
+  // `minHeight` (one line, matching the note's own font-size/line-height)
+  // reserves that line's height either way. A normal visit with no age
+  // param renders neither the wrapper nor any reserved space, so the
+  // "efficient top of the page" ask isn't taxed by a feature that visit
+  // never uses.
+  ageFilterSlot: { margin: "0 0 0.5rem", minHeight: "1.2rem" },
+  ageFilterSlotEmbed: { margin: "0 0 6px", minHeight: "1.4rem" },
+  ageFilterNote: { margin: 0, fontSize: "0.85rem", color: "#333" },
   // Macro-popup round 3: 11px -> 14px, same ~25% embed-only bump as the
   // dose-button/product-name sizes below (see lib/macro-dose-button.tsx's
   // round-3 note) — this note sits right above the same grid the buttons
   // do, so it reads oddly small next to them at the old size.
-  ageFilterNoteEmbed: { margin: "0 0 6px", fontSize: 14, color: "#333" },
+  ageFilterNoteEmbed: { margin: 0, fontSize: 14, color: "#333" },
   ageFilterClearLink: { marginLeft: "0.5rem", color: "#0b63c5" },
 } as const;
 
@@ -578,13 +609,6 @@ function MacroCodesPageContent() {
     saved: boolean;
   };
   const [modal, setModal] = useState<ModalState | null>(null);
-
-  // Round 14: version C's live-filter query — the ONLY layout state this
-  // page has left (see this file's ROUND 14 doc comment above). No
-  // switcher, no localStorage read/write, no `embed`-forces-C special
-  // case: `embed` still exists for the popup's compact styling, but
-  // doesn't need to "force" a layout anymore since there's only one.
-  const [filterQuery, setFilterQuery] = useState("");
 
   // MACRO-POPUP ROUND 3 FIX: the `<main>` DOM node, captured via a
   // callback ref (`<main ref={setEmbedContentEl}>` below) rather than a
@@ -804,30 +828,23 @@ function MacroCodesPageContent() {
   const sections = useMemo(() => groupMacroRowsBySection(rows), [rows]);
   const topGroups = useMemo(() => groupSectionsByTopGroup(sections), [sections]);
 
-  // V-macro-age-filter: the Ctrl+Numpad4 popup's age filter runs FIRST
-  // (narrowing to age-eligible products, unknowns last within each
-  // section — see lib/macro-codes.ts's filterMacroProductsByAge), then
-  // version C's live text filter narrows that further — the two are
-  // independent and compose in either order the tech uses them.
+  // V-macro-age-filter: the Ctrl+Numpad4 popup's age filter narrows to
+  // age-eligible products, unknowns last within each section (see
+  // lib/macro-codes.ts's filterMacroProductsByAge) — the page's only
+  // filter since the text search bar was removed (V-T macro-codes
+  // efficiency fix, Will 8:22pm: "Remove the search bar. It is stupid.").
   const ageFilteredTopGroups = useMemo(() => filterMacroProductsByAge(topGroups, activeAgeYears), [topGroups, activeAgeYears]);
-
-  // Version C's live filter — the page's only layout now, so this
-  // always applies.
-  const visibleTopGroups = useMemo(
-    () => filterMacroTopGroups(ageFilteredTopGroups, filterQuery),
-    [ageFilteredTopGroups, filterQuery]
-  );
 
   // Macro-codes hotkeys round 2: the currently-armed product (for the
   // "Press 1-N for the dose" note near the header, and for the
   // visibility-based clear effect below) — null whenever nothing is
-  // armed OR the armed product is no longer in `visibleTopGroups`.
+  // armed OR the armed product is no longer in `ageFilteredTopGroups`.
   // lib/macro-hotkeys.ts's findArmedProduct is the single source of
   // truth for this lookup (also used internally by hotkeyTransition's
   // digit branch), so the page never re-implements its own walk.
   const armedProduct = useMemo(
-    () => (hotkeyState.armedProductKey ? findArmedProduct(hotkeyState.armedProductKey, visibleTopGroups) : null),
-    [hotkeyState.armedProductKey, visibleTopGroups]
+    () => (hotkeyState.armedProductKey ? findArmedProduct(hotkeyState.armedProductKey, ageFilteredTopGroups) : null),
+    [hotkeyState.armedProductKey, ageFilteredTopGroups]
   );
 
   const rowKey = macroRowKey;
@@ -1118,7 +1135,7 @@ function MacroCodesPageContent() {
   // longer copy on one press — lib/macro-hotkeys.ts's hotkeyTransition
   // (a pure reducer, see its own doc comment) now owns the whole
   // letter -> arm -> digit -> copy flow, including Escape-clears-armed;
-  // this effect just feeds it the raw key and current visibleTopGroups,
+  // this effect just feeds it the raw key and current ageFilteredTopGroups,
   // adopts the returned state unconditionally, and runs the `copy` side
   // effect when that's what came back. Escape is included here (not
   // skipped) so arming/clearing share the exact same listener the
@@ -1147,7 +1164,7 @@ function MacroCodesPageContent() {
         const tag = target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
       }
-      const result = hotkeyTransition(hotkeyState, event.key, visibleTopGroups);
+      const result = hotkeyTransition(hotkeyState, event.key, ageFilteredTopGroups);
       if (result.action.type === "none") return;
       setHotkeyState(result.state);
       event.preventDefault();
@@ -1161,7 +1178,7 @@ function MacroCodesPageContent() {
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [modal, visibleTopGroups, hotkeyState, handleCopy]);
+  }, [modal, ageFilteredTopGroups, hotkeyState, handleCopy]);
 
   // Macro-codes hotkeys round 2: arming is only meaningful against the
   // CURRENT visible set — an age-filter or search change can hide the
@@ -1169,8 +1186,8 @@ function MacroCodesPageContent() {
   // highlight/note pointing at something no longer on screen.
   //
   // ROUND 2 FOLLOW-UP (reviewer, code review on 5a39605): this used to
-  // clear on EVERY `visibleTopGroups` reference change, but
-  // vaccines/lots (and hence visibleTopGroups) get brand-new array
+  // clear on EVERY `ageFilteredTopGroups` reference change, but
+  // vaccines/lots (and hence ageFilteredTopGroups) get brand-new array
   // references on every successful background refetch too — the 60s
   // heartbeat and the window focus/visibilitychange refetch (below),
   // i.e. exactly the alt-tab-to-the-desktop-app-and-back Ctrl+Keypad 2
@@ -1440,17 +1457,15 @@ function MacroCodesPageContent() {
    * Will's stated goal: a pharmacy tech scanning ~25 products to find
    * ONE fast. Design choices (each addresses one part of the brief):
    *
-   * - Live filter-as-you-type (lib/macro-codes.ts's
-   *   filterMacroTopGroups), not an A–Z index rail: a tech almost always
-   *   already knows the product or short code they need, so typing a
-   *   few letters narrows straight to it in one motion. An alphabetical
-   *   index instead requires the tech to know which LETTER their target
-   *   starts under across an already-alphabetically-scattered catalog
-   *   (products are grouped by disease family, not name), which is an
-   *   extra translation step the filter avoids entirely — and the
-   *   filter also matches a section family name ("tdap", "flu") and
-   *   short codes, not just the display name, so it works as a family
-   *   jump-to as well as a product search.
+   * - REMOVED (V-T macro-codes efficiency fix, Will 8:22pm verbatim:
+   *   "Remove the search bar. It is stupid... The top part of the page
+   *   needs to be efficient"): this used to be a live filter-as-you-type
+   *   box (lib/macro-codes.ts's filterMacroTopGroups, still exported/
+   *   tested there for reuse elsewhere) in place of an A–Z index rail.
+   *   The hotkey letter/digit flow (below) already gets a tech to any
+   *   product in one or two keystrokes without a search box eating top-
+   *   of-page space, which is what made the box redundant enough to cut
+   *   outright rather than shrink.
    * - High-contrast per-family color BANDS (macro-section-band below):
    *   reuses SECTION_COLORS' existing border hue as a solid heading
    *   background instead of the subtle per-button tint every other
@@ -1481,10 +1496,12 @@ function MacroCodesPageContent() {
    * hasn't been verified pixel-for-pixel in a real browser at that
    * resolution. If a future catalog addition (a new section, or several
    * new products piling into one already-long column) ever does push a
-   * column past one screen, the live filter above is also the fallback:
-   * typing even one character immediately drops every non-matching row
-   * and the page fits again — the filter isn't just a search feature
-   * here, it's the page's own answer to "what if it doesn't fit."
+   * column past one screen: the live filter used to be the in-page
+   * fallback for that (typing a character dropped every non-matching
+   * row), but it's gone now (V-T macro-codes efficiency fix, Will
+   * 8:22pm: "Remove the search bar. It is stupid") — a future overflow
+   * needs a different answer (e.g. letting the column scroll) rather
+   * than reaching for the filter that used to paper over it.
    *
    * ROUND 9 (Will's verbatim feedback, 2026-09-13, replying to round 8:
    * "I like C so far, but keep all the options for now. Let's work on
@@ -1515,8 +1532,8 @@ function MacroCodesPageContent() {
    *   the dead space going away will make it easier to use."
    * - Row vertical padding bumped to ~6px (.macro-row-c) per the same
    *   brief; still not measured pixel-for-pixel at 1920×1080/1440×900 —
-   *   same caveat as the one-screen-fit note above, and the live filter
-   *   is still the fallback if a wide catalog ever overflows.
+   *   same caveat as the one-screen-fit note above (and its now-gone
+   *   filter fallback).
    */
   function renderSectionVersionC(section: MacroSectionGroup) {
     const colors = SECTION_COLORS[section.section];
@@ -1724,53 +1741,42 @@ function MacroCodesPageContent() {
     >
       {!embed && <h1 style={styles.heading}>Macro codes</h1>}
 
-      {/* V-macro-age-filter: shown whenever an age filter is active,
-       * regardless of embed — this note is the whole point of the
-       * Ctrl+Numpad4 flow, so it can't be hidden by embed mode's
-       * no-heading rule the way the plain "Macro codes" <h1> above is. */}
-      {activeAgeYears !== null && (
-        <p style={embed ? styles.ageFilterNoteEmbed : styles.ageFilterNote}>
-          Showing vaccines for age {ageFilterLabel}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              setAgeFilterCleared(true);
-            }}
-            style={styles.ageFilterClearLink}
-          >
-            Show all
-          </a>
-        </p>
-      )}
-
-      {/* Embed (2026-09-13; sizing rationale updated by macro-popup round
-       * 3, 2026-09-25 — see this file's top-of-file doc comment): only
-       * the margin shrinks here — width/position are untouched so the
-       * box stays visible at top.
+      {/* V-macro-age-filter: shown regardless of embed — this note is the
+       * whole point of the Ctrl+Numpad4 flow, so it can't be hidden by
+       * embed mode's no-heading rule the way the plain "Macro codes" <h1>
+       * above is.
        *
-       * FOCUS FIX (Will, 2026-09-28): this box no longer autofocuses in
-       * embed mode. It used to (autoFocus={embed}), but that put DOM
-       * focus on an <input> the instant the popup opened — the hotkeys
-       * keydown effect above deliberately ignores keydown while focus is
-       * in an INPUT/TEXTAREA/SELECT (so typing a search or lot number
-       * never triggers a hotkey), so every hotkey letter typed the
-       * moment the popup opened a letter into THIS box instead of
-       * selecting a vaccine, even once the desktop popup itself gained
-       * real keyboard focus. <main> above is focused instead (see the
-       * effect near the ResizeObserver one), so the hotkey listener sees
-       * a non-form target by default; clicking into this box to type a
-       * search still works exactly as before. */}
-      <div style={embed ? { ...styles.filterBox, margin: "0 0 6px" } : styles.filterBox}>
-        <input
-          type="text"
-          value={filterQuery}
-          onChange={(e) => setFilterQuery(e.target.value)}
-          placeholder="Filter by name or code…"
-          aria-label="Filter vaccines"
-          style={styles.filterInput}
-        />
-      </div>
+       * V-T macro-codes efficiency fix (Will, 5:57pm/8:22pm): the wrapper
+       * renders whenever this session COULD show the note
+       * (`requestedAgeYears !== null`, fixed at mount from the URL's age
+       * param — never flips true after that), reserving its line's
+       * height via `minHeight` either way; only the <p> INSIDE toggles on
+       * "Show all" (`activeAgeYears`). That keeps the wrapper's own
+       * presence constant for the life of the page, so clearing the
+       * filter can never shift .macro-groups-c below it — see
+       * styles.ageFilterSlot's comment for the full history (this was
+       * the one remaining unfixed case of the bug already fixed for the
+       * armed-row note and the "Refreshing…" indicator). A normal visit
+       * with no age param renders nothing here at all. */}
+      {requestedAgeYears !== null && (
+        <div style={embed ? styles.ageFilterSlotEmbed : styles.ageFilterSlot}>
+          {activeAgeYears !== null && (
+            <p style={embed ? styles.ageFilterNoteEmbed : styles.ageFilterNote}>
+              Showing vaccines for age {ageFilterLabel}
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setAgeFilterCleared(true);
+                }}
+                style={styles.ageFilterClearLink}
+              >
+                Show all
+              </a>
+            </p>
+          )}
+        </div>
+      )}
 
       {loading && <p style={styles.muted}>Loading…</p>}
       {loadError && <p style={styles.error}>{loadError}</p>}
@@ -1783,7 +1789,11 @@ function MacroCodesPageContent() {
           Refreshing…
         </span>
       )}
-      {!loading && !revalidating && refreshNote && <p style={styles.error}>{refreshNote}</p>}
+      {!loading && !revalidating && refreshNote && (
+        <p style={styles.refreshNoteFloating} aria-live="polite">
+          {refreshNote}
+        </p>
+      )}
 
       {!loading && (
         <div
@@ -1808,19 +1818,20 @@ function MacroCodesPageContent() {
             }
           }
         >
-          {visibleTopGroups.map((block) => renderTopGroup(block))}
+          {ageFilteredTopGroups.map((block) => renderTopGroup(block))}
         </div>
       )}
 
       {/* MACRO-POPUP ROUND 3 FIX (code review, 2026-09-25): with no
-       * fallback text here, a name filter narrowed to 0 rows rendered
-       * NOTHING below the filter box — `<main>`'s own measured height
-       * (the content-size effect above) would collapse toward the
-       * MinHeight floor on the desktop side, and an unlucky lot/exp
+       * fallback text here, a filter narrowed to 0 rows (the text filter,
+       * now removed — see V-T macro-codes efficiency fix — or today just
+       * the age filter) rendered NOTHING below it — `<main>`'s own
+       * measured height (the content-size effect above) would collapse
+       * toward the MinHeight floor on the desktop side, and an unlucky lot/exp
        * modal open in that state had very little headroom before this
        * round's own modal-height fix (modalCardEl above) existed. Keeps
        * `<main>` from ever collapsing that far regardless. */}
-      {!loading && visibleTopGroups.length === 0 && <p style={styles.muted}>No codes match.</p>}
+      {!loading && ageFilteredTopGroups.length === 0 && <p style={styles.muted}>No codes match.</p>}
 
       {modal && (
         <div
