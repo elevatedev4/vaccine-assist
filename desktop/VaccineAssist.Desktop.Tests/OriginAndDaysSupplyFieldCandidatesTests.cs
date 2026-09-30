@@ -85,6 +85,51 @@ public class OriginAndDaysSupplyFieldCandidatesTests
         Assert.Null(match);
     }
 
+    // REVIEWER FIX (REQUEST_CHANGES, V-T41 R6 round 2): "origin" used to be
+    // a plain Contains() check, so an enabled "Original Rx"/"Original
+    // Date"/"Originator" field on the SAME screen (PioneerRx's Add New Rx
+    // panel is literally titled "Original" — InputVaccineCodeStep's own
+    // doc comment) would have matched, been SetValue("Other")'d, and read
+    // its own wrong value back as a false "success." These pin the fix:
+    // negative cases first (must NOT match), then the positive cases that
+    // must still match under exact-token matching.
+
+    [Theory]
+    [InlineData("Original Rx", "uxOriginalRx", "Edit")]
+    [InlineData("Original Date", "uxOriginalDate", "Edit")]
+    [InlineData("", "uxOriginalDate", "Edit")]
+    [InlineData("Originator", "uxOriginator", "Edit")]
+    [InlineData("Original", "uxOriginal", "ComboBox")]
+    public void Origin_KeywordFallbackNeverMatchesAWordThatMerelyStartsWithOrigin(string name, string automationId, string controlType)
+    {
+        var candidates = new List<FieldDescriptor>
+        {
+            new(AutomationId: automationId, Name: name, ClassName: "WindowsForms10." + controlType, ControlType: controlType),
+        };
+
+        var match = OriginAndDaysSupplyFieldCandidates.TryMatchOrigin(candidates);
+
+        Assert.Null(match);
+    }
+
+    [Theory]
+    [InlineData("Origin", "uxOriginField")]
+    [InlineData("Rx Origin", "uxRxOriginField")]
+    [InlineData("", "uxOriginCombo")]
+    [InlineData("ORIGIN", "uxSomethingElse")]
+    public void Origin_KeywordFallbackStillMatchesARealOriginField(string name, string automationId)
+    {
+        var candidates = new List<FieldDescriptor>
+        {
+            new(AutomationId: automationId, Name: name, ClassName: "WindowsForms10.ComboBox", ControlType: "ComboBox"),
+        };
+
+        var match = OriginAndDaysSupplyFieldCandidates.TryMatchOrigin(candidates);
+
+        Assert.NotNull(match);
+        Assert.Equal(automationId, match!.Value.AutomationId);
+    }
+
     [Fact]
     public void DaysSupply_MatchesTheFirstFixedCandidateWhenPresent()
     {

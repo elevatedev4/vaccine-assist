@@ -158,6 +158,16 @@ public partial class AgePromptWindow : Window
         Topmost = false;
         Topmost = true;
 
+        // REVIEWER NOTE (V-T41 R6 round 2, confirmed): if the user has
+        // ALREADY clicked/tabbed into YearsTextBox and started typing by
+        // the time a later retry tick runs this method again, these two
+        // calls are a no-op for caret position/selection — WPF's
+        // TextBox.Focus()/Keyboard.Focus() only affect IsFocused/
+        // FocusedElement state on a control that's already focused; they
+        // never reset CaretIndex or clear/change SelectionStart/
+        // SelectionLength as a side effect. A late tick can re-assert
+        // foreground/focus without disturbing digits the user already
+        // typed or where their cursor is.
         YearsTextBox.Focus();
         Keyboard.Focus(YearsTextBox);
 
