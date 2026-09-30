@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using VaccineAssist.Desktop.Fax;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
+using VaccineAssist.Desktop.ViewModels;
 using Xunit;
 
 namespace VaccineAssist.Desktop.Tests;

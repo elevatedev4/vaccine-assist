@@ -52,10 +52,6 @@ public partial class FaxSettingsWindow : Window
         }
     }
 
-    /// <summary>Notifyre-key-visibility follow-up (Will, 2026-09-28):
-    /// "Add a 'Forget key' button that clears the stored token (confirm
-    /// dialog)." The confirm lives here (a UI concern) — ForgetKeyCommand
-    /// itself just does the clearing once confirmed.</summary>
     /// <summary>V-T65 R6 (Will, verbatim, 2026-09-29): "Add a place in
     /// settings for me to upload company logo to use in the report."
     /// OpenFileDialog lives here (same convention as FaxSendWindow's file
@@ -80,6 +76,10 @@ public partial class FaxSettingsWindow : Window
         _viewModel.RemoveLogo();
     }
 
+    /// <summary>Notifyre-key-visibility follow-up (Will, 2026-09-28):
+    /// "Add a 'Forget key' button that clears the stored token (confirm
+    /// dialog)." The confirm lives here (a UI concern) — ForgetKeyCommand
+    /// itself just does the clearing once confirmed.</summary>
     private void ForgetKeyButton_OnClick(object sender, RoutedEventArgs e)
     {
         var result = System.Windows.MessageBox.Show(
