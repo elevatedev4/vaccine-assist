@@ -40,6 +40,7 @@ public class PlaceholderVaccineEntrySequenceTests
                 "Enter quantity",
                 "Enter directions",
                 "Enter lot and expiration",
+                "Set origin and days supply",
                 "Confirm entry",
             },
             names);
