@@ -110,8 +110,23 @@ export async function GET(request: Request) {
       // below produce different literal row types (supabase-js infers a
       // type from the select() string), and this variable gets
       // reassigned to whichever one actually succeeded.
+      // Reviewer fix (post-Shingrix-fix review): `.order("name")` alone
+      // doesn't guarantee a stable relative order for two rows with the
+      // SAME name (e.g. Shingrix's two dose rows) across requests —
+      // Postgres makes no ordering promise beyond the given key(s). A
+      // secondary `.order("id")` makes the row order fully deterministic,
+      // which lib/lots-grouping.ts's groupVaccinesIntoProducts no longer
+      // strictly depends on for a stable key/ndc (it now sorts NDCs
+      // itself — see that file), but this is cheap, correct belt-and-
+      // suspenders for anything else in the app that assumes a stable
+      // catalog order across refetches.
       let { data, error }: { data: Record<string, unknown>[] | null; error: { message?: string; code?: string } | null } =
-        await supabase.from("vaccine").select(VACCINE_COLUMNS_FULL).eq("active", true).order("name", { ascending: true });
+        await supabase
+          .from("vaccine")
+          .select(VACCINE_COLUMNS_FULL)
+          .eq("active", true)
+          .order("name", { ascending: true })
+          .order("id", { ascending: true });
       let quantityDirectionsSupported = true;
 
       if (error && isMissingColumnError(error)) {
@@ -120,7 +135,8 @@ export async function GET(request: Request) {
           .from("vaccine")
           .select(VACCINE_COLUMNS_BASE)
           .eq("active", true)
-          .order("name", { ascending: true }));
+          .order("name", { ascending: true })
+          .order("id", { ascending: true }));
       }
 
       if (error) {
@@ -132,14 +148,23 @@ export async function GET(request: Request) {
       return NextResponse.json({ vaccines: withDisplayName((vaccines ?? []) as VaccineRow[]), quantityDirectionsSupported });
     }
 
+    // Same secondary-sort reasoning as the !includeInactive branch above.
     let vaccinesResult: {
       data: Record<string, unknown>[] | null;
       error: { message?: string; code?: string } | null;
-    } = await supabase.from("vaccine").select(VACCINE_COLUMNS_FULL).order("name", { ascending: true });
+    } = await supabase
+      .from("vaccine")
+      .select(VACCINE_COLUMNS_FULL)
+      .order("name", { ascending: true })
+      .order("id", { ascending: true });
     let quantityDirectionsSupported = true;
     if (vaccinesResult.error && isMissingColumnError(vaccinesResult.error)) {
       quantityDirectionsSupported = false;
-      vaccinesResult = await supabase.from("vaccine").select(VACCINE_COLUMNS_BASE).order("name", { ascending: true });
+      vaccinesResult = await supabase
+        .from("vaccine")
+        .select(VACCINE_COLUMNS_BASE)
+        .order("name", { ascending: true })
+        .order("id", { ascending: true });
     }
 
     const [{ data: vaccines, error: vaccinesError }, { data: activeLots, error: lotsError }] = await Promise.all([

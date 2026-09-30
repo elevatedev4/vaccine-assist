@@ -374,6 +374,26 @@ const styles = {
     fontSize: "0.75rem",
     pointerEvents: "none" as const,
   },
+  // Reviewer fix (non-blocking, same review as the Shingrix/altNdcs
+  // determinism fix): `refreshNote` (a failed-background-refresh
+  // message, e.g. "Session expired…") was still a plain in-flow <p> —
+  // the one other conditionally-mounted element left above
+  // .macro-groups-c besides the age-filter note this ticket already
+  // fixed. Same "pull it out of flow" treatment as refreshIndicator
+  // above (same anchor point — the two never show at once: `revalidating`
+  // is true while a background fetch is in flight, `refreshNote` only
+  // once one has finished AND failed), just styled as an error and
+  // capped so a long message wraps within its own box instead of
+  // stretching arbitrarily wide.
+  refreshNoteFloating: {
+    position: "absolute" as const,
+    top: "0.6rem",
+    right: "1rem",
+    maxWidth: "60%",
+    textAlign: "right" as const,
+    color: "#b00020",
+    fontSize: "0.75rem",
+  },
   groupHeading: {
     fontSize: "1rem",
     fontWeight: 800,
@@ -1769,7 +1789,11 @@ function MacroCodesPageContent() {
           Refreshing…
         </span>
       )}
-      {!loading && !revalidating && refreshNote && <p style={styles.error}>{refreshNote}</p>}
+      {!loading && !revalidating && refreshNote && (
+        <p style={styles.refreshNoteFloating} aria-live="polite">
+          {refreshNote}
+        </p>
+      )}
 
       {!loading && (
         <div

@@ -25,13 +25,36 @@ function authedRequest(path: string, init?: RequestInit) {
   });
 }
 
+/**
+ * Reviewer fix (post-Shingrix-fix review, app/api/vaccines/route.ts):
+ * every GET query now chains a second `.order("id", ...)` after
+ * `.order("name", ...)` for a deterministic secondary sort (Postgres
+ * doesn't guarantee stable relative order for two same-named rows on
+ * `.order("name")` alone — see lib/lots-grouping.ts's groupVaccinesInto-
+ * Products doc comment for why that mattered for Shingrix). Real
+ * supabase-js `.order()` calls are chainable (each returns the same
+ * builder, which is itself awaitable) — this stands in for that:
+ * `.order()` returns the SAME chain object again (so a second/third call
+ * is a no-op that doesn't change the eventual result), and the chain
+ * itself is a thenable that resolves to `result`, so `await` at the end
+ * of any length of `.order()` chaining resolves identically.
+ */
+function chainableOrder<T>(result: T) {
+  const chain = {
+    order: vi.fn(() => chain),
+    then: (onFulfilled: (value: T) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve(result).then(onFulfilled, onRejected),
+  };
+  return chain;
+}
+
 describe("GET /api/vaccines", () => {
   afterEach(() => {
     vi.mocked(getSupabaseServerClient).mockReset();
   });
 
   it("default (no query param) returns only active vaccines — regression guard for the Lots and Data-entry dropdowns, which rely on this staying unfiltered by query param", async () => {
-    const order = vi.fn(async () => ({
+    const order = vi.fn(() => chainableOrder({
       data: [{ id: "v1", name: "Flu", active: true }],
       error: null,
     }));
@@ -68,7 +91,7 @@ describe("GET /api/vaccines", () => {
   });
 
   it("V-names-everywhere: adds a maker-prefixed displayName for a COVID product, leaving `name` raw", async () => {
-    const order = vi.fn(async () => ({
+    const order = vi.fn(() => chainableOrder({
       data: [{ id: "v1", name: "Comirnaty 2026-27 12+", active: true }],
       error: null,
     }));
@@ -84,7 +107,7 @@ describe("GET /api/vaccines", () => {
   });
 
   it("ROUND 2: annotates a blank-quantity row with quantity_default when its short_code has a table entry", async () => {
-    const order = vi.fn(async () => ({
+    const order = vi.fn(() => chainableOrder({
       data: [{ id: "v1", name: "Comirnaty", active: true, short_code: "comirnaty12", quantity: null }],
       error: null,
     }));
@@ -99,7 +122,7 @@ describe("GET /api/vaccines", () => {
   });
 
   it("ROUND 2: never invents quantity_default for an unrecognized short_code", async () => {
-    const order = vi.fn(async () => ({
+    const order = vi.fn(() => chainableOrder({
       data: [{ id: "v1", name: "Mystery Vax", active: true, short_code: "not-a-real-code", quantity: null }],
       error: null,
     }));
@@ -114,7 +137,7 @@ describe("GET /api/vaccines", () => {
   });
 
   it("ROUND 2: omits quantity_default when quantity is already on file, even if it differs from the table", async () => {
-    const order = vi.fn(async () => ({
+    const order = vi.fn(() => chainableOrder({
       data: [{ id: "v1", name: "Comirnaty", active: true, short_code: "comirnaty12", quantity: "0.2" }],
       error: null,
     }));
@@ -141,7 +164,7 @@ describe("GET /api/vaccines", () => {
       if (table === "vaccine") {
         return {
           select: () => ({
-            order: async () => ({ data: vaccines, error: null }),
+            order: () => chainableOrder({ data: vaccines, error: null }),
           }),
         };
       }
@@ -178,7 +201,7 @@ describe("GET /api/vaccines", () => {
   it("returns 500 when the includeInactive lot lookup errors", async () => {
     const from = vi.fn((table: string) => {
       if (table === "vaccine") {
-        return { select: () => ({ order: async () => ({ data: [], error: null }) }) };
+        return { select: () => ({ order: () => chainableOrder({ data: [], error: null }) }) };
       }
       return { select: () => ({ eq: async () => ({ data: null, error: new Error("boom") }) }) };
     });
@@ -849,7 +872,7 @@ describe("GET /api/vaccines — quantityDirectionsSupported degradation", () => 
   });
 
   it("flags quantityDirectionsSupported: true when the columns are present", async () => {
-    const order = vi.fn(async () => ({ data: [{ id: "v1", name: "Flu" }], error: null }));
+    const order = vi.fn(() => chainableOrder({ data: [{ id: "v1", name: "Flu" }], error: null }));
     const eq = vi.fn(() => ({ order }));
     const select = vi.fn(() => ({ eq }));
     const from = vi.fn(() => ({ select }));
@@ -866,9 +889,9 @@ describe("GET /api/vaccines — quantityDirectionsSupported degradation", () => 
     const select = vi.fn(() => {
       selectCallCount += 1;
       if (selectCallCount === 1) {
-        return { eq: () => ({ order: async () => ({ data: null, error: missingColumnError }) }) };
+        return { eq: () => ({ order: () => chainableOrder({ data: null, error: missingColumnError }) }) };
       }
-      return { eq: () => ({ order: async () => ({ data: [{ id: "v1", name: "Flu" }], error: null }) }) };
+      return { eq: () => ({ order: () => chainableOrder({ data: [{ id: "v1", name: "Flu" }], error: null }) }) };
     });
     const from = vi.fn(() => ({ select }));
     vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);

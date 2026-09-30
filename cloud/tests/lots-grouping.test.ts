@@ -117,8 +117,12 @@ describe("groupVaccinesIntoProducts", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].name).toBe("Shingrix");
     expect(groups[0].vaccineIds).toEqual(["sh1", "sh2"]);
-    expect(groups[0].ndc).toBe("58160082311");
-    expect(groups[0].altNdcs).toEqual(["58160082152"]);
+    // Primary `ndc` is the lexicographically-SMALLEST of the two NDCs
+    // ("...52" < "...311"), not whichever came first in `vaccines` — see
+    // the "is order-independent" test below for why that matters.
+    expect(groups[0].ndc).toBe("58160082152");
+    expect(groups[0].altNdcs).toEqual(["58160082311"]);
+    expect(groups[0].key).toBe("ndc:58160082152");
   });
 
   it("merges mismatched-NDC dose rows regardless of catalog order", () => {
@@ -129,6 +133,33 @@ describe("groupVaccinesIntoProducts", () => {
     const groups = groupVaccinesIntoProducts(vaccines);
     expect(groups).toHaveLength(1);
     expect(groups[0].vaccineIds.sort()).toEqual(["sh1", "sh2"]);
+  });
+
+  // --- Reviewer fix (post-Shingrix-fix review): GET /api/vaccines only
+  // orders by `name`, so Postgres never guaranteed which of two
+  // same-named dose rows comes back first across requests. Since
+  // app/lots/page.tsx keys persistent per-row UI state (drafts,
+  // savingByKey, rowErrors, budEnabledKeys) by a group's `key` across
+  // background refetches, `key`/`ndc`/`altNdcs` must depend only on the
+  // SET of NDCs a product's dose rows carry, never on which array
+  // position each row happened to land in. ---
+  it("is order-independent: productKey/ndc/altNdcs are identical regardless of which mismatched-NDC row comes first", () => {
+    const rowsFirstOrder = [
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+      { id: "sh2", name: "Shingrix", ndc: "58160-0821-52", active: true },
+    ];
+    const rowsSecondOrder = [
+      { id: "sh2", name: "Shingrix", ndc: "58160-0821-52", active: true },
+      { id: "sh1", name: "Shingrix", ndc: "58160-0823-11", active: true },
+    ];
+    const [groupFirst] = groupVaccinesIntoProducts(rowsFirstOrder);
+    const [groupSecond] = groupVaccinesIntoProducts(rowsSecondOrder);
+    expect(groupFirst.key).toBe(groupSecond.key);
+    expect(groupFirst.ndc).toBe(groupSecond.ndc);
+    expect(groupFirst.altNdcs).toEqual(groupSecond.altNdcs);
+    expect(groupFirst.key).toBe("ndc:58160082152");
+    expect(groupFirst.ndc).toBe("58160082152");
+    expect(groupFirst.altNdcs).toEqual(["58160082311"]);
   });
 
   it("keeps two genuinely different products separate even when they share a base name (pediatric vs adult formulation)", () => {
