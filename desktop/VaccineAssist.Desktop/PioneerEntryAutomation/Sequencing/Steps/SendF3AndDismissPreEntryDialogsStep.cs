@@ -529,6 +529,22 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
     /// checked.</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
+    /// <summary>V-T41 R7 REVIEW FIX (reviewer, after approving 6edf1f7):
+    /// with _enableAutoSuggestDiagnostics off, TryKeyboardNoDropdownStrategy
+    /// used to get an INCIDENTAL ~1s settle between NativeKeyboard.SendText
+    /// and ReadControlValue for free — the now-skipped diagnostic poll
+    /// (SynchronousPoll.WaitUntil, up to 10 ticks * 100ms) sat right between
+    /// them. The Priority dialog is the flow's most fragile step (rounds
+    /// 5-6) and the retry loop should absorb a too-early read, but removing
+    /// that settle entirely is the one real behavior change item 2 didn't
+    /// account for. This constant is an explicit, much shorter replacement
+    /// for that incidental delay — applied ONLY when diagnostics are off
+    /// (see TryKeyboardNoDropdownStrategy below); when diagnostics are on,
+    /// the poll itself is the settle, so there's no double delay. Can be
+    /// reduced (or removed) once live app.log data shows Priority's
+    /// type-ahead value reads correctly on the first try at 200ms.</summary>
+    private static readonly TimeSpan PriorityValueSettleDelay = TimeSpan.FromMilliseconds(200);
+
     public string Name => "Start Add New Rx (F3) and dismiss pre-entry dialogs";
 
     public async Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
@@ -1963,12 +1979,23 @@ public sealed class SendF3AndDismissPreEntryDialogsStep : IPioneerEntryStep
         // line is logged at all (there's nothing to report).
         if (_enableAutoSuggestDiagnostics)
         {
+            // The poll below IS the settle in this branch — PollInterval
+            // ticks before ReadControlValue runs either way, so no extra
+            // delay is added here (would be a double wait).
             var popupAppeared = SynchronousPoll.WaitUntil(
                 () => IsAutoSuggestPopupVisible(mainProcessId),
                 maxTicks: 10,
                 () => Thread.Sleep(100));
             log($"[{Name}] \"Priority\" dialog: keyboard (no-dropdown) strategy — after typing, visible popups: " +
                 $"{DescribeVisiblePopupsForLog(mainProcessId)} (Auto-Suggest Dropdown appeared={popupAppeared}).");
+        }
+        else
+        {
+            // REVIEW FIX: replaces the incidental ~1s settle the diagnostic
+            // poll used to provide for free between SendText and
+            // ReadControlValue below — see PriorityValueSettleDelay's own
+            // doc comment.
+            Thread.Sleep(PriorityValueSettleDelay);
         }
 
         var currentValue = ReadControlValue(control);
