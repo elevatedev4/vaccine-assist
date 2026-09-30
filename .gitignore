@@ -7,3 +7,8 @@ obj/
 !.env.example
 .DS_Store
 *.tsbuildinfo
+
+# Velopack installer channel (G-Q5): read-only S3 credentials for the
+# desktop update source. See desktop/VaccineAssist.Desktop/Velopack/
+# release-source.example.json for the committed placeholder version.
+desktop/VaccineAssist.Desktop/Velopack/release-source.json

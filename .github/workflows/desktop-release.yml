@@ -1,0 +1,83 @@
+name: Desktop release
+
+# Velopack installer channel (G-Q5, Will 2026-09-29, docs/plans/velopack-installer-plan.md
+# in the manager-app repo). Builds a real Setup.exe with `vpk` and uploads
+# it (plus the delta/RELEASES feed) to the private S3 release bucket.
+# Does NOT modify desktop-build.yml/cloud-tests.yml — this is an
+# ADDITIONAL channel; the existing update-and-run.ps1 + shortcut flow is
+# untouched by this workflow.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.0.0, no leading 'v')"
+        required: true
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}"
+          } else {
+            $version = "${{ github.ref_name }}" -replace '^v', ''
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "Could not determine a version from the trigger (tag or workflow_dispatch input)."
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore desktop/VaccineAssist.Desktop/VaccineAssist.Desktop.csproj
+
+      - name: Publish
+        run: >
+          dotnet publish desktop/VaccineAssist.Desktop/VaccineAssist.Desktop.csproj
+          -c Release -r win-x64 --self-contained true -o publish
+
+      - name: Install vpk
+        run: dotnet tool install -g vpk
+
+      - name: Pack release
+        run: >
+          vpk pack --packId VaccineAssist --packVersion ${{ steps.version.outputs.version }}
+          --packDir publish --mainExe VaccineAssist.Desktop.exe -o release
+
+      - name: Verify Setup.exe was produced
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path release -Filter "*Setup.exe" -ErrorAction SilentlyContinue
+          if (-not $setup) {
+            throw "vpk pack did not produce a *Setup.exe in release/ — failing the job."
+          }
+          Write-Host "Found installer: $($setup.FullName)"
+
+      - name: Upload release to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_RELEASE_UPLOAD_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_RELEASE_UPLOAD_SECRET }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: aws s3 sync release/ s3://${{ secrets.DESKTOP_RELEASE_BUCKET }}/releases/vaccine-assist/
+
+      - name: Confirm RELEASES file is live
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_RELEASE_UPLOAD_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_RELEASE_UPLOAD_SECRET }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: aws s3 ls s3://${{ secrets.DESKTOP_RELEASE_BUCKET }}/releases/vaccine-assist/
