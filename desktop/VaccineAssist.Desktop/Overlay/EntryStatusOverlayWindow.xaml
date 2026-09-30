@@ -1,0 +1,50 @@
+<Window x:Class="VaccineAssist.Desktop.Overlay.EntryStatusOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Vaccine Assist"
+        Width="230" Height="40"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Topmost="True"
+        WindowStartupLocation="Manual">
+    <!--
+        V-T41 R5 (Will's brief, item 4, verbatim): "add an overlay that
+        shows up in the top right next to the blue vaccine icon that shows
+        that data entry is in process when the Ctrl+Keypad 7 data entry is
+        active, including with an X to halt the data entry." Same
+        borderless/chrome-free, non-activating pattern as
+        Overlay/PioneerOverlayWindow.xaml (WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW
+        set in code-behind's OnSourceInitialized) — this panel never steals
+        keyboard focus from PioneerRx, but the X border below still
+        receives mouse clicks (WS_EX_NOACTIVATE only blocks ACTIVATION, not
+        mouse input). PioneerOverlayController owns this window's whole
+        lifetime/positioning (immediately left of the blue icon — see
+        Overlay/OverlayPlacement.ComputeEntryStatus), showing it only while
+        a Ctrl+Keypad 7 run is active.
+    -->
+    <Border Background="#1F6FEB" CornerRadius="6" BorderBrush="#0D3C78" BorderThickness="1" Padding="8,4">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,6,0">
+                <TextBlock Text="Vaccine entry in progress…" Foreground="White" FontSize="11" FontWeight="Bold"
+                           TextTrimming="CharacterEllipsis"/>
+                <TextBlock x:Name="StepTextBlock" Text="" Foreground="#D7E6FF" FontSize="10"
+                           TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+            <Border x:Name="CancelBorder" Grid.Column="1" Width="18" Height="18" CornerRadius="9"
+                    Background="#0D3C78" VerticalAlignment="Center"
+                    MouseLeftButtonUp="CancelBorder_OnClick"
+                    ToolTip="Stop this vaccine entry">
+                <TextBlock Text="&#10005;" Foreground="White" FontSize="10"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

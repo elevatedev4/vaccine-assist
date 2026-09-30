@@ -20,7 +20,13 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 /// into whatever field currently has focus). An unexpected exception from
 /// a step (one that didn't follow IPioneerEntryStep's "return a failed
 /// result, don't throw" contract) is still caught here and turned into a
-/// failed result, so one misbehaving step can never crash the whole run.
+/// failed result, so one misbehaving step can never crash the whole run —
+/// EXCEPT an OperationCanceledException caused by `cancellationToken`
+/// itself (RunOneStepAsync), which is deliberately RE-thrown rather than
+/// turned into a step failure: a step cancelled mid-execution (e.g. the
+/// Ctrl+Keypad 7 overlay's X button firing while a field-wait poll loop is
+/// running) must surface to the caller the same way a between-steps
+/// cancellation already does, not be reported as an ordinary failed step.
 /// </summary>
 public static class PioneerEntrySequenceRunner
 {
@@ -99,6 +105,33 @@ public static class PioneerEntrySequenceRunner
         try
         {
             result = await step.ExecuteAsync(context, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // REVIEWER FIX (REQUEST_CHANGES, V-T41 R5): a step's own poll
+            // loop (QuickSearchFieldEntry.WaitForFieldAsync/TypeAndConfirmAsync's
+            // Task.Delay(interval, cancellationToken)) throws
+            // OperationCanceledException the instant the caller's
+            // CancellationTokenSource is cancelled (the overlay's X button,
+            // mid-step) — the blanket catch below used to swallow this into
+            // a normal "FAILED — Unexpected error: The operation was
+            // canceled." step result, letting RunAsync return NORMALLY
+            // (no exception) instead of surfacing the cancellation. Callers
+            // (MainWindow.RunVaccineEntryAutomationAsync) had to fall back
+            // to checking cancellationToken.IsCancellationRequested AFTER a
+            // normal return to notice this at all. Rethrowing here — the
+            // `when` guard only fires for a cancellation that genuinely
+            // came from OUR OWN token, never an unrelated
+            // OperationCanceledException a step might throw for its own
+            // reasons — means a mid-step cancel now surfaces identically to
+            // RunAsync's own between-steps cancellationToken.ThrowIfCancellationRequested()
+            // check: both propagate an OperationCanceledException straight
+            // out of RunAsync/RunSingleStepAsync, no further steps run, and
+            // no step is ever reported as merely "FAILED" for a cancellation
+            // the user asked for. See PioneerEntrySequenceRunnerTests.
+            // CancellingMidStepThrowsInsteadOfBeingSwallowedAsAFailure.
+            context.Log($"[{step.Name}] cancelled by user mid-step.");
+            throw;
         }
         catch (Exception ex)
         {

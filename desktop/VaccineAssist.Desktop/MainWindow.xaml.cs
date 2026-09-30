@@ -1,14 +1,19 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Fax;
 using VaccineAssist.Desktop.Hotkeys;
 using VaccineAssist.Desktop.Logging;
+using VaccineAssist.Desktop.Models;
 using VaccineAssist.Desktop.Overlay;
+using VaccineAssist.Desktop.PioneerEntryAutomation;
 using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
@@ -100,7 +105,7 @@ public partial class MainWindow : Window
     private readonly FaxSendCoordinator _faxSendCoordinator;
 
     /// <summary>At most one Fax settings window at a time — same
-    /// re-activate-not-stack rule as _openDataEntryPopup/_openMacroCodesPopup.</summary>
+    /// re-activate-not-stack rule as _openMacroCodesPopup.</summary>
     private FaxSettingsWindow? _openFaxSettingsWindow;
 
     /// <summary>At most one Send PCP faxes window at a time (V-T65 R4) —
@@ -140,28 +145,12 @@ public partial class MainWindow : Window
     private bool _allowRealClose;
 
     /// <summary>
-    /// The currently-open data-entry popup, if any — at most one can be
-    /// open at a time. MSG893 item 2 changed ShowDataEntryPopup to
-    /// actively enforce that (re-activate/re-focus this instance instead
-    /// of opening a second one) rather than merely tracking it; see that
-    /// method's doc comment. Also lets MainWindow explicitly close it on
-    /// sign-out/window-close (see MainWindow_OnClosed and
-    /// LogoutButton_OnClick) now that it's no longer an owned window (see
-    /// ShowDataEntryPopup's doc comment on removing Owner=this) — without
-    /// this, the popup would survive past logout, left bound to a
-    /// DataEntryPopupViewModel/IVaccineApiService whose bearer token is
-    /// now stale (calls would just start 401ing). Cleared via the popup's
-    /// own Closed event so a user closing it normally doesn't leave a
-    /// stale reference or cause a double-Close.
-    /// </summary>
-    private DataEntryPopupWindow? _openDataEntryPopup;
-
-    /// <summary>
     /// The currently-open macro-codes popup, if any — same "at most one at
-    /// a time, re-activate rather than stack" rule as _openDataEntryPopup
-    /// above (see ShowMacroCodesPopup), and same reason MainWindow needs
-    /// to explicitly close it on sign-out/window-close (MainWindow_OnClosed):
-    /// it's not an owned window, so nothing else would clean it up.
+    /// a time, re-activate rather than stack" rule every popup in this
+    /// class follows (see ShowMacroCodesPopup), and same reason MainWindow
+    /// needs to explicitly close it on sign-out/window-close
+    /// (MainWindow_OnClosed): it's not an owned window, so nothing else
+    /// would clean it up.
     /// </summary>
     private MacroCodesWindow? _openMacroCodesPopup;
 
@@ -190,6 +179,43 @@ public partial class MainWindow : Window
     /// actually opens a MacroCodesWindow). This flag closes that gap.
     /// </summary>
     private bool _ageMacroPromptShowing;
+
+    /// <summary>
+    /// V-T41 R5 (Will, 2026-09-29 8:15pm brief, item 3): the Ctrl+Keypad 7
+    /// hotkey no longer opens DataEntryPopupWindow at all — it now mirrors
+    /// the Ctrl+Keypad 2 flow (age prompt, then the same age-filtered
+    /// macro-codes picker) and runs this app's own PioneerEntryAutomation
+    /// against whatever product is picked, instead of the Ctrl+Keypad 2
+    /// flow's synthetic Ctrl+NumPad5 keypress. Tracked separately from
+    /// _openAgeMacroPopup (same "at most one instance, re-activate rather
+    /// than stack" rule, but a distinct field so the two flows' hotkeys
+    /// can never interfere with each other's single-instance bookkeeping).
+    /// </summary>
+    private MacroCodesWindow? _openVaccineEntryMacroPopup;
+
+    /// <summary>Same re-entrancy guard as _ageMacroPromptShowing, for the
+    /// Ctrl+Keypad 7 flow's own AgePromptWindow.ShowAndGetResult call.</summary>
+    private bool _vaccineEntryAgePromptShowing;
+
+    /// <summary>
+    /// Non-null for the whole life of an active Ctrl+Keypad 7
+    /// PioneerEntryAutomation run — the entry-status overlay's X button
+    /// (PioneerOverlayController.EntryStatusCancelRequested -&gt;
+    /// CancelVaccineEntryRun) cancels THIS token. Null whenever no run is
+    /// in flight (also used as the "is a run currently active" guard by
+    /// ShowDataEntryPopup, so a repeat Ctrl+Keypad 7 press mid-run doesn't
+    /// start a second overlapping one).
+    /// </summary>
+    private CancellationTokenSource? _vaccineEntryCts;
+
+    /// <summary>The most recent step name LogVaccineEntryStep parsed out of
+    /// a "[StepName] ..." log line for the run _vaccineEntryCts is tracking
+    /// — used only to name the step in the "Halted by user at step ..." log
+    /// line when cancellation is observed BETWEEN steps (PioneerEntrySequenceRunner's
+    /// own cancellationToken.ThrowIfCancellationRequested() check, which
+    /// throws out of RunAsync entirely rather than returning a normal
+    /// per-step failure).</summary>
+    private string? _vaccineEntryCurrentStepName;
 
     /// <summary>Process-unique id for RegisterHotKey — arbitrary but must not collide with another hotkey id this process registers.</summary>
     private const int DataEntryHotKeyId = 1;
@@ -315,12 +341,15 @@ public partial class MainWindow : Window
 
         try
         {
-            _pioneerOverlayController = new PioneerOverlayController(
+            var pioneerOverlayController = new PioneerOverlayController(
                 navigateTo: NavigateTo,
                 showDataEntryPopup: ShowDataEntryPopup,
                 showMacroCodesPopup: ShowMacroCodesPopup,
                 exit: ExitApplication,
                 settings: _settings);
+            // V-T41 R5 (item 4): the entry-status panel's X button.
+            pioneerOverlayController.EntryStatusCancelRequested += (_, _) => CancelVaccineEntryRun();
+            _pioneerOverlayController = pioneerOverlayController;
         }
         catch (Exception ex)
         {
@@ -560,71 +589,339 @@ public partial class MainWindow : Window
         // Alt+F4, or the tray's Exit — both only reach here now via
         // _allowRealClose) and Sign out (LogoutButton_OnClick/tray Sign
         // out -> App.xaml.cs's LoggedOut handler calls mainWindow.Close(),
-        // which raises this same Closed event) — see _openDataEntryPopup's
+        // which raises this same Closed event) — see _openMacroCodesPopup's
         // doc comment for why an orphaned popup is a real problem, not
         // just cosmetic.
-        _openDataEntryPopup?.Close();
-        _openDataEntryPopup = null;
-
         _openMacroCodesPopup?.Close();
         _openMacroCodesPopup = null;
 
         _openAgeMacroPopup?.Close();
         _openAgeMacroPopup = null;
+
+        // V-T41 R5: cancel any in-flight Ctrl+Keypad 7 automation and close
+        // its macro-codes picker if still open, same "an orphaned popup/run
+        // must not survive sign-out or window-close" reasoning as the other
+        // popups above.
+        CancelVaccineEntryRun();
+
+        _openVaccineEntryMacroPopup?.Close();
+        _openVaccineEntryMacroPopup = null;
     }
 
     /// <summary>
-    /// V-T3 item 2: light presence check first (Uia/PioneerRxPresence —
-    /// cheap, no FlaUI/UIA session), then show the popup regardless of
-    /// the result — a pharmacist who fat-fingers the hotkey before
-    /// switching to PioneerRx still gets a usable popup (it defaults to
-    /// dry run and says so; see DataEntryPopupViewModel's constructor)
-    /// rather than nothing happening at all.
+    /// V-T41 R5 (Will, 2026-09-29 8:15pm brief, item 3, verbatim): "let's
+    /// make the flow match the Ctrl+Keypad 2 flow we have right now, with
+    /// an age window, then the macro codes, then the window disappears."
+    /// Ctrl+Keypad 7 no longer opens DataEntryPopupWindow at all (BYPASSED,
+    /// not deleted — the class/its tests are left in place in case a future
+    /// round needs the guided-flow UI again, but nothing live constructs it
+    /// any more); this method — still the one thing the hotkey, the tray
+    /// menu's "Data entry" item, and the Pioneer overlay's "Data entry"
+    /// item all call — now runs ShowVaccineEntryAgeMacroPrompt instead: age
+    /// prompt, then the SAME age-filtered macro-codes picker the Ctrl+
+    /// Keypad 2 flow uses, then this app's own PioneerEntryAutomation runs
+    /// against whatever product was picked (see RunVaccineEntryAutomationAsync)
+    /// instead of that flow's synthetic Ctrl+NumPad5 keypress.
     ///
-    /// Deliberately touches nothing on MainWindow itself — no Show,
-    /// Activate, WindowState, or Visibility change, and no Owner
-    /// assignment either. Will's feedback (2026-08-19): "don't make
-    /// 'Vaccine Assist' pop up when data entry is happening, just the one
-    /// popup window." The popup doesn't need Owner to stay on top of
-    /// PioneerRx: it already sets Topmost="True" and ShowInTaskbar="False"
-    /// itself (see DataEntryPopupWindow.xaml). This also fires perfectly
-    /// well while MainWindow is hidden to the tray — nothing here depends
-    /// on MainWindow's own visibility.
-    ///
-    /// MSG893 item 2 (2026-09-07-ish): if the popup is ALREADY open (a
-    /// repeat hotkey press, or the tray/overlay's "Data entry" item
-    /// clicked again), re-activate and re-focus that SAME instance
-    /// (DataEntryPopupWindow.ActivateAndFocusCurrentStage) instead of opening a
-    /// second one — a pharmacist who presses the hotkey again because the
-    /// first press didn't visibly grab focus should land back in the age
-    /// box, not get a confusing stack of popups.
+    /// A repeat press while a run is already in flight (_vaccineEntryCts is
+    /// non-null) is a no-op — the overlay's X is the way to stop it, not a
+    /// second hotkey press starting a second, overlapping run. A repeat
+    /// press while the macro-codes picker is already open re-activates that
+    /// SAME instance (same "at most one instance" rule every other popup in
+    /// this class follows) instead of stacking a second age prompt on top.
     /// </summary>
     private void ShowDataEntryPopup()
     {
-        if (_openDataEntryPopup is not null)
+        if (_vaccineEntryCts is not null)
         {
-            _openDataEntryPopup.ActivateAndFocusCurrentStage();
             return;
         }
 
-        var pioneerDetected = PioneerRxPresence.IsPresent();
-        var viewModel = new DataEntryPopupViewModel(_vaccineApiService, _clipboardService, _pioneerEntrySequence, pioneerDetected);
-        var popup = new DataEntryPopupWindow(viewModel);
+        if (_openVaccineEntryMacroPopup is not null)
+        {
+            _openVaccineEntryMacroPopup.BringToFront();
+            return;
+        }
 
-        // Tracked so MainWindow_OnClosed can explicitly close this popup
-        // on sign-out/window-close (see _openDataEntryPopup's doc
-        // comment), and so a repeat hotkey press above re-activates this
-        // instance instead of opening a duplicate.
+        if (_vaccineEntryAgePromptShowing)
+        {
+            return;
+        }
+
+        ShowVaccineEntryAgeMacroPrompt();
+    }
+
+    /// <summary>
+    /// V-T41 R5, item 3: age prompt -&gt; age-filtered macro-codes picker
+    /// (identical URL-building to ShowAgeMacroPrompt's own
+    /// AgeMacroCodesUrlBuilder.BuildUrl call) -&gt; once a dose is picked and
+    /// the picker closes, RunVaccineEntryAutomationAsync runs this app's
+    /// PioneerEntryAutomation against it. sendCtrlNumPad5OnClose is
+    /// deliberately false here (unlike ShowAgeMacroPrompt) — that synthetic
+    /// keypress exists only to trigger the EXTERNAL on-computer macro the
+    /// Ctrl+Keypad 2 flow hands off to (see MacroCodesWindow's own doc
+    /// comment); this flow runs its own automation instead and must never
+    /// also fire that macro.
+    ///
+    /// Automation is kicked off from the popup's OWN Closed handler (not
+    /// from onCodeCopied directly) so it only starts once MacroCodesWindow_OnClosed's
+    /// SetForegroundWindow(previousForegroundWindow) has already run —
+    /// same ordering ShowAgeMacroPrompt's synthetic-keypress path relies on
+    /// (see MacroCodesWindow_OnClosed's own doc comment on why that delay
+    /// matters).
+    /// </summary>
+    private void ShowVaccineEntryAgeMacroPrompt()
+    {
+        AppFileLog.Log("[VaccineEntry] age prompt");
+
+        var previousForegroundWindow = GetForegroundWindow();
+        AgePromptResult result;
+        _vaccineEntryAgePromptShowing = true;
+        try
+        {
+            result = AgePromptWindow.ShowAndGetResult();
+        }
+        finally
+        {
+            _vaccineEntryAgePromptShowing = false;
+        }
+
+        if (!result.Confirmed)
+        {
+            AppFileLog.Log("[VaccineEntry] age prompt cancelled");
+            return;
+        }
+
+        var ageYears = result.Years;
+        AppFileLog.Log($"[VaccineEntry] age {ageYears}");
+
+        string? pickedCode = null;
+        string? pickedLabel = null;
+        string? pickedProduct = null;
+
+        var url = AgeMacroCodesUrlBuilder.BuildUrl(_settings.CloudApiBaseUrl, ageYears);
+        var popup = new MacroCodesWindow(
+            _settings.CloudApiBaseUrl,
+            _clipboardService,
+            previousForegroundWindow,
+            overrideUrl: url,
+            sendCtrlNumPad5OnClose: false,
+            onCodeCopied: (code, label, product) =>
+            {
+                pickedCode = code;
+                pickedLabel = label;
+                pickedProduct = product;
+            });
+
         popup.Closed += (_, _) =>
         {
-            if (ReferenceEquals(_openDataEntryPopup, popup))
+            if (ReferenceEquals(_openVaccineEntryMacroPopup, popup))
             {
-                _openDataEntryPopup = null;
+                _openVaccineEntryMacroPopup = null;
+            }
+
+            if (pickedCode is not null)
+            {
+                _ = RunVaccineEntryAutomationAsync(pickedCode, pickedLabel ?? "", pickedProduct ?? "", ageYears);
+            }
+            else
+            {
+                AppFileLog.Log("[VaccineEntry] macro picker closed with nothing picked");
             }
         };
-        _openDataEntryPopup = popup;
+        _openVaccineEntryMacroPopup = popup;
 
+        AppFileLog.Log("[VaccineEntry] macro picker opened");
         popup.Show();
+        popup.ActivateAndFocusWebView();
+    }
+
+    /// <summary>
+    /// V-T41 R5, items 2-4: runs PlaceholderVaccineEntrySequence against the
+    /// vaccine `macroCode` (a MacroCodesWindow onCodeCopied payload) refers
+    /// to.
+    ///
+    /// ITEM 2 (Will: "I also wonder if the vaccine assist data entry window
+    /// visually blocking the priority window before has any impact?"): by
+    /// construction, AgePromptWindow and the macro-codes picker are ALREADY
+    /// closed by the time this runs (the picker's own Closed handler is
+    /// what calls this) — the only OTHER activatable Vaccine Assist window
+    /// that could still be visible is MainWindow itself, so that's the one
+    /// explicit check below, hidden to the tray before the first key is
+    /// sent and logged either way.
+    ///
+    /// ITEM 3: parses the macro text (MacroCodeParser), resolves the real
+    /// Vaccine catalog row by short code (MacroCodeVaccineResolver) against
+    /// GetVaccinesAsync(), resolves the protocol physician for that vaccine
+    /// + age (same IVaccineApiService.ResolvePhysicianAsync
+    /// DataEntryPopupViewModel.BuildLivePayloadAsync uses), and builds a
+    /// VaccineEntryPayload the SAME shape that method builds — Quantity/
+    /// Directions fall back through VaccineEntryDefaults exactly like the
+    /// old guided flow did.
+    ///
+    /// ITEM 4: ShowEntryStatus/UpdateEntryStatusStep/HideEntryStatus drive
+    /// the overlay panel; _vaccineEntryCts is what its X button cancels.
+    /// </summary>
+    private async Task RunVaccineEntryAutomationAsync(string macroCode, string label, string product, int ageYears)
+    {
+        AppFileLog.Log($"[VaccineEntry] picked \"{product}\" ({label})");
+
+        using var cts = new CancellationTokenSource();
+        _vaccineEntryCts = cts;
+        _vaccineEntryCurrentStepName = null;
+        _pioneerOverlayController?.ShowEntryStatus("Preparing…");
+
+        var hiddenWindows = new List<string>();
+        // Same "no tray icon to restore from" guard MainWindow_OnStateChanged/
+        // MainWindow_OnClosing already use — hiding MainWindow with no tray
+        // icon (rare: only when TrayIconController's own construction threw)
+        // would strand the pharmacist with no way to bring it back.
+        if (IsVisible && _trayIconController is not null)
+        {
+            HideToTray();
+            hiddenWindows.Add("MainWindow");
+        }
+        AppFileLog.Log($"[VaccineEntry] windows hidden before automation: {(hiddenWindows.Count > 0 ? string.Join(", ", hiddenWindows) : "none (nothing else visible)")}");
+
+        try
+        {
+            var parsed = MacroCodeParser.TryParse(macroCode);
+            if (parsed is null)
+            {
+                AppFileLog.Log("[VaccineEntry] FAILED — couldn't parse the picked macro code.");
+                return;
+            }
+
+            PioneerEntrySequenceResult? result = null;
+            try
+            {
+                // REVIEWER FIX (non-blocking, V-T41 R5): widened to cover
+                // GetVaccinesAsync/ResolvePhysicianAsync too, not just the
+                // FlaUI sequence itself — a cancel that lands BEFORE
+                // PioneerEntrySequenceRunner.RunAsync ever starts (e.g. the
+                // overlay's X clicked during the initial vaccine-lookup
+                // round trip) now also logs "Halted by user" instead of
+                // falling through to the generic catch below and logging a
+                // raw exception dump for what was really just a cancel.
+                var vaccines = await _vaccineApiService.GetVaccinesAsync(cts.Token);
+                var vaccine = MacroCodeVaccineResolver.FindByShortCode(vaccines, parsed.Value.ShortCode);
+                if (vaccine is null)
+                {
+                    AppFileLog.Log($"[VaccineEntry] FAILED — no vaccine on file with short code \"{parsed.Value.ShortCode}\".");
+                    return;
+                }
+
+                var physician = await _vaccineApiService.ResolvePhysicianAsync(vaccine.Id, ageYears, cts.Token);
+                if (physician is null)
+                {
+                    AppFileLog.Log($"[VaccineEntry] FAILED — no protocol physician configured for {vaccine.Name} at age {ageYears}.");
+                    return;
+                }
+
+                var quantity = VaccineEntryDefaults.ResolveQuantity(vaccine).Value;
+                var directions = VaccineEntryDefaults.ResolveDirections(vaccine).Value;
+                var hasLot = !string.IsNullOrWhiteSpace(parsed.Value.LotNumber) && !string.IsNullOrWhiteSpace(parsed.Value.ExpirationMacroFormat);
+
+                var payload = new VaccineEntryPayload(
+                    vaccine.ShortCode, parsed.Value.LotNumber, parsed.Value.ExpirationMacroFormat, AdminSiteDisplayText: "",
+                    Ndc: vaccine.Ndc ?? "",
+                    PhysicianAlternateId: physician.AlternateId,
+                    SkipLotAndExpiration: !hasLot,
+                    Quantity: quantity,
+                    Directions: directions,
+                    VaccineName: vaccine.Name);
+
+                var dryRun = !PioneerRxPresence.IsPresent();
+                var context = new PioneerEntryStepContext(payload, dryRun, message => LogVaccineEntryStep(message))
+                {
+                    RequestTextPrompt = (title, message, allowSkip) => TextEntryPromptWindow.ShowAndGetResult(title, message, allowSkip, this),
+                    SaveQuantityAsync = q => SaveVaccineEntryFieldAsync(() => _vaccineApiService.UpdateVaccineQuantityAsync(vaccine.Id, q)),
+                    SaveDirectionsAsync = d => SaveVaccineEntryFieldAsync(() => _vaccineApiService.UpdateVaccineDirectionsAsync(vaccine.Id, d)),
+                };
+
+                result = await PioneerEntrySequenceRunner.RunAsync(_pioneerEntrySequence, context, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                AppFileLog.Log($"[VaccineEntry] Halted by user at step {_vaccineEntryCurrentStepName ?? "(unknown)"}.");
+                return;
+            }
+
+            if (cts.Token.IsCancellationRequested)
+            {
+                AppFileLog.Log($"[VaccineEntry] Halted by user at step {result?.FirstFailure?.StepName ?? _vaccineEntryCurrentStepName ?? "(unknown)"}.");
+            }
+            else if (result?.Success == true)
+            {
+                AppFileLog.Log("[VaccineEntry] completed.");
+            }
+            else
+            {
+                AppFileLog.Log($"[VaccineEntry] stopped at \"{result?.FirstFailure?.StepName}\" — {result?.FirstFailure?.Message}");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.RunVaccineEntryAutomationAsync", ex);
+        }
+        finally
+        {
+            _pioneerOverlayController?.HideEntryStatus();
+            _vaccineEntryCts = null;
+        }
+    }
+
+    /// <summary>Parses the leading "[StepName] " prefix every
+    /// PioneerEntrySequenceRunner log line carries (see RunOneStepAsync)
+    /// so the overlay's step line and a "Halted by user at step ..."
+    /// message both name the right step, without RunVaccineEntryAutomationAsync
+    /// needing its own separate step-tracking hook into the runner.</summary>
+    private void LogVaccineEntryStep(string message)
+    {
+        AppFileLog.Log($"[VaccineEntry] {message}");
+
+        if (message.Length > 1 && message[0] == '[')
+        {
+            var close = message.IndexOf(']');
+            if (close > 1)
+            {
+                var stepName = message[1..close];
+                _vaccineEntryCurrentStepName = stepName;
+                _pioneerOverlayController?.UpdateEntryStatusStep(stepName);
+            }
+        }
+    }
+
+    /// <summary>Same "a failed save must not abort the entry" posture as
+    /// DataEntryPopupViewModel.SaveVaccineFieldAsync — see that method's
+    /// own doc comment.</summary>
+    private static async Task<bool> SaveVaccineEntryFieldAsync(Func<Task<Vaccine>> save)
+    {
+        try
+        {
+            await save();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.SaveVaccineEntryFieldAsync", ex);
+            return false;
+        }
+    }
+
+    /// <summary>V-T41 R5, item 4: the entry-status overlay's X button —
+    /// PioneerOverlayController.EntryStatusCancelRequested. Best-effort;
+    /// cancelling an already-disposed/null token source is harmless.</summary>
+    private void CancelVaccineEntryRun()
+    {
+        try
+        {
+            _vaccineEntryCts?.Cancel();
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.CancelVaccineEntryRun", ex);
+        }
     }
 
     /// <summary>

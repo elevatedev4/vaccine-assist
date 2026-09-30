@@ -54,4 +54,35 @@ public class OverlayPlacementTests
         Assert.Equal(pioneerBounds.Right - 30, rect100.X + rect100.Width);
         Assert.Equal(pioneerBounds.Right - 45, rect150.X + rect150.Width); // 30 * 1.5 = 45
     }
+
+    /// <summary>
+    /// V-T41 R5 (Will's brief, item 4): the "entry in progress" panel sits
+    /// immediately LEFT of the icon and is vertically centered against it.
+    /// </summary>
+    [Fact]
+    public void EntryStatusPanelSitsImmediatelyLeftOfTheIconAndIsVerticallyCentered()
+    {
+        var iconRect = new OverlayRect(X: 1834, Y: 204, Width: 36, Height: 36);
+
+        var statusRect = OverlayPlacement.ComputeEntryStatus(iconRect, dpiScale: 1.0);
+
+        Assert.Equal(230, statusRect.Width);
+        Assert.Equal(40, statusRect.Height);
+        // Right edge of the panel = icon's left edge - 8dip gap.
+        Assert.Equal(iconRect.X - 8, statusRect.X + statusRect.Width);
+        // Vertically centered against the icon.
+        Assert.Equal(iconRect.Y + (iconRect.Height - statusRect.Height) / 2, statusRect.Y);
+    }
+
+    [Fact]
+    public void EntryStatusPanelScalesWithDpiLikeTheIconDoes()
+    {
+        var iconRect = OverlayPlacement.Compute(Rectangle.FromLTRB(0, 0, 2560, 1440), dpiScale: 1.5);
+
+        var statusRect = OverlayPlacement.ComputeEntryStatus(iconRect, dpiScale: 1.5);
+
+        Assert.Equal(345, statusRect.Width);  // 230 * 1.5
+        Assert.Equal(60, statusRect.Height);  // 40 * 1.5
+        Assert.Equal(iconRect.X - 12, statusRect.X + statusRect.Width); // 8 * 1.5 = 12
+    }
 }

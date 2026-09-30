@@ -1,6 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using FlaUI.Core.AutomationElements;
+using VaccineAssist.Desktop.Uia;
 
 namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 
@@ -16,11 +20,32 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// PioneerEntryAutomation/TODO.md). This is a PLACEHOLDER AutomationId —
 /// no directions/sig field appeared in any of the six dumps collected so
 /// far, likely because none of those captures got far enough into the
-/// form to show it. CONFIRM AGAINST A LIVE UIA DUMP OF THE DIRECTIONS
-/// FIELD (the "Dump Pioneer UIA tree" button — see Uia/UiaTreeDumper.cs)
-/// before relying on this in a live run; rename this constant (and update
-/// this doc comment) once the real AutomationId is known — PioneerRx may
-/// call it something else entirely (e.g. a "Sig" field).
+/// form to show it.
+///
+/// CANDIDATE SEARCH (V-T41 R5, Will 2026-09-29 8:15pm: quantity now
+/// enters fine, but "[Enter directions] FAILED — Couldn't find the
+/// directions field (AutomationId 'uxDirections')" after ~59s — the
+/// single hardcoded id above was exactly this doc comment's own
+/// UNCONFIRMED warning coming true live): rather than betting the whole
+/// step on one guessed AutomationId, FindAndTypeDirectionsAsync below now
+/// tries DirectionsFieldCandidates.AutomationIds in order (uxDirections
+/// first, so a correct guess costs nothing extra), each with a short 2s
+/// wait inside the overall 15s budget (QuickSearchFieldEntry.
+/// DefaultFieldWaitTimeout) rather than 15s per candidate, searched under
+/// BOTH context.AttachedWindow and the current OS foreground window when
+/// it's a DIFFERENT PioneerRx window (Uia/ForegroundPioneerWindow). If no
+/// fixed id matches, a keyword fallback (DirectionsFieldCandidates.
+/// TryMatch, Name/AutomationId containing "direction" or "sig") gets one
+/// try against whatever's actually enabled on screen. If NOTHING matches,
+/// one compact, NO-PHI field dump (Uia/EditableFieldDumper — AutomationId/
+/// ClassName/ControlType/bounds only, capped at 40 entries; Name is used
+/// IN MEMORY for the keyword match above but deliberately never logged —
+/// see that class's own REVIEWER FIX doc comment on why an Edit control's
+/// accessible Name can, on some WinForms controls, fall back to the
+/// field's own content) is logged before the step fails, so the next
+/// report names exactly what candidate AutomationId round 6 should
+/// hardcode. Whichever candidate DOES match is logged by name — see
+/// FindAndTypeDirectionsAsync.
 ///
 /// NULL/BLANK DIRECTIONS — REWORKED (V-..., 2026-09-10, Will 2026-09-09/10:
 /// entry "stopped at quantity"): every vaccine row currently has blank
@@ -77,20 +102,113 @@ public sealed class InputDirectionsStep : IPioneerEntryStep
                 "No PioneerRx window attached — FocusPioneerWindowStep must run (and succeed) before this step.");
         }
 
-        // V-..., 2026-09-11: same "wait for found AND enabled before the
-        // one-shot lookup" hardening SelectPrescriberStep/InputVaccineCodeStep/
-        // InputLotAndExpirationStep already got — see
-        // QuickSearchFieldEntry.WaitForFieldAsync's own doc comment for why
-        // a one-shot lookup alone isn't a strong enough "ready" signal.
-        await QuickSearchFieldEntry.WaitForFieldAsync(
-            context.AttachedWindow, DirectionsAutomationId, QuickSearchFieldEntry.DefaultFieldWaitTimeout,
-            context.Log, cancellationToken);
+        return await FindAndTypeDirectionsAsync(context, directions!, cancellationToken);
+    }
 
-        var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
-            context.AttachedWindow, DirectionsAutomationId, "directions", directions!, enterPresses: 0,
-            log: context.Log, cancellationToken: cancellationToken);
+    /// <summary>
+    /// V-T41 R5: the candidate-list search described in this class's own
+    /// doc comment. Returns as soon as ANY candidate (fixed id or keyword
+    /// fallback) is found, typed, and confirmed; logs which one matched.
+    /// Logs one compact field dump and returns a named failure if nothing
+    /// matches within QuickSearchFieldEntry.DefaultFieldWaitTimeout (15s
+    /// total, not 15s per candidate).
+    /// </summary>
+    private async Task<PioneerEntryStepResult> FindAndTypeDirectionsAsync(
+        PioneerEntryStepContext context, string directions, CancellationToken cancellationToken)
+    {
+        var attachedWindow = context.AttachedWindow!;
+        var searchWindows = BuildSearchWindows(attachedWindow);
 
-        return new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message);
+        var fixedMatch = await TryFixedCandidatesAsync(searchWindows, cancellationToken);
+        if (fixedMatch is { } found)
+        {
+            context.Log($"[{Name}] matched candidate AutomationId '{found.CandidateId}'{found.Label}.");
+            var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
+                found.Window, found.CandidateId, "directions", directions, enterPresses: 0,
+                log: context.Log, cancellationToken: cancellationToken);
+            return new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message);
+        }
+
+        // Keyword fallback, then (whether or not it matches) the one
+        // compact dump — see this class's own doc comment.
+        var allFields = new List<FieldDescriptor>();
+        foreach (var (window, label) in searchWindows)
+        {
+            var fields = EditableFieldDumper.Collect(window);
+            allFields.AddRange(fields);
+
+            var match = DirectionsFieldCandidates.TryMatch(fields);
+            if (match is { } m && !string.IsNullOrEmpty(m.AutomationId))
+            {
+                var matchedId = m.AutomationId!;
+                // PHI: never logs m.Name (a field's accessible Name can, on
+                // some WinForms controls, fall back to the field's own
+                // content — see EditableFieldDumper's REVIEWER FIX doc
+                // comment) — only the AutomationId that matched.
+                context.Log($"[{Name}] matched by keyword: AutomationId '{matchedId}'{label}.");
+                var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
+                    window, matchedId, "directions", directions, enterPresses: 0,
+                    log: context.Log, cancellationToken: cancellationToken);
+                return new PioneerEntryStepResult(Name, outcome.Success, DryRun: false, outcome.Message);
+            }
+        }
+
+        context.Log($"[{Name}] no directions/sig field candidate matched — enabled fields: {EditableFieldDumper.DescribeForLog(allFields)}");
+        return new PioneerEntryStepResult(Name, Success: false, DryRun: false,
+            $"Couldn't find the directions field after trying {DirectionsFieldCandidates.AutomationIds.Count} candidate AutomationId(s) " +
+            "and a keyword fallback on the attached PioneerRx window" +
+            (searchWindows.Count > 1 ? " and the foreground PioneerRx window" : "") +
+            " — see the field dump logged just above.");
+    }
+
+    /// <summary>Tries DirectionsFieldCandidates.AutomationIds in order, each
+    /// with a short (2s) wait against every search window, inside the
+    /// OVERALL 15s budget (QuickSearchFieldEntry.DefaultFieldWaitTimeout) —
+    /// not 15s per candidate. Returns as soon as one is found+enabled;
+    /// null if the whole budget is spent with nothing found.</summary>
+    private static async Task<(AutomationElement Window, string CandidateId, string Label)?> TryFixedCandidatesAsync(
+        List<(AutomationElement Window, string Label)> searchWindows, CancellationToken cancellationToken)
+    {
+        var totalBudget = QuickSearchFieldEntry.DefaultFieldWaitTimeout;
+        var perCandidateWait = TimeSpan.FromSeconds(2);
+        var stopwatch = Stopwatch.StartNew();
+
+        foreach (var candidateId in DirectionsFieldCandidates.AutomationIds)
+        {
+            foreach (var (window, label) in searchWindows)
+            {
+                var remaining = totalBudget - stopwatch.Elapsed;
+                if (remaining <= TimeSpan.Zero) return null;
+
+                var wait = remaining < perCandidateWait ? remaining : perCandidateWait;
+                var found = await QuickSearchFieldEntry.WaitForFieldAsync(window, candidateId, wait, log: null, cancellationToken: cancellationToken);
+                if (found) return (window, candidateId, label);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The attached window, PLUS the current OS foreground window
+    /// when it's a DIFFERENT PioneerRx window (Uia/ForegroundPioneerWindow)
+    /// — see this class's own doc comment. `label` is a short, human
+    /// readable suffix for the "matched candidate ..." log line (blank for
+    /// the attached window, since that's the normal/expected case).</summary>
+    private static List<(AutomationElement Window, string Label)> BuildSearchWindows(AutomationElement attachedWindow)
+    {
+        var result = new List<(AutomationElement Window, string Label)> { (attachedWindow, "") };
+
+        IntPtr attachedHandle;
+        try { attachedHandle = attachedWindow.FrameworkAutomationElement.NativeWindowHandle ?? IntPtr.Zero; }
+        catch { attachedHandle = IntPtr.Zero; }
+
+        var foreground = ForegroundPioneerWindow.TryGetIfDifferent(attachedHandle);
+        if (foreground is not null)
+        {
+            result.Add((foreground, " on the foreground PioneerRx window"));
+        }
+
+        return result;
     }
 
     /// <summary>Shows the blank-directions prompt with Skip offered — see

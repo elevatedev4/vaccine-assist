@@ -52,4 +52,32 @@ public static class OverlayPlacement
     }
 
     private static int ToPhysical(double dip, double dpiScale) => (int)Math.Round(dip * dpiScale);
+
+    /// <summary>Entry-status panel width/height, DIP — V-T41 R5 (Will's
+    /// brief, item 4: a small panel with two lines of text and an X).</summary>
+    public const double EntryStatusWidthDip = 230;
+    public const double EntryStatusHeightDip = 40;
+
+    /// <summary>Gap between the entry-status panel's right edge and the
+    /// icon's left edge, DIP.</summary>
+    private const double EntryStatusGapDip = 8;
+
+    /// <summary>
+    /// V-T41 R5 (Will's brief, item 4, verbatim): "add an overlay that
+    /// shows up in the top right next to the blue vaccine icon that shows
+    /// that data entry is in process." Sits immediately LEFT of the icon
+    /// (whose own rect is `iconRect`, already computed by Compute above —
+    /// same physical-pixel space, no extra DPI conversion needed for X/Y
+    /// beyond scaling this panel's own DIP size), vertically centered
+    /// against it.
+    /// </summary>
+    public static OverlayRect ComputeEntryStatus(OverlayRect iconRect, double dpiScale)
+    {
+        var width = ToPhysical(EntryStatusWidthDip, dpiScale);
+        var height = ToPhysical(EntryStatusHeightDip, dpiScale);
+        var gap = ToPhysical(EntryStatusGapDip, dpiScale);
+        var x = iconRect.X - gap - width;
+        var y = iconRect.Y + (iconRect.Height - height) / 2;
+        return new OverlayRect(x, y, width, height);
+    }
 }
