@@ -19,9 +19,28 @@ namespace VaccineAssist.Desktop.Uia;
 /// truncated field values, meant for a one-off manual capture Will
 /// attaches to a message himself) — this is a small, automatic,
 /// NO-PHI-by-construction snapshot logged inline.
+///
+/// REVIEWER FIX (REQUEST_CHANGES, PHI blocker): Collect() still captures
+/// each field's Name (FieldDescriptor) since DirectionsFieldCandidates.
+/// TryMatch's keyword fallback needs it IN MEMORY to match "Sig"/
+/// "Directions" labels — but DescribeForLog, the one method whose output
+/// actually reaches AppFileLog (and from there "Copy logs," which hands
+/// the whole file to support — see AppFileLog's own NO-PHI note), now
+/// deliberately OMITS Name entirely. WinForms/UIA has known cases where an
+/// Edit control's accessible Name falls back to the field's own CONTENT
+/// when no AccessibleName/label association exists — never confirmed
+/// against a live PioneerRx capture, so this dump must not risk it. Only
+/// AutomationId, ClassName, ControlType, and bounds are ever written to
+/// the log. Also caps the logged list at <see cref="MaxLoggedFields"/>
+/// entries — the Add New Rx screen is a small form, not a data grid, so a
+/// screen with more enabled fields than that is almost certainly the
+/// wrong one to be dumping anyway.
 /// </summary>
 public static class EditableFieldDumper
 {
+    /// <summary>See class doc comment's REVIEWER FIX note.</summary>
+    private const int MaxLoggedFields = 40;
+
     /// <summary>Same "best-effort, never throw" posture as every other UIA
     /// scan in this codebase (e.g. Uia/PioneerWindowInventory). Returns an
     /// empty list on any failure rather than propagating.</summary>
@@ -70,11 +89,18 @@ public static class EditableFieldDumper
         catch { return null; }
     }
 
-    /// <summary>Compact, single-line-per-field text — NO field values, only
-    /// structure — suitable for a single AppFileLog line. "no enabled ...
-    /// fields found" when the list is empty (still a useful, explicit
-    /// signal — a totally empty screen is a different problem than a
-    /// screen with fields that just don't match).</summary>
+    /// <summary>
+    /// Compact, single-line-per-field text for a single AppFileLog line —
+    /// "no enabled ... fields found" when the list is empty (still a
+    /// useful, explicit signal — a totally empty screen is a different
+    /// problem than a screen with fields that just don't match).
+    ///
+    /// PHI: deliberately NEVER includes Name (see class doc comment's
+    /// REVIEWER FIX note) — only AutomationId/ClassName/ControlType/
+    /// bounds, none of which can carry a field's typed content. Capped at
+    /// MaxLoggedFields entries, with a trailing "(+N more, not logged)"
+    /// note when the real count is higher.
+    /// </summary>
     public static string DescribeForLog(IReadOnlyList<FieldDescriptor> fields)
     {
         if (fields.Count == 0)
@@ -82,8 +108,12 @@ public static class EditableFieldDumper
             return "no enabled Edit/Document/ComboBox fields found.";
         }
 
-        return string.Join(" \\ ", fields.Select(f =>
-            $"{f.ControlType ?? "<unknown>"} id='{f.AutomationId ?? "<null>"}' name='{f.Name ?? "<null>"}' " +
-            $"class='{f.ClassName ?? "<null>"}' bounds={f.Bounds ?? "<unknown>"}"));
+        var shown = fields.Take(MaxLoggedFields).Select(f =>
+            $"{f.ControlType ?? "<unknown>"} id='{f.AutomationId ?? "<null>"}' " +
+            $"class='{f.ClassName ?? "<null>"}' bounds={f.Bounds ?? "<unknown>"}");
+
+        var text = string.Join(" \\ ", shown);
+        var remaining = fields.Count - MaxLoggedFields;
+        return remaining > 0 ? $"{text} \\ (+{remaining} more, not logged)" : text;
     }
 }

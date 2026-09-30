@@ -38,10 +38,14 @@ namespace VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing.Steps;
 /// TryMatch, Name/AutomationId containing "direction" or "sig") gets one
 /// try against whatever's actually enabled on screen. If NOTHING matches,
 /// one compact, NO-PHI field dump (Uia/EditableFieldDumper — AutomationId/
-/// Name/ClassName/ControlType/bounds, never field values) is logged
-/// before the step fails, so the next report names exactly what candidate
-/// AutomationId round 6 should hardcode. Whichever candidate DOES match
-/// is logged by name — see FindAndTypeDirectionsAsync.
+/// ClassName/ControlType/bounds only, capped at 40 entries; Name is used
+/// IN MEMORY for the keyword match above but deliberately never logged —
+/// see that class's own REVIEWER FIX doc comment on why an Edit control's
+/// accessible Name can, on some WinForms controls, fall back to the
+/// field's own content) is logged before the step fails, so the next
+/// report names exactly what candidate AutomationId round 6 should
+/// hardcode. Whichever candidate DOES match is logged by name — see
+/// FindAndTypeDirectionsAsync.
 ///
 /// NULL/BLANK DIRECTIONS — REWORKED (V-..., 2026-09-10, Will 2026-09-09/10:
 /// entry "stopped at quantity"): every vaccine row currently has blank
@@ -137,7 +141,11 @@ public sealed class InputDirectionsStep : IPioneerEntryStep
             if (match is { } m && !string.IsNullOrEmpty(m.AutomationId))
             {
                 var matchedId = m.AutomationId!;
-                context.Log($"[{Name}] matched by keyword: AutomationId '{matchedId}' Name '{m.Name ?? ""}'{label}.");
+                // PHI: never logs m.Name (a field's accessible Name can, on
+                // some WinForms controls, fall back to the field's own
+                // content — see EditableFieldDumper's REVIEWER FIX doc
+                // comment) — only the AutomationId that matched.
+                context.Log($"[{Name}] matched by keyword: AutomationId '{matchedId}'{label}.");
                 var outcome = await QuickSearchFieldEntry.TypeAndConfirmAsync(
                     window, matchedId, "directions", directions, enterPresses: 0,
                     log: context.Log, cancellationToken: cancellationToken);

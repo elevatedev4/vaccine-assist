@@ -105,7 +105,7 @@ public partial class MainWindow : Window
     private readonly FaxSendCoordinator _faxSendCoordinator;
 
     /// <summary>At most one Fax settings window at a time — same
-    /// re-activate-not-stack rule as _openDataEntryPopup/_openMacroCodesPopup.</summary>
+    /// re-activate-not-stack rule as _openMacroCodesPopup.</summary>
     private FaxSettingsWindow? _openFaxSettingsWindow;
 
     /// <summary>At most one Send PCP faxes window at a time (V-T65 R4) —
@@ -145,28 +145,12 @@ public partial class MainWindow : Window
     private bool _allowRealClose;
 
     /// <summary>
-    /// The currently-open data-entry popup, if any — at most one can be
-    /// open at a time. MSG893 item 2 changed ShowDataEntryPopup to
-    /// actively enforce that (re-activate/re-focus this instance instead
-    /// of opening a second one) rather than merely tracking it; see that
-    /// method's doc comment. Also lets MainWindow explicitly close it on
-    /// sign-out/window-close (see MainWindow_OnClosed and
-    /// LogoutButton_OnClick) now that it's no longer an owned window (see
-    /// ShowDataEntryPopup's doc comment on removing Owner=this) — without
-    /// this, the popup would survive past logout, left bound to a
-    /// DataEntryPopupViewModel/IVaccineApiService whose bearer token is
-    /// now stale (calls would just start 401ing). Cleared via the popup's
-    /// own Closed event so a user closing it normally doesn't leave a
-    /// stale reference or cause a double-Close.
-    /// </summary>
-    private DataEntryPopupWindow? _openDataEntryPopup;
-
-    /// <summary>
     /// The currently-open macro-codes popup, if any — same "at most one at
-    /// a time, re-activate rather than stack" rule as _openDataEntryPopup
-    /// above (see ShowMacroCodesPopup), and same reason MainWindow needs
-    /// to explicitly close it on sign-out/window-close (MainWindow_OnClosed):
-    /// it's not an owned window, so nothing else would clean it up.
+    /// a time, re-activate rather than stack" rule every popup in this
+    /// class follows (see ShowMacroCodesPopup), and same reason MainWindow
+    /// needs to explicitly close it on sign-out/window-close
+    /// (MainWindow_OnClosed): it's not an owned window, so nothing else
+    /// would clean it up.
     /// </summary>
     private MacroCodesWindow? _openMacroCodesPopup;
 
@@ -600,12 +584,9 @@ public partial class MainWindow : Window
         // Alt+F4, or the tray's Exit — both only reach here now via
         // _allowRealClose) and Sign out (LogoutButton_OnClick/tray Sign
         // out -> App.xaml.cs's LoggedOut handler calls mainWindow.Close(),
-        // which raises this same Closed event) — see _openDataEntryPopup's
+        // which raises this same Closed event) — see _openMacroCodesPopup's
         // doc comment for why an orphaned popup is a real problem, not
         // just cosmetic.
-        _openDataEntryPopup?.Close();
-        _openDataEntryPopup = null;
-
         _openMacroCodesPopup?.Close();
         _openMacroCodesPopup = null;
 
@@ -806,45 +787,53 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var vaccines = await _vaccineApiService.GetVaccinesAsync(cts.Token);
-            var vaccine = MacroCodeVaccineResolver.FindByShortCode(vaccines, parsed.Value.ShortCode);
-            if (vaccine is null)
-            {
-                AppFileLog.Log($"[VaccineEntry] FAILED — no vaccine on file with short code \"{parsed.Value.ShortCode}\".");
-                return;
-            }
-
-            var physician = await _vaccineApiService.ResolvePhysicianAsync(vaccine.Id, ageYears, cts.Token);
-            if (physician is null)
-            {
-                AppFileLog.Log($"[VaccineEntry] FAILED — no protocol physician configured for {vaccine.Name} at age {ageYears}.");
-                return;
-            }
-
-            var quantity = VaccineEntryDefaults.ResolveQuantity(vaccine).Value;
-            var directions = VaccineEntryDefaults.ResolveDirections(vaccine).Value;
-            var hasLot = !string.IsNullOrWhiteSpace(parsed.Value.LotNumber) && !string.IsNullOrWhiteSpace(parsed.Value.ExpirationMacroFormat);
-
-            var payload = new VaccineEntryPayload(
-                vaccine.ShortCode, parsed.Value.LotNumber, parsed.Value.ExpirationMacroFormat, AdminSiteDisplayText: "",
-                Ndc: vaccine.Ndc ?? "",
-                PhysicianAlternateId: physician.AlternateId,
-                SkipLotAndExpiration: !hasLot,
-                Quantity: quantity,
-                Directions: directions,
-                VaccineName: vaccine.Name);
-
-            var dryRun = !PioneerRxPresence.IsPresent();
-            var context = new PioneerEntryStepContext(payload, dryRun, message => LogVaccineEntryStep(message))
-            {
-                RequestTextPrompt = (title, message, allowSkip) => TextEntryPromptWindow.ShowAndGetResult(title, message, allowSkip, this),
-                SaveQuantityAsync = q => SaveVaccineEntryFieldAsync(() => _vaccineApiService.UpdateVaccineQuantityAsync(vaccine.Id, q)),
-                SaveDirectionsAsync = d => SaveVaccineEntryFieldAsync(() => _vaccineApiService.UpdateVaccineDirectionsAsync(vaccine.Id, d)),
-            };
-
             PioneerEntrySequenceResult? result = null;
             try
             {
+                // REVIEWER FIX (non-blocking, V-T41 R5): widened to cover
+                // GetVaccinesAsync/ResolvePhysicianAsync too, not just the
+                // FlaUI sequence itself — a cancel that lands BEFORE
+                // PioneerEntrySequenceRunner.RunAsync ever starts (e.g. the
+                // overlay's X clicked during the initial vaccine-lookup
+                // round trip) now also logs "Halted by user" instead of
+                // falling through to the generic catch below and logging a
+                // raw exception dump for what was really just a cancel.
+                var vaccines = await _vaccineApiService.GetVaccinesAsync(cts.Token);
+                var vaccine = MacroCodeVaccineResolver.FindByShortCode(vaccines, parsed.Value.ShortCode);
+                if (vaccine is null)
+                {
+                    AppFileLog.Log($"[VaccineEntry] FAILED — no vaccine on file with short code \"{parsed.Value.ShortCode}\".");
+                    return;
+                }
+
+                var physician = await _vaccineApiService.ResolvePhysicianAsync(vaccine.Id, ageYears, cts.Token);
+                if (physician is null)
+                {
+                    AppFileLog.Log($"[VaccineEntry] FAILED — no protocol physician configured for {vaccine.Name} at age {ageYears}.");
+                    return;
+                }
+
+                var quantity = VaccineEntryDefaults.ResolveQuantity(vaccine).Value;
+                var directions = VaccineEntryDefaults.ResolveDirections(vaccine).Value;
+                var hasLot = !string.IsNullOrWhiteSpace(parsed.Value.LotNumber) && !string.IsNullOrWhiteSpace(parsed.Value.ExpirationMacroFormat);
+
+                var payload = new VaccineEntryPayload(
+                    vaccine.ShortCode, parsed.Value.LotNumber, parsed.Value.ExpirationMacroFormat, AdminSiteDisplayText: "",
+                    Ndc: vaccine.Ndc ?? "",
+                    PhysicianAlternateId: physician.AlternateId,
+                    SkipLotAndExpiration: !hasLot,
+                    Quantity: quantity,
+                    Directions: directions,
+                    VaccineName: vaccine.Name);
+
+                var dryRun = !PioneerRxPresence.IsPresent();
+                var context = new PioneerEntryStepContext(payload, dryRun, message => LogVaccineEntryStep(message))
+                {
+                    RequestTextPrompt = (title, message, allowSkip) => TextEntryPromptWindow.ShowAndGetResult(title, message, allowSkip, this),
+                    SaveQuantityAsync = q => SaveVaccineEntryFieldAsync(() => _vaccineApiService.UpdateVaccineQuantityAsync(vaccine.Id, q)),
+                    SaveDirectionsAsync = d => SaveVaccineEntryFieldAsync(() => _vaccineApiService.UpdateVaccineDirectionsAsync(vaccine.Id, d)),
+                };
+
                 result = await PioneerEntrySequenceRunner.RunAsync(_pioneerEntrySequence, context, cts.Token);
             }
             catch (OperationCanceledException)

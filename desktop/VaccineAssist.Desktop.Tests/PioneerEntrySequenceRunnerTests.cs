@@ -119,6 +119,42 @@ public class PioneerEntrySequenceRunnerTests
         Assert.False(second.WasExecuted); // never reached -- cancellation was observed before it could start
     }
 
+    /// <summary>
+    /// REVIEWER FIX (REQUEST_CHANGES, V-T41 R5): the REALISTIC shape of a
+    /// Ctrl+Keypad 7 cancel is the overlay's X firing WHILE a step is
+    /// mid-poll (QuickSearchFieldEntry.WaitForFieldAsync/TypeAndConfirmAsync's
+    /// own Task.Delay(interval, cancellationToken)) — that throws
+    /// OperationCanceledException FROM WITHIN step.ExecuteAsync, not
+    /// between steps. Before RunOneStepAsync's dedicated
+    /// `catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)`
+    /// clause existed, its blanket `catch (Exception ex)` swallowed this
+    /// into an ordinary "FAILED — Unexpected error: The operation was
+    /// canceled." step result — RunAsync would then return NORMALLY
+    /// (Success: false, no exception thrown at all), which this test would
+    /// catch: Assert.ThrowsAsync below would fail with "expected
+    /// OperationCanceledException, no exception was thrown."
+    /// CancelingThrowingStep simulates that exact shape — cancels `cts`
+    /// AND throws OperationCanceledException itself, the same way a real
+    /// step's own cancelled Task.Delay would.
+    /// </summary>
+    [Fact]
+    public async Task CancellingMidStepThrowsInsteadOfBeingSwallowedAsAFailure()
+    {
+        var log = new List<string>();
+        var context = MakeContext(dryRun: false, log);
+        using var cts = new CancellationTokenSource();
+        var first = new CancelingThrowingStep("one", cts);
+        var second = new FakeStep("two", success: true);
+        var sequence = new FakeSequence(first, second);
+
+        await Assert.ThrowsAsync<System.OperationCanceledException>(
+            () => PioneerEntrySequenceRunner.RunAsync(sequence, context, cts.Token));
+
+        Assert.True(first.WasExecuted);
+        Assert.False(second.WasExecuted); // never reached
+        Assert.Contains(log, line => line.Contains("cancelled by user mid-step"));
+    }
+
     private static IEnumerable<string> ExecutedStepNames(FakeSequence sequence)
     {
         foreach (var step in sequence.Steps)
@@ -180,6 +216,31 @@ public class PioneerEntrySequenceRunnerTests
             WasExecuted = true;
             _cts.Cancel();
             return Task.FromResult(new PioneerEntryStepResult(Name, Success: true, context.DryRun, "ok"));
+        }
+    }
+
+    /// <summary>Simulates the REAL shape of a mid-step cancel: cancels `cts`
+    /// AND throws OperationCanceledException from inside ExecuteAsync
+    /// itself (exactly what a real step's own cancelled Task.Delay(...,
+    /// cancellationToken) would do) — see
+    /// CancellingMidStepThrowsInsteadOfBeingSwallowedAsAFailure.</summary>
+    private sealed class CancelingThrowingStep : IPioneerEntryStep
+    {
+        private readonly CancellationTokenSource _cts;
+        public CancelingThrowingStep(string name, CancellationTokenSource cts)
+        {
+            Name = name;
+            _cts = cts;
+        }
+
+        public string Name { get; }
+        public bool WasExecuted { get; private set; }
+
+        public Task<PioneerEntryStepResult> ExecuteAsync(PioneerEntryStepContext context, CancellationToken cancellationToken = default)
+        {
+            WasExecuted = true;
+            _cts.Cancel();
+            throw new System.OperationCanceledException(cancellationToken);
         }
     }
 
