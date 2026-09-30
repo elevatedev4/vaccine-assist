@@ -194,7 +194,22 @@ public class DataEntryMacroFidelityTests
         static string StripTiming(string line) =>
             System.Text.RegularExpressions.Regex.Replace(line, @"\s*\(took \d+ms\)", "");
 
-        Assert.Equal(fullLog.Select(StripTiming), singleLog.Select(StripTiming));
+        // REVIEW FIX (V-T41 R7, CI failure on 6edf1f7): RunAsync alone also
+        // logs a trailing "Sequence total (took Nms) — N step(s) ran." line
+        // after the loop (PioneerEntrySequenceRunner.cs's timing
+        // instrumentation) — RunSingleStepAsync has no such concept (it
+        // runs exactly one step, not a sequence), so the two logs are no
+        // longer the same SHAPE overall. That total line is deliberately
+        // NOT bracket-prefixed (see its own comment in
+        // PioneerEntrySequenceRunner.cs), so filtering to per-step lines
+        // (every real step line starts with "[StepName] ") restores an
+        // apples-to-apples comparison without touching the live total line
+        // this test isn't about.
+        static bool IsPerStepLine(string line) => line.StartsWith("[", System.StringComparison.Ordinal);
+
+        Assert.Equal(
+            fullLog.Where(IsPerStepLine).Select(StripTiming),
+            singleLog.Where(IsPerStepLine).Select(StripTiming));
     }
 
     // ---- Models/VaccineEntryDefaults (quantity/directions defaults, V-T41 item 3) ----
