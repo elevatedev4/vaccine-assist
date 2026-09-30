@@ -11,6 +11,7 @@ function view(overrides: Partial<ProductView> & { productKey: string; vaccineIds
   return {
     displayName: overrides.productKey,
     ndc: null,
+    altNdcs: [],
     ndcSource: null,
     packageSize: null,
     group: "Other",

@@ -9,6 +9,7 @@ function view(overrides: Partial<ProductView>): ProductView {
     active: true,
     displayName: "Test Vaccine",
     ndc: null,
+    altNdcs: [],
     ndcSource: null,
     packageSize: null,
     group: "Other",

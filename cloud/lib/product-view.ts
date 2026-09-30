@@ -80,6 +80,11 @@ export type ProductView = ProductViewFields & {
   vaccineIds: string[];
   /** true if ANY dose row in the group is active. */
   active: boolean;
+  /** Additional NDC(s) beyond `ndc` when this product's dose rows carry
+   * mismatched NDCs (see lib/lots-grouping.ts's LotsProductGroup.altNdcs
+   * — the Shingrix case). Empty for the normal one-NDC-per-product
+   * case. Ordering doesn't read this field; only /lots displays it. */
+  altNdcs: string[];
 };
 
 /**
@@ -123,6 +128,7 @@ export function buildProductViews(vaccines: readonly ProductViewVaccine[]): Prod
     productKey: group.key,
     vaccineIds: group.vaccineIds,
     active: group.active,
+    altNdcs: group.altNdcs,
     ...deriveProductViewFields(group.name, group.ndc),
   }));
 }

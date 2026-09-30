@@ -190,6 +190,10 @@ const styles = {
     textOverflow: "ellipsis" as const,
   },
   savedText: { color: "#1a7f37", fontSize: "0.8rem", transition: "opacity 300ms ease-out" },
+  // V-T lots Shingrix fix: a product whose dose rows carry more than one
+  // distinct NDC shows the extra one(s) here, smaller/muted so the
+  // primary NDC still reads first.
+  altNdc: { color: "#555", fontSize: "0.75rem" },
   statusError: { color: "#b00020", fontSize: "0.75rem" },
   // V-lots-row-status: the trailing status column's idle-state note text
   // for a row with no lot on file, or a lot but no expiration date
@@ -1228,7 +1232,12 @@ export default function LotsPage() {
     return (
       <tr key={view.productKey} style={rowStyle}>
         <td style={styles.td}>{vaccineDisplayName(view.displayName)}</td>
-        <td style={styles.td}>{formatNdcDashed(view.ndc) || "—"}</td>
+        <td style={styles.td}>
+          {formatNdcDashed(view.ndc) || "—"}
+          {view.altNdcs.length > 0 && (
+            <span style={styles.altNdc}> / {view.altNdcs.map((ndc) => formatNdcDashed(ndc)).join(", ")}</span>
+          )}
+        </td>
         <td style={styles.tdRight}>{view.packageSize ?? "—"}</td>
         <td style={styles.td}>
           <input

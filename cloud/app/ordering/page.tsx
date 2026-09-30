@@ -211,7 +211,15 @@ const orderedTodayBadgeBase: CSSProperties = {
 };
 
 const styles = {
-  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1000 },
+  // V-T ordering-row-height (Will, 5:57pm/8:22pm: "Make the table wider
+  // so that each row only takes up one row not two rows") — 1000px left
+  // no room for the "To order" table's full row (name + NDC button + BOH
+  // + target + order qty + "(N left)" + Ordered-today input + badge) on
+  // one line, so long rows wrapped onto a second line. Widened to 1400;
+  // every data cell below also gets whiteSpace:nowrap so a cell never
+  // wraps internally even if the table ends up wider than the viewport
+  // (a horizontal scrollbar beats a silently-taller row).
+  main: { fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: 1400 },
   toolbar: { display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" as const, marginBottom: "0.5rem" },
   button: { padding: "0.5rem 1rem" },
   link: { fontSize: "0.85rem" },
@@ -250,11 +258,25 @@ const styles = {
   toOrderTable: { borderCollapse: "collapse" as const, width: "fit-content" as const, fontSize: "16px", lineHeight: 1.3 },
   toOrderTh: { textAlign: "left" as const, padding: "10px 14px", borderBottom: "2px solid #bbb", whiteSpace: "nowrap" as const, fontWeight: 700 },
   toOrderThRight: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "2px solid #bbb", whiteSpace: "nowrap" as const, fontWeight: 700 },
-  toOrderTd: { textAlign: "left" as const, padding: "10px 14px", borderBottom: "1px solid #eee" },
-  toOrderTdRight: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "1px solid #eee" },
+  // whiteSpace:nowrap (V-T ordering-row-height) — headers already had
+  // this; body cells didn't, which is what let a row wrap onto two lines.
+  toOrderTd: { textAlign: "left" as const, padding: "10px 14px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" as const },
+  toOrderTdRight: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" as const },
   // Order qty (pkg) is the number staff actually act on — bold per
   // Will's brief so it can't be skimmed past.
-  toOrderTdOrderQty: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "1px solid #eee", fontWeight: 700 },
+  toOrderTdOrderQty: { textAlign: "right" as const, padding: "10px 14px", borderBottom: "1px solid #eee", fontWeight: 700, whiteSpace: "nowrap" as const },
+  // Product-name cell (V-T ordering-row-height): ellipsize a long name
+  // instead of letting it force the row to wrap or the table to blow out
+  // past a reasonable width — full name always available via `title`.
+  toOrderTdName: {
+    textAlign: "left" as const,
+    padding: "10px 14px",
+    borderBottom: "1px solid #eee",
+    whiteSpace: "nowrap" as const,
+    overflow: "hidden" as const,
+    textOverflow: "ellipsis" as const,
+    maxWidth: 320,
+  },
   // Deemphasized second line under a "To order" header's main label
   // (V-ordering-header-sublabels, Will 2026-09-13: "Add '(doses)' to BOH
   // and Target on a second row, deemphasized, same for order qty
@@ -324,20 +346,35 @@ const styles = {
   table: { borderCollapse: "collapse" as const, width: "100%", fontSize: "13px", lineHeight: 1.2, marginTop: "0.75rem" },
   th: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
   thRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
-  td: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
-  tdRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee" },
+  // whiteSpace:nowrap (V-T ordering-row-height, Will 5:57pm/8:22pm: "Make
+  // the table wider so that each row only takes up one row not two
+  // rows") — body cells lacked this while headers had it, so a cell
+  // (usually the product name) could wrap and make the whole row taller.
+  td: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" as const },
+  tdRight: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" as const },
+  // Product-name cell in the compact "All vaccines" table — same
+  // ellipsize-with-tooltip treatment as toOrderTdName above.
+  tdName: {
+    textAlign: "left" as const,
+    padding: "2px 6px",
+    borderBottom: "1px solid #eee",
+    whiteSpace: "nowrap" as const,
+    overflow: "hidden" as const,
+    textOverflow: "ellipsis" as const,
+    maxWidth: 260,
+  },
   // Surplus column (V-ordering-surplus, Will 2026-09-11): BOH minus the
   // row's selected target — green when there's extra stock, red when
   // short, neutral (inherited color) exactly at target.
-  tdRightSurplusPositive: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", color: "#0a7d27" },
-  tdRightSurplusNegative: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", color: "#b00020" },
+  tdRightSurplusPositive: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", color: "#0a7d27", whiteSpace: "nowrap" as const },
+  tdRightSurplusNegative: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", color: "#b00020", whiteSpace: "nowrap" as const },
   // Order-quantity cells (Order (doses) / Order (pkg)) for any row with
   // something to order — light green fill + bold so a nonzero order can't
   // be scrolled past unnoticed. Used ONLY where the row itself has no
   // other highlight (the inactive-vaccines table below) — see
   // tdRightOrderDueBold for the active table, where the whole row is
   // already highlighted (V-ordering-row-highlight-fix, round6).
-  tdRightOrderDue: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", background: "#e6f4ea", fontWeight: 700 },
+  tdRightOrderDue: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", background: "#e6f4ea", fontWeight: 700, whiteSpace: "nowrap" as const },
   // Same emphasis as tdRightOrderDue (bold, so a nonzero order still
   // can't be scrolled past) but with NO background of its own
   // (V-ordering-row-highlight-fix, Will round6, verbatim: "Make the whole
@@ -347,7 +384,7 @@ const styles = {
   // of style order), so the last column stayed green while the rest of
   // the row went yellow. Used for the Order (doses)/Order (pkg) cells in
   // the "All vaccines" table, whose <tr> already carries trOrderDue.
-  tdRightOrderDueBold: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", fontWeight: 700 },
+  tdRightOrderDueBold: { textAlign: "right" as const, padding: "2px 6px", borderBottom: "1px solid #eee", fontWeight: 700, whiteSpace: "nowrap" as const },
   // Whole-row highlight for any "All vaccines" product row with a
   // nonzero computed order (V-ordering-header-sublabels, Will
   // 2026-09-13: "highlight the entire row... to indicate action is
@@ -1047,7 +1084,9 @@ export default function OrderingPage() {
 
     return (
       <tr key={row.key} style={orderedTodayRowStyle(state)} title={orderedTodayRowTitle(state, row.remaining)}>
-        <td style={styles.toOrderTd}>{vaccineDisplayName(row.displayName)}</td>
+        <td style={styles.toOrderTdName} title={vaccineDisplayName(row.displayName)}>
+          {vaccineDisplayName(row.displayName)}
+        </td>
         <td style={styles.toOrderTd}>
           <button
             type="button"
@@ -1332,7 +1371,9 @@ export default function OrderingPage() {
                   const rowStyle = orderedTodayRowStyle(state) ?? (row.order > 0 ? styles.trOrderDue : undefined);
                   return (
                     <tr key={row.key} style={rowStyle} title={orderedTodayRowTitle(state, remaining)}>
-                      <td style={{ ...styles.td, paddingLeft: "1.5rem" }}>{vaccineDisplayName(row.displayName)}</td>
+                      <td style={{ ...styles.tdName, paddingLeft: "1.5rem" }} title={vaccineDisplayName(row.displayName)}>
+                        {vaccineDisplayName(row.displayName)}
+                      </td>
                       <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
@@ -1404,7 +1445,9 @@ export default function OrderingPage() {
                   const surplus = surplusCell(row);
                   return (
                     <tr key={row.key}>
-                      <td style={styles.td}>{vaccineDisplayName(row.displayName)}</td>
+                      <td style={styles.tdName} title={vaccineDisplayName(row.displayName)}>
+                        {vaccineDisplayName(row.displayName)}
+                      </td>
                       <td style={styles.td}>{formatNdcDashed(row.displayNdc) || "—"}</td>
                       <td style={styles.td}>{row.unitSize ?? "—"}</td>
                       <td style={styles.tdRight}>{row.dosesPerPackage ?? "—"}</td>
