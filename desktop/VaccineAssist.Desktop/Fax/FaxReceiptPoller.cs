@@ -81,6 +81,21 @@ public sealed class FaxReceiptPoller
             entry.LastCheckedAtUtc = DateTime.UtcNow;
             changed = true;
 
+            // V-T65 R7 (Will, verbatim, 2026-09-30: "It still stays on 'in
+            // process' ... never reports back a successful fax. Need to
+            // fix that with Notifyre."): one log line per poll result —
+            // ledger entry id (not patient data), the vendor's own raw
+            // status text, and what this mapped it to — so a stuck entry
+            // is diagnosable from app.log alone (was it never found?
+            // found but unmapped? mapped but never terminal?) instead of
+            // only showing up as "still InProcess" in the UI. No PHI:
+            // entry.Id is a random guid, FaxId is Notifyre's own
+            // identifier, RawStatus is vendor delivery-status text.
+            AppFileLog.Log(
+                $"[FaxReceiptPoller] poll {entry.Id} (faxId={entry.FaxId}) — " +
+                $"success={result.Success} raw=\"{result.RawStatus ?? "(none)"}\" mapped={result.Status}" +
+                (result.Success ? "" : $" error=\"{result.ErrorMessage}\""));
+
             if (!result.Success)
             {
                 // A failed STATUS CHECK (network hiccup, vendor 5xx after
@@ -88,7 +103,6 @@ public sealed class FaxReceiptPoller
                 // leave the entry Queued/InProcess and try again next
                 // pass rather than marking it Failed on a check we
                 // couldn't even complete.
-                AppFileLog.Log($"[FaxReceiptPoller] status check failed for {entry.Id}: {result.ErrorMessage}");
                 continue;
             }
 

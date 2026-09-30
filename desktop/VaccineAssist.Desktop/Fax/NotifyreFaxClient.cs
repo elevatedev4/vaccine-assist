@@ -27,12 +27,20 @@ namespace VaccineAssist.Desktop.Fax;
 /// 1. There is NO documented "get one sent fax by id" endpoint (no
 ///    GET /fax/send/{id}) — GET /fax/send is a LIST endpoint only
 ///    (StatusType/FromDate/ToDate/Sort/Limit/Skip filters, no id filter).
-///    GetStatusAsync below lists the most recent faxes (Sort=desc,
-///    Limit=100) and matches the id client-side. Good enough for this
-///    app's polling cadence (FaxReceiptPoller only checks recently-sent
-///    faxes) but will report "not found" for a fax that has aged out of
-///    the most-recent-100 window — flagged here for whoever revisits this
-///    if that ever turns out to matter.
+///    Re-confirmed V-T65 R7 (2026-09-30) against GoLogic's official
+///    Notifyre .NET SDK source (github.com/GoLogic-Group/
+///    notifyre-dotnet-sdk — FaxSendService.cs's FaxService has only
+///    ListSentFaxesAsync for this, same query params, still no id filter)
+///    since Will's report that faxes never resolve made it worth
+///    double-checking rather than trusting the 2026-09-22 docs read alone.
+///    GetStatusAsync lists sent faxes (Sort=desc, Limit=100 per page,
+///    explicit FromDate/ToDate covering FaxPollSchedule's whole poll
+///    window) and matches the id client-side, paging past the first 100
+///    (Skip) until it's checked MaxStatusPages pages or Notifyre's own
+///    Total says there's nothing left — see GetStatusAsync's own doc
+///    comment for why R7 added the date window and paging (R5/R6 left
+///    this exactly as R1 wrote it: a single Limit=100 call with no date
+///    filter at all, which is what let a fax silently age out of scope).
 /// 2. Notifyre documents two different fax-status vocabularies that don't
 ///    line up: the top-level "Status Codes" reference page lists queued/
 ///    processing/sending/delivered/receiving/no-answer/busy/failed/
@@ -52,6 +60,31 @@ namespace VaccineAssist.Desktop.Fax;
 public sealed class NotifyreFaxClient : IFaxClient
 {
     private const string BaseUrl = "https://api.notifyre.com";
+
+    /// <summary>V-T65 R7 (Will, verbatim, 2026-09-30: "It still stays on
+    /// 'in process' though and never reports back a successful fax. Need
+    /// to fix that with Notifyre."). Confirmed against GoLogic's own
+    /// official Notifyre .NET SDK source (github.com/GoLogic-Group/
+    /// notifyre-dotnet-sdk, FaxSendService.cs) — its FaxService has no
+    /// "get one sent fax by id" method either, only ListSentFaxesAsync
+    /// (GET /fax/send, StatusType/FromDate/ToDate/Search/Sort/Limit/Skip —
+    /// still no id filter). So GetStatusAsync below still has to list+
+    /// match client-side (see this class's own doc comment, point 1) —
+    /// what changes here is making that list-and-match actually reliable:
+    /// an explicit FromDate/ToDate window (this class's original
+    /// implementation sent neither, leaving the server's own undefined
+    /// default date range to decide whether a just-sent fax is even in
+    /// scope) plus paging past the first page via Skip instead of trusting
+    /// a single Limit=100 call to always contain our fax.</summary>
+    private const int StatusPageSize = 100;
+
+    /// <summary>Hard cap on how many pages GetStatusAsync will fetch
+    /// hunting for one fax id — 5 * StatusPageSize = 500 most-recent faxes
+    /// checked before giving up on THIS poll pass (FaxReceiptPoller tries
+    /// again next cadence tick regardless). Bounds the cost of a single
+    /// status check even against an account/date-window with an unbounded
+    /// Total, or a server that reports a Total that never shrinks.</summary>
+    private const int MaxStatusPages = 5;
 
     private static readonly JsonSerializerOptions ResponseJsonOptions = new() { PropertyNameCaseInsensitive = true };
 
@@ -137,18 +170,53 @@ public sealed class NotifyreFaxClient : IFaxClient
             return new FaxStatusResult(false, FaxSendStatus.Failed, "Notifyre API token not configured.", null);
         }
 
-        string body;
-        try
+        // Window comfortably covers FaxPollSchedule.GiveUpAfter (2h) — the
+        // oldest a still-pending entry can possibly be when this runs —
+        // plus 30 min slack for clock skew between this machine and
+        // Notifyre's server, and 5 min forward for a fax queued between
+        // building this timestamp and the request landing.
+        var nowUtc = DateTime.UtcNow;
+        var fromDate = ToUnixSeconds(nowUtc - FaxPollSchedule.GiveUpAfter - TimeSpan.FromMinutes(30));
+        var toDate = ToUnixSeconds(nowUtc + TimeSpan.FromMinutes(5));
+
+        for (var page = 0; page < MaxStatusPages; page++)
         {
-            body = await SendWithRetryAsync(() => BuildRequest(HttpMethod.Get, "/fax/send?sort=desc&limit=100", null), ct);
-        }
-        catch (Exception ex)
-        {
-            return new FaxStatusResult(false, FaxSendStatus.Failed, $"Couldn't reach Notifyre: {ex.Message}", null);
+            var skip = page * StatusPageSize;
+            var path = $"/fax/send?sort=desc&limit={StatusPageSize}&skip={skip}&fromdate={fromDate}&todate={toDate}";
+
+            string body;
+            try
+            {
+                body = await SendWithRetryAsync(() => BuildRequest(HttpMethod.Get, path, null), ct);
+            }
+            catch (Exception ex)
+            {
+                return new FaxStatusResult(false, FaxSendStatus.Failed, $"Couldn't reach Notifyre: {ex.Message}", null);
+            }
+
+            if (!TryParseStatusPage(body, out var faxes, out var total, out var envelopeError))
+            {
+                return new FaxStatusResult(false, FaxSendStatus.Failed, envelopeError, null);
+            }
+
+            var match = faxes.FirstOrDefault(f => string.Equals(f.ID, faxId, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+            {
+                return BuildStatusResult(match);
+            }
+
+            var seenSoFar = skip + faxes.Count;
+            if (faxes.Count == 0 || seenSoFar >= total)
+            {
+                break; // Exhausted everything Notifyre has in this window — no point paging further.
+            }
         }
 
-        return ParseStatusResponse(body, faxId);
+        return new FaxStatusResult(false, FaxSendStatus.Failed,
+            $"Fax {faxId} wasn't found in Notifyre's sent faxes (checked up to {MaxStatusPages * StatusPageSize} most recent, within the last ~2.5h).", null);
     }
+
+    private static long ToUnixSeconds(DateTime utc) => new DateTimeOffset(utc, TimeSpan.Zero).ToUnixTimeSeconds();
 
     /// <summary>Header label used for each NotifyreAuthMode in log lines
     /// and in the Summary/ErrorMessage text shown to Will — kept in one
@@ -517,37 +585,55 @@ public sealed class NotifyreFaxClient : IFaxClient
         }
     }
 
-    private static FaxStatusResult ParseStatusResponse(string body, string faxId)
+    /// <summary>Parses one page of the List Sent Faxes response. Returns
+    /// false (with <paramref name="envelopeError"/> set) only for an
+    /// envelope-level failure (Success:false, or the JSON itself didn't
+    /// parse) — an empty-but-successful page (the fax just isn't on THIS
+    /// page) returns true with an empty list, which GetStatusAsync's
+    /// paging loop treats as "keep looking," not an error.</summary>
+    private static bool TryParseStatusPage(string body, out List<SentFaxItem> faxes, out int total, out string? envelopeError)
     {
         try
         {
             var envelope = JsonSerializer.Deserialize<NotifyreEnvelope<ListFaxesPayload>>(body, ResponseJsonOptions);
             if (envelope is null || !envelope.Success)
             {
-                return new FaxStatusResult(false, FaxSendStatus.Failed, FirstMessage(envelope) ?? "Notifyre reported failure with no message.", null);
+                faxes = new List<SentFaxItem>();
+                total = 0;
+                envelopeError = FirstMessage(envelope) ?? "Notifyre reported failure with no message.";
+                return false;
             }
 
-            var match = envelope.Payload?.Faxes?.FirstOrDefault(f => string.Equals(f.ID, faxId, StringComparison.OrdinalIgnoreCase));
-            if (match is null)
-            {
-                return new FaxStatusResult(false, FaxSendStatus.Failed, $"Fax {faxId} wasn't found in Notifyre's most recent sent faxes.", null);
-            }
-
-            var mapped = MapStatus(match.Status);
-            if (mapped is null)
-            {
-                return new FaxStatusResult(false, FaxSendStatus.Failed, $"Unrecognized Notifyre status: {match.Status}", match.Pages);
-            }
-
-            var errorMessage = mapped == FaxSendStatus.Failed
-                ? (string.IsNullOrWhiteSpace(match.StatusMessage) ? "Notifyre reported the fax as failed." : match.StatusMessage)
-                : null;
-            return new FaxStatusResult(true, mapped.Value, errorMessage, match.Pages);
+            faxes = envelope.Payload?.Faxes ?? new List<SentFaxItem>();
+            total = envelope.Payload?.Total ?? faxes.Count;
+            envelopeError = null;
+            return true;
         }
         catch (Exception ex)
         {
-            return new FaxStatusResult(false, FaxSendStatus.Failed, $"Couldn't parse Notifyre response: {ex.Message}", null);
+            faxes = new List<SentFaxItem>();
+            total = 0;
+            envelopeError = $"Couldn't parse Notifyre response: {ex.Message}";
+            return false;
         }
+    }
+
+    /// <summary>Maps one matched SentFaxItem onto FaxStatusResult —
+    /// RawStatus always carries the vendor's own text verbatim (even on an
+    /// unrecognized value) so FaxReceiptPoller can log exactly what
+    /// Notifyre said alongside whatever this mapped it to.</summary>
+    private static FaxStatusResult BuildStatusResult(SentFaxItem match)
+    {
+        var mapped = MapStatus(match.Status);
+        if (mapped is null)
+        {
+            return new FaxStatusResult(false, FaxSendStatus.Failed, $"Unrecognized Notifyre status: {match.Status}", match.Pages, match.Status);
+        }
+
+        var errorMessage = mapped == FaxSendStatus.Failed
+            ? (string.IsNullOrWhiteSpace(match.StatusMessage) ? "Notifyre reported the fax as failed." : match.StatusMessage)
+            : null;
+        return new FaxStatusResult(true, mapped.Value, errorMessage, match.Pages, match.Status);
     }
 
     /// <summary>Maps every fax-status string documented anywhere on

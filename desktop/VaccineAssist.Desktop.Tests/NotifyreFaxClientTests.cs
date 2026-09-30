@@ -418,6 +418,107 @@ public class NotifyreFaxClientTests
     }
 
     [Fact]
+    public async Task GetStatusAsyncSendsAnExplicitFromDateAndToDateWindow()
+    {
+        // V-T65 R7 (Will, 2026-09-30: "never reports back a successful
+        // fax") — the original implementation sent no date filter at all,
+        // leaving whatever undocumented default the server applies to
+        // decide whether a just-sent fax is even in scope. Every request
+        // must now carry an explicit window.
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, "{\"Success\":true,\"Payload\":{\"Faxes\":[],\"Total\":0}}");
+        var client = MakeClient(handler);
+
+        await client.GetStatusAsync("fax-123");
+
+        var url = handler.Requests[0].RequestUri!.ToString();
+        Assert.Contains("fromdate=", url);
+        Assert.Contains("todate=", url);
+        Assert.Contains("skip=0", url);
+        Assert.Contains("limit=100", url);
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncPagesPastTheFirstPageWhenNotFoundButMoreRemain()
+    {
+        // V-T65 R7: root cause of "stuck InProcess forever" — a fax that
+        // isn't on Notifyre's first page of 100 (sort=desc) used to be
+        // reported as permanently "not found" instead of being looked for
+        // on later pages.
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK,
+            "{\"Success\":true,\"Payload\":{\"Faxes\":[{\"ID\":\"other-1\"},{\"ID\":\"other-2\"}],\"Total\":5}}");
+        handler.EnqueueJson(HttpStatusCode.OK,
+            "{\"Success\":true,\"Payload\":{\"Faxes\":[{\"ID\":\"fax-123\",\"Status\":\"successful\"}],\"Total\":5}}");
+        var client = MakeClient(handler);
+
+        var result = await client.GetStatusAsync("fax-123");
+
+        Assert.True(result.Success);
+        Assert.Equal(FaxSendStatus.Sent, result.Status);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("skip=0", handler.Requests[0].RequestUri!.ToString());
+        Assert.Contains("skip=100", handler.Requests[1].RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncStopsPagingOnceAllResultsHaveBeenSeen()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, "{\"Success\":true,\"Payload\":{\"Faxes\":[{\"ID\":\"other-1\"}],\"Total\":1}}");
+        var client = MakeClient(handler);
+
+        var result = await client.GetStatusAsync("fax-123");
+
+        Assert.False(result.Success);
+        Assert.Contains("fax-123", result.ErrorMessage);
+        Assert.Single(handler.Requests); // Total was fully accounted for on page 1 — never asked for page 2.
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncGivesUpAfterABoundedNumberOfPagesEvenIfTotalNeverShrinks()
+    {
+        var handler = new FakeHttpMessageHandler();
+        for (var i = 0; i < 10; i++)
+        {
+            handler.EnqueueJson(HttpStatusCode.OK, "{\"Success\":true,\"Payload\":{\"Faxes\":[{\"ID\":\"other\"}],\"Total\":999999}}");
+        }
+        var client = MakeClient(handler);
+
+        var result = await client.GetStatusAsync("fax-123");
+
+        Assert.False(result.Success);
+        Assert.Equal(5, handler.Requests.Count); // MaxStatusPages — bounded, never hammers Notifyre forever.
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncSurfacesTheRawVendorStatusTextForLogging()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK,
+            "{\"Success\":true,\"Payload\":{\"Faxes\":[{\"ID\":\"fax-123\",\"Status\":\"Successful\"}],\"Total\":1}}");
+        var client = MakeClient(handler);
+
+        var result = await client.GetStatusAsync("fax-123");
+
+        Assert.Equal("Successful", result.RawStatus);
+    }
+
+    [Fact]
+    public async Task GetStatusAsyncSurfacesRawStatusEvenWhenUnrecognized()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK,
+            "{\"Success\":true,\"Payload\":{\"Faxes\":[{\"ID\":\"fax-123\",\"Status\":\"something-new\"}],\"Total\":1}}");
+        var client = MakeClient(handler);
+
+        var result = await client.GetStatusAsync("fax-123");
+
+        Assert.False(result.Success);
+        Assert.Equal("something-new", result.RawStatus);
+    }
+
+    [Fact]
     public async Task GetStatusAsyncReturnsFailureWhenIdIsNotInTheList()
     {
         var handler = new FakeHttpMessageHandler();
