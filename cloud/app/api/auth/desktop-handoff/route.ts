@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
-import {
-  DESKTOP_HANDOFF_COOKIE_NAME,
-  isTrustedDesktopRequest,
-  getRequestIp,
-  revokeOlderDesktopSessionsForSameDevice,
-} from "@/lib/desktop-handoff";
+import { DESKTOP_HANDOFF_COOKIE_NAME, isTrustedDesktopRequest } from "@/lib/desktop-handoff";
 
 /**
  * Desktop -> embedded-WebView2 session handoff (Will's brief: "Require
@@ -52,6 +47,15 @@ import {
  * the cookie this route sets is deliberately NOT httpOnly (see below).
  *
  * Never logs the tokens themselves.
+ *
+ * NO "revoke the user's other desktop sessions" cleanup any more
+ * (removed 2026-10-03): it revoked every other session of the shared
+ * pharmacy login that had a non-browser user agent and the same public
+ * IP — i.e. every OTHER WORKSTATION in the pharmacy. Each launch on one
+ * PC signed the rest out (the "sign in 1-2 times a day per workstation"
+ * bug). It existed to stop duplicate rows in Settings -> Sessions when
+ * every launch created a new session; launches now restore the stored
+ * session instead, so there is nothing left to tidy.
  */
 
 type DesktopHandoffBody = {
@@ -107,20 +111,15 @@ export async function POST(request: Request) {
     // token's own user id (from getUser() above) rejects a mismatched or
     // garbage refresh_token paired with someone else's access_token.
     //
-    // ROTATION CAVEAT (read before changing this): Supabase refresh
-    // tokens are single-use/rotating — SupabaseAuthService.
-    // TryRestoreSessionAsync's own doc comment already documents this
-    // ("Gotrue rotates the refresh token on every use, so the caller must
-    // re-persist it"). If this call DOES hit the redeem branch (an
-    // already-expired access token reaching this endpoint — not the
-    // normal path, since this always runs seconds after a fresh sign-in/
-    // silent restore), the OLD refresh_token becomes invalid and the
-    // NEWLY rotated one is known only to this server call, not propagated
-    // back to the desktop's own SessionStore. Worst case that causes is
-    // the desktop's 90-day silent restore failing on its NEXT launch
-    // (recoverable with one manual sign-in) — not a security issue, and
-    // not the common case, but a real, deliberately-accepted trade-off
-    // documented here rather than silently ignored.
+    // ROTATION (read before changing this): Supabase refresh tokens are
+    // single-use/rotating, and re-presenting a spent one revokes the whole
+    // session. The desktop therefore NEVER sends its real refresh token
+    // here (since 2026-10-03 it sends an inert placeholder — see
+    // lib/desktop-handoff.ts parseDesktopSessionMessage), and always
+    // sends an access token with plenty of life left, so setSession below
+    // never reaches its redeem branch. If it ever did (an expired access
+    // token + the placeholder), the redeem simply fails with 401 — it can
+    // no longer rotate away the desktop's real token.
     const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
       access_token,
       refresh_token,
@@ -128,17 +127,6 @@ export async function POST(request: Request) {
     if (sessionError || !sessionData.session || sessionData.session.user.id !== userData.user.id) {
       return NextResponse.json({ error: "Invalid or mismatched session." }, { status: 401 });
     }
-
-    // Duplicate-session cleanup (Will, 2026-09-16) — see
-    // revokeOlderDesktopSessionsForSameDevice's own doc comment. Never
-    // throws and never blocks/fails this handoff: a successful sign-in
-    // must always complete even if this best-effort tidy-up can't run.
-    await revokeOlderDesktopSessionsForSameDevice({
-      supabase,
-      userId: userData.user.id,
-      newSessionAccessToken: access_token,
-      requestIp: getRequestIp(request),
-    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Supabase is not configured." },

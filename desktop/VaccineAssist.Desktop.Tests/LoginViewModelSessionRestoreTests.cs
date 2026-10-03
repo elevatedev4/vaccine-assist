@@ -100,8 +100,11 @@ public class LoginViewModelSessionRestoreTests
     }
 
     [Fact]
-    public async Task TrySilentSignInReSavesRotatedTokensButKeepsTheOriginalIssuedAt()
+    public async Task TrySilentSignInPassesTheOriginalIssuedAtToTheAuthServiceAndDoesNotWriteTheStoreItself()
     {
+        // The auth service's SessionKeeper is the ONLY writer of
+        // session.json (it persists every rotation — SessionKeeperTests);
+        // the view model just hands it the stored 90-day anchor.
         var originalIssuedAt = DateTime.UtcNow.AddDays(-30);
         var session = new PersistedSession("stale-access", "refresh-token", originalIssuedAt);
         var sessionStore = new FakeSessionStore(session);
@@ -110,13 +113,37 @@ public class LoginViewModelSessionRestoreTests
         var viewModel = CreateViewModel(authService, sessionStore);
         await viewModel.TrySilentSignInAsync();
 
-        Assert.Equal(1, sessionStore.SaveCallCount);
-        Assert.NotNull(sessionStore.LastSaved);
-        Assert.Equal("fake-restored-access-token", sessionStore.LastSaved!.AccessToken);
-        Assert.Equal("fake-restored-refresh-token", sessionStore.LastSaved.RefreshToken);
-        // The 90-day clock tracks the last INTERACTIVE sign-in, not this
-        // silent restore — the original timestamp must survive unchanged.
-        Assert.Equal(originalIssuedAt, sessionStore.LastSaved.IssuedAtUtc);
+        Assert.Equal(originalIssuedAt, authService.LastRestoreIssuedAtUtc);
+        Assert.Equal(0, sessionStore.SaveCallCount);
+    }
+
+    [Fact]
+    public async Task TrySilentSignInKeepsTheStoredSessionAndSkipsAutoLoginWhenTheServiceIsUnreachable()
+    {
+        // Transient network failure != revoked session: no fallback to a
+        // password sign-in over the same dead network, the stored session
+        // stays, and the form explains what happened.
+        var session = new PersistedSession("stale-access", "refresh-token", DateTime.UtcNow.AddDays(-5));
+        var sessionStore = new FakeSessionStore(session);
+        var config = new AutoLoginConfig { Email = "pharmacy@example.test", Password = "hunter2" };
+        var authService = new FakeAuthService(AuthResult.Ok())
+        {
+            RestoreResult = AuthResult.TransientFail("Couldn't reach the sign-in service."),
+        };
+        var viewModel = CreateViewModel(authService, sessionStore, config);
+
+        var signedInRaised = false;
+        viewModel.SignedIn += (_, _) => signedInRaised = true;
+
+        await viewModel.TrySilentSignInAsync();
+
+        Assert.False(signedInRaised);
+        Assert.Equal(1, authService.TryRestoreSessionCallCount);
+        Assert.Equal(0, authService.SignInCallCount);
+        Assert.Equal(0, sessionStore.DeleteCallCount);
+        Assert.NotNull(sessionStore.Session);
+        Assert.Equal(SignInErrorMapper.NetworkOrTimeoutMessage, viewModel.ErrorMessage);
+        Assert.False(viewModel.IsBusy);
     }
 
     [Fact]
@@ -189,25 +216,22 @@ public class LoginViewModelSessionRestoreTests
     }
 
     [Fact]
-    public async Task SuccessfulSignInPersistsANewSessionWithAFreshIssuedAt()
+    public async Task SuccessfulSignInLeavesPersistingTheSessionToTheAuthService()
     {
         // Goes through TryAutoSignInAsync (fully awaitable, no ICommand
         // fire-and-forget timing to work around) since it calls the exact
         // same private SignInAsync a manual click does — see
-        // LoginViewModel.SignInCommand.
+        // LoginViewModel.SignInCommand. SessionKeeper.StartInteractiveSession
+        // (SessionKeeperTests) starts the new 90-day window and writes
+        // session.json; the view model must not write a second copy.
         var sessionStore = new FakeSessionStore();
         var authService = new FakeAuthService(AuthResult.Ok());
         var config = new AutoLoginConfig { Email = "pharmacy@example.test", Password = "hunter2" };
         var viewModel = CreateViewModel(authService, sessionStore, config);
 
-        var before = DateTime.UtcNow;
         await viewModel.TryAutoSignInAsync();
-        var after = DateTime.UtcNow;
 
-        Assert.Equal(1, sessionStore.SaveCallCount);
-        Assert.NotNull(sessionStore.LastSaved);
-        Assert.Equal("fake-token", sessionStore.LastSaved!.AccessToken);
-        Assert.Equal("fake-refresh-token", sessionStore.LastSaved.RefreshToken);
-        Assert.InRange(sessionStore.LastSaved.IssuedAtUtc, before.AddSeconds(-1), after.AddSeconds(1));
+        Assert.Equal(1, authService.SignInCallCount);
+        Assert.Equal(0, sessionStore.SaveCallCount);
     }
 }

@@ -1,8 +1,3 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { getSessionIdFromToken } from "@/lib/jwt";
-import { isDesktopUserAgent } from "@/lib/session-device-label";
-import { isMissingFunctionError } from "@/lib/schema-degradation";
-
 /**
  * Shared constant between app/api/auth/desktop-handoff/route.ts (writes
  * this cookie after validating the desktop's tokens) and
@@ -83,81 +78,33 @@ export function isTrustedDesktopRequest(request: Request): boolean {
 }
 
 /**
- * Best-effort client IP from the usual proxy header (Vercel sets
- * x-forwarded-for). Returns null rather than guessing when absent —
- * callers must treat null as "can't identify the device," never as a
- * match against another null.
+ * Web-message type the desktop app (CloudPageView.PushDesktopAccessToken ->
+ * CoreWebView2.PostWebMessageAsJson) posts into the embedded page every
+ * time it refreshes the Supabase session. Must match
+ * DesktopWebSession.PushMessageType in desktop/.../Services.
  */
-export function getRequestIp(request: Request): string | null {
-  const forwardedFor = request.headers.get("x-forwarded-for");
-  if (!forwardedFor) return null;
-  const first = forwardedFor.split(",")[0]?.trim();
-  return first || null;
-}
+export const DESKTOP_SESSION_MESSAGE_TYPE = "va-desktop-session";
 
 /**
- * Duplicate-session cleanup (Will, 2026-09-16, verbatim: "is there a way
- * to not show duplicate sessions if it's the same computer? I feel like
- * there were duplicates because there were so many listed"). Root cause:
- * the desktop app performs a brand-new Supabase sign-in (a new
- * auth.sessions row) on every launch that reaches
- * CloudPageView.PerformDesktopHandoffAsync, so the Settings -> Sessions
- * table grows one row per launch on the same workstation.
- *
- * Called right after app/api/auth/desktop-handoff/route.ts establishes
- * the NEW session: revokes this user's OTHER sessions that (a) look like
- * the desktop app (isDesktopUserAgent) and (b) share this request's IP —
- * the same (user_agent, ip) stand-in device marker
- * lib/session-grouping.ts uses to fold rows together in the UI, reused
- * here so the table actually stops growing instead of just looking
- * grouped. See that module's doc comment for why this heuristic was
- * chosen over adding a real per-machine device id: doing so needs either
- * a new auth.sessions column (a schema change, which the brief says to
- * STOP on if unavoidable) or a new desktop-sent header, and this
- * (user_agent, ip) pairing achieves the same practical result — one
- * accumulating row instead of many — for the common case (one desktop
- * app per workstation IP) without either.
- *
- * Never throws — the caller (the handoff route) must still complete a
- * successful sign-in even if this cleanup can't run at all (migration
- * 0013 not yet applied — isMissingFunctionError) or fails partway
- * through (logged, not surfaced). Skips entirely when requestIp is null:
- * without an IP there is nothing safe to match on, and matching two
- * null-ip rows against each other would revoke unrelated sessions.
+ * WHY THE DESKTOP PUSHES TOKENS (2026-10-03, "people have to sign in 1-2
+ * times a day per workstation"): Supabase refresh tokens rotate — using
+ * one invalidates it, and presenting an already-used one revokes the whole
+ * session. The desktop used to hand its REAL refresh token to this page,
+ * whose supabase-js auto-refresh timer then rotated it independently of
+ * the desktop's copy, so one of the two always ended up holding a spent
+ * token. Now the desktop keeps the only real refresh token, hands this
+ * page the access token plus an inert placeholder, and posts a fresh
+ * access token here whenever it refreshes. This parses that message;
+ * anything that isn't exactly the expected shape is ignored.
  */
-export async function revokeOlderDesktopSessionsForSameDevice(params: {
-  supabase: SupabaseClient;
-  userId: string;
-  newSessionAccessToken: string;
-  requestIp: string | null;
-}): Promise<void> {
-  const { supabase, userId, newSessionAccessToken, requestIp } = params;
-  if (!requestIp) return;
-
-  const newSessionId = getSessionIdFromToken(newSessionAccessToken);
-
-  try {
-    const { data, error } = await supabase.rpc("list_my_sessions", { uid: userId });
-    if (error) {
-      if (isMissingFunctionError(error)) return; // 0013 not applied yet — nothing to clean up
-      console.error("revokeOlderDesktopSessionsForSameDevice: list_my_sessions failed", error);
-      return;
-    }
-
-    const rows = (data ?? []) as Array<{ id: string; user_agent: string | null; ip: string | null }>;
-    const staleIds = rows
-      .filter((row) => row.id !== newSessionId)
-      .filter((row) => isDesktopUserAgent(row.user_agent))
-      .filter((row) => (row.ip ?? null) === requestIp)
-      .map((row) => row.id);
-
-    for (const staleId of staleIds) {
-      const { error: revokeError } = await supabase.rpc("revoke_my_session", { uid: userId, target_id: staleId });
-      if (revokeError) {
-        console.error("revokeOlderDesktopSessionsForSameDevice: revoke_my_session failed", revokeError);
-      }
-    }
-  } catch (err) {
-    console.error("revokeOlderDesktopSessionsForSameDevice: unexpected error", err);
-  }
+export function parseDesktopSessionMessage(
+  data: unknown
+): { access_token: string; refresh_token: string } | null {
+  if (!data || typeof data !== "object") return null;
+  const message = data as Record<string, unknown>;
+  if (message.type !== DESKTOP_SESSION_MESSAGE_TYPE) return null;
+  const { access_token, refresh_token } = message;
+  if (typeof access_token !== "string" || access_token.length < 20) return null;
+  if (typeof refresh_token !== "string" || refresh_token.length < 10) return null;
+  return { access_token, refresh_token };
 }

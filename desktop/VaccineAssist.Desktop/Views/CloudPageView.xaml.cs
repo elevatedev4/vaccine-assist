@@ -406,7 +406,7 @@ public partial class CloudPageView : UserControl
     /// cause. An outright exception still goes through AppFileLog.LogException
     /// below, which already captures the full type/message/stack chain.
     /// </summary>
-    public async Task<bool> PerformDesktopHandoffAsync(string accessToken, string refreshToken, TimeSpan timeout)
+    public async Task<bool> PerformDesktopHandoffAsync(string accessToken, TimeSpan timeout)
     {
         await EnsureInitializedAsync();
         var coreWebView2 = WebView.CoreWebView2;
@@ -426,7 +426,9 @@ public partial class CloudPageView : UserControl
 
         try
         {
-            var json = JsonSerializer.Serialize(new { access_token = accessToken, refresh_token = refreshToken });
+            // The REAL refresh token never leaves SessionKeeper — see
+            // DesktopWebSession for why the page only gets a placeholder.
+            var json = JsonSerializer.Serialize(new { access_token = accessToken, refresh_token = DesktopWebSession.PlaceholderRefreshToken });
             using var postDataStream = new MemoryStream(Encoding.UTF8.GetBytes(json));
 
             var request = coreWebView2.Environment.CreateWebResourceRequest(
@@ -490,6 +492,39 @@ public partial class CloudPageView : UserControl
         {
             AppFileLog.LogException("CloudPageView.PerformDesktopHandoffAsync", ex);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Pushes a freshly-refreshed access token into the already-loaded
+    /// page (cloud/app/desktop-handoff-bootstrap.tsx listens for the web
+    /// message and calls supabase-js setSession), so the page's session
+    /// never expires and the page never needs to refresh by itself — see
+    /// DesktopWebSession. Must be called on the UI thread. Never throws,
+    /// never logs the token; a missed push only means the page asks for a
+    /// sign-in at its next expiry.
+    /// </summary>
+    public void PushDesktopAccessToken(string accessToken)
+    {
+        try
+        {
+            var coreWebView2 = WebView.CoreWebView2;
+            if (coreWebView2 is null)
+            {
+                return;
+            }
+
+            var json = JsonSerializer.Serialize(new
+            {
+                type = DesktopWebSession.PushMessageType,
+                access_token = accessToken,
+                refresh_token = DesktopWebSession.PlaceholderRefreshToken,
+            });
+            coreWebView2.PostWebMessageAsJson(json);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("CloudPageView.PushDesktopAccessToken", ex);
         }
     }
 

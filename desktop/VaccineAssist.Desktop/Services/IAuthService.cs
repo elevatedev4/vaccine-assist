@@ -1,3 +1,5 @@
+using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace VaccineAssist.Desktop.Services;
@@ -10,29 +12,41 @@ public interface IAuthService
 {
     bool IsSignedIn { get; }
 
-    /// <summary>Current Supabase access token, or null when not signed in. Sent
-    /// as an Authorization: Bearer header by VaccineApiService.</summary>
+    /// <summary>Current Supabase access token, or null when not signed in.
+    /// A snapshot — it can be up to ~1 h old. Anything that sends it
+    /// somewhere should use GetValidAccessTokenAsync instead.</summary>
     string? AccessToken { get; }
 
-    /// <summary>Current Supabase refresh token, or null when not signed in —
-    /// the thing LoginViewModel persists (DPAPI-protected, via
-    /// ISessionStore) for the 90-day silent sign-in. Never sent as a
-    /// bearer header; only ever handed back to SetSession/TryRestoreSessionAsync.</summary>
+    /// <summary>Current Supabase refresh token, or null when not signed in.
+    /// Owned by the session keeper (which persists it, DPAPI-protected,
+    /// after every rotation) — nothing else may refresh with it, and it is
+    /// never handed to the embedded web page.</summary>
     string? RefreshToken { get; }
+
+    /// <summary>Raised after a background/on-demand refresh produced a new
+    /// access token (already persisted). Runs on a thread-pool thread.</summary>
+    event EventHandler<string>? AccessTokenRefreshed;
 
     Task<AuthResult> SignInAsync(string email, string password);
 
     /// <summary>
-    /// Restores a previously-persisted session (LoginViewModel's 90-day
-    /// silent sign-in) from a stored access/refresh token pair, forcing a
-    /// fresh access token from the refresh token regardless of whether
-    /// the stored access token still looks unexpired — see
-    /// SupabaseAuthService's implementation doc comment. On success,
-    /// AccessToken/RefreshToken are updated exactly like a normal
-    /// SignInAsync (Gotrue rotates the refresh token on every use, so the
-    /// caller must re-persist it).
+    /// The access token to send on a request: refreshed first (serialized,
+    /// persisted) if it is expired or about to be. Null when not signed
+    /// in. A transient refresh failure returns the current token.
     /// </summary>
-    Task<AuthResult> TryRestoreSessionAsync(string accessToken, string refreshToken);
+    Task<string?> GetValidAccessTokenAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Restores the persisted session (LoginViewModel's 90-day silent
+    /// sign-in) — refreshing an expired access token, retrying with
+    /// backoff when the service can't be reached. A failure with
+    /// AuthResult.IsTransient set means the saved sign-in is intact and
+    /// must NOT be treated as invalid; any other failure means the
+    /// session is definitively over (and session.json has been cleared).
+    /// <paramref name="issuedAtUtc"/> is the last INTERACTIVE sign-in —
+    /// the 90-day ceiling is measured from it.
+    /// </summary>
+    Task<AuthResult> TryRestoreSessionAsync(string accessToken, string refreshToken, DateTime issuedAtUtc);
 
     Task SignOutAsync();
 }

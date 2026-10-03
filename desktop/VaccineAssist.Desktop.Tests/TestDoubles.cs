@@ -39,6 +39,7 @@ internal sealed class FakeAuthService : IAuthService
     public int TryRestoreSessionCallCount { get; private set; }
     public string? LastRestoreAccessToken { get; private set; }
     public string? LastRestoreRefreshToken { get; private set; }
+    public DateTime? LastRestoreIssuedAtUtc { get; private set; }
 
     /// <summary>When set, the NEXT SignInAsync call returns THIS task
     /// instead of completing immediately — lets a test hold a sign-in
@@ -83,11 +84,20 @@ internal sealed class FakeAuthService : IAuthService
         return result;
     }
 
-    public Task<AuthResult> TryRestoreSessionAsync(string accessToken, string refreshToken)
+    public event EventHandler<string>? AccessTokenRefreshed;
+
+    public Task<string?> GetValidAccessTokenAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(AccessToken);
+
+    /// <summary>Test hook: simulate a background refresh.</summary>
+    public void RaiseAccessTokenRefreshed(string token) => AccessTokenRefreshed?.Invoke(this, token);
+
+    public Task<AuthResult> TryRestoreSessionAsync(string accessToken, string refreshToken, DateTime issuedAtUtc)
     {
         TryRestoreSessionCallCount++;
         LastRestoreAccessToken = accessToken;
         LastRestoreRefreshToken = refreshToken;
+        LastRestoreIssuedAtUtc = issuedAtUtc;
 
         var result = RestoreResult ?? _result;
         if (result.Success)

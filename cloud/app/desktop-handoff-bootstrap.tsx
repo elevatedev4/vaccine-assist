@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
-import { DESKTOP_HANDOFF_COOKIE_NAME } from "@/lib/desktop-handoff";
+import { DESKTOP_HANDOFF_COOKIE_NAME, parseDesktopSessionMessage } from "@/lib/desktop-handoff";
 
 /**
  * Client half of the desktop -> embedded-WebView2 session handoff — see
@@ -15,9 +15,44 @@ import { DESKTOP_HANDOFF_COOKIE_NAME } from "@/lib/desktop-handoff";
  * immediately — success or failure, and regardless of which page happened
  * to be first to mount after the redirect.
  *
+ * It also listens for the desktop's pushed session refreshes (WebView2
+ * web messages): the desktop owns the only real refresh token and posts a
+ * fresh access token here each time it refreshes — see
+ * parseDesktopSessionMessage in lib/desktop-handoff.ts for why. Outside
+ * the desktop app `window.chrome.webview` doesn't exist and this is a
+ * no-op.
+ *
  * Renders nothing. Never throws, never logs the token values themselves.
  */
+type WebViewHost = {
+  addEventListener: (type: "message", listener: (event: { data: unknown }) => void) => void;
+  removeEventListener: (type: "message", listener: (event: { data: unknown }) => void) => void;
+};
+
 export default function DesktopHandoffBootstrap() {
+  useEffect(() => {
+    const webview = (window as unknown as { chrome?: { webview?: WebViewHost } }).chrome?.webview;
+    if (!webview) return;
+
+    const onMessage = (event: { data: unknown }) => {
+      const session = parseDesktopSessionMessage(event.data);
+      if (!session) return;
+      try {
+        void getSupabaseBrowserClient()
+          .auth.setSession(session)
+          .catch(() => {
+            // A failed push just leaves the page on its previous session;
+            // the next push (or the page's own sign-in gate) recovers.
+          });
+      } catch {
+        // Supabase not configured — nothing to update.
+      }
+    };
+
+    webview.addEventListener("message", onMessage);
+    return () => webview.removeEventListener("message", onMessage);
+  }, []);
+
   useEffect(() => {
     const raw = readCookie(DESKTOP_HANDOFF_COOKIE_NAME);
     if (!raw) return;

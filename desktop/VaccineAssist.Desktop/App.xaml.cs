@@ -30,6 +30,10 @@ public partial class App : Application
     private AppSettings _settings = null!;
     private HttpClient _httpClient = null!;
     private IAuthService _authService = null!;
+    // The CloudPageView hosted by the CURRENT MainWindow (null before
+    // sign-in / after sign-out) — target of the refreshed-access-token
+    // push; see the AccessTokenRefreshed subscription in OnStartup.
+    private CloudPageView? _activeCloudPageView;
     private IVaccineApiService _vaccineApiService = null!;
     private IClipboardService _clipboardService = null!;
     private IPioneerEntryAutomation _pioneerEntryAutomation = null!;
@@ -91,7 +95,15 @@ public partial class App : Application
         // UriFormatException that ViewModels surface as ErrorMessage,
         // rather than silently hitting the wrong host.
 
-        _authService = new SupabaseAuthService(_settings);
+        // Own HttpClient (absolute Supabase URLs) — _httpClient above is
+        // pinned to the cloud app's BaseAddress. SupabaseAuthService owns
+        // the refresh token: it persists every rotation to session.json.
+        _authService = new SupabaseAuthService(_settings, _sessionStore, new HttpClient());
+        // The embedded page never refreshes by itself (it holds only a
+        // placeholder refresh token — see DesktopWebSession): every
+        // refresh here is pushed into it. Raised on a thread-pool thread.
+        _authService.AccessTokenRefreshed += (_, token) =>
+            Dispatcher.BeginInvoke(new Action(() => _activeCloudPageView?.PushDesktopAccessToken(token)));
         _vaccineApiService = new VaccineApiService(_httpClient, _authService);
         _clipboardService = new ClipboardService();
         // Kept constructed (harmless, side-effect-free) even though nothing
@@ -269,7 +281,7 @@ public partial class App : Application
                     await loginViewModel.TrySilentSignInAsync();
                     return _authService.IsSignedIn;
                 },
-                timeLimit: TimeSpan.FromSeconds(15),
+                timeLimit: TimeSpan.FromSeconds(30), // restore retries with backoff when the service is unreachable (SessionKeeper)
                 log: message => AppFileLog.Log($"[Startup] {message}"));
 
             var result = await coordinator.RunAsync(cancelSource.Token);
@@ -571,6 +583,7 @@ public partial class App : Application
     private async Task<bool> ShowMainWindowAndInitializeAsync(LoginViewModel loginViewModel, Window windowToKeepOnTop)
     {
         var cloudPageView = new CloudPageView(_settings.CloudApiBaseUrl, autoInitializeOnLoad: false);
+        _activeCloudPageView = cloudPageView;
 
         MainWindow mainWindowInstance;
         try
@@ -667,11 +680,10 @@ public partial class App : Application
                 {
                     try
                     {
-                        if (_authService.AccessToken is { Length: > 0 } lateAccessToken &&
-                            _authService.RefreshToken is { Length: > 0 } lateRefreshToken)
+                        if (await _authService.GetValidAccessTokenAsync() is { Length: > 0 } lateAccessToken)
                         {
                             var lateHandoffOk = await cloudPageView.PerformDesktopHandoffAsync(
-                                lateAccessToken, lateRefreshToken, TimeSpan.FromSeconds(10));
+                                lateAccessToken, TimeSpan.FromSeconds(10));
                             AppFileLog.Log(lateHandoffOk
                                 ? "[Startup] late cloud session handoff (post-timeout recovery): ok"
                                 : "[Startup] late cloud session handoff (post-timeout recovery): failed or timed out — see the preceding [CloudPageView] line for the concrete reason");
@@ -691,10 +703,9 @@ public partial class App : Application
                     }
                 };
             }
-            else if (_authService.AccessToken is { Length: > 0 } accessToken &&
-                _authService.RefreshToken is { Length: > 0 } refreshToken)
+            else if (await _authService.GetValidAccessTokenAsync() is { Length: > 0 } accessToken)
             {
-                var handoffOk = await cloudPageView.PerformDesktopHandoffAsync(accessToken, refreshToken, TimeSpan.FromSeconds(10));
+                var handoffOk = await cloudPageView.PerformDesktopHandoffAsync(accessToken, TimeSpan.FromSeconds(10));
                 AppFileLog.Log(handoffOk
                     ? "[Startup] cloud session handoff: ok"
                     : "[Startup] cloud session handoff: failed or timed out — see the preceding [CloudPageView] line for the concrete reason");
@@ -767,6 +778,7 @@ public partial class App : Application
             // ShowLoginWindow's attemptAutoLogin: false below already
             // covers suppressing that one on this screen.)
             _sessionStore.Delete();
+            _activeCloudPageView = null;
             mainWindow.Close();
             // attemptAutoLogin: false — see ShowLoginWindow's doc comment.
             // Sign out must actually sign out, even when autologin.json is

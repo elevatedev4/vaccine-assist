@@ -195,7 +195,11 @@ export default function TopNav() {
     setMenuOpen(false);
     try {
       const supabase = getSupabaseBrowserClient();
-      await supabase.auth.signOut();
+      // scope "local": supabase-js's default ("global") revokes EVERY
+      // session of the shared pharmacy login, signing every other
+      // workstation out too (2026-10-03: "sign in 1-2 times a day per
+      // workstation"). Local ends only this browser/workstation's session.
+      await supabase.auth.signOut({ scope: "local" });
     } catch {
       // Every page's own session subscription still resolves this on its
       // own (see the doc comment above) — nothing else to do here.

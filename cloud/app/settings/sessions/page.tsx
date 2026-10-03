@@ -173,7 +173,7 @@ export default function SessionsPage() {
       }
       if (target.isCurrent) {
         const supabase = getSupabaseBrowserClient();
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: "local" });
         return;
       }
       await loadSessions(session.accessToken);

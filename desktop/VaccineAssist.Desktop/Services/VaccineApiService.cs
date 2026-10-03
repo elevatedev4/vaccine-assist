@@ -217,6 +217,14 @@ public sealed class VaccineApiService : IVaccineApiService
 
     private async Task<T> SendAsync<T>(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        // CreateRequest stamped the snapshot token; the access token only
+        // lives ~1 h, so ask the auth service for one that is still good
+        // (a no-op when it is — refresh is serialized and persisted there).
+        if (await _authService.GetValidAccessTokenAsync(cancellationToken) is string freshToken)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", freshToken);
+        }
+
         using var response = await _httpClient.SendAsync(request, cancellationToken);
 
         if (!response.IsSuccessStatusCode)
