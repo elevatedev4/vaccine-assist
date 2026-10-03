@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -215,17 +216,61 @@ public sealed class VaccineApiService : IVaccineApiService
         return request;
     }
 
+    private static async Task<HttpRequestMessage> CloneAsync(HttpRequestMessage original, string accessToken, CancellationToken cancellationToken)
+    {
+        var clone = new HttpRequestMessage(original.Method, original.RequestUri) { Version = original.Version };
+        foreach (var header in original.Headers)
+        {
+            if (!string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
+            {
+                clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        if (original.Content is not null)
+        {
+            var bytes = await original.Content.ReadAsByteArrayAsync(cancellationToken);
+            var content = new ByteArrayContent(bytes);
+            foreach (var header in original.Content.Headers)
+            {
+                content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+            clone.Content = content;
+        }
+
+        clone.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        return clone;
+    }
+
     private async Task<T> SendAsync<T>(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         // CreateRequest stamped the snapshot token; the access token only
         // lives ~1 h, so ask the auth service for one that is still good
         // (a no-op when it is — refresh is serialized and persisted there).
-        if (await _authService.GetValidAccessTokenAsync(cancellationToken) is string freshToken)
+        var sentToken = await _authService.GetValidAccessTokenAsync(cancellationToken);
+        if (sentToken is not null)
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", freshToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", sentToken);
         }
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var response = await _httpClient.SendAsync(request, cancellationToken);
+
+        // One-shot recovery: a 401 with a token we believed valid (clock
+        // skew, server-side early expiry) -> force ONE refresh and retry
+        // ONCE. The auth service rate-limits refreshes, so a persistent
+        // 401 (a cloud-side problem) can't turn into a refresh storm.
+        if (response.StatusCode == HttpStatusCode.Unauthorized && sentToken is not null)
+        {
+            var retryToken = await _authService.RefreshAfterUnauthorizedAsync(sentToken, cancellationToken);
+            if (retryToken is not null && retryToken != sentToken)
+            {
+                response.Dispose();
+                using var retryRequest = await CloneAsync(request, retryToken, cancellationToken);
+                response = await _httpClient.SendAsync(retryRequest, cancellationToken);
+            }
+        }
+
+        using var disposableResponse = response;
 
         if (!response.IsSuccessStatusCode)
         {

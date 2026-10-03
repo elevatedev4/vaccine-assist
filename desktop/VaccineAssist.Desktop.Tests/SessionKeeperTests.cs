@@ -66,7 +66,12 @@ public class SessionKeeperTests
         /// "in flight").</summary>
         public TaskCompletionSource<bool>? Gate { get; set; }
 
-        public string IssueAccessToken() => FakeJwt(_clock.Now.AddHours(1));
+        /// <summary>When set, every issued access token expires then —
+        /// simulates a local clock far AHEAD of real time (tokens look
+        /// already-expired the moment they are issued).</summary>
+        public DateTime? FixedExpiry { get; set; }
+
+        public string IssueAccessToken() => FakeJwt(FixedExpiry ?? _clock.Now.AddHours(1));
 
         public async Task<TokenRefreshResult> RefreshAsync(string refreshToken, CancellationToken cancellationToken)
         {
@@ -505,6 +510,194 @@ public class SessionKeeperTests
 
         Assert.NotEmpty(log);
         Assert.DoesNotContain(log, line => line.Contains("refresh-secret-value") || line.Contains(access));
+    }
+
+    // ---- Review round: clock skew, storms, forced refresh, SessionEnded, sign-out race
+
+    [Fact]
+    public async Task ClockSteppedBackKeepsTheSessionAndReAnchorsTheCeilingToNow()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0");
+        var futureAnchor = clock.Now.AddDays(3); // negative age
+        var store = new FakeSessionStore(new PersistedSession("stale", "refresh-0", futureAnchor));
+        var keeper = CreateKeeper(store, endpoint, clock);
+
+        var result = await keeper.RestoreAsync(store.Session!);
+
+        Assert.True(result.Success);
+        Assert.Equal(0, store.DeleteCallCount);
+        Assert.Equal(clock.Now, store.LastSaved!.IssuedAtUtc); // clamped: can't stretch the 90 days
+    }
+
+    [Fact]
+    public async Task ClockSteppedBackWhileRunningDoesNotEndTheSession()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0");
+        var store = new FakeSessionStore();
+        var keeper = CreateKeeper(store, endpoint, clock);
+        keeper.StartInteractiveSession(FakeJwt(T0.AddDays(-3)), "refresh-0"); // issued at T0, token already stale
+
+        clock.Now = T0.AddDays(-2); // clock stepped back: the session is "from the future" (negative age)
+
+        var token = await keeper.GetValidAccessTokenAsync();
+
+        Assert.Equal(1, endpoint.RefreshCallCount); // refreshed normally...
+        Assert.NotNull(token);
+        Assert.True(keeper.HasSession); // ...and the session survived
+        Assert.Equal(0, store.DeleteCallCount);
+    }
+
+    [Fact]
+    public async Task ClockFarAheadDoesNotCauseARefreshStorm()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0") { FixedExpiry = T0.AddHours(1) };
+        var keeper = CreateKeeper(new FakeSessionStore(), endpoint, clock);
+        keeper.StartInteractiveSession(endpoint.IssueAccessToken(), "refresh-0");
+        clock.Now = T0.AddHours(5); // every token (exp T0+1h) already looks expired
+
+        for (var tick = 0; tick < 5; tick++)
+        {
+            await keeper.GetValidAccessTokenAsync();
+            clock.Now = clock.Now.AddSeconds(10);
+        }
+
+        Assert.Equal(1, endpoint.RefreshCallCount); // not once per tick
+
+        clock.Now = clock.Now.AddSeconds(SessionKeeper.MinRefreshInterval.TotalSeconds);
+        await keeper.GetValidAccessTokenAsync();
+        Assert.Equal(2, endpoint.RefreshCallCount); // allowed again after the interval
+    }
+
+    [Fact]
+    public async Task RefreshAfterUnauthorizedRefreshesOnceEvenWhenTheTokenLooksValid()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0");
+        var store = new FakeSessionStore();
+        var keeper = CreateKeeper(store, endpoint, clock);
+        var rejected = FakeJwt(clock.Now.AddMinutes(40));
+        keeper.StartInteractiveSession(rejected, "refresh-0");
+
+        var retryToken = await keeper.RefreshAfterUnauthorizedAsync(rejected);
+
+        Assert.Equal(1, endpoint.RefreshCallCount);
+        Assert.NotEqual(rejected, retryToken);
+        Assert.Equal("refresh-1", store.Session!.RefreshToken);
+
+        // Same stale token reported again (a second in-flight request that
+        // also got 401): already replaced -> no second refresh.
+        await keeper.RefreshAfterUnauthorizedAsync(rejected);
+        Assert.Equal(1, endpoint.RefreshCallCount);
+
+        // The NEW token also 401s: rate-limited, no storm.
+        await keeper.RefreshAfterUnauthorizedAsync(retryToken!);
+        Assert.Equal(1, endpoint.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task RefreshAfterUnauthorizedWithNoSessionDoesNothing()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0");
+        var keeper = CreateKeeper(new FakeSessionStore(), endpoint, clock);
+
+        Assert.Null(await keeper.RefreshAfterUnauthorizedAsync("whatever"));
+        Assert.Equal(0, endpoint.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task SessionEndedIsRaisedOnceWhenARunningSessionIsRejected()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0");
+        endpoint.ScriptedResults.Enqueue(TokenRefreshResult.Rejected("HTTP 400 (session_not_found)"));
+        var store = new FakeSessionStore();
+        var keeper = CreateKeeper(store, endpoint, clock);
+        keeper.StartInteractiveSession(FakeJwt(clock.Now.AddMinutes(1)), "refresh-0");
+        var reasons = new List<string>();
+        keeper.SessionEnded += (_, reason) => reasons.Add(reason);
+
+        await keeper.GetValidAccessTokenAsync();
+        await keeper.GetValidAccessTokenAsync(); // no session any more: nothing more raised
+
+        Assert.Single(reasons);
+        Assert.Contains("session_not_found", reasons[0]);
+        Assert.Null(store.Session); // already cleared when the event fires
+    }
+
+    [Fact]
+    public async Task SessionEndedIsRaisedWhenTheNinetyDayCeilingEndsARunningSession()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0");
+        var keeper = CreateKeeper(new FakeSessionStore(), endpoint, clock);
+        keeper.StartInteractiveSession(endpoint.IssueAccessToken(), "refresh-0");
+        var raised = 0;
+        keeper.SessionEnded += (_, _) => raised++;
+
+        clock.Now = clock.Now.AddDays(91);
+        await keeper.GetValidAccessTokenAsync();
+
+        Assert.Equal(1, raised);
+    }
+
+    [Fact]
+    public async Task SessionEndedIsNotRaisedForStartupRestoreFailuresOrSignOut()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "some-other-token"); // stored token is dead
+        var store = new FakeSessionStore(new PersistedSession("stale", "refresh-0", clock.Now.AddDays(-2)));
+        var keeper = CreateKeeper(store, endpoint, clock);
+        var raised = 0;
+        keeper.SessionEnded += (_, _) => raised++;
+
+        Assert.False((await keeper.RestoreAsync(store.Session!)).Success); // caller shows sign-in itself
+
+        keeper.StartInteractiveSession(FakeJwt(clock.Now.AddMinutes(30)), "refresh-1");
+        await keeper.SignOutAsync();
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public async Task SignOutWaitsForAnInFlightRefreshSoItCanNeverRewriteSessionJsonAfterwards()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0") { Gate = new TaskCompletionSource<bool>() };
+        var store = new FakeSessionStore();
+        var keeper = CreateKeeper(store, endpoint, clock);
+        keeper.StartInteractiveSession(FakeJwt(clock.Now.AddMinutes(1)), "refresh-0");
+
+        var refresh = keeper.GetValidAccessTokenAsync(); // blocked at the endpoint
+        var signOut = keeper.SignOutAsync();
+        await Task.Delay(50);
+        Assert.False(signOut.IsCompleted); // sign-out is queued behind the refresh
+
+        endpoint.Gate!.SetResult(true);
+        await Task.WhenAll(refresh, signOut);
+
+        Assert.Null(store.Session); // the refresh's save did NOT survive the sign-out
+        Assert.False(keeper.HasSession);
+        Assert.Null(keeper.RefreshToken);
+    }
+
+    [Fact]
+    public async Task ARefreshQueuedBehindSignOutDoesNotResurrectTheSession()
+    {
+        var clock = new FakeClock();
+        var endpoint = new RotationAwareEndpoint(clock, "refresh-0");
+        var store = new FakeSessionStore();
+        var keeper = CreateKeeper(store, endpoint, clock);
+        keeper.StartInteractiveSession(FakeJwt(clock.Now.AddMinutes(1)), "refresh-0");
+
+        await keeper.SignOutAsync();
+        await keeper.GetValidAccessTokenAsync();
+
+        Assert.Equal(0, endpoint.RefreshCallCount);
+        Assert.Null(store.Session);
     }
 
     private sealed class FlakySessionStore : ISessionStore

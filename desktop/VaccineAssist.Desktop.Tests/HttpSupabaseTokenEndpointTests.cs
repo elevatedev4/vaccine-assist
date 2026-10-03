@@ -73,20 +73,36 @@ public class HttpSupabaseTokenEndpointTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.BadRequest)]
-    [InlineData(HttpStatusCode.Unauthorized)]
-    [InlineData(HttpStatusCode.Forbidden)]
-    [InlineData(HttpStatusCode.NotFound)]
-    [InlineData(HttpStatusCode.UnprocessableEntity)]
-    public async Task DefinitiveRefusalsAreRejected(HttpStatusCode status)
+    [InlineData(HttpStatusCode.BadRequest, "{\"code\":400,\"error_code\":\"refresh_token_not_found\",\"msg\":\"Invalid Refresh Token: Refresh Token Not Found\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error_code\":\"refresh_token_already_used\",\"msg\":\"Invalid Refresh Token: Already Used\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error_code\":\"session_not_found\",\"msg\":\"Session not found\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error_code\":\"session_expired\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error\":\"invalid_grant\",\"error_description\":\"Invalid Refresh Token: Already Used\"}")]
+    [InlineData(HttpStatusCode.Forbidden, "{\"error_code\":\"user_banned\",\"msg\":\"User is banned\"}")]
+    [InlineData(HttpStatusCode.NotFound, "{\"error_code\":\"user_not_found\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"msg\":\"Invalid Refresh Token: Session Expired\"}")]
+    public async Task GoTrueShapedDeadSessionResponsesAreRejected(HttpStatusCode status, string body)
     {
-        var handler = Respond(status, "{\"error_code\":\"refresh_token_already_used\",\"msg\":\"Invalid Refresh Token: Already Used\"}");
-
-        var result = await Create(handler).RefreshAsync("old-refresh", CancellationToken.None);
+        var result = await Create(Respond(status, body)).RefreshAsync("old-refresh", CancellationToken.None);
 
         Assert.Equal(TokenRefreshKind.Rejected, result.Kind);
-        Assert.Contains("refresh_token_already_used", result.Detail);
         Assert.DoesNotContain("old-refresh", result.Detail);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden, "<html><body>Attention Required! | Cloudflare</body></html>")] // WAF on the shared pharmacy IP
+    [InlineData(HttpStatusCode.Forbidden, "")]
+    [InlineData(HttpStatusCode.NotFound, "<html>Blocked by your organization's web filter</html>")] // filtering proxy
+    [InlineData(HttpStatusCode.Unauthorized, "{\"message\":\"Invalid API key\",\"hint\":\"Double check your Supabase `anon` or `service_role` API key.\"}")] // anon-key misconfig
+    [InlineData(HttpStatusCode.Unauthorized, "{\"error\":\"Invalid API key\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error_code\":\"validation_failed\",\"msg\":\"bad request body\"}")]
+    [InlineData(HttpStatusCode.UnprocessableEntity, "not json")]
+    [InlineData(HttpStatusCode.BadRequest, "[]")]
+    public async Task ClientErrorsThatAreNotGoTrueVerdictsAreTransientAndKeepTheSession(HttpStatusCode status, string body)
+    {
+        var result = await Create(Respond(status, body)).RefreshAsync("old-refresh", CancellationToken.None);
+
+        Assert.Equal(TokenRefreshKind.Transient, result.Kind);
     }
 
     [Theory]

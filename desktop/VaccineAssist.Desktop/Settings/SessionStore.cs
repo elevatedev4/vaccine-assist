@@ -102,7 +102,12 @@ public sealed class SessionStore : ISessionStore
         // would read as "no session" and force a sign-in. Move with
         // overwrite replaces the old file in one step on the same volume.
         var tempPath = _filePath + ".tmp";
-        File.WriteAllText(tempPath, json);
+        using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(json));
+            stream.Flush(flushToDisk: true); // fsync: power loss must not leave a zero-length session.json after the move
+        }
+
         File.Move(tempPath, _filePath, overwrite: true);
     }
 

@@ -27,7 +27,18 @@ public interface IAuthService
     /// access token (already persisted). Runs on a thread-pool thread.</summary>
     event EventHandler<string>? AccessTokenRefreshed;
 
+    /// <summary>Raised when a RUNNING session ends for good (Supabase
+    /// rejected the refresh token, or the 90-day ceiling passed).
+    /// session.json is already cleared; the app shows the sign-in window.
+    /// Thread-pool thread. Not raised for sign-out or startup restore.</summary>
+    event EventHandler<string>? SessionEnded;
+
     Task<AuthResult> SignInAsync(string email, string password);
+
+    /// <summary>One-shot recovery for an API 401: refreshes once (serialized,
+    /// rate-limited, no-op if the rejected token was already replaced) and
+    /// returns the token to retry with, or null when there is no session.</summary>
+    Task<string?> RefreshAfterUnauthorizedAsync(string rejectedAccessToken, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The access token to send on a request: refreshed first (serialized,

@@ -131,24 +131,39 @@ public sealed class HttpSupabaseTokenEndpoint : ISupabaseTokenEndpoint
         return TokenRefreshResult.Transient("200 response without a token pair");
     }
 
+    /// <summary>GoTrue error codes that mean THIS refresh token/session is
+    /// definitively dead (see supabase/auth error codes). Anything else —
+    /// including a 4xx with no recognisable GoTrue body — is not proof of
+    /// anything about the token.</summary>
+    private static readonly string[] DeadSessionErrorCodes =
+    {
+        "refresh_token_not_found",
+        "refresh_token_already_used",
+        "session_not_found",
+        "session_expired",
+        "invalid_grant",
+        "user_banned",
+        "user_not_found",
+    };
+
     /// <summary>
-    /// GoTrue answers a dead refresh token with 400 (invalid_grant /
-    /// refresh_token_not_found / refresh_token_already_used / session_not_found),
-    /// occasionally 401/403 (banned/forbidden user) or 404/422. Rate limits
-    /// (429), request timeouts (408) and every 5xx are server-side
-    /// hiccups and must be retried, never treated as a revoked session.
+    /// Rejected ONLY when the response is GoTrue-shaped JSON that names a
+    /// dead-session error (error_code, or the older error/error_description
+    /// pair). Status codes alone are NOT specific enough: a WAF/Cloudflare
+    /// 403 on the pharmacy's shared IP, a captive portal or filtering
+    /// proxy's 403/404 HTML page, or a 401 "Invalid API key" (a
+    /// misconfigured anon key) would otherwise delete a good session — or,
+    /// for the API-key case, sign the whole fleet out permanently. Those
+    /// are Transient: keep the stored session and retry. Rate limits
+    /// (429), timeouts (408) and every 5xx are Transient too.
     /// </summary>
     private static TokenRefreshResult Classify(HttpStatusCode status, string body)
     {
         var code = (int)status;
-        var detail = $"HTTP {code}{ExtractErrorCode(body)}";
+        var errorCode = ExtractErrorCode(body);
+        var detail = $"HTTP {code}{(errorCode is null ? "" : $" ({errorCode})")}";
 
-        if (code == 408 || code == 429 || code >= 500)
-        {
-            return TokenRefreshResult.Transient(detail);
-        }
-
-        if (code == 400 || code == 401 || code == 403 || code == 404 || code == 422)
+        if ((code is 400 or 401 or 403 or 404 or 422) && IsDeadSessionBody(body))
         {
             return TokenRefreshResult.Rejected(detail);
         }
@@ -156,28 +171,64 @@ public sealed class HttpSupabaseTokenEndpoint : ISupabaseTokenEndpoint
         return TokenRefreshResult.Transient(detail);
     }
 
-    private static string ExtractErrorCode(string body)
+    private static bool IsDeadSessionBody(string body)
     {
         try
         {
             using var doc = JsonDocument.Parse(body);
-            foreach (var name in new[] { "error_code", "error" })
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
             {
-                if (doc.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+                return false;
+            }
+
+            var errorCode = ReadString(doc.RootElement, "error_code");
+            if (errorCode is not null && Array.IndexOf(DeadSessionErrorCodes, errorCode) >= 0)
+            {
+                return true;
+            }
+
+            // Older GoTrue shape: {"error":"invalid_grant","error_description":"Invalid Refresh Token: ..."}
+            var error = ReadString(doc.RootElement, "error");
+            if (error is not null && Array.IndexOf(DeadSessionErrorCodes, error) >= 0)
+            {
+                return true;
+            }
+
+            var description = ReadString(doc.RootElement, "error_description") ?? ReadString(doc.RootElement, "msg");
+            return error == "invalid_grant" ||
+                   (description is not null && description.Contains("Refresh Token", StringComparison.OrdinalIgnoreCase));
+        }
+        catch (JsonException)
+        {
+            return false; // HTML / empty / non-JSON body: not GoTrue's verdict
+        }
+    }
+
+    private static string? ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private static string? ExtractErrorCode(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var name in new[] { "error_code", "error" })
                 {
-                    var text = value.GetString();
+                    var text = ReadString(doc.RootElement, name);
                     if (!string.IsNullOrWhiteSpace(text) && text.Length <= 64)
                     {
-                        return $" ({text})";
+                        return text;
                     }
                 }
             }
         }
-        catch (Exception)
+        catch (JsonException)
         {
             // Not JSON — status alone is enough.
         }
 
-        return "";
+        return null;
     }
 }

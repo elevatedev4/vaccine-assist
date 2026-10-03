@@ -255,6 +255,103 @@ public partial class CloudPageView : UserControl
         await WebView.EnsureCoreWebView2Async(environment);
         stopwatch.Stop();
         AppFileLog.Log($"[CloudPageView] EnsureCoreWebView2Async completed in {stopwatch.ElapsedMilliseconds}ms");
+
+        if (WebView.CoreWebView2 is { } core)
+        {
+            AttachCoreHandlers(core);
+        }
+    }
+
+    /// <summary>Supplies the current access token for re-pushes into the
+    /// page after each navigation (set by App.xaml.cs). The page only ever
+    /// holds an access token + placeholder refresh token (see
+    /// DesktopWebSession), so a lost push must be recovered here rather
+    /// than by the page refreshing on its own.</summary>
+    public Func<string?>? AccessTokenProvider { get; set; }
+
+    private bool _coreHandlersAttached;
+
+    /// <summary>
+    /// 1) Keeps this WebView2 on the cloud app's own origin: a main-frame
+    /// navigation anywhere else is cancelled (an https link is opened in
+    /// the default browser instead), and so is a new-window request to
+    /// another origin. The access-token push is only ever sent to a page
+    /// on the cloud origin, and this makes sure the page the token is
+    /// pushed to is that origin. 2) Re-pushes the current access token a
+    /// moment after every successful load, so a push lost while the page
+    /// was reloading (the page's listener isn't mounted yet) can never
+    /// leave it holding an expiring token.
+    /// </summary>
+    private void AttachCoreHandlers(CoreWebView2 core)
+    {
+        if (_coreHandlersAttached)
+        {
+            return;
+        }
+        _coreHandlersAttached = true;
+
+        core.NavigationStarting += (_, e) =>
+        {
+            if (IsAllowedNavigation(e.Uri))
+            {
+                return;
+            }
+
+            e.Cancel = true;
+            OpenInDefaultBrowser(e.Uri);
+        };
+
+        core.NewWindowRequested += (_, e) =>
+        {
+            if (CloudOriginPolicy.IsCloudOrigin(e.Uri, _cloudApiBaseUrl))
+            {
+                return; // same-origin popups behave as before
+            }
+
+            e.Handled = true;
+            OpenInDefaultBrowser(e.Uri);
+        };
+
+        core.NavigationCompleted += async (_, e) =>
+        {
+            if (!e.IsSuccess)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2)); // let the page's session listener mount
+                if (AccessTokenProvider?.Invoke() is { Length: > 0 } token)
+                {
+                    PushDesktopAccessToken(token);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppFileLog.LogException("CloudPageView.NavigationCompleted push", ex);
+            }
+        };
+    }
+
+    private bool IsAllowedNavigation(string uri) =>
+        CloudOriginPolicy.IsCloudOrigin(uri, _cloudApiBaseUrl) ||
+        uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase);
+
+    private static void OpenInDefaultBrowser(string uri)
+    {
+        try
+        {
+            if (Uri.TryCreate(uri, UriKind.Absolute, out var parsed) &&
+                (parsed.Scheme == Uri.UriSchemeHttps || parsed.Scheme == Uri.UriSchemeHttp))
+            {
+                Process.Start(new ProcessStartInfo(parsed.AbsoluteUri) { UseShellExecute = true });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("CloudPageView.OpenInDefaultBrowser", ex);
+        }
     }
 
     /// <summary>Same reasoning as StartupSignInCoordinator.ObserveLateCompletion
@@ -511,6 +608,13 @@ public partial class CloudPageView : UserControl
             var coreWebView2 = WebView.CoreWebView2;
             if (coreWebView2 is null)
             {
+                return;
+            }
+
+            // Never hand a credential to a page that isn't the cloud app.
+            if (!CloudOriginPolicy.IsCloudOrigin(coreWebView2.Source, _cloudApiBaseUrl))
+            {
+                AppFileLog.Log("[CloudPageView] PushDesktopAccessToken: skipped (page is not on the cloud origin)");
                 return;
             }
 

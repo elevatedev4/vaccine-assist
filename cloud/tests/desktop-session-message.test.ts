@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESKTOP_SESSION_MESSAGE_TYPE, parseDesktopSessionMessage } from "@/lib/desktop-handoff";
+import { DESKTOP_SESSION_MESSAGE_TYPE, isDesktopWebViewHost, parseDesktopSessionMessage } from "@/lib/desktop-handoff";
 
 const ACCESS = "a".repeat(40);
 const PLACEHOLDER = "desktop-managed-session-no-refresh";
@@ -30,5 +30,18 @@ describe("parseDesktopSessionMessage", () => {
     expect(parseDesktopSessionMessage({ type: DESKTOP_SESSION_MESSAGE_TYPE, access_token: 5, refresh_token: PLACEHOLDER })).toBeNull();
     expect(parseDesktopSessionMessage({ type: DESKTOP_SESSION_MESSAGE_TYPE, access_token: "short", refresh_token: PLACEHOLDER })).toBeNull();
     expect(parseDesktopSessionMessage({ type: DESKTOP_SESSION_MESSAGE_TYPE, access_token: ACCESS, refresh_token: "x" })).toBeNull();
+  });
+});
+
+describe("isDesktopWebViewHost", () => {
+  it("is true only when the WebView2 host object is present", () => {
+    expect(isDesktopWebViewHost({ chrome: { webview: {} } })).toBe(true);
+  });
+
+  it("is false in an ordinary browser (chrome exists, no webview) and for junk", () => {
+    expect(isDesktopWebViewHost({ chrome: {} })).toBe(false);
+    expect(isDesktopWebViewHost({})).toBe(false);
+    expect(isDesktopWebViewHost(undefined)).toBe(false);
+    expect(isDesktopWebViewHost(null)).toBe(false);
   });
 });

@@ -86,8 +86,26 @@ internal sealed class FakeAuthService : IAuthService
 
     public event EventHandler<string>? AccessTokenRefreshed;
 
+    public event EventHandler<string>? SessionEnded;
+
     public Task<string?> GetValidAccessTokenAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(AccessToken);
+
+    /// <summary>Every access token VaccineApiService reported as 401-rejected.</summary>
+    public List<string> RejectedAccessTokens { get; } = new();
+
+    /// <summary>What RefreshAfterUnauthorizedAsync hands back for the retry
+    /// (null = "no session").</summary>
+    public string? TokenAfterUnauthorizedRefresh { get; set; } = "fake-refreshed-token";
+
+    public Task<string?> RefreshAfterUnauthorizedAsync(string rejectedAccessToken, CancellationToken cancellationToken = default)
+    {
+        RejectedAccessTokens.Add(rejectedAccessToken);
+        AccessToken = TokenAfterUnauthorizedRefresh;
+        return Task.FromResult(TokenAfterUnauthorizedRefresh);
+    }
+
+    public void RaiseSessionEnded(string reason) => SessionEnded?.Invoke(this, reason);
 
     /// <summary>Test hook: simulate a background refresh.</summary>
     public void RaiseAccessTokenRefreshed(string token) => AccessTokenRefreshed?.Invoke(this, token);

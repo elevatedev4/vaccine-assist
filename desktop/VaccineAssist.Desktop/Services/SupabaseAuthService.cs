@@ -38,6 +38,11 @@ public sealed class SupabaseAuthService : IAuthService
             new HttpSupabaseTokenEndpoint(httpClient, settings),
             log: message => AppFileLog.Log($"[Session] {message}"));
         _keeper.AccessTokenRefreshed += (_, token) => AccessTokenRefreshed?.Invoke(this, token);
+        _keeper.SessionEnded += (_, reason) =>
+        {
+            StopMaintenance();
+            SessionEnded?.Invoke(this, reason);
+        };
     }
 
     public bool IsSignedIn => _keeper.HasSession;
@@ -47,6 +52,8 @@ public sealed class SupabaseAuthService : IAuthService
     public string? RefreshToken => _keeper.RefreshToken;
 
     public event EventHandler<string>? AccessTokenRefreshed;
+
+    public event EventHandler<string>? SessionEnded;
 
     public async Task<AuthResult> SignInAsync(string email, string password)
     {
@@ -88,6 +95,9 @@ public sealed class SupabaseAuthService : IAuthService
 
     public Task<string?> GetValidAccessTokenAsync(CancellationToken cancellationToken = default) =>
         _keeper.GetValidAccessTokenAsync(cancellationToken);
+
+    public Task<string?> RefreshAfterUnauthorizedAsync(string rejectedAccessToken, CancellationToken cancellationToken = default) =>
+        _keeper.RefreshAfterUnauthorizedAsync(rejectedAccessToken, cancellationToken);
 
     public async Task<AuthResult> TryRestoreSessionAsync(string accessToken, string refreshToken, DateTime issuedAtUtc)
     {

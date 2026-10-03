@@ -108,3 +108,19 @@ export function parseDesktopSessionMessage(
   if (typeof refresh_token !== "string" || refresh_token.length < 10) return null;
   return { access_token, refresh_token };
 }
+
+/**
+ * True when this page is hosted inside the desktop app's WebView2 (the
+ * host injects `window.chrome.webview`). There the page holds only a
+ * short-lived access token plus a placeholder refresh token (see
+ * parseDesktopSessionMessage), so its supabase-js client must NOT run its
+ * own refresh timer: the attempt can only fail, and a failed refresh makes
+ * supabase-js delete the session from localStorage — which every WebView2
+ * window on the shared profile (the main page AND the Ctrl+8 macro-codes
+ * popup) reads. The desktop keeps the stored token fresh instead.
+ */
+export function isDesktopWebViewHost(win: unknown): boolean {
+  if (!win || typeof win !== "object") return false;
+  const chrome = (win as { chrome?: { webview?: unknown } }).chrome;
+  return !!chrome && typeof chrome === "object" && !!chrome.webview;
+}

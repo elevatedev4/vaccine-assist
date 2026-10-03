@@ -34,6 +34,13 @@ public partial class App : Application
     // sign-in / after sign-out) — target of the refreshed-access-token
     // push; see the AccessTokenRefreshed subscription in OnStartup.
     private CloudPageView? _activeCloudPageView;
+    private MainWindow? _activeMainWindow;
+    // Set just before an app-initiated sign-out (SessionEnded) so the
+    // sign-in window that follows explains why and may use autologin.json
+    // (a user-initiated Sign out never does — see ShowLoginWindow).
+    private string? _pendingLoginMessage;
+    private bool _nextLoginAllowsAutoLogin;
+    private DispatcherTimer? _pushHeartbeat;
     private IVaccineApiService _vaccineApiService = null!;
     private IClipboardService _clipboardService = null!;
     private IPioneerEntryAutomation _pioneerEntryAutomation = null!;
@@ -104,6 +111,50 @@ public partial class App : Application
         // refresh here is pushed into it. Raised on a thread-pool thread.
         _authService.AccessTokenRefreshed += (_, token) =>
             Dispatcher.BeginInvoke(new Action(() => _activeCloudPageView?.PushDesktopAccessToken(token)));
+        // Heartbeat: re-push the (kept-fresh) access token into the page
+        // every ~10 min, so a push lost to a reload/race can never leave
+        // the page holding an expiring token — it has no refresh token of
+        // its own to fall back on (see DesktopWebSession).
+        _pushHeartbeat = new DispatcherTimer { Interval = TimeSpan.FromMinutes(10) };
+        _pushHeartbeat.Tick += async (_, _) =>
+        {
+            try
+            {
+                if (_activeCloudPageView is { } view && await _authService.GetValidAccessTokenAsync() is { Length: > 0 } token)
+                {
+                    view.PushDesktopAccessToken(token);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppFileLog.LogException("App.PushHeartbeat", ex);
+            }
+        };
+        _pushHeartbeat.Start();
+
+        // A RUNNING session that Supabase definitively ended (or hit the
+        // 90-day ceiling): show the sign-in window rather than leaving a
+        // shell with no session. session.json is already cleared.
+        _authService.SessionEnded += (_, reason) =>
+            Dispatcher.BeginInvoke(new Action(async () =>
+            {
+                try
+                {
+                    if (_activeMainWindow is not { } window)
+                    {
+                        return;
+                    }
+
+                    AppFileLog.Log($"[Session] session ended while running ({reason}) — showing sign-in");
+                    _pendingLoginMessage = "Your sign-in has ended — please sign in again.";
+                    _nextLoginAllowsAutoLogin = true;
+                    await window.ForceSignOutAsync();
+                }
+                catch (Exception ex)
+                {
+                    AppFileLog.LogException("App.SessionEnded", ex);
+                }
+            }));
         _vaccineApiService = new VaccineApiService(_httpClient, _authService);
         _clipboardService = new ClipboardService();
         // Kept constructed (harmless, side-effect-free) even though nothing
@@ -493,6 +544,11 @@ public partial class App : Application
     private void ShowLoginWindow(bool attemptAutoLogin)
     {
         var loginViewModel = new LoginViewModel(_authService, _localSettingsService, _settings, _autoLoginConfigService, _sessionStore, attemptAutoLogin);
+        if (_pendingLoginMessage is not null)
+        {
+            loginViewModel.SetErrorMessage(_pendingLoginMessage);
+            _pendingLoginMessage = null;
+        }
         var loginWindow = new LoginWindow(loginViewModel);
         var signedIn = false;
 
@@ -584,6 +640,7 @@ public partial class App : Application
     {
         var cloudPageView = new CloudPageView(_settings.CloudApiBaseUrl, autoInitializeOnLoad: false);
         _activeCloudPageView = cloudPageView;
+        cloudPageView.AccessTokenProvider = () => _authService.AccessToken;
 
         MainWindow mainWindowInstance;
         try
@@ -766,6 +823,7 @@ public partial class App : Application
             _pioneerEntrySequence, cloudPageView, _localSettingsService, _settings,
             _faxRunScheduler, _faxRunOrchestrator, _faxCredentialStore, _faxHttpClient,
             _faxSendCoordinator);
+        _activeMainWindow = mainWindow;
         var loggingOut = false;
 
         mainWindow.LoggedOut += (_, _) =>
@@ -779,11 +837,14 @@ public partial class App : Application
             // covers suppressing that one on this screen.)
             _sessionStore.Delete();
             _activeCloudPageView = null;
+            _activeMainWindow = null;
             mainWindow.Close();
             // attemptAutoLogin: false — see ShowLoginWindow's doc comment.
             // Sign out must actually sign out, even when autologin.json is
             // seeded on this workstation.
-            ShowLoginWindow(attemptAutoLogin: false);
+            var allowAutoLogin = _nextLoginAllowsAutoLogin;
+            _nextLoginAllowsAutoLogin = false;
+            ShowLoginWindow(attemptAutoLogin: allowAutoLogin);
         };
 
         mainWindow.Closed += (_, _) =>

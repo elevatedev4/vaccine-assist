@@ -46,6 +46,12 @@ public sealed class SessionKeeper
     /// instant.</summary>
     public static readonly TimeSpan[] DefaultRestoreRetryDelays = { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3) };
 
+    /// <summary>A successful refresh is never repeated sooner than this
+    /// (per session). Protects against a refresh storm when the local
+    /// clock is far ahead of real time: every fresh token would look
+    /// already-expired and be re-refreshed on every maintenance tick.</summary>
+    public static readonly TimeSpan MinRefreshInterval = TimeSpan.FromSeconds(60);
+
     private readonly ISessionStore _store;
     private readonly ISupabaseTokenEndpoint _endpoint;
     private readonly Func<DateTime> _utcNow;
@@ -60,6 +66,7 @@ public sealed class SessionKeeper
     private string? _refreshToken;
     private DateTime _issuedAtUtc;
     private string? _lastPersistedRefreshToken;
+    private DateTime? _lastSuccessfulRefreshUtc;
 
     public SessionKeeper(
         ISessionStore store,
@@ -83,6 +90,14 @@ public sealed class SessionKeeper
     /// embedded WebView2 so the page never has to refresh by itself.</summary>
     public event EventHandler<string>? AccessTokenRefreshed;
 
+    /// <summary>Raised when a RUNNING session ends because Supabase
+    /// definitively rejected the refresh token (revoked / reused / user
+    /// banned) or the 90-day ceiling was reached — never for sign-out and
+    /// never during startup restore (the caller gets the failure result
+    /// there). The app responds by showing the sign-in window. Raised on
+    /// a thread-pool thread, after session.json has been cleared.</summary>
+    public event EventHandler<string>? SessionEnded;
+
     public string? AccessToken
     {
         get { lock (_stateLock) { return _accessToken; } }
@@ -99,6 +114,7 @@ public sealed class SessionKeeper
     /// and persists it.</summary>
     public void StartInteractiveSession(string accessToken, string refreshToken)
     {
+        _lastSuccessfulRefreshUtc = null;
         Commit(accessToken, refreshToken, _utcNow());
     }
 
@@ -118,17 +134,24 @@ public sealed class SessionKeeper
             return AuthResult.Fail("Your saved sign-in is older than 90 days — please sign in again.");
         }
 
+        // Clock stepped back (anchor in the future): keep the session, but
+        // re-anchor to "now" so the rolled-back clock can't stretch the
+        // 90-day ceiling.
+        var now = _utcNow();
+        var issuedAtUtc = persisted.IssuedAtUtc > now ? now : persisted.IssuedAtUtc;
+
         lock (_stateLock)
         {
             _accessToken = persisted.AccessToken;
             _refreshToken = persisted.RefreshToken;
-            _issuedAtUtc = persisted.IssuedAtUtc;
+            _issuedAtUtc = issuedAtUtc;
             _lastPersistedRefreshToken = persisted.RefreshToken;
+            _lastSuccessfulRefreshUtc = null;
         }
 
         for (var attempt = 0; ; attempt++)
         {
-            var step = await RefreshIfNeededAsync(cancellationToken).ConfigureAwait(false);
+            var step = await RefreshIfNeededAsync(cancellationToken, notifyWhenSessionEnds: false).ConfigureAwait(false);
             switch (step)
             {
                 case RefreshStep.NotNeeded:
@@ -164,17 +187,44 @@ public sealed class SessionKeeper
     /// </summary>
     public async Task<string?> GetValidAccessTokenAsync(CancellationToken cancellationToken = default)
     {
-        await RefreshIfNeededAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshIfNeededAsync(cancellationToken, notifyWhenSessionEnds: true).ConfigureAwait(false);
+        return AccessToken;
+    }
+
+    /// <summary>
+    /// One-shot recovery for a 401 from the API: the server rejected
+    /// <paramref name="rejectedAccessToken"/> (clock skew, a token the
+    /// server considers expired earlier than we do). Refreshes once —
+    /// serialized with every other refresh, a no-op if the token has
+    /// already been replaced since, and subject to the same
+    /// MinRefreshInterval guard so a persistent 401 can't become a
+    /// refresh storm. Returns the access token to retry with (null when no
+    /// session).
+    /// </summary>
+    public async Task<string?> RefreshAfterUnauthorizedAsync(string rejectedAccessToken, CancellationToken cancellationToken = default)
+    {
+        await RefreshIfNeededAsync(cancellationToken, notifyWhenSessionEnds: true, rejectedAccessToken).ConfigureAwait(false);
         return AccessToken;
     }
 
     /// <summary>Local sign-out: forgets the session, deletes session.json,
-    /// and (best effort) tells Supabase to end THIS session only.</summary>
+    /// and (best effort) tells Supabase to end THIS session only. Takes the
+    /// refresh gate, so an in-flight refresh finishes first and can never
+    /// re-write session.json after the sign-out.</summary>
     public async Task SignOutAsync(CancellationToken cancellationToken = default)
     {
-        var accessToken = AccessToken;
-        ClearMemory();
-        _store.Delete();
+        string? accessToken;
+        await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            accessToken = AccessToken;
+            ClearMemory();
+            _store.Delete();
+        }
+        finally
+        {
+            _refreshGate.Release();
+        }
 
         if (!string.IsNullOrEmpty(accessToken))
         {
@@ -207,14 +257,19 @@ public sealed class SessionKeeper
         return expiry is null || expiry.Value - _utcNow() <= RefreshSkew;
     }
 
-    private async Task<RefreshStep> RefreshIfNeededAsync(CancellationToken cancellationToken)
+    private async Task<RefreshStep> RefreshIfNeededAsync(
+        CancellationToken cancellationToken,
+        bool notifyWhenSessionEnds,
+        string? rejectedAccessToken = null)
     {
-        if (!NeedsRefresh())
+        var forced = rejectedAccessToken is not null;
+        if (forced ? !HasSession : !NeedsRefresh())
         {
             return RefreshStep.NotNeeded;
         }
 
         string? newAccessToken = null;
+        string? endedReason = null;
         RefreshStep step;
 
         await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -224,9 +279,18 @@ public sealed class SessionKeeper
             // already have rotated the token — never spend (and so
             // invalidate) a refresh token that is already gone.
             AdoptStoredSessionIfAnotherProcessRotatedIt();
-            if (!NeedsRefresh())
+            if (forced ? (!HasSession || AccessToken != rejectedAccessToken) : !NeedsRefresh())
             {
-                return RefreshStep.NotNeeded;
+                return RefreshStep.NotNeeded; // gone, or already replaced by someone else's refresh
+            }
+
+            if (_lastSuccessfulRefreshUtc is { } lastRefresh)
+            {
+                var sinceLast = _utcNow() - lastRefresh;
+                if (sinceLast >= TimeSpan.Zero && sinceLast < MinRefreshInterval)
+                {
+                    return RefreshStep.NotNeeded; // refresh-storm guard (clock far ahead / persistent 401)
+                }
             }
 
             string refreshToken;
@@ -239,29 +303,34 @@ public sealed class SessionKeeper
 
             if (!SessionExpiry.IsValid(issuedAtUtc, _utcNow()))
             {
-                EndSession("90-day limit reached");
-                return RefreshStep.Rejected;
+                endedReason = "90-day limit reached";
+                EndSession(endedReason);
+                step = RefreshStep.Rejected;
             }
-
-            var result = await _endpoint.RefreshAsync(refreshToken, cancellationToken).ConfigureAwait(false);
-            switch (result.Kind)
+            else
             {
-                case TokenRefreshKind.Success:
-                    // Persist the rotated pair BEFORE releasing the gate.
-                    Commit(result.AccessToken!, result.RefreshToken!, issuedAtUtc);
-                    newAccessToken = result.AccessToken;
-                    step = RefreshStep.Refreshed;
-                    break;
+                var result = await _endpoint.RefreshAsync(refreshToken, cancellationToken).ConfigureAwait(false);
+                switch (result.Kind)
+                {
+                    case TokenRefreshKind.Success:
+                        // Persist the rotated pair BEFORE releasing the gate.
+                        Commit(result.AccessToken!, result.RefreshToken!, issuedAtUtc);
+                        _lastSuccessfulRefreshUtc = _utcNow();
+                        newAccessToken = result.AccessToken;
+                        step = RefreshStep.Refreshed;
+                        break;
 
-                case TokenRefreshKind.Rejected:
-                    EndSession($"refresh rejected ({result.Detail})");
-                    step = RefreshStep.Rejected;
-                    break;
+                    case TokenRefreshKind.Rejected:
+                        endedReason = $"refresh rejected ({result.Detail})";
+                        EndSession(endedReason);
+                        step = RefreshStep.Rejected;
+                        break;
 
-                default:
-                    _log?.Invoke($"token refresh failed transiently ({result.Detail}) — keeping stored session");
-                    step = RefreshStep.Transient;
-                    break;
+                    default:
+                        _log?.Invoke($"token refresh failed transiently ({result.Detail}) — keeping stored session");
+                        step = RefreshStep.Transient;
+                        break;
+                }
             }
         }
         finally
@@ -278,6 +347,18 @@ public sealed class SessionKeeper
             catch (Exception ex)
             {
                 _log?.Invoke($"AccessTokenRefreshed handler failed ({ex.GetType().Name})");
+            }
+        }
+
+        if (endedReason is not null && notifyWhenSessionEnds)
+        {
+            try
+            {
+                SessionEnded?.Invoke(this, endedReason);
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"SessionEnded handler failed ({ex.GetType().Name})");
             }
         }
 
@@ -364,6 +445,7 @@ public sealed class SessionKeeper
             _accessToken = null;
             _refreshToken = null;
             _lastPersistedRefreshToken = null;
+            _lastSuccessfulRefreshUtc = null;
         }
     }
 
