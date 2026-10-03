@@ -142,4 +142,52 @@ describe("subscribeToSessionState", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(onChange).not.toHaveBeenCalled();
   });
+  it("does not re-emit when supabase-js replays the same session (setSession -> SIGNED_IN, TOKEN_REFRESHED with an unchanged token)", async () => {
+    const { supabase, emitChange } = makeFakeSupabase(makeSession());
+    const onChange = vi.fn();
+    subscribeToSessionState(supabase, onChange);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+
+    emitChange("SIGNED_IN", makeSession()); // brand-new object, same token + email
+    emitChange("TOKEN_REFRESHED", makeSession());
+    emitChange("INITIAL_SESSION", makeSession());
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("does emit when the access token actually changes, or the user signs out", async () => {
+    const { supabase, emitChange } = makeFakeSupabase(makeSession());
+    const onChange = vi.fn();
+    subscribeToSessionState(supabase, onChange);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+
+    emitChange("TOKEN_REFRESHED", makeSession({ access_token: "token-new" }));
+    expect(onChange).toHaveBeenLastCalledWith({ accessToken: "token-new", email: "pharmacist@example.com" });
+
+    emitChange("SIGNED_OUT", null);
+    expect(onChange).toHaveBeenLastCalledWith(null);
+    expect(onChange).toHaveBeenCalledTimes(3);
+  });
+
+  it("emits when the email changes even if the token string does not", async () => {
+    const { supabase, emitChange } = makeFakeSupabase(makeSession());
+    const onChange = vi.fn();
+    subscribeToSessionState(supabase, onChange);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+
+    emitChange("USER_UPDATED", makeSession({ user: { ...makeSession().user, email: "other@example.com" } }));
+
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("always emits the first state, including null, and does not repeat a repeated null", async () => {
+    const { supabase, emitChange } = makeFakeSupabase(null);
+    const onChange = vi.fn();
+    subscribeToSessionState(supabase, onChange);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(null));
+
+    emitChange("INITIAL_SESSION", null);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
 });

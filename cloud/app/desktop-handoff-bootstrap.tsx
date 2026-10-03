@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
-import { DESKTOP_HANDOFF_COOKIE_NAME, parseDesktopSessionMessage } from "@/lib/desktop-handoff";
+import { DESKTOP_HANDOFF_COOKIE_NAME, parseDesktopSessionMessage, shouldApplyPushedSession } from "@/lib/desktop-handoff";
 
 /**
  * Client half of the desktop -> embedded-WebView2 session handoff — see
@@ -37,16 +37,20 @@ export default function DesktopHandoffBootstrap() {
     const onMessage = (event: { data: unknown }) => {
       const session = parseDesktopSessionMessage(event.data);
       if (!session) return;
-      try {
-        void getSupabaseBrowserClient()
-          .auth.setSession(session)
-          .catch(() => {
-            // A failed push just leaves the page on its previous session;
-            // the next push (or the page's own sign-in gate) recovers.
-          });
-      } catch {
-        // Supabase not configured — nothing to update.
-      }
+      void (async () => {
+        try {
+          const supabase = getSupabaseBrowserClient();
+          // Skip a push that carries the token we already hold: setSession
+          // would notify every subscriber with SIGNED_IN and make each
+          // page reload its data (spinner flash, edit forms reset).
+          const { data } = await supabase.auth.getSession();
+          if (!shouldApplyPushedSession(data.session?.access_token, session.access_token)) return;
+          await supabase.auth.setSession(session);
+        } catch {
+          // A failed push just leaves the page on its previous session;
+          // the next push (or the page's own sign-in gate) recovers.
+        }
+      })();
     };
 
     webview.addEventListener("message", onMessage);

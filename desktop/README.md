@@ -82,6 +82,9 @@ message rather than crashing.
    workstation's session (`scope=local`). The embedded web page never
    holds the real refresh token (`Services/DesktopWebSession.cs`); the
    desktop pushes each refreshed access token into it.
+   `CloudApiBaseUrl` must be the cloud app's canonical host: the embedded
+   page is kept on that origin, so a redirect to a different host is
+   cancelled (and opened in the default browser).
 3. The resulting access token is sent as an `Authorization: Bearer` header
    on every call into the cloud app's own REST API
    (`Services/VaccineApiService.cs` -> `cloud/app/api/vaccines`, `/lots`,

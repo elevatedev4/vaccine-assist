@@ -124,3 +124,16 @@ export function isDesktopWebViewHost(win: unknown): boolean {
   const chrome = (win as { chrome?: { webview?: unknown } }).chrome;
   return !!chrome && typeof chrome === "object" && !!chrome.webview;
 }
+
+/**
+ * A desktop push whose access token is already the stored one must not be
+ * applied: setSession() always ends by notifying every subscriber with
+ * SIGNED_IN, which makes pages reload their data. The desktop re-pushes
+ * after every navigation and on a heartbeat, so most pushes are no-ops.
+ */
+export function shouldApplyPushedSession(
+  storedAccessToken: string | null | undefined,
+  pushedAccessToken: string
+): boolean {
+  return storedAccessToken !== pushedAccessToken;
+}

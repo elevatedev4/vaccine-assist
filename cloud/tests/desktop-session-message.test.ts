@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESKTOP_SESSION_MESSAGE_TYPE, isDesktopWebViewHost, parseDesktopSessionMessage } from "@/lib/desktop-handoff";
+import { DESKTOP_SESSION_MESSAGE_TYPE, isDesktopWebViewHost, parseDesktopSessionMessage, shouldApplyPushedSession } from "@/lib/desktop-handoff";
 
 const ACCESS = "a".repeat(40);
 const PLACEHOLDER = "desktop-managed-session-no-refresh";
@@ -43,5 +43,17 @@ describe("isDesktopWebViewHost", () => {
     expect(isDesktopWebViewHost({})).toBe(false);
     expect(isDesktopWebViewHost(undefined)).toBe(false);
     expect(isDesktopWebViewHost(null)).toBe(false);
+  });
+});
+
+describe("shouldApplyPushedSession", () => {
+  it("skips a push carrying the access token the page already holds", () => {
+    expect(shouldApplyPushedSession(ACCESS, ACCESS)).toBe(false);
+  });
+
+  it("applies a push with a different token, or when nothing is stored", () => {
+    expect(shouldApplyPushedSession("b".repeat(40), ACCESS)).toBe(true);
+    expect(shouldApplyPushedSession(null, ACCESS)).toBe(true);
+    expect(shouldApplyPushedSession(undefined, ACCESS)).toBe(true);
   });
 });

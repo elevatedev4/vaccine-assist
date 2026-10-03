@@ -334,9 +334,7 @@ public partial class CloudPageView : UserControl
         };
     }
 
-    private bool IsAllowedNavigation(string uri) =>
-        CloudOriginPolicy.IsCloudOrigin(uri, _cloudApiBaseUrl) ||
-        uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase);
+    private bool IsAllowedNavigation(string uri) => CloudOriginPolicy.IsAllowedNavigation(uri, _cloudApiBaseUrl);
 
     private static void OpenInDefaultBrowser(string uri)
     {

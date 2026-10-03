@@ -42,4 +42,28 @@ public class CloudOriginPolicyTests
     {
         Assert.False(CloudOriginPolicy.IsCloudOrigin("https://vaccine-assist.example.test/", cloud));
     }
+
+    [Theory]
+    [InlineData("https://vaccine-assist.example.test/lots")]
+    [InlineData("about:blank")]
+    [InlineData("chrome-error://chromewebdata/")] // WebView2's failed-load page
+    [InlineData("blob:https://vaccine-assist.example.test/3f2c1a9e-0000-4000-8000-000000000000")] // CSV export link
+    public void TheGuardAllowsCloudPagesAboutBlobsFromTheCloudAndTheErrorPage(string url)
+    {
+        Assert.True(CloudOriginPolicy.IsAllowedNavigation(url, Cloud));
+    }
+
+    [Theory]
+    [InlineData("https://evil.example.test/")]
+    [InlineData("https://other-host.example.test/") ] // a redirect to a non-canonical host is external
+    [InlineData("blob:https://evil.example.test/3f2c1a9e-0000-4000-8000-000000000000")]
+    [InlineData("blob:")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("file:///C:/Windows/win.ini")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void TheGuardCancelsEverythingElse(string? url)
+    {
+        Assert.False(CloudOriginPolicy.IsAllowedNavigation(url, Cloud));
+    }
 }
