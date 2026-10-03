@@ -95,7 +95,20 @@ public sealed class SessionStore : ISessionStore
         };
 
         var json = JsonSerializer.Serialize(dto, JsonOptions);
-        File.WriteAllText(_filePath, json);
+
+        // Write-then-rename so a crash/kill mid-write (the app is
+        // restarted constantly, and update-and-run.ps1 stops a running
+        // copy) can never leave a truncated session.json — which Load
+        // would read as "no session" and force a sign-in. Move with
+        // overwrite replaces the old file in one step on the same volume.
+        var tempPath = _filePath + ".tmp";
+        using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(json));
+            stream.Flush(flushToDisk: true); // fsync: power loss must not leave a zero-length session.json after the move
+        }
+
+        File.Move(tempPath, _filePath, overwrite: true);
     }
 
     public void Delete()
@@ -105,6 +118,11 @@ public sealed class SessionStore : ISessionStore
             if (File.Exists(_filePath))
             {
                 File.Delete(_filePath);
+            }
+
+            if (File.Exists(_filePath + ".tmp"))
+            {
+                File.Delete(_filePath + ".tmp");
             }
         }
         catch

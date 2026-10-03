@@ -70,6 +70,21 @@ message rather than crashing.
    `Supabase.Client.Auth.SignIn(email, password)` directly against
    Supabase Auth (the `Supabase` NuGet package) — the one shared pharmacy
    login.
+   **Staying signed in (~90 days):** `Services/SessionKeeper.cs` owns the
+   session. It persists the refresh token (DPAPI, CurrentUser) to
+   `%LocalAppData%\VaccineAssist\session.json` after EVERY refresh —
+   Supabase refresh tokens rotate, so a stale one on disk ends the
+   session — refreshes the access token ~5 min before it expires (one
+   serialized refresh at a time), restores silently on every launch, and
+   only shows the sign-in screen when Supabase definitively rejects the
+   session or 90 days have passed since the last interactive sign-in. Network
+   trouble never clears the stored session. Sign out ends only this
+   workstation's session (`scope=local`). The embedded web page never
+   holds the real refresh token (`Services/DesktopWebSession.cs`); the
+   desktop pushes each refreshed access token into it.
+   `CloudApiBaseUrl` must be the cloud app's canonical host: the embedded
+   page is kept on that origin, so a redirect to a different host is
+   cancelled (and opened in the default browser).
 3. The resulting access token is sent as an `Authorization: Bearer` header
    on every call into the cloud app's own REST API
    (`Services/VaccineApiService.cs` -> `cloud/app/api/vaccines`, `/lots`,

@@ -17,14 +17,18 @@ public static class SessionExpiry
     public const int MaxAgeDays = 90;
 
     /// <summary>
-    /// True when <paramref name="issuedAtUtc"/> is neither in the future
-    /// (clamped to false rather than "valid forever" — a clock rollback
-    /// shouldn't grant an even-longer session) nor more than
-    /// <see cref="MaxAgeDays"/> old as of <paramref name="nowUtc"/>.
+    /// False ONLY when the session is <see cref="MaxAgeDays"/> or more old
+    /// as of <paramref name="nowUtc"/>. A negative age (issuedAtUtc is in
+    /// the future — the workstation clock was stepped back, e.g. a CMOS
+    /// battery reset or a bad NTP sync) is tolerated and counts as age
+    /// zero: deleting a good 90-day session over clock skew is exactly
+    /// the sign-in this feature exists to prevent. SessionKeeper clamps
+    /// the stored anchor to "now" in that case, so a rolled-back clock can
+    /// never stretch the ceiling past 90 days from when it was noticed.
     /// </summary>
     public static bool IsValid(DateTime issuedAtUtc, DateTime nowUtc)
     {
         var age = nowUtc - issuedAtUtc;
-        return age >= TimeSpan.Zero && age < TimeSpan.FromDays(MaxAgeDays);
+        return age < TimeSpan.FromDays(MaxAgeDays);
     }
 }

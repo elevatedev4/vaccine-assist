@@ -45,12 +45,13 @@ public class SessionExpiryTests
     }
 
     [Fact]
-    public void InvalidWhenIssuedInTheFuture()
+    public void ValidWhenIssuedInTheFutureBecauseTheClockWasSteppedBack()
     {
-        // Guards against a clock rollback (or a corrupt/tampered file)
-        // granting an even-longer session than intended.
+        // A negative age (clock rolled back) must not delete a good
+        // session — only a true >= 90 days does. SessionKeeper clamps the
+        // anchor so this can't extend the ceiling (SessionKeeperTests).
         var now = new DateTime(2026, 9, 13, 12, 0, 0, DateTimeKind.Utc);
-        var issuedAt = now.AddDays(1);
-        Assert.False(SessionExpiry.IsValid(issuedAt, now));
+        Assert.True(SessionExpiry.IsValid(now.AddDays(1), now));
+        Assert.True(SessionExpiry.IsValid(now.AddDays(400), now));
     }
 }

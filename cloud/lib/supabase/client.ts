@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { env } from "@/lib/env";
+import { isDesktopWebViewHost } from "@/lib/desktop-handoff";
 
 /**
  * Browser-safe Supabase client (anon key only). Backs the /settings
@@ -30,7 +31,10 @@ export function getSupabaseBrowserClient(): SupabaseClient {
   cached = createClient(url, anonKey, {
     auth: {
       persistSession: true,
-      autoRefreshToken: true,
+      // OFF inside the desktop app's WebView2: the desktop owns the only
+      // real refresh token and pushes fresh access tokens in (see
+      // isDesktopWebViewHost). Every other browser keeps the default.
+      autoRefreshToken: !(typeof window !== "undefined" && isDesktopWebViewHost(window)),
     },
   });
   return cached;

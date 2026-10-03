@@ -228,29 +228,12 @@ public sealed class LoginViewModel : ObservableObject
                 AppFileLog.LogException("LoginViewModel.SignInAsync (settings save)", ex);
             }
 
-            // Will, 2026-09-13: "make that last for 90 days without
-            // requiring a login again." Every successful call through
-            // this method — manual entry OR the seeded autologin.json
-            // path (TryAutoSignInAsync calls this same method) — resets
-            // the 90-day clock to now. That's deliberate: an
-            // autologin.json machine already re-authenticates silently on
-            // every single restart regardless, so layering a rolling
-            // session.json on top is harmless there and gives a real
-            // human's manual sign-in the full 90 days it was promised.
-            // Same resilience pattern as the settings save above — a
-            // failed write here must never stop sign-in from completing.
-            try
-            {
-                if (_authService.AccessToken is { Length: > 0 } accessToken &&
-                    _authService.RefreshToken is { Length: > 0 } refreshToken)
-                {
-                    _sessionStore.Save(new PersistedSession(accessToken, refreshToken, DateTime.UtcNow));
-                }
-            }
-            catch (Exception ex)
-            {
-                AppFileLog.LogException("LoginViewModel.SignInAsync (session save)", ex);
-            }
+            // Will, 2026-09-13/2026-10-03: the 90-day session is persisted
+            // by the auth service's SessionKeeper (it starts a new 90-day
+            // window on every successful sign-in here — manual OR the
+            // autologin.json path — and re-persists every rotated refresh
+            // token). This view model no longer writes session.json: two
+            // writers is how a stale refresh token ended up on disk.
 
             // Set BEFORE Invoke — see handedOff's own comment above for why
             // it can't be set after (Invoke may already have returned to
@@ -416,15 +399,40 @@ public sealed class LoginViewModel : ObservableObject
             return;
         }
 
-        if (await TryRestoreSessionAsync())
+        switch (await TryRestoreSessionAsync())
         {
-            return;
-        }
+            case RestoreOutcome.Restored:
+                return;
 
-        await TryAutoSignInAsync();
+            case RestoreOutcome.ServiceUnreachable:
+                // Stop here: the saved sign-in is intact, and a password
+                // sign-in (autologin.json) would only hit the same dead
+                // network. The manual form comes up with an explanation;
+                // reopening the app once the network is back restores
+                // silently.
+                ErrorMessage = SignInErrorMapper.NetworkOrTimeoutMessage;
+                return;
+
+            default:
+                await TryAutoSignInAsync();
+                return;
+        }
     }
 
-    private async Task<bool> TryRestoreSessionAsync()
+    private enum RestoreOutcome
+    {
+        /// <summary>No usable stored session (none / expired / rejected).</summary>
+        NotRestored,
+
+        /// <summary>Signed in from the stored session.</summary>
+        Restored,
+
+        /// <summary>The service couldn't be reached — the stored session
+        /// was KEPT.</summary>
+        ServiceUnreachable,
+    }
+
+    private async Task<RestoreOutcome> TryRestoreSessionAsync()
     {
         PersistedSession? persisted;
         try
@@ -435,50 +443,38 @@ public sealed class LoginViewModel : ObservableObject
         {
             AppFileLog.LogException("LoginViewModel.TryRestoreSessionAsync (session load)", ex);
             AppFileLog.Log($"[Startup] session restore: failed (could not read stored session: {ex.GetType().Name})");
-            return false;
+            return RestoreOutcome.NotRestored;
         }
 
         if (persisted is null || !SessionExpiry.IsValid(persisted.IssuedAtUtc, DateTime.UtcNow))
         {
             AppFileLog.Log("[Startup] session restore: failed (no valid stored session)");
-            return false;
+            return RestoreOutcome.NotRestored;
         }
 
         IsBusy = true;
         try
         {
-            var result = await _authService.TryRestoreSessionAsync(persisted.AccessToken, persisted.RefreshToken);
+            // The auth service refreshes an expired access token (with
+            // retry/backoff on network trouble), persists any rotated
+            // token itself, and clears session.json ONLY when Supabase
+            // definitively rejects the session.
+            var result = await _authService.TryRestoreSessionAsync(persisted.AccessToken, persisted.RefreshToken, persisted.IssuedAtUtc);
             if (!result.Success)
             {
-                AppFileLog.Log($"[Startup] session restore: failed ({result.ErrorMessage ?? "rejected"})");
-                return false;
-            }
-
-            // Re-persist the (likely rotated) tokens but keep the
-            // ORIGINAL IssuedAtUtc — the 90-day window tracks the last
-            // time a human actually signed in, not each silent restore.
-            try
-            {
-                if (_authService.AccessToken is { Length: > 0 } accessToken &&
-                    _authService.RefreshToken is { Length: > 0 } refreshToken)
-                {
-                    _sessionStore.Save(new PersistedSession(accessToken, refreshToken, persisted.IssuedAtUtc));
-                }
-            }
-            catch (Exception ex)
-            {
-                AppFileLog.LogException("LoginViewModel.TryRestoreSessionAsync (session save)", ex);
+                AppFileLog.Log($"[Startup] session restore: failed ({(result.IsTransient ? "service unreachable, saved sign-in kept: " : "")}{result.ErrorMessage ?? "rejected"})");
+                return result.IsTransient ? RestoreOutcome.ServiceUnreachable : RestoreOutcome.NotRestored;
             }
 
             AppFileLog.Log("[Startup] session restore: ok");
             SignedIn?.Invoke(this, EventArgs.Empty);
-            return true;
+            return RestoreOutcome.Restored;
         }
         catch (Exception ex)
         {
             AppFileLog.LogException("LoginViewModel.TryRestoreSessionAsync", ex);
             AppFileLog.Log($"[Startup] session restore: failed ({ex.GetType().Name})");
-            return false;
+            return RestoreOutcome.NotRestored;
         }
         finally
         {

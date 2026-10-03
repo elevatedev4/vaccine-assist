@@ -125,4 +125,29 @@ public class SessionStoreTests
 
         Assert.Null(exception);
     }
+
+    [Fact]
+    public void OverwritingKeepsTheLatestTokensAndLeavesNoTempFileBehind()
+    {
+        // Atomic write (temp file + move): a kill mid-write can never leave
+        // a truncated session.json, and rotation overwrites it constantly.
+        var dir = Path.Combine(Path.GetTempPath(), "va-session-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(dir, "session.json");
+        try
+        {
+            var store = new SessionStore(path);
+            store.Save(new PersistedSession("access-1", "refresh-1", DateTime.UtcNow));
+            store.Save(new PersistedSession("access-2", "refresh-2", DateTime.UtcNow));
+
+            Assert.Equal("refresh-2", store.Load()!.RefreshToken);
+            Assert.Equal(new[] { path }, Directory.GetFiles(dir));
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
 }

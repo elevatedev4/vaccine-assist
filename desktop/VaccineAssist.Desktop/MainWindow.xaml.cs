@@ -1198,6 +1198,12 @@ public partial class MainWindow : Window
     /// would silently survive, so the NEXT sign-in's embedded page could
     /// still show the PREVIOUS pharmacist's account.
     /// </summary>
+    /// <summary>Signs out exactly like the tray menu's Sign out item. Also
+    /// used by App.xaml.cs when the running session ends for good
+    /// (SessionKeeper.SessionEnded) so the user lands on the sign-in
+    /// window instead of a shell that silently has no session.</summary>
+    public System.Threading.Tasks.Task ForceSignOutAsync() => SignOutAndRaiseLoggedOutAsync();
+
     private async System.Threading.Tasks.Task SignOutAndRaiseLoggedOutAsync()
     {
         _allowRealClose = true;

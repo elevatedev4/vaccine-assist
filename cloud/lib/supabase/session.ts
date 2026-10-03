@@ -34,15 +34,31 @@ export function subscribeToSessionState(
   onChange: (state: SessionState) => void
 ): () => void {
   let cancelled = false;
+  let hasEmitted = false;
+  let last: SessionState = null;
+
+  // supabase-js replays SIGNED_IN on every setSession() and TOKEN_REFRESHED
+  // on every refresh — each carries a brand-new object, and pages key their
+  // data-loading effects on the state object, so forwarding every event
+  // reloaded the page (spinner flash, edit forms reset mid-edit). Only
+  // forward a change in who is signed in / which token is current; the
+  // first emission always goes through.
+  const emit = (state: SessionState) => {
+    if (cancelled) return;
+    if (hasEmitted && state?.accessToken === last?.accessToken && state?.email === last?.email) return;
+    hasEmitted = true;
+    last = state;
+    onChange(state);
+  };
 
   void supabase.auth.getSession().then(({ data }) => {
-    if (!cancelled) onChange(toSessionState(data.session));
+    emit(toSessionState(data.session));
   });
 
   const {
     data: { subscription },
   } = supabase.auth.onAuthStateChange((_event, session) => {
-    if (!cancelled) onChange(toSessionState(session));
+    emit(toSessionState(session));
   });
 
   return () => {
