@@ -7,6 +7,7 @@ import { subscribeToSessionState, toSessionState, type SessionState } from "@/li
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import { todayInChicago } from "@/lib/chicago-date";
 import { buildAppointmentTable, heatmapCellBackground } from "@/lib/appointment-table";
+import { buildPocTestTable } from "@/lib/poc-test-table";
 import {
   MAX_RANGE_MONTHS,
   chunkScheduleRange,
@@ -19,7 +20,7 @@ import {
   type MergedPoll,
   type ScheduleRange,
 } from "@/lib/schedule-range";
-import { ScheduleTableHead, formatDayLabel, renderCount, styles as tableStyles, totalCellStyle } from "../schedule-table";
+import { PocTestsSection, ScheduleTableHead, formatDayLabel, renderCount, styles as tableStyles, totalCellStyle } from "../schedule-table";
 
 /**
  * "View more" schedule (Will, 2026-10-07: "view the schedule farther out ...
@@ -201,6 +202,8 @@ function ScheduleRangeContent() {
 
   const days = daysInclusive(range.start, range.end);
   const table = buildAppointmentTable(poll?.counts ?? [], days);
+  // Merged across every chunk, so it covers the whole chosen range.
+  const testTable = buildPocTestTable(poll?.testCounts ?? [], days);
 
   let dailyScaleMax = 0;
   for (const row of table.rows) {
@@ -322,6 +325,8 @@ function ScheduleRangeContent() {
           </table>
         </div>
       )}
+
+      {poll && poll.configured && <PocTestsSection testTable={testTable} />}
     </main>
   );
 }

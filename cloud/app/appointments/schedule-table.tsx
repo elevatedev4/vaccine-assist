@@ -1,5 +1,6 @@
 import type { AppointmentTableColumn } from "@/lib/appointment-table";
 import { heatmapCellBackground } from "@/lib/appointment-table";
+import { computePocTestHeatmapMaxes, isPocTestTableEmpty, type PocTestTable } from "@/lib/poc-test-table";
 
 // Shared presentation for the pivoted schedule table (vaccine columns across
 // the top, dates down the left). Extracted verbatim from
@@ -444,6 +445,69 @@ export function ScheduleTableHead({ columns }: { columns: AppointmentTableColumn
           ))}
         </tr>
       </thead>
+    </>
+  );
+}
+
+/**
+ * Point-of-care tests section (heading + table, or a muted one-liner when no
+ * test-type columns exist in the range) — shared by the 7-day page and the
+ * date-range page. Moved verbatim from app/appointments/page.tsx; see
+ * lib/poc-test-table.ts for the table builder.
+ */
+export function PocTestsSection({ testTable }: { testTable: PocTestTable }) {
+  const testHeatmapMaxes = computePocTestHeatmapMaxes(testTable);
+  return (
+    <>
+      <h2 style={styles.hourlyHeading}>Point-of-care tests</h2>
+      {isPocTestTableEmpty(testTable) ? (
+        <p style={styles.muted}>No point-of-care tests scheduled in this range.</p>
+      ) : (
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <colgroup>
+              <col />
+              <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
+              {testTable.columns.map((column) => (
+                <col key={column.testName} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
+              ))}
+            </colgroup>
+            <thead>
+              <tr>
+                <th style={styles.thType}>Scheduled date</th>
+                <th style={styles.thLeaf}>Total</th>
+                {testTable.columns.map((column) => (
+                  <th key={column.testName} style={{ ...styles.thLeaf, ...COLUMN_DIVIDER }}>
+                    {column.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {testTable.days.map((day) => (
+                <tr key={day}>
+                  <td style={styles.tdType}>{formatDayLabel(day)}</td>
+                  <td
+                    style={totalCellStyle(
+                      styles.totalCell,
+                      heatmapCellBackground(testTable.dailyTotals[day], testHeatmapMaxes.totalScaleMax)
+                    )}
+                  >
+                    {testTable.dailyTotals[day]}
+                  </td>
+                  {testTable.columns.map((column, index) =>
+                    renderCount(
+                      { vaccineName: column.testName, group: "Other", subgroup: null, label: column.label },
+                      testTable.rows[index].countsByDay[day],
+                      testHeatmapMaxes.dataScaleMax
+                    )
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }

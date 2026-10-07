@@ -22,6 +22,7 @@ import {
   COLUMN_DIVIDER,
   DATA_COL_WIDTH_PX,
   HEADER_ROW_COUNT,
+  PocTestsSection,
   ScheduleTableHead,
   TOTAL_COL_WIDTH_PX,
   buildHeaderRows,
@@ -37,8 +38,6 @@ import {
 } from "./schedule-table";
 import {
   buildPocTestTable,
-  computePocTestHeatmapMaxes,
-  isPocTestTableEmpty,
   type PocTestTable,
   type TestCount,
 } from "@/lib/poc-test-table";
@@ -481,7 +480,6 @@ export default function AppointmentsPage() {
   // when `testCounts` is missing (unconfigured/stale-cache/not-yet-
   // loaded), same pattern as buildHourlyBreakdownTable above.
   const testTable: PocTestTable = buildPocTestTable(poll?.testCounts ?? [], days);
-  const testHeatmapMaxes = computePocTestHeatmapMaxes(testTable);
 
   // Scheduling activity (V-T-booking-activity) — only ever built once
   // `activity` has actually loaded (the section is collapsed, and its
@@ -781,55 +779,7 @@ export default function AppointmentsPage() {
               WITH at least one test-type column still always renders (even
               if a given day's count is 0) — same "always render the
               columns you have" convention as the main table. */}
-          <h2 style={styles.hourlyHeading}>Point-of-care tests</h2>
-          {isPocTestTableEmpty(testTable) ? (
-            <p style={styles.muted}>No point-of-care tests scheduled in this range.</p>
-          ) : (
-            <div style={styles.tableWrap}>
-              <table style={styles.table}>
-                <colgroup>
-                  <col />
-                  <col style={{ width: `${TOTAL_COL_WIDTH_PX}px` }} />
-                  {testTable.columns.map((column) => (
-                    <col key={column.testName} style={{ width: `${DATA_COL_WIDTH_PX}px` }} />
-                  ))}
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th style={styles.thType}>Scheduled date</th>
-                    <th style={styles.thLeaf}>Total</th>
-                    {testTable.columns.map((column) => (
-                      <th key={column.testName} style={{ ...styles.thLeaf, ...COLUMN_DIVIDER }}>
-                        {column.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {testTable.days.map((day) => (
-                    <tr key={day}>
-                      <td style={styles.tdType}>{formatDayLabel(day)}</td>
-                      <td
-                        style={totalCellStyle(
-                          styles.totalCell,
-                          heatmapCellBackground(testTable.dailyTotals[day], testHeatmapMaxes.totalScaleMax)
-                        )}
-                      >
-                        {testTable.dailyTotals[day]}
-                      </td>
-                      {testTable.columns.map((column, index) =>
-                        renderCount(
-                          { vaccineName: column.testName, group: "Other", subgroup: null, label: column.label },
-                          testTable.rows[index].countsByDay[day],
-                          testHeatmapMaxes.dataScaleMax
-                        )
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <PocTestsSection testTable={testTable} />
         </div>
         </div>
       )}

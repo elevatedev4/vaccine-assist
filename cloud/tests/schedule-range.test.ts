@@ -11,6 +11,7 @@ import {
   type ChunkPollResponse,
 } from "@/lib/schedule-range";
 import { buildAppointmentTable } from "@/lib/appointment-table";
+import { buildPocTestTable, isPocTestTableEmpty } from "@/lib/poc-test-table";
 
 describe("defaultScheduleRange", () => {
   it("is today through one calendar month out", () => {
@@ -161,6 +162,28 @@ describe("mergePollResponses", () => {
     expect(table.days).toHaveLength(32);
     expect(table.grandTotal).toBe(5);
     expect(table.dailyTotals["2026-11-07"]).toBe(3);
+  });
+
+  it("merged testCounts from every chunk build one point-of-care table over the whole range", () => {
+    const range = { start: "2026-10-07", end: "2026-11-20" };
+    const chunks = chunkScheduleRange(range);
+    expect(chunks.length).toBe(2);
+    const merged = mergePollResponses([
+      part({ testCounts: [{ date: "2026-10-08", testName: "A1C", count: 2 }, { date: "2026-10-09", testName: "Strep", count: 1 }] }),
+      part({ testCounts: [{ date: "2026-11-18", testName: "A1C", count: 4 }] }),
+    ]);
+    expect(merged.testCounts).toHaveLength(3);
+    const table = buildPocTestTable(merged.testCounts, daysInclusive(range.start, range.end));
+    expect(isPocTestTableEmpty(table)).toBe(false);
+    expect(table.columns.map((c) => c.testName).sort()).toEqual(["A1C", "Strep"]);
+    expect(table.dailyTotals["2026-10-08"]).toBe(2);
+    expect(table.dailyTotals["2026-11-18"]).toBe(4);
+    expect(table.grandTotal).toBe(7);
+  });
+
+  it("yields an empty point-of-care table when no chunk has test counts", () => {
+    const merged = mergePollResponses([part({}), part({})]);
+    expect(isPocTestTableEmpty(buildPocTestTable(merged.testCounts, ["2026-10-07"]))).toBe(true);
   });
 
   it("flags truncation if any chunk is truncated; cached only if all are", () => {
