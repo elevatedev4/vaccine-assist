@@ -30,8 +30,16 @@ export function maxEndForStart(start: string): string {
   return addMonthsToDate(start, MAX_RANGE_MONTHS);
 }
 
-function isValidIsoDate(value: string): boolean {
+/** Accepted year window — keeps Date.UTC's 0-99 year remapping and
+ * toISOString's RangeError (years near +/-275760) unreachable. */
+const MIN_YEAR = 2000;
+const MAX_YEAR = 2100;
+
+/** True for a real "YYYY-MM-DD" calendar date with a year in 2000-2100. */
+export function isValidScheduleDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  if (year < MIN_YEAR || year > MAX_YEAR) return false;
   const date = new Date(`${value}T00:00:00Z`);
   // Round-trip so "2026-02-31" (which Date silently rolls over) is rejected.
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
@@ -41,7 +49,7 @@ export type RangeValidation = { ok: true; range: ScheduleRange } | { ok: false; 
 
 /** Validates a caller-chosen start/end pair (date inputs or URL params). */
 export function validateScheduleRange(start: string, end: string): RangeValidation {
-  if (!isValidIsoDate(start) || !isValidIsoDate(end)) {
+  if (!isValidScheduleDate(start) || !isValidScheduleDate(end)) {
     return { ok: false, error: "Choose a valid start and end date." };
   }
   if (end < start) {
@@ -151,4 +159,19 @@ export function mergePollResponses(parts: ChunkPollResponse[]): MergedPoll {
     hourlyCounts: parts.flatMap((part) => part.hourlyCounts ?? []),
     testCounts: parts.flatMap((part) => part.testCounts ?? []),
   };
+}
+
+/** A merged poll tagged with the range it was fetched for. */
+export type LoadedPoll = { range: ScheduleRange; poll: MergedPoll };
+
+/**
+ * The poll to render for `current`, or null while it hasn't loaded yet.
+ * A poll fetched for a DIFFERENT range must never be pivoted against the
+ * new range's days (it would show every row as zeros), so it is hidden
+ * until the new range's data arrives. A reload of the SAME range keeps the
+ * previous data visible.
+ */
+export function pollForRange(loaded: LoadedPoll | null, current: ScheduleRange): MergedPoll | null {
+  if (!loaded) return null;
+  return loaded.range.start === current.start && loaded.range.end === current.end ? loaded.poll : null;
 }

@@ -3,10 +3,12 @@ import {
   MAX_RANGE_MONTHS,
   chunkScheduleRange,
   daysInclusive,
+  isValidScheduleDate,
   defaultScheduleRange,
   maxEndForStart,
   mergePollResponses,
   parseScheduleRangeParams,
+  pollForRange,
   validateScheduleRange,
   type ChunkPollResponse,
 } from "@/lib/schedule-range";
@@ -207,5 +209,49 @@ describe("mergePollResponses", () => {
     expect(merged.configured).toBe(false);
     expect(merged.message).toBe("Set credentials");
     expect(merged.counts).toEqual([]);
+  });
+});
+
+describe("isValidScheduleDate year window", () => {
+  it("accepts 2000..2100 and rejects years outside it", () => {
+    expect(isValidScheduleDate("2026-10-07")).toBe(true);
+    expect(isValidScheduleDate("2000-01-01")).toBe(true);
+    expect(isValidScheduleDate("2100-12-31")).toBe(true);
+    expect(isValidScheduleDate("1999-12-31")).toBe(false);
+    expect(isValidScheduleDate("2101-01-01")).toBe(false);
+  });
+
+  it("rejects years 0-99 (Date.UTC remap) and huge years (toISOString RangeError)", () => {
+    expect(isValidScheduleDate("0026-10-07")).toBe(false);
+    expect(isValidScheduleDate("0099-01-01")).toBe(false);
+    expect(isValidScheduleDate("9999-12-31")).toBe(false);
+  });
+
+  it("validateScheduleRange / parseScheduleRangeParams never throw on out-of-window years", () => {
+    expect(validateScheduleRange("0026-10-07", "2026-10-07").ok).toBe(false);
+    expect(validateScheduleRange("2026-10-07", "9999-12-31").ok).toBe(false);
+    const parsed = parseScheduleRangeParams("9999-12-31", "9999-12-31", "2026-10-07");
+    expect(parsed.error).not.toBeNull();
+    expect(parsed.range).toEqual({ start: "2026-10-07", end: "2026-11-07" });
+  });
+});
+
+describe("pollForRange", () => {
+  const poll = mergePollResponses([
+    { configured: true, counts: [], possiblyTruncated: false, cacheHit: false, asOf: null },
+  ]);
+  const loaded = { range: { start: "2026-10-07", end: "2026-11-07" }, poll };
+
+  it("returns the poll when it was fetched for the current range (incl. a same-range reload)", () => {
+    expect(pollForRange(loaded, { start: "2026-10-07", end: "2026-11-07" })).toBe(poll);
+  });
+
+  it("hides a poll fetched for a different range so the new rows never render as zeros", () => {
+    expect(pollForRange(loaded, { start: "2026-10-07", end: "2027-01-07" })).toBeNull();
+    expect(pollForRange(loaded, { start: "2026-10-08", end: "2026-11-07" })).toBeNull();
+  });
+
+  it("returns null before anything has loaded", () => {
+    expect(pollForRange(null, { start: "2026-10-07", end: "2026-11-07" })).toBeNull();
   });
 });

@@ -14,10 +14,12 @@ import {
   daysInclusive,
   maxEndForStart,
   mergePollResponses,
+  isValidScheduleDate,
   parseScheduleRangeParams,
+  pollForRange,
   validateScheduleRange,
   type ChunkPollResponse,
-  type MergedPoll,
+  type LoadedPoll,
   type ScheduleRange,
 } from "@/lib/schedule-range";
 import { PocTestsSection, ScheduleTableHead, formatDayLabel, renderCount, styles as tableStyles, totalCellStyle } from "../schedule-table";
@@ -64,7 +66,7 @@ function ScheduleRangeContent() {
   const [signInError, setSignInError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
 
-  const [poll, setPoll] = useState<MergedPoll | null>(null);
+  const [loaded, setLoaded] = useState<LoadedPoll | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -94,7 +96,7 @@ function ScheduleRangeContent() {
         setSession(state);
         setAuthChecked(true);
         if (!state) {
-          setPoll(null);
+          setLoaded(null);
           setLoadError(null);
         }
       });
@@ -125,10 +127,10 @@ function ScheduleRangeContent() {
         setProgress({ done: parts.length, total: chunks.length });
         if (!part.configured) break;
       }
-      setPoll(mergePollResponses(parts));
+      setLoaded({ range: target, poll: mergePollResponses(parts) });
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
-      setPoll(null);
+      setLoaded(null);
       setLoadError(err instanceof Error ? err.message : "Could not load appointment counts.");
     } finally {
       if (requestId === requestIdRef.current) {
@@ -173,7 +175,8 @@ function ScheduleRangeContent() {
       return;
     }
     setApplyError(null);
-    if (result.range.start === range.start && result.range.end === range.end) {
+    // An invalid URL (urlError) still navigates, so the URL becomes valid and the message clears.
+    if (!urlError && result.range.start === range.start && result.range.end === range.end) {
       // Same URL -> no navigation -> no effect; re-run explicitly.
       if (accessToken) void loadRange(accessToken, result.range, false);
       return;
@@ -200,6 +203,8 @@ function ScheduleRangeContent() {
     );
   }
 
+  // Only ever the poll fetched for THIS range (see pollForRange).
+  const poll = pollForRange(loaded, range);
   const days = daysInclusive(range.start, range.end);
   const table = buildAppointmentTable(poll?.counts ?? [], days);
   // Merged across every chunk, so it covers the whole chosen range.
@@ -214,7 +219,7 @@ function ScheduleRangeContent() {
   let rangeScaleMax = 0;
   for (const row of table.rows) rangeScaleMax = Math.max(rangeScaleMax, row.total);
 
-  const maxEnd = maxEndForStart(draftStart || range.start);
+  const maxEnd = maxEndForStart(isValidScheduleDate(draftStart) ? draftStart : range.start);
 
   return (
     <main style={tableStyles.mainWide}>
