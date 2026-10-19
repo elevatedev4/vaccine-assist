@@ -291,8 +291,8 @@ public partial class MainWindow : Window
         _versionMenuSource = new VersionMenuSource(
             buildInfo,
             new TestingVersionCatalog(ct => GitRemoteLister.RunAsync(PrimaryCheckoutLocator.ResolveForCurrentProcess(), ct)));
-        // Warm the list in the background so the first menu open has an answer.
-        _ = _versionMenuSource.Catalog.RefreshAsync();
+        // No startup lookup on purpose: `git ls-remote` can trigger Git
+        // Credential Manager prompts, so it only runs when a Version menu opens.
 
         // 2026-09-25 (Will, verbatim: "make sure the widths of all the
         // screens are enough ... it wasn't wide enough. It was maing the
@@ -582,6 +582,23 @@ public partial class MainWindow : Window
     /// The choice is never persisted: the desktop shortcut always opens
     /// Stable. A failure to start the launcher leaves this app running.
     /// </summary>
+    private bool IsVaccineEntryBusy() => _vaccineEntryCts is not null;
+
+    private bool WarnIfVaccineEntryBusy()
+    {
+        if (!IsVaccineEntryBusy())
+        {
+            return false;
+        }
+
+        MessageBox.Show(
+            "A vaccine entry is in progress. Finish or cancel it before switching versions.",
+            "Vaccine Assist",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        return true;
+    }
+
     private void SwitchVersion(string versionRef)
     {
         try
@@ -599,13 +616,8 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (_vaccineEntryCts is not null)
+            if (WarnIfVaccineEntryBusy())
             {
-                MessageBox.Show(
-                    "A vaccine entry is in progress. Finish or cancel it before switching versions.",
-                    "Vaccine Assist",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
                 return;
             }
 
@@ -627,6 +639,13 @@ public partial class MainWindow : Window
                 MessageBoxImage.Question,
                 MessageBoxResult.No);
             if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            // The modal dialog pumps messages: a hotkey may have started an
+            // entry while it was open. Never exit mid-automation.
+            if (WarnIfVaccineEntryBusy())
             {
                 return;
             }

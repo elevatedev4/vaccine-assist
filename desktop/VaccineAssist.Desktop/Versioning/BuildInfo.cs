@@ -42,6 +42,16 @@ public sealed record BuildInfo(string Ref, string Commit, string PrimaryRoot)
         }
     }
 
+    /// <summary>Windows throws if NotifyIcon.Text is longer than this.</summary>
+    public const int MaxTrayTooltipLength = 63;
+
+    /// <summary>Clamps text to NotifyIcon's hard limit (63 chars). Apply at the point of assignment.</summary>
+    public static string ClampTooltip(string? text)
+    {
+        var value = text ?? "";
+        return value.Length <= MaxTrayTooltipLength ? value : value.Substring(0, MaxTrayTooltipLength);
+    }
+
     /// <summary>One log line's worth: "testing/flu-preferred @ 1a2b3c4".</summary>
     public string Describe() =>
         $"{(string.IsNullOrEmpty(Ref) ? "unstamped" : Ref)} @ {(string.IsNullOrEmpty(Commit) ? "unknown" : Commit)}";

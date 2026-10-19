@@ -200,9 +200,41 @@ public class VersionControlTests
     [InlineData("testing/a\"b", false)]
     [InlineData("--help", false)]
     [InlineData("", false)]
+    [InlineData("testing/x\n", false)]       // trailing newline must not slip past the end anchor
+    [InlineData("stable\n", false)]
+    [InlineData("testing/aux", false)]       // Windows device names cannot be ref files
+    [InlineData("testing/CON", false)]
+    [InlineData("testing/com1", false)]
+    [InlineData("testing/lpt9.txt", false)]
+    [InlineData("testing/console", true)]
     public void LaunchableRefValidation(string value, bool expected)
     {
         Assert.Equal(expected, TestingBranchParser.IsLaunchableRef(value));
+    }
+
+    [Fact]
+    public void LsRemoteLinesWithReservedOrNewlineNamesAreDropped()
+    {
+        var output = $"{Sha}\trefs/heads/testing/aux\n{Sha}\trefs/heads/testing/ok\n";
+        Assert.Equal(new[] { "testing/ok" }, TestingBranchParser.ParseLsRemote(output).ToArray());
+    }
+
+    [Theory]
+    [InlineData(10, 10)]
+    [InlineData(63, 63)]
+    [InlineData(64, 63)]
+    [InlineData(200, 63)]
+    public void TrayTooltipIsClampedToTheNotifyIconLimit(int length, int expected)
+    {
+        Assert.Equal(expected, BuildInfo.ClampTooltip(new string('x', length)).Length);
+    }
+
+    [Fact]
+    public void LongestFaxTooltipStaysWithinTheLimitAfterClamping()
+    {
+        var info = new BuildInfo("testing/" + new string('a', 60), "abc", "");
+        var text = $"{info.TrayTooltip} \u2014 Faxes: 123456 in process";
+        Assert.True(BuildInfo.ClampTooltip(text).Length <= 63);
     }
 
     // ---- launcher command line ----

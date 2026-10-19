@@ -10,7 +10,7 @@
     repo root instead of assuming $PSScriptRoot IS the repo root.
 
     There is no Node/npm build step here (unlike rx-verify, which pairs a
-    TypeScript matching engine with its overlay) — cloud\ is a separate
+    TypeScript matching engine with its overlay) - cloud\ is a separate
     Next.js app deployed to Vercel, not something a pharmacy workstation
     builds or runs locally. This script only builds and launches the WPF
     desktop project.
@@ -113,7 +113,7 @@ function Write-ErrorBlock {
 
 # V-T21 item 8 (Will, 2026-09-08): a visible "Updating..." line the
 # instant the shortcut/one-liner runs, before anything else (repo-root
-# lookup, git, dotnet build) even starts — so a double-click clearly shows
+# lookup, git, dotnet build) even starts - so a double-click clearly shows
 # "something happened" right away, distinct from Write-Step's own
 # "Syncing to latest from GitHub..." a moment later. No other behavior in
 # this script changes.
@@ -145,11 +145,49 @@ function Invoke-NativeCapture {
 }
 
 # ---------------------------------------------------------------------
-# Only two kinds of ref are ever launched: 'stable' or 'testing/<slug>'
-# (one path segment of letters, digits, '.', '_', '-'). Anything else is
-# refused before it reaches a git or dotnet command line.
+# Pure helpers (no I/O). desktop\tests\check-launcher.ps1 extracts these by
+# name and asserts them in CI, so keep them self-contained.
 # ---------------------------------------------------------------------
-if (($Ref -cnotmatch '^(stable|testing/[A-Za-z0-9][A-Za-z0-9._-]*)$') -or $Ref.Contains('..') -or $Ref.EndsWith('.lock') -or $Ref.EndsWith('.')) {
+
+# Only two kinds of ref are ever launched: 'stable' or 'testing/<slug>'
+# (one path segment of letters, digits, '.', '_', '-'; \z, not $, so a
+# trailing newline cannot slip through). Windows device names (con, aux,
+# nul, com1, ...) are refused: they cannot be created as ref files there.
+function Test-LaunchableRef {
+    param([string]$Value)
+
+    if ([string]::IsNullOrEmpty($Value)) { return $false }
+    if ($Value -ceq 'stable') { return $true }
+    if ($Value -cnotmatch '^testing/[A-Za-z0-9][A-Za-z0-9._-]*\z') { return $false }
+    if ($Value.Contains('..') -or $Value.EndsWith('.lock') -or $Value.EndsWith('.')) { return $false }
+    $slug = $Value.Substring('testing/'.Length)
+    $baseName = $slug.Split('.')[0].ToLowerInvariant()
+    if ($baseName -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])\z') { return $false }
+    return $true
+}
+
+# A short commit id for -p:VaBuildCommit, or 'unknown' when the text is
+# anything else (e.g. a git warning that landed on the same stream).
+function Get-SafeCommit {
+    param([string]$Raw)
+
+    $text = "$Raw".Trim()
+    if ($text -cmatch '^[0-9a-f]{4,40}\z') { return $text }
+    return 'unknown'
+}
+
+# True when a value is safe to pass as an MSBuild -p:Name=Value. ';' would
+# start a second property, '%' an escape, '*' '?' wildcards, '$' '@' item/
+# property syntax, '"' breaks quoting, ',' splits some switches.
+function Test-SafeStampValue {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if ($Value -match '[;"%*?$@,\r\n\t]') { return $false }
+    return $true
+}
+
+if (-not (Test-LaunchableRef $Ref)) {
     Stop-WithMessage "Unsupported -Ref '$Ref'. Use 'stable' or 'testing/<name>'."
 }
 
@@ -329,12 +367,25 @@ function Invoke-DesktopBuild {
     }
 
     $shaOutput = Invoke-NativeCapture { git -C $Root rev-parse --short HEAD }
-    $commit = if ($script:NativeExitCode -eq 0) { (@($shaOutput) | Select-Object -First 1).ToString().Trim() } else { 'unknown' }
+    $commit = 'unknown'
+    if ($script:NativeExitCode -eq 0) {
+        foreach ($line in @($shaOutput)) {
+            $candidate = Get-SafeCommit "$line"
+            if ($candidate -ne 'unknown') { $commit = $candidate; break }
+        }
+    }
+
+    # Stamp values are only passed when safe; a bad one is omitted (the
+    # app then shows "unstamped"/unknown for it) rather than breaking the build.
+    $buildArgs = @('build', "-p:VaBuildRef=$BuildRef")
+    if ($commit -ne 'unknown') { $buildArgs += "-p:VaBuildCommit=$commit" }
+    if (Test-SafeStampValue $PrimaryRoot) { $buildArgs += "-p:VaPrimaryRoot=$PrimaryRoot" }
+    else { Write-Detail 'Primary checkout path has characters MSBuild cannot take as a property; not stamping it.' }
 
     Write-Step "Building Vaccine Assist ($BuildRef @ $commit) (dotnet build)..."
     Push-Location $projectDir
     try {
-        dotnet build "-p:VaBuildRef=$BuildRef" "-p:VaBuildCommit=$commit" "-p:VaPrimaryRoot=$PrimaryRoot" | Out-Host
+        & dotnet @buildArgs | Out-Host
         $buildExitCode = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -359,7 +410,9 @@ function Start-DesktopApp {
 
 # Creates (or resets) the <checkout>-testing worktree at origin/<ref> and
 # returns its path. Detached HEAD, so it never competes with the primary
-# checkout for a branch. Throws on failure.
+# checkout for a branch. A worktree folder that git no longer recognizes
+# (e.g. its admin dir under .git\worktrees is gone after a re-clone) is
+# removed, pruned and re-created ONCE. Throws on failure.
 function Update-TestingWorktree {
     param([string]$TestingRef)
 
@@ -369,49 +422,125 @@ function Update-TestingWorktree {
         throw "The branch origin/$TestingRef was not found on GitHub (was it deleted?)."
     }
 
-    if (-not (Test-Path (Join-Path $TestingRoot '.git'))) {
-        Write-Step "Creating the testing worktree ($TestingRoot)..."
+    $healthy = $false
+    if (Test-Path (Join-Path $TestingRoot '.git')) {
+        $null = Invoke-NativeCapture { git -C $TestingRoot rev-parse --git-dir }
+        $healthy = ($script:NativeExitCode -eq 0)
+        if ($healthy) {
+            Write-Step "Updating the testing worktree to origin/$TestingRef..."
+            $coOutput = Invoke-NativeCapture { git -C $TestingRoot checkout -f --detach $remoteRef }
+            $coCode = $script:NativeExitCode
+            $coOutput | ForEach-Object { Write-Detail "$_" }
+            if ($coCode -eq 0) { return $TestingRoot }
+            Write-Detail 'Checkout in the existing testing worktree failed; re-creating it.'
+        } else {
+            Write-Detail 'The testing worktree folder is no longer a valid git worktree; re-creating it.'
+        }
+    }
+
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        # Whatever is at this path is not a usable worktree (checked above);
+        # only ever removes the derived <checkout>-testing folder.
+        if ((Test-Path $TestingRoot) -and $TestingRoot.EndsWith('-testing')) {
+            Remove-Item -LiteralPath $TestingRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
         $null = Invoke-NativeCapture { git -C $PrimaryRoot worktree prune }
+        Write-Step "Creating the testing worktree ($TestingRoot)..."
         $addOutput = Invoke-NativeCapture { git -C $PrimaryRoot worktree add --detach --force $TestingRoot $remoteRef }
         $addCode = $script:NativeExitCode
         $addOutput | ForEach-Object { Write-Detail "$_" }
-        if ($addCode -ne 0) {
-            throw "git worktree add failed for $TestingRoot. If that folder already exists and is not a git worktree, delete or rename it and try again."
-        }
-    } else {
-        Write-Step "Updating the testing worktree to origin/$TestingRef..."
-        $coOutput = Invoke-NativeCapture { git -C $TestingRoot checkout -f --detach $remoteRef }
-        $coCode = $script:NativeExitCode
-        $coOutput | ForEach-Object { Write-Detail "$_" }
-        if ($coCode -ne 0) {
-            throw "git checkout -f --detach $remoteRef failed in $TestingRoot."
-        }
+        if ($addCode -eq 0) { return $TestingRoot }
     }
-    return $TestingRoot
+    throw "git worktree add failed for $TestingRoot (tried twice, after removing the folder and pruning)."
 }
 
 # ---------------------------------------------------------------------
-# Step 1: fetch.
+# Fetching. Only what is needed is fetched - never every branch - so an
+# odd testing/* branch name (a Windows device name, a case collision, a
+# trailing dot) cannot make the loose-ref creation of an unrelated branch
+# fail and take the stable launch down with it. --prune drops remote-
+# tracking refs of branches deleted on GitHub.
 # ---------------------------------------------------------------------
-Write-Step "Syncing with GitHub..."
-$fetchOutput = Invoke-NativeCapture { git fetch origin }
-$fetchExitCode = $script:NativeExitCode
-$fetchOutput | ForEach-Object { Write-Detail "$_" }
-if ($fetchExitCode -ne 0) {
-    Stop-WithMessage "git fetch origin failed in $PrimaryRoot. Check the network connection and try again."
+function Update-StableRefs {
+    # Both branches in one go; if `stable` does not exist on GitHub yet that
+    # fails as a whole, so fall back to `main` alone (pre-channels behavior).
+    $out = Invoke-NativeCapture { git fetch --prune origin stable main }
+    if ($script:NativeExitCode -eq 0) { return $true }
+    $out | ForEach-Object { Write-Detail "$_" }
+    $out = Invoke-NativeCapture { git fetch --prune origin main }
+    $out | ForEach-Object { Write-Detail "$_" }
+    return ($script:NativeExitCode -eq 0)
+}
+
+function Update-TestingRef {
+    param([string]$TestingRef)
+
+    $refspec = "+refs/heads/${TestingRef}:refs/remotes/origin/${TestingRef}"
+    $out = Invoke-NativeCapture { git fetch --prune origin $refspec }
+    $code = $script:NativeExitCode
+    $out | ForEach-Object { Write-Detail "$_" }
+    if ($code -ne 0) {
+        # Deleted on GitHub: drop the stale remote-tracking ref so it cannot be picked again.
+        if ((@($out) -join "`n") -match "couldn't find remote ref") {
+            $null = Invoke-NativeCapture { git update-ref -d "refs/remotes/origin/$TestingRef" }
+        }
+        throw "git fetch of origin/$TestingRef failed (the branch may have been deleted, or GitHub is unreachable)."
+    }
+}
+
+# The exe currently built under the primary checkout's bin\Debug, with its
+# size and timestamp, so a launch whose update step fails can fall back to
+# it - but only if the failed step did not touch it.
+function Get-ExeSnapshot {
+    $path = Find-DesktopExe -BinDebugDir (Join-Path $PrimaryRoot 'desktop\VaccineAssist.Desktop\bin\Debug')
+    if (($path -eq $null) -or (-not (Test-Path $path))) { return $null }
+    $item = Get-Item -LiteralPath $path
+    return @{ Path = $path; Length = $item.Length; Ticks = $item.LastWriteTimeUtc.Ticks }
+}
+
+# Update failed (offline, bad fetch, failed build): start the previously
+# built app instead of leaving no app. A failed compile never reaches the
+# copy-to-bin step, so bin\Debug still holds the last good build; if the
+# exe's size/timestamp changed anyway, it is not trusted. No usable exe =
+# the old behavior (message + hold the window open).
+function Start-PreviousBuildOrStop {
+    param([string]$Reason, $Snapshot)
+
+    $usable = $false
+    if ($Snapshot -ne $null -and (Test-Path -LiteralPath $Snapshot.Path)) {
+        $now = Get-Item -LiteralPath $Snapshot.Path
+        $usable = ($now.Length -eq $Snapshot.Length) -and ($now.LastWriteTimeUtc.Ticks -eq $Snapshot.Ticks)
+    }
+    if (-not $usable) {
+        Stop-WithMessage $Reason
+    }
+
+    Write-ErrorBlock ''
+    Write-ErrorBlock "$Reason"
+    Write-ErrorBlock 'Starting the previously installed version instead.'
+    try {
+        Stop-DesktopApps -Roots @($PrimaryRoot, $TestingRoot)
+        Start-DesktopApp -ExePath $Snapshot.Path
+    } catch {
+        Stop-WithMessage "$Reason Starting the previous version also failed: $($_.Exception.Message)"
+    }
+    Read-Host 'Press Enter to close this window'
+    exit 0
 }
 
 # ---------------------------------------------------------------------
-# Step 2 (testing only): build + run the testing worktree. ANY failure
+# Step 1 (testing only): build + run the testing worktree. ANY failure
 # prints why and falls through to the stable path below, so the user is
 # never left with no app. The stable checkout is not touched here.
 # ---------------------------------------------------------------------
 $testingFailure = $null
 if ($isTesting) {
     try {
-        $worktreePath = Update-TestingWorktree -TestingRef $Ref
-        # The previous copy of THIS testing build must not hold its own exe open.
+        Write-Step "Syncing with GitHub (origin/$Ref)..."
+        Update-TestingRef -TestingRef $Ref
+        # The previous copy of THIS testing build must not hold its own files open.
         Stop-DesktopApps -Roots @($TestingRoot)
+        $worktreePath = Update-TestingWorktree -TestingRef $Ref
         $testingExe = Invoke-DesktopBuild -Root $worktreePath -BuildRef $Ref
         # Built OK: now free the single-instance mutex (stable or testing
         # copy, whichever is running) and start the testing build.
@@ -429,10 +558,19 @@ if ($isTesting) {
 }
 
 # ---------------------------------------------------------------------
-# Step 3: stable. Forces the primary checkout's `stable` branch to exactly
+# Step 2: stable. Forces the primary checkout's `stable` branch to exactly
 # match GitHub's, every run. Until the stable branch exists on GitHub this
 # falls back to `main` (the behavior before version channels existed).
+# If GitHub cannot be reached, or the sync/build fails, the previously
+# built app is started instead (see Start-PreviousBuildOrStop).
 # ---------------------------------------------------------------------
+$previousExe = Get-ExeSnapshot
+
+Write-Step 'Syncing with GitHub...'
+if (-not (Update-StableRefs)) {
+    Start-PreviousBuildOrStop -Reason "git fetch origin failed in $PrimaryRoot (offline, or GitHub unreachable)." -Snapshot $previousExe
+}
+
 try {
     $null = Invoke-NativeCapture { git rev-parse --verify --quiet refs/remotes/origin/stable }
     $stableBranch = if ($script:NativeExitCode -eq 0) { 'stable' } else { 'main' }
@@ -452,7 +590,7 @@ try {
     $stableExe = Invoke-DesktopBuild -Root $PrimaryRoot -BuildRef $stableBranch
     Start-DesktopApp -ExePath $stableExe
 } catch {
-    Stop-WithMessage $_.Exception.Message
+    Start-PreviousBuildOrStop -Reason $_.Exception.Message -Snapshot $previousExe
 }
 
 if ($testingFailure) {
