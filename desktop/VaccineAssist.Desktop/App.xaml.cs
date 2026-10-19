@@ -11,6 +11,7 @@ using VaccineAssist.Desktop.PioneerEntryAutomation.Sequencing;
 using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
 using VaccineAssist.Desktop.VelopackIntegration;
+using VaccineAssist.Desktop.Versioning;
 using VaccineAssist.Desktop.ViewModels;
 using VaccineAssist.Desktop.Views;
 
@@ -84,6 +85,7 @@ public partial class App : Application
         // between the two, both paths this brief asked for are always
         // discoverable from "Copy logs").
         AppFileLog.Log($"[Startup] Log file: {AppFileLog.LogFilePath}");
+        AppFileLog.Log($"[Startup] Build: {BuildInfo.Current.Describe()} ({BuildInfo.Current.Channel})");
 
         _localSettingsService = new LocalSettingsService();
         _autoLoginConfigService = new AutoLoginConfigService();

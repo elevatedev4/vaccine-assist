@@ -15,35 +15,64 @@
     builds or runs locally. This script only builds and launches the WPF
     desktop project.
 
+    Version channels (Will, 2026-10-18): "It is vital that the app works at
+    all times." Git refs are the versions:
+      * `stable`        - latest known-good. THE DEFAULT. The desktop shortcut
+                          passes no arguments, so every normal start builds
+                          and runs origin/stable in the primary checkout.
+                          If origin/stable does not exist yet this falls
+                          back to origin/main (the old behavior).
+      * `testing/<slug>` - opt-in testing versions, picked from the app's
+                          Version menu (-Ref testing/<slug>). Built and run
+                          from a separate git worktree folder beside the
+                          primary checkout (<checkout>-testing), so the
+                          stable checkout and its binaries are never
+                          touched. If the testing build fails for any
+                          reason, the reason is printed and stable is built
+                          and launched instead - the user is never left
+                          with no app.
+    The script ALWAYS operates on the primary checkout, even when it is
+    started from the testing worktree's copy of this file.
+
     Every run:
-      1. Self-locates the repo root by walking up from this script's own
-         folder ($PSScriptRoot) until a .git folder is found - no
-         hardcoded path, works whether the repo is at \claude\vaccine-assist,
-         \vaccine-assist, or anywhere else.
-      2. git fetch origin + git checkout -f -B main origin/main - forces
-         the local `main` branch to exactly match GitHub's `main`,
-         regardless of local drift. GitHub is the source of truth on
-         deploy-and-test machines, so this intentionally discards local
-         modifications.
-      3. Before building: stops any running VaccineAssist.Desktop.exe whose
-         path is under THIS checkout's own bin\Debug directory (never a
-         same-named process from a different checkout) - gracefully
-         (CloseMainWindow, then a short wait, then Stop-Process -Force if
-         it's still up) - so `dotnet build` doesn't fail trying to
-         overwrite a running exe (MSB3026).
-      4. dotnet build (desktop\VaccineAssist.Desktop) - ALWAYS runs, every
-         invocation. No staleness guesswork; dotnet's incremental build
-         makes repeat runs fast once warm.
-      5. Launches the freshly built .exe, which then attempts one silent
+      1. Self-locates the primary checkout (walks up from this script's
+         folder to a .git; a linked worktree resolves back to its primary).
+      2. (-WaitForPid only) waits for the app that asked for a switch to
+         exit on its own, up to 20 seconds.
+      3. git fetch origin.
+      4. Stable: git checkout -f -B stable origin/stable (or main if there is
+         no stable branch yet) in the primary checkout - GitHub is the
+         source of truth on deploy-and-test machines, so this intentionally
+         discards local modifications.
+         Testing: create/reset the <checkout>-testing worktree to
+         origin/<ref> (detached HEAD).
+      5. Stops any running VaccineAssist.Desktop.exe from EITHER folder's
+         bin\Debug (gracefully, then forced, then waits until it has really
+         exited) so `dotnet build` can overwrite the exe and the single-
+         instance mutex is free. A same-named process from anywhere else is
+         never touched.
+      6. dotnet build (desktop\VaccineAssist.Desktop) - ALWAYS runs - with
+         the ref, short commit SHA and primary checkout path stamped into
+         the build (-p:VaBuildRef / VaBuildCommit / VaPrimaryRoot), which
+         the app uses for its window title and Version menu.
+      7. Launches the freshly built .exe, which then attempts one silent
          auto-login using %LocalAppData%\VaccineAssist\autologin.json if
          bootstrap-fresh.ps1 (repo root) seeded it - see that script and
          ViewModels/LoginViewModel.cs (TryAutoSignInAsync).
 
-    Any failed step (git fetch/checkout, a running app that won't stop,
-    dotnet build, or not finding the built .exe) prints exactly which step
-    failed, then holds the window open with "Press Enter to close" so the
-    error is readable even when this was launched via double-click. On
+    Any failed stable step (git fetch/checkout, a running app that won't
+    stop, dotnet build, or not finding the built .exe) prints exactly which
+    step failed, then holds the window open with "Press Enter to close" so
+    the error is readable even when this was launched via double-click. On
     success, it just launches and exits.
+
+.PARAMETER Ref
+    Which version to run: `stable` (default) or `testing/<slug>`.
+
+.PARAMETER WaitForPid
+    Process id of the running app that is switching versions; the script
+    waits (up to 20 s) for it to exit before touching anything. Passed by the
+    app's Version menu, not by the shortcut.
 
     PowerShell 5.1 compatible on purpose (Windows' default) - no PS7-only
     syntax (ternary, ??, &&/||, Join-Path -AdditionalChildPath, etc.).
@@ -54,6 +83,16 @@
     artifacts. Local app settings (Supabase URL/keys) live at
     %AppData%\VaccineAssist\settings.json, untouched by this script.
 #>
+
+[CmdletBinding()]
+param(
+    # Which version to run: 'stable' (default - what the desktop shortcut
+    # gets, since it passes no arguments) or 'testing/<slug>'.
+    [string]$Ref = 'stable',
+
+    # Pid of the running app that is asking for the switch (see .PARAMETER).
+    [int]$WaitForPid = 0
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -106,92 +145,92 @@ function Invoke-NativeCapture {
 }
 
 # ---------------------------------------------------------------------
-# Step 1: find the repo root by walking up from this script's own folder
-# until a .git folder turns up. This script lives in desktop\, not the
-# repo root, so (unlike rx-verify's script) $PSScriptRoot itself is NOT
-# the repo root.
+# Only two kinds of ref are ever launched: 'stable' or 'testing/<slug>'
+# (one path segment of letters, digits, '.', '_', '-'). Anything else is
+# refused before it reaches a git or dotnet command line.
 # ---------------------------------------------------------------------
-$RepoRoot = $PSScriptRoot
-while ($RepoRoot -and -not (Test-Path (Join-Path $RepoRoot '.git'))) {
-    $parent = Split-Path -Parent $RepoRoot
-    if ($parent -eq $RepoRoot -or [string]::IsNullOrEmpty($parent)) {
-        $RepoRoot = $null
-        break
+if (($Ref -cnotmatch '^(stable|testing/[A-Za-z0-9][A-Za-z0-9._-]*)$') -or $Ref.Contains('..') -or $Ref.EndsWith('.lock') -or $Ref.EndsWith('.')) {
+    Stop-WithMessage "Unsupported -Ref '$Ref'. Use 'stable' or 'testing/<name>'."
+}
+
+# ---------------------------------------------------------------------
+# Locate the PRIMARY checkout. This script lives in desktop\, so walk up to
+# the nearest .git. If that .git is a FILE the script is running from a
+# linked worktree (the <checkout>-testing folder): its first line reads
+# "gitdir: <primary>/.git/worktrees/<name>", which leads back to the primary
+# checkout. Everything below operates on the primary checkout, no matter
+# which copy of this file was started.
+# ---------------------------------------------------------------------
+function Find-PrimaryRoot {
+    param([string]$StartDir)
+
+    $dir = $StartDir
+    while ($dir -and -not (Test-Path (Join-Path $dir '.git'))) {
+        $up = Split-Path -Parent $dir
+        if ($up -eq $dir -or [string]::IsNullOrEmpty($up)) { return $null }
+        $dir = $up
     }
-    $RepoRoot = $parent
+    if (-not $dir) { return $null }
+
+    $gitEntry = Join-Path $dir '.git'
+    if (Test-Path $gitEntry -PathType Container) {
+        return $dir
+    }
+
+    # Linked worktree: .git is a file.
+    $firstLine = Get-Content -Path $gitEntry -TotalCount 1
+    if ($firstLine -match '^gitdir:\s*(.+)$') {
+        $gitDir = ($Matches[1].Trim()) -replace '/', '\'
+        $worktreesDir = Split-Path -Parent $gitDir          # <primary>\.git\worktrees
+        $dotGitDir = Split-Path -Parent $worktreesDir       # <primary>\.git
+        if ((Split-Path -Leaf $worktreesDir) -eq 'worktrees' -and (Split-Path -Leaf $dotGitDir) -eq '.git') {
+            $candidate = Split-Path -Parent $dotGitDir
+            if (Test-Path (Join-Path $candidate '.git') -PathType Container) { return $candidate }
+        }
+    }
+
+    # Fallback: <primary>-testing -> <primary>
+    if ($dir.EndsWith('-testing')) {
+        $candidate = $dir.Substring(0, $dir.Length - '-testing'.Length)
+        if (Test-Path (Join-Path $candidate '.git') -PathType Container) { return $candidate }
+    }
+    return $null
 }
 
-if (-not $RepoRoot) {
-    Stop-WithMessage "Could not find a .git folder above $PSScriptRoot. Re-clone the vaccine-assist repo (see README.md) and run this script from inside desktop\."
+$PrimaryRoot = Find-PrimaryRoot -StartDir $PSScriptRoot
+if (-not $PrimaryRoot) {
+    Stop-WithMessage "Could not find the primary vaccine-assist checkout above $PSScriptRoot. Re-clone the vaccine-assist repo (see README.md) and run this script from inside desktop\."
 }
+$TestingRoot = $PrimaryRoot.TrimEnd('\') + '-testing'
+$isTesting = $Ref.StartsWith('testing/')
 
-Set-Location -Path $RepoRoot
+Set-Location -Path $PrimaryRoot
 
 # ---------------------------------------------------------------------
-# Step 2: sync to origin/main - forces the local `main` branch to exactly
-# match GitHub's `main` every run, same reasoning as rx-verify's script.
+# Switching from inside the running app: let it finish exiting on its own
+# (releases the hotkeys, tray icon and single-instance mutex cleanly)
+# before this script touches anything. Bounded; anything still running
+# after this is stopped below.
 # ---------------------------------------------------------------------
-Write-Step "Syncing to latest from GitHub (origin/main)..."
-$fetchOutput = Invoke-NativeCapture { git fetch origin }
-$fetchExitCode = $script:NativeExitCode
-$fetchOutput | ForEach-Object { Write-Detail "$_" }
-if ($fetchExitCode -ne 0) {
-    Stop-WithMessage "git fetch origin failed in $RepoRoot. Check the network connection and try again."
-}
-
-$checkoutOutput = Invoke-NativeCapture { git checkout -f -B main origin/main }
-$checkoutExitCode = $script:NativeExitCode
-$checkoutOutput | ForEach-Object { Write-Detail "$_" }
-if ($checkoutExitCode -ne 0) {
-    Stop-WithMessage "git checkout -f -B main origin/main failed in $RepoRoot. The local checkout could not be synced to match GitHub's main branch."
-}
-
-# ---------------------------------------------------------------------
-# Step 3: dotnet build - ALWAYS runs. Incremental under the hood, so
-# there's never a stale .exe to debug.
-# ---------------------------------------------------------------------
-$desktopProjectDir = Join-Path $RepoRoot 'desktop\VaccineAssist.Desktop'
-if (-not (Test-Path $desktopProjectDir)) {
-    Stop-WithMessage "Desktop project folder not found at $desktopProjectDir. The repo checkout looks incomplete or corrupted."
-}
-
-$binDebugDir = Join-Path $desktopProjectDir 'bin\Debug'
-# Trailing-separator-normalized form used for the StartsWith() prefix
-# checks below - without the trailing '\', "...\bin\Debug" would also
-# match an unrelated sibling folder like "...\bin\DebugOld" that merely
-# starts with the same characters.
-$binDebugDirPrefix = $binDebugDir.TrimEnd('\') + '\'
-
-function Find-DesktopExe {
-    if (-not (Test-Path $binDebugDir)) { return $null }
-    $found = Get-ChildItem -Path $binDebugDir -Filter 'VaccineAssist.Desktop.exe' -Recurse -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($null -eq $found) { return $null }
-    return $found.FullName
+if ($WaitForPid -gt 0) {
+    $asker = Get-Process -Id $WaitForPid -ErrorAction SilentlyContinue
+    if ($asker) {
+        Write-Step 'Waiting for Vaccine Assist to close...'
+        $null = $asker.WaitForExit(20000)
+    }
 }
 
 # ---------------------------------------------------------------------
-# Step 3a: stop a running instance of this app before rebuilding it.
-# `dotnet build` fails with MSB3026 ("Could not copy apphost.exe ...
-# because it is being used by another process") if the exe it's about to
-# overwrite is currently running — without this, re-running the shortcut
-# or the one-liner (bootstrap-fresh.ps1) while Vaccine Assist is still
-# open turns into a build-failure retry loop instead of a clean update.
-# Only ever stops a VaccineAssist.Desktop.exe whose path is under THIS
-# checkout's own bin\Debug dir ($binDebugDir, built from $RepoRoot above)
-# — never a same-named process from a different checkout/location.
-# Mirrors rx-verify's update-and-run.ps1 (~/claude/rx-verify) stop-before-
-# build pattern, minus its extra "close an old-location copy too" step
-# (W-T67-specific to rx-verify, not asked for here).
+# Process handling: stop any VaccineAssist.Desktop.exe running from one of
+# the given checkout folders' bin\Debug (never a same-named process from
+# anywhere else), then wait until it has actually exited.
 # ---------------------------------------------------------------------
-# .HasExited (like .Path below) can throw — eg. a Win32Exception on an
-# access-denied/elevation-mismatch process. With $ErrorActionPreference =
-# 'Stop' that would crash the whole script before Stop-WithMessage ever
-# runs — on the double-click path, a window that just vanishes with no
-# message. Treat "can't tell" as "still running": it falls through to the
-# Stop-Process -Force attempt and then the final re-check below, both of
-# which already report a real failure loudly.
+$appProcessName = 'VaccineAssist.Desktop'
+
+# .HasExited (like .Path) can throw - eg. a Win32Exception on an
+# access-denied/elevation-mismatch process. Treat "can't tell" as "still
+# running": it falls through to the force-stop attempt and the final
+# re-check, which report a real failure loudly.
 function Test-ProcessStillRunning {
     param($Process)
     try {
@@ -202,37 +241,45 @@ function Test-ProcessStillRunning {
     }
 }
 
-$appProcessName = 'VaccineAssist.Desktop'
-$runningAppProcesses = Get-Process -Name $appProcessName -ErrorAction SilentlyContinue
-$processesToStop = @()
-foreach ($proc in $runningAppProcesses) {
-    # .Path (MainModule.FileName under the hood) can throw — eg. access
-    # denied for an elevated process while this script runs non-elevated,
-    # or a process that exited between Get-Process and here. Treat
-    # "couldn't determine" the same as "different location": never stop
-    # something we can't positively confirm is our own exe.
-    $procPath = $null
-    try {
-        $procPath = $proc.Path
-    } catch {
-        $procPath = $null
+function Get-AppProcessesUnder {
+    param([string[]]$Roots)
+
+    $prefixes = @()
+    foreach ($root in $Roots) {
+        # Trailing '\' so "...\bin\Debug" never matches a sibling like "...\bin\DebugOld".
+        $prefixes += ((Join-Path $root 'desktop\VaccineAssist.Desktop\bin\Debug').TrimEnd('\') + '\')
     }
 
-    if (($procPath -ne $null) -and $procPath.StartsWith($binDebugDirPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        $processesToStop += $proc
+    $found = @()
+    foreach ($proc in @(Get-Process -Name $appProcessName -ErrorAction SilentlyContinue)) {
+        # .Path can throw (access denied / process exited): "couldn't
+        # determine" is treated as "different location" - never stop
+        # something not positively confirmed to be ours.
+        $procPath = $null
+        try { $procPath = $proc.Path } catch { $procPath = $null }
+        if ($procPath -eq $null) { continue }
+        foreach ($prefix in $prefixes) {
+            if ($procPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                $found += $proc
+                break
+            }
+        }
     }
+    return $found
 }
 
-if ($processesToStop.Count -gt 0) {
+# Throws (does not exit) if something could not be stopped, so the caller
+# decides: stable stops with a message, testing falls back to stable.
+function Stop-DesktopApps {
+    param([string[]]$Roots)
+
+    $toStop = @(Get-AppProcessesUnder -Roots $Roots)
+    if ($toStop.Count -eq 0) { return }
+
     Write-Step 'Stopping the running Vaccine Assist app so it can be updated...'
-    foreach ($proc in $processesToStop) {
+    foreach ($proc in $toStop) {
         Write-Detail "Stopping VaccineAssist.Desktop.exe (PID $($proc.Id))..."
-        try {
-            $proc.CloseMainWindow() | Out-Null
-        } catch {
-            # No message loop / already gone — fall through to the
-            # wait-then-force-kill below regardless.
-        }
+        try { $proc.CloseMainWindow() | Out-Null } catch { }
 
         $waited = 0
         while ($waited -lt 5) {
@@ -244,49 +291,173 @@ if ($processesToStop.Count -gt 0) {
         if (Test-ProcessStillRunning $proc) {
             try {
                 Stop-Process -Id $proc.Id -Force -ErrorAction Stop
-                Start-Sleep -Seconds 1
             } catch {
-                # Failure is caught by the still-running re-check below.
+                # Caught by the re-check below.
             }
+            # Wait until it has REALLY exited (releases the mutex + the exe file lock).
+            try { $null = $proc.WaitForExit(10000) } catch { }
         }
     }
 
-    $stillRunning = @(Get-Process -Name $appProcessName -ErrorAction SilentlyContinue | Where-Object {
-        $stillPath = $null
-        try { $stillPath = $_.Path } catch { $stillPath = $null }
-        ($stillPath -ne $null) -and $stillPath.StartsWith($binDebugDirPrefix, [StringComparison]::OrdinalIgnoreCase)
-    })
-
+    $stillRunning = @(Get-AppProcessesUnder -Roots $Roots | Where-Object { Test-ProcessStillRunning $_ })
     if ($stillRunning.Count -gt 0) {
         $stillPids = ($stillRunning | ForEach-Object { $_.Id }) -join ', '
-        Stop-WithMessage "Vaccine Assist (PID(s): $stillPids) is still running and could not be stopped automatically. Close it by hand - right-click its window/taskbar icon and close, or End Task in Task Manager - then re-run this script."
+        throw "Vaccine Assist (PID(s): $stillPids) is still running and could not be stopped automatically. Close it by hand - right-click its window/taskbar icon and close, or End Task in Task Manager - then re-run this script."
     }
     Write-Detail 'Vaccine Assist stopped.'
 }
 
-Write-Step 'Building Vaccine Assist (dotnet build)...'
-Push-Location $desktopProjectDir
-try {
-    dotnet build
-    $buildExitCode = $LASTEXITCODE
-} finally {
-    Pop-Location
-}
-if ($buildExitCode -ne 0) {
-    Stop-WithMessage "dotnet build failed in $desktopProjectDir (see the error above)."
+function Find-DesktopExe {
+    param([string]$BinDebugDir)
+    if (-not (Test-Path $BinDebugDir)) { return $null }
+    $found = Get-ChildItem -Path $BinDebugDir -Filter 'VaccineAssist.Desktop.exe' -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $found) { return $null }
+    return $found.FullName
 }
 
-$exePath = Find-DesktopExe
-if (($exePath -eq $null) -or (-not (Test-Path $exePath))) {
-    Stop-WithMessage "dotnet build succeeded but VaccineAssist.Desktop.exe was not found anywhere under $binDebugDir (searched recursively for bin\Debug\net8.0-windows\VaccineAssist.Desktop.exe). Something is wrong with the build output path."
+# dotnet build ALWAYS runs (incremental under the hood, so there is never a
+# stale .exe to debug). Stamps ref + short commit + primary checkout path
+# into the build. Returns the built exe path; throws on any failure.
+function Invoke-DesktopBuild {
+    param([string]$Root, [string]$BuildRef)
+
+    $projectDir = Join-Path $Root 'desktop\VaccineAssist.Desktop'
+    if (-not (Test-Path $projectDir)) {
+        throw "Desktop project folder not found at $projectDir. The checkout looks incomplete or corrupted."
+    }
+
+    $shaOutput = Invoke-NativeCapture { git -C $Root rev-parse --short HEAD }
+    $commit = if ($script:NativeExitCode -eq 0) { (@($shaOutput) | Select-Object -First 1).ToString().Trim() } else { 'unknown' }
+
+    Write-Step "Building Vaccine Assist ($BuildRef @ $commit) (dotnet build)..."
+    Push-Location $projectDir
+    try {
+        dotnet build "-p:VaBuildRef=$BuildRef" "-p:VaBuildCommit=$commit" "-p:VaPrimaryRoot=$PrimaryRoot" | Out-Host
+        $buildExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($buildExitCode -ne 0) {
+        throw "dotnet build failed in $projectDir (exit code $buildExitCode; see the error above)."
+    }
+
+    $binDebugDir = Join-Path $projectDir 'bin\Debug'
+    $exePath = Find-DesktopExe -BinDebugDir $binDebugDir
+    if (($exePath -eq $null) -or (-not (Test-Path $exePath))) {
+        throw "dotnet build succeeded but VaccineAssist.Desktop.exe was not found anywhere under $binDebugDir (searched recursively for bin\Debug\net8.0-windows\VaccineAssist.Desktop.exe). Something is wrong with the build output path."
+    }
+    return $exePath
+}
+
+function Start-DesktopApp {
+    param([string]$ExePath)
+    Write-Step "Launching Vaccine Assist ($ExePath)..."
+    Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path -Path $ExePath -Parent)
+}
+
+# Creates (or resets) the <checkout>-testing worktree at origin/<ref> and
+# returns its path. Detached HEAD, so it never competes with the primary
+# checkout for a branch. Throws on failure.
+function Update-TestingWorktree {
+    param([string]$TestingRef)
+
+    $remoteRef = "refs/remotes/origin/$TestingRef"
+    $null = Invoke-NativeCapture { git -C $PrimaryRoot rev-parse --verify --quiet $remoteRef }
+    if ($script:NativeExitCode -ne 0) {
+        throw "The branch origin/$TestingRef was not found on GitHub (was it deleted?)."
+    }
+
+    if (-not (Test-Path (Join-Path $TestingRoot '.git'))) {
+        Write-Step "Creating the testing worktree ($TestingRoot)..."
+        $null = Invoke-NativeCapture { git -C $PrimaryRoot worktree prune }
+        $addOutput = Invoke-NativeCapture { git -C $PrimaryRoot worktree add --detach --force $TestingRoot $remoteRef }
+        $addCode = $script:NativeExitCode
+        $addOutput | ForEach-Object { Write-Detail "$_" }
+        if ($addCode -ne 0) {
+            throw "git worktree add failed for $TestingRoot. If that folder already exists and is not a git worktree, delete or rename it and try again."
+        }
+    } else {
+        Write-Step "Updating the testing worktree to origin/$TestingRef..."
+        $coOutput = Invoke-NativeCapture { git -C $TestingRoot checkout -f --detach $remoteRef }
+        $coCode = $script:NativeExitCode
+        $coOutput | ForEach-Object { Write-Detail "$_" }
+        if ($coCode -ne 0) {
+            throw "git checkout -f --detach $remoteRef failed in $TestingRoot."
+        }
+    }
+    return $TestingRoot
 }
 
 # ---------------------------------------------------------------------
-# Step 4: launch.
+# Step 1: fetch.
 # ---------------------------------------------------------------------
-Write-Step "Launching Vaccine Assist ($exePath)..."
+Write-Step "Syncing with GitHub..."
+$fetchOutput = Invoke-NativeCapture { git fetch origin }
+$fetchExitCode = $script:NativeExitCode
+$fetchOutput | ForEach-Object { Write-Detail "$_" }
+if ($fetchExitCode -ne 0) {
+    Stop-WithMessage "git fetch origin failed in $PrimaryRoot. Check the network connection and try again."
+}
+
+# ---------------------------------------------------------------------
+# Step 2 (testing only): build + run the testing worktree. ANY failure
+# prints why and falls through to the stable path below, so the user is
+# never left with no app. The stable checkout is not touched here.
+# ---------------------------------------------------------------------
+$testingFailure = $null
+if ($isTesting) {
+    try {
+        $worktreePath = Update-TestingWorktree -TestingRef $Ref
+        # The previous copy of THIS testing build must not hold its own exe open.
+        Stop-DesktopApps -Roots @($TestingRoot)
+        $testingExe = Invoke-DesktopBuild -Root $worktreePath -BuildRef $Ref
+        # Built OK: now free the single-instance mutex (stable or testing
+        # copy, whichever is running) and start the testing build.
+        Stop-DesktopApps -Roots @($PrimaryRoot, $TestingRoot)
+        Start-DesktopApp -ExePath $testingExe
+        exit 0
+    } catch {
+        $testingFailure = $_.Exception.Message
+        Write-ErrorBlock ''
+        Write-ErrorBlock "The testing version ($Ref) could not be started:"
+        Write-ErrorBlock "  $testingFailure"
+        Write-ErrorBlock 'Falling back to the Stable version...'
+        Write-Host ''
+    }
+}
+
+# ---------------------------------------------------------------------
+# Step 3: stable. Forces the primary checkout's `stable` branch to exactly
+# match GitHub's, every run. Until the stable branch exists on GitHub this
+# falls back to `main` (the behavior before version channels existed).
+# ---------------------------------------------------------------------
 try {
-    Start-Process -FilePath $exePath -WorkingDirectory (Split-Path -Path $exePath -Parent)
+    $null = Invoke-NativeCapture { git rev-parse --verify --quiet refs/remotes/origin/stable }
+    $stableBranch = if ($script:NativeExitCode -eq 0) { 'stable' } else { 'main' }
+    if ($stableBranch -eq 'main') {
+        Write-Detail 'No origin/stable branch yet - using origin/main.'
+    }
+
+    Write-Step "Syncing to latest from GitHub (origin/$stableBranch)..."
+    $checkoutOutput = Invoke-NativeCapture { git checkout -f -B $stableBranch "origin/$stableBranch" }
+    $checkoutExitCode = $script:NativeExitCode
+    $checkoutOutput | ForEach-Object { Write-Detail "$_" }
+    if ($checkoutExitCode -ne 0) {
+        throw "git checkout -f -B $stableBranch origin/$stableBranch failed in $PrimaryRoot. The local checkout could not be synced to match GitHub's $stableBranch branch."
+    }
+
+    Stop-DesktopApps -Roots @($PrimaryRoot, $TestingRoot)
+    $stableExe = Invoke-DesktopBuild -Root $PrimaryRoot -BuildRef $stableBranch
+    Start-DesktopApp -ExePath $stableExe
 } catch {
-    Stop-WithMessage "Failed to launch $exePath. Error: $($_.Exception.Message)"
+    Stop-WithMessage $_.Exception.Message
+}
+
+if ($testingFailure) {
+    # Stable is running; keep the window open so the reason above can be read.
+    Write-ErrorBlock ''
+    Write-ErrorBlock "Stable Vaccine Assist has been started. The testing version ($Ref) failed: $testingFailure"
+    Read-Host 'Press Enter to close this window'
 }

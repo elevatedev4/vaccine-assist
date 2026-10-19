@@ -46,6 +46,36 @@
   </PropertyGroup>
 
   <!--
+    Version control (Will, 2026-10-18): update-and-run.ps1 passes
+    -p:VaBuildRef=<stable|testing/slug> -p:VaBuildCommit=<short sha>
+    -p:VaPrimaryRoot=<primary checkout>; they are stamped into the assembly
+    as AssemblyMetadata so the running app knows which version it is (see
+    Versioning/BuildInfo.cs). A build with no properties (IDE, CI, the old
+    launcher) stamps "unstamped", which BuildInfo reads as plain Stable.
+    The sentinel is non-empty on purpose: empty attribute arguments are not
+    reliably emitted by the SDK's AssemblyInfo generation.
+  -->
+  <PropertyGroup>
+    <VaBuildRef Condition="'$(VaBuildRef)' == ''">unstamped</VaBuildRef>
+    <VaBuildCommit Condition="'$(VaBuildCommit)' == ''">unstamped</VaBuildCommit>
+    <VaPrimaryRoot Condition="'$(VaPrimaryRoot)' == ''">unstamped</VaPrimaryRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>VaBuildRef</_Parameter1>
+      <_Parameter2>$(VaBuildRef)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>VaBuildCommit</_Parameter1>
+      <_Parameter2>$(VaBuildCommit)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>VaPrimaryRoot</_Parameter1>
+      <_Parameter2>$(VaPrimaryRoot)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <!--
     Defensive guard for UseWindowsForms above: if the SDK's implicit-usings
     machinery ever globally imports System.Windows.Forms/System.Drawing for
     a UseWindowsForms=true project (it does for the WindowsDesktop "Windows

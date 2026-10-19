@@ -2,9 +2,12 @@ using System;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using VaccineAssist.Desktop.Navigation;
+using VaccineAssist.Desktop.Versioning;
 
 namespace VaccineAssist.Desktop.Overlay;
 
@@ -44,6 +47,15 @@ public sealed partial class PioneerOverlayWindow : Window
     /// the same way (see class doc comment). Owner's ask, 2026-09-21: "a
     /// quick way to close the app" from the vaccine icon's popup menu.</summary>
     public event EventHandler? ExitRequested;
+
+    /// <summary>Raised with the chosen version ref ("stable" or "testing/&lt;slug&gt;") when a Version submenu row is clicked.</summary>
+    public event EventHandler<string>? VersionSwitchRequested;
+
+    /// <summary>Source for the menu's "Version" submenu; null (never set) omits the submenu.</summary>
+    public VersionMenuSource? Versions { get; set; }
+
+    private MenuItem? _versionMenuItem;
+    private OverlayRect? _openSubmenuScreenBounds;
 
     /// <summary>Raw HWND for PioneerOverlayController's SetWindowPos calls — IntPtr.Zero until SourceInitialized has run.</summary>
     public IntPtr Handle { get; private set; } = IntPtr.Zero;
@@ -105,6 +117,11 @@ public sealed partial class PioneerOverlayWindow : Window
         var exitItem = new MenuItem { Header = "Exit" };
         exitItem.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
         menu.Items.Add(new Separator());
+        if (Versions is not null)
+        {
+            _versionMenuItem = BuildVersionMenuItem();
+            menu.Items.Add(_versionMenuItem);
+        }
         menu.Items.Add(exitItem);
 
         menu.PlacementTarget = IconBorder;
@@ -151,6 +168,20 @@ public sealed partial class PioneerOverlayWindow : Window
         if (menu is null || !menu.IsOpen) return;
         if (!OverlayMenuGeometry.IsPointOutsideMenu(_openMenuScreenBounds, screenX, screenY)) return;
 
+        // The Version submenu's popup lies outside the main menu's rect: a
+        // click on one of its rows must not count as an outside click (it
+        // would close the menu before the row's Click fires). If the
+        // submenu is open but its bounds are unknown, err on the side of
+        // keeping the menu open — Esc / choosing a row still close it.
+        if (_versionMenuItem is { IsSubmenuOpen: true })
+        {
+            if (_openSubmenuScreenBounds is not { } submenuBounds
+                || !OverlayMenuGeometry.IsPointOutsideMenu(submenuBounds, screenX, screenY))
+            {
+                return;
+            }
+        }
+
         // Posted back through the Dispatcher: the hook callback runs
         // synchronously inside Windows' own hook-chain dispatch, and
         // closing a Popup from within that reentrant context is best done
@@ -182,12 +213,81 @@ public sealed partial class PioneerOverlayWindow : Window
         _outsideClickHook.Uninstall();
         if (sender is ContextMenu menu)
         {
+            _versionMenuItem = null;
+            _openSubmenuScreenBounds = null;
             menu.Closed -= Menu_OnClosed;
             menu.PreviewKeyDown -= Menu_OnPreviewKeyDown;
             if (ReferenceEquals(_openMenu, menu))
             {
                 _openMenu = null;
             }
+        }
+    }
+
+    private MenuItem BuildVersionMenuItem()
+    {
+        var versionItem = new MenuItem { Header = "Version" };
+        PopulateVersionRows(versionItem);
+        versionItem.SubmenuOpened += (_, _) => OnVersionSubmenuOpened(versionItem);
+        versionItem.SubmenuClosed += (_, _) => _openSubmenuScreenBounds = null;
+        return versionItem;
+    }
+
+    private void PopulateVersionRows(MenuItem versionItem)
+    {
+        versionItem.Items.Clear();
+        if (Versions is null) return;
+
+        foreach (var row in Versions.BuildItems())
+        {
+            var rowItem = new MenuItem { Header = row.Text, IsEnabled = row.Enabled, IsChecked = row.Checked };
+            if (row.Enabled && row.Ref is { Length: > 0 } versionRef)
+            {
+                rowItem.Click += (_, _) => VersionSwitchRequested?.Invoke(this, versionRef);
+            }
+            versionItem.Items.Add(rowItem);
+        }
+    }
+
+    /// <summary>Shows the last known list immediately, then refreshes the remote list on a background thread (never the UI thread) and repaints if the submenu is still open.</summary>
+    private void OnVersionSubmenuOpened(MenuItem versionItem)
+    {
+        PopulateVersionRows(versionItem);
+        TryUpdateSubmenuBounds(versionItem);
+        if (Versions is null) return;
+
+        Versions.Catalog.RefreshAsync().ContinueWith(
+            _ => Dispatcher.BeginInvoke(() =>
+            {
+                if (versionItem.IsSubmenuOpen)
+                {
+                    PopulateVersionRows(versionItem);
+                    TryUpdateSubmenuBounds(versionItem);
+                }
+            }),
+            TaskScheduler.Default);
+    }
+
+    /// <summary>Best-effort screen bounds of the open submenu popup (physical pixels), for the outside-click check.</summary>
+    private void TryUpdateSubmenuBounds(MenuItem versionItem)
+    {
+        try
+        {
+            if (versionItem.Template?.FindName("PART_Popup", versionItem) is Popup { Child: FrameworkElement child })
+            {
+                child.UpdateLayout();
+                var origin = child.PointToScreen(new Point(0, 0));
+                var dpi = VisualTreeHelper.GetDpi(child);
+                _openSubmenuScreenBounds = new OverlayRect(
+                    (int)Math.Round(origin.X),
+                    (int)Math.Round(origin.Y),
+                    (int)Math.Round(child.ActualWidth * dpi.DpiScaleX),
+                    (int)Math.Round(child.ActualHeight * dpi.DpiScaleY));
+            }
+        }
+        catch
+        {
+            _openSubmenuScreenBounds = null; // see OnGlobalMouseDown: unknown bounds keep the menu open
         }
     }
 

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 using VaccineAssist.Desktop.Logging;
+using VaccineAssist.Desktop.Versioning;
 
 namespace VaccineAssist.Desktop.Tray;
 
@@ -38,9 +39,10 @@ namespace VaccineAssist.Desktop.Tray;
 /// </summary>
 public sealed class TrayIconController : IDisposable
 {
-    private const string BaseTooltipText = "Vaccine Assist";
-
+    private readonly string _baseTooltipText;
     private readonly NotifyIcon _notifyIcon;
+    private readonly VersionMenuSource? _versions;
+    private readonly SynchronizationContext? _uiContext;
 
     public event EventHandler? OpenRequested;
     public event EventHandler? SignOutRequested;
@@ -62,6 +64,9 @@ public sealed class TrayIconController : IDisposable
     /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a Navigate row is clicked.</summary>
     public event EventHandler<string>? NavigationRequested;
 
+    /// <summary>Raised with the chosen version ref ("stable" or "testing/&lt;slug&gt;") when a Version submenu row is clicked.</summary>
+    public event EventHandler<string>? VersionSwitchRequested;
+
     /// <summary>Raised with the NEW checked state when "Show Pioneer overlay" is clicked.</summary>
     public event EventHandler<bool>? ShowOverlayToggled;
 
@@ -70,8 +75,13 @@ public sealed class TrayIconController : IDisposable
     /// ShowPioneerOverlay) — sets the checkbox row's initial Checked state
     /// so the tray menu reflects the real setting instead of always
     /// starting unchecked.</param>
-    public TrayIconController(bool showPioneerOverlayInitiallyChecked)
+    /// <param name="versions">Source for the Version submenu; null disables the submenu row.</param>
+    public TrayIconController(bool showPioneerOverlayInitiallyChecked, VersionMenuSource? versions = null)
     {
+        _versions = versions;
+        _uiContext = SynchronizationContext.Current;
+        _baseTooltipText = (versions?.Current ?? BuildInfo.Current).TrayTooltip;
+
         var menu = new ContextMenuStrip();
         foreach (var item in TrayMenuBuilder.Build())
         {
@@ -82,6 +92,18 @@ public sealed class TrayIconController : IDisposable
             }
 
             var menuItem = new ToolStripMenuItem(item.Text) { Enabled = item.Enabled };
+            if (item.Action == TrayMenuAction.Version)
+            {
+                menuItem.Enabled = _versions is not null;
+                if (_versions is not null)
+                {
+                    PopulateVersionItems(menuItem);
+                    menuItem.DropDownOpening += (_, _) => OnVersionDropDownOpening(menuItem);
+                }
+                menu.Items.Add(menuItem);
+                continue;
+            }
+
             if (item.IsCheckable)
             {
                 menuItem.CheckOnClick = false; // we flip Checked ourselves after the toggle is accepted, not optimistically
@@ -96,7 +118,7 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon = new NotifyIcon
         {
             Icon = LoadAppIcon(),
-            Text = BaseTooltipText,
+            Text = _baseTooltipText,
             ContextMenuStrip = menu,
             Visible = true,
         };
@@ -113,8 +135,8 @@ public sealed class TrayIconController : IDisposable
     public void UpdateFaxTooltip(int inProcessCount)
     {
         _notifyIcon.Text = inProcessCount > 0
-            ? $"{BaseTooltipText} — Faxes: {inProcessCount} in process"
-            : BaseTooltipText;
+            ? $"{_baseTooltipText} — Faxes: {inProcessCount} in process"
+            : _baseTooltipText;
     }
 
     /// <summary>V-T53: "tray balloon 'Vaccine faxes: 12 sent, 1 failed, 2
@@ -124,6 +146,65 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon.BalloonTipTitle = title;
         _notifyIcon.BalloonTipText = text;
         _notifyIcon.ShowBalloonTip(8000);
+    }
+
+    /// <summary>Fills the Version submenu from the last known answer right away, then refreshes the remote list on a background thread and repaints if the submenu is still open.</summary>
+    private void OnVersionDropDownOpening(ToolStripMenuItem versionItem)
+    {
+        PopulateVersionItems(versionItem);
+        var context = _uiContext;
+        if (_versions is null || context is null)
+        {
+            return;
+        }
+
+        _versions.Catalog.RefreshAsync().ContinueWith(
+            _ => context.Post(
+                __ =>
+                {
+                    try
+                    {
+                        if (versionItem.DropDown.Visible)
+                        {
+                            PopulateVersionItems(versionItem);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppFileLog.LogException("TrayIconController.VersionRefresh", ex);
+                    }
+                },
+                null),
+            TaskScheduler.Default);
+    }
+
+    private void PopulateVersionItems(ToolStripMenuItem versionItem)
+    {
+        if (_versions is null)
+        {
+            return;
+        }
+
+        var old = new System.Collections.Generic.List<ToolStripItem>();
+        foreach (ToolStripItem existing in versionItem.DropDownItems)
+        {
+            old.Add(existing);
+        }
+        versionItem.DropDownItems.Clear();
+        foreach (var existing in old)
+        {
+            existing.Dispose();
+        }
+
+        foreach (var row in _versions.BuildItems())
+        {
+            var rowItem = new ToolStripMenuItem(row.Text) { Enabled = row.Enabled, Checked = row.Checked };
+            if (row.Enabled && row.Ref is { Length: > 0 } versionRef)
+            {
+                rowItem.Click += (_, _) => VersionSwitchRequested?.Invoke(this, versionRef);
+            }
+            versionItem.DropDownItems.Add(rowItem);
+        }
     }
 
     private void RaiseAction(TrayMenuItemDescriptor descriptor, ToolStripMenuItem menuItem)
@@ -165,6 +246,8 @@ public sealed class TrayIconController : IDisposable
                 menuItem.Checked = newState;
                 ShowOverlayToggled?.Invoke(this, newState);
                 break;
+            case TrayMenuAction.Version:
+                break; // submenu parent — its rows raise VersionSwitchRequested
             case TrayMenuAction.Separator:
                 break; // never wired to a Click handler
         }

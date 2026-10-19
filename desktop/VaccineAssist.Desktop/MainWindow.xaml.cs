@@ -19,6 +19,7 @@ using VaccineAssist.Desktop.Services;
 using VaccineAssist.Desktop.Settings;
 using VaccineAssist.Desktop.Tray;
 using VaccineAssist.Desktop.Uia;
+using VaccineAssist.Desktop.Versioning;
 using VaccineAssist.Desktop.ViewModels;
 using VaccineAssist.Desktop.Views;
 
@@ -128,6 +129,9 @@ public partial class MainWindow : Window
     /// losing a convenience feature.
     /// </summary>
     private readonly TrayIconController? _trayIconController;
+
+    /// <summary>Version control: what the Version submenu in the tray and Pioneer overlay menus draws from (the running build + the remote testing-branch lookup).</summary>
+    private readonly VersionMenuSource _versionMenuSource;
 
     /// <summary>Part 4 — null if construction ever throws (belt-and-suspenders, same posture as _trayIconController above); a missing overlay just means no Pioneer icon, never a broken MainWindow.</summary>
     private readonly PioneerOverlayController? _pioneerOverlayController;
@@ -273,6 +277,23 @@ public partial class MainWindow : Window
 
         InitializeComponent();
 
+        // Version control (Will, 2026-10-18): title + orange strip say
+        // which version this is; stable (and any unstamped build) keeps the
+        // plain "Vaccine Assist" title and no strip.
+        var buildInfo = BuildInfo.Current;
+        Title = buildInfo.WindowTitle;
+        if (buildInfo.IsTesting)
+        {
+            TestingBannerText.Text = $"TESTING VERSION: {buildInfo.Slug} — not the stable app. Use the tray menu > Version to go back to Stable.";
+            TestingBanner.Visibility = Visibility.Visible;
+        }
+
+        _versionMenuSource = new VersionMenuSource(
+            buildInfo,
+            new TestingVersionCatalog(ct => GitRemoteLister.RunAsync(PrimaryCheckoutLocator.ResolveForCurrentProcess(), ct)));
+        // Warm the list in the background so the first menu open has an answer.
+        _ = _versionMenuSource.Catalog.RefreshAsync();
+
         // 2026-09-25 (Will, verbatim: "make sure the widths of all the
         // screens are enough ... it wasn't wide enough. It was maing the
         // tables all cramped"): clamp the XAML's larger 1600x900 default
@@ -307,7 +328,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var trayIconController = new TrayIconController(_settings.ShowPioneerOverlay);
+            var trayIconController = new TrayIconController(_settings.ShowPioneerOverlay, _versionMenuSource);
             trayIconController.OpenRequested += (_, _) => RestoreFromTray();
             trayIconController.SignOutRequested += async (_, _) => await SignOutAndRaiseLoggedOutAsync();
             trayIconController.ExitRequested += (_, _) => ExitApplication();
@@ -318,6 +339,7 @@ public partial class MainWindow : Window
             trayIconController.FaxSettingsRequested += (_, _) => ShowFaxSettings();
             trayIconController.FaxOpenFolderRequested += (_, _) => OpenFaxFolder();
             trayIconController.FaxImportFileRequested += (_, _) => ShowFaxSendWindow();
+            trayIconController.VersionSwitchRequested += (_, versionRef) => SwitchVersion(versionRef);
             // V-T65 R5 (Will, verbatim: "allow the app to work from the
             // background to send faxes ... make sure the status is
             // displayed correctly") — tray tooltip reflects the
@@ -346,7 +368,9 @@ public partial class MainWindow : Window
                 showDataEntryPopup: ShowDataEntryPopup,
                 showMacroCodesPopup: ShowMacroCodesPopup,
                 exit: ExitApplication,
-                settings: _settings);
+                settings: _settings,
+                versions: _versionMenuSource);
+            pioneerOverlayController.VersionSwitchRequested += (_, versionRef) => SwitchVersion(versionRef);
             // V-T41 R5 (item 4): the entry-status panel's X button.
             pioneerOverlayController.EntryStatusCancelRequested += (_, _) => CancelVaccineEntryRun();
             _pioneerOverlayController = pioneerOverlayController;
@@ -548,6 +572,79 @@ public partial class MainWindow : Window
         _allowRealClose = true;
         Close();
         Application.Current.Shutdown();
+    }
+
+    /// <summary>
+    /// Version control (Will, 2026-10-18): a Version submenu row was picked
+    /// (tray or Pioneer overlay menu). Confirms, starts the launcher
+    /// detached (update-and-run.ps1 -Ref ... -WaitForPid this-process), then
+    /// shuts down through the normal Exit path (hotkeys, tray icon, mutex).
+    /// The choice is never persisted: the desktop shortcut always opens
+    /// Stable. A failure to start the launcher leaves this app running.
+    /// </summary>
+    private void SwitchVersion(string versionRef)
+    {
+        try
+        {
+            var current = BuildInfo.Current;
+            var currentRef = current.IsTesting ? current.Ref : BuildInfo.StableRef;
+            if (string.Equals(versionRef, currentRef, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (!TestingBranchParser.IsLaunchableRef(versionRef))
+            {
+                AppFileLog.Log($"[Version] refusing to switch to invalid ref '{versionRef}'");
+                return;
+            }
+
+            if (_vaccineEntryCts is not null)
+            {
+                MessageBox.Show(
+                    "A vaccine entry is in progress. Finish or cancel it before switching versions.",
+                    "Vaccine Assist",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            var primaryRoot = PrimaryCheckoutLocator.ResolveForCurrentProcess();
+            if (primaryRoot is null)
+            {
+                MessageBox.Show(
+                    "Could not find the Vaccine Assist install folder, so the version cannot be switched. Nothing was changed.",
+                    "Vaccine Assist",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var answer = MessageBox.Show(
+                VersionMenuBuilder.ConfirmMessage(versionRef),
+                "Switch version",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            var command = VersionLauncher.BuildCommand(primaryRoot, versionRef, Environment.ProcessId);
+            VersionLauncher.Start(command);
+            AppFileLog.Log($"[Version] switching {current.Describe()} -> {versionRef}");
+            ExitApplication();
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.SwitchVersion", ex);
+            MessageBox.Show(
+                $"Could not switch versions: {ex.Message}\n\nVaccine Assist is still running.",
+                "Vaccine Assist",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     /// <summary>

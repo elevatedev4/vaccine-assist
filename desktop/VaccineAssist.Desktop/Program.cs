@@ -71,5 +71,19 @@ internal static class Program
         var app = new App();
         app.InitializeComponent();
         app.Run();
+
+        // Explicit release on a clean shutdown (version switch / Exit) so a
+        // relaunching copy never races a lingering handle. Best-effort: if
+        // this thread somehow doesn't own it, process exit releases it anyway.
+        try
+        {
+            singleInstanceMutex.ReleaseMutex();
+        }
+        catch (ApplicationException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 }

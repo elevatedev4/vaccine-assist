@@ -20,6 +20,9 @@ public enum TrayMenuAction
     FaxSettings,
     FaxOpenFolder,
     FaxImportFile,
+
+    /// <summary>The "Version" submenu (Stable + testing versions) — TrayIconController builds its children from Versioning/VersionMenuBuilder.</summary>
+    Version,
 }
 
 /// <summary>
@@ -101,6 +104,10 @@ public static class TrayMenuBuilder
         items.Add(new TrayMenuItemDescriptor("Vaccines-Send PCP faxes", true, TrayMenuAction.FaxImportFile, null, false));
         items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Settings", true, TrayMenuAction.FaxSettings, null, false));
         items.Add(new TrayMenuItemDescriptor("Open fax folder", true, TrayMenuAction.FaxOpenFolder, null, false));
+        items.Add(Separator);
+        // Version control (Will, 2026-10-18): Stable is the default every
+        // normal start; testing versions are only ever picked from here.
+        items.Add(new TrayMenuItemDescriptor("Version", true, TrayMenuAction.Version, null, false));
         items.Add(Separator);
         items.Add(new TrayMenuItemDescriptor("Sign out", true, TrayMenuAction.SignOut, null, false));
         items.Add(new TrayMenuItemDescriptor("Exit", true, TrayMenuAction.Exit, null, false));

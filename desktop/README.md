@@ -13,7 +13,8 @@ needed, clones/updates the repo, seeds config, then runs this:
 .\update-and-run.ps1
 ```
 
-Syncs to `origin/main`, stops any already-running copy of the app (so the
+Syncs to `origin/stable` (falls back to `origin/main` until a `stable`
+branch exists), stops any already-running copy of the app (so the
 build below can't fail with a locked .exe), runs `dotnet build`, and
 launches the app — which then attempts a silent auto-login if
 `autologin.json` (see "Local configuration" below) is present. See the
@@ -22,6 +23,28 @@ script's own header comment for exactly what each step does.
 Double-clicking the "Vaccine Assist" Desktop shortcut (created by
 `install-shortcut.ps1`, normally run automatically by the repo root's
 `bootstrap-fresh.ps1`) runs this exact same script.
+
+## Versions (Stable and Testing)
+
+Git branches are the versions. `stable` is the latest known-good build and
+the only thing the shortcut ever opens; `main` is the development line;
+`testing/<name>` branches are opt-in testing versions. Whoever maintains the
+repo advances `stable` (fast-forward to a vetted `main` commit) — the app
+never does.
+
+In the app, tray menu (or the Pioneer icon menu) > **Version** lists
+"Stable (default)" and every `testing/*` branch on GitHub (the current one is
+checked). Picking one asks for confirmation, then runs:
+
+```
+.\update-and-run.ps1 -Ref testing/<name>
+```
+
+A testing version is built in a separate worktree folder next to the main
+checkout (`<checkout>-testing`) so Stable's files are never touched; the
+window title and an orange strip say "TESTING". If a testing build fails, the
+launcher prints why and starts Stable instead. The choice is never saved:
+the next normal launch is Stable again.
 
 ## Local configuration
 

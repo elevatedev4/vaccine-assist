@@ -2,6 +2,7 @@ using System;
 using System.Windows.Threading;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Settings;
+using VaccineAssist.Desktop.Versioning;
 
 namespace VaccineAssist.Desktop.Overlay;
 
@@ -38,6 +39,7 @@ public sealed class PioneerOverlayController : IDisposable
     private readonly Action _showMacroCodesPopup;
     private readonly Action _exit;
     private readonly AppSettings _settings;
+    private readonly VersionMenuSource? _versions;
     private readonly DispatcherTimer _timer;
 
     private PioneerOverlayWindow? _window;
@@ -64,13 +66,18 @@ public sealed class PioneerOverlayController : IDisposable
     /// MainWindow cancels the active run's CancellationTokenSource.</summary>
     public event EventHandler? EntryStatusCancelRequested;
 
+    /// <summary>Raised with the chosen version ref when a row of the icon menu's Version submenu is clicked.</summary>
+    public event EventHandler<string>? VersionSwitchRequested;
+
     public PioneerOverlayController(
         Action<string> navigateTo,
         Action showDataEntryPopup,
         Action showMacroCodesPopup,
         Action exit,
-        AppSettings settings)
+        AppSettings settings,
+        VersionMenuSource? versions = null)
     {
+        _versions = versions;
         _navigateTo = navigateTo ?? throw new ArgumentNullException(nameof(navigateTo));
         _showDataEntryPopup = showDataEntryPopup ?? throw new ArgumentNullException(nameof(showDataEntryPopup));
         _showMacroCodesPopup = showMacroCodesPopup ?? throw new ArgumentNullException(nameof(showMacroCodesPopup));
@@ -200,6 +207,9 @@ public sealed class PioneerOverlayController : IDisposable
         window.DataEntryRequested += (_, _) => SafeInvoke(_showDataEntryPopup);
         window.MacroCodesRequested += (_, _) => SafeInvoke(_showMacroCodesPopup);
         window.ExitRequested += (_, _) => SafeInvoke(_exit);
+        window.Versions = _versions;
+        window.VersionSwitchRequested += (_, versionRef) =>
+            SafeInvoke(() => VersionSwitchRequested?.Invoke(this, versionRef));
         // ShowActivated="False" + the WS_EX_NOACTIVATE/WS_EX_TOOLWINDOW
         // styles set in its own OnSourceInitialized mean this never
         // steals focus from PioneerRx.

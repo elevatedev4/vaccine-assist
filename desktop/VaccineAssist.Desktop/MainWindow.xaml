@@ -50,5 +50,20 @@
         App.xaml.cs's PrepareMainCloudPageViewAsync and this window's own
         constructor — BEFORE this window was even shown.
     -->
-    <ContentControl x:Name="MainContent"/>
+    <!--
+        Version control (Will, 2026-10-18): TestingBanner is collapsed for
+        Stable (the default) and shown, orange, only when this process is a
+        testing build — MainWindow's constructor fills it from BuildInfo.
+    -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Border x:Name="TestingBanner" Grid.Row="0" Background="#F59E0B" Padding="10,3" Visibility="Collapsed">
+            <TextBlock x:Name="TestingBannerText" Foreground="#1F1300" FontWeight="SemiBold" FontSize="13"
+                       HorizontalAlignment="Center"/>
+        </Border>
+        <ContentControl x:Name="MainContent" Grid.Row="1"/>
+    </Grid>
 </Window>

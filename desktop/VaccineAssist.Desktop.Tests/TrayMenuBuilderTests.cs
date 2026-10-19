@@ -44,6 +44,8 @@ public class TrayMenuBuilderTests
                 TrayMenuAction.FaxSettings,
                 TrayMenuAction.FaxOpenFolder,
                 TrayMenuAction.Separator,
+                TrayMenuAction.Version, // version control (2026-10-18): Stable + testing versions submenu
+                TrayMenuAction.Separator,
                 TrayMenuAction.SignOut,
                 TrayMenuAction.Exit,
             },
@@ -100,5 +102,16 @@ public class TrayMenuBuilderTests
         {
             Assert.True(item.Enabled);
         }
+    }
+
+    [Fact]
+    public void HasExactlyOneVersionSubmenuRow()
+    {
+        var items = TrayMenuBuilder.Build();
+
+        var version = items.Single(i => i.Action == TrayMenuAction.Version);
+        Assert.Equal("Version", version.Text);
+        Assert.True(version.Enabled);
+        Assert.False(version.IsCheckable);
     }
 }
