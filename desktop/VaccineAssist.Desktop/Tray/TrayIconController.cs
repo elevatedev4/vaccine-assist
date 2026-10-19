@@ -118,7 +118,7 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon = new NotifyIcon
         {
             Icon = LoadAppIcon(),
-            Text = _baseTooltipText,
+            Text = BuildInfo.ClampTooltip(_baseTooltipText),
             ContextMenuStrip = menu,
             Visible = true,
         };
@@ -134,9 +134,9 @@ public sealed class TrayIconController : IDisposable
     /// characters by Windows — this stays well under that.</summary>
     public void UpdateFaxTooltip(int inProcessCount)
     {
-        _notifyIcon.Text = inProcessCount > 0
+        _notifyIcon.Text = BuildInfo.ClampTooltip(inProcessCount > 0
             ? $"{_baseTooltipText} — Faxes: {inProcessCount} in process"
-            : _baseTooltipText;
+            : _baseTooltipText);
     }
 
     /// <summary>V-T53: "tray balloon 'Vaccine faxes: 12 sent, 1 failed, 2

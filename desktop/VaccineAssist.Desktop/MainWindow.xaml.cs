@@ -306,8 +306,8 @@ public partial class MainWindow : Window
         _versionMenuSource = new VersionMenuSource(
             buildInfo,
             new TestingVersionCatalog(ct => GitRemoteLister.RunAsync(PrimaryCheckoutLocator.ResolveForCurrentProcess(), ct)));
-        // Warm the list in the background so the first menu open has an answer.
-        _ = _versionMenuSource.Catalog.RefreshAsync();
+        // No startup lookup on purpose: `git ls-remote` can trigger Git
+        // Credential Manager prompts, so it only runs when a Version menu opens.
 
         // 2026-09-25 (Will, verbatim: "make sure the widths of all the
         // screens are enough ... it wasn't wide enough. It was maing the
@@ -597,6 +597,24 @@ public partial class MainWindow : Window
     /// The choice is never persisted: the desktop shortcut always opens
     /// Stable. A failure to start the launcher leaves this app running.
     /// </summary>
+    /// <summary>An entry run is active, or a picked macro is still going through the flu-preference prompt.</summary>
+    private bool IsVaccineEntryBusy() => _vaccineEntryCts is not null || _vaccineEntryPreRunPending;
+
+    private bool WarnIfVaccineEntryBusy()
+    {
+        if (!IsVaccineEntryBusy())
+        {
+            return false;
+        }
+
+        MessageBox.Show(
+            "A vaccine entry is in progress. Finish or cancel it before switching versions.",
+            "Vaccine Assist",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        return true;
+    }
+
     private void SwitchVersion(string versionRef)
     {
         try
@@ -614,13 +632,8 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (_vaccineEntryCts is not null || _vaccineEntryPreRunPending)
+            if (WarnIfVaccineEntryBusy())
             {
-                MessageBox.Show(
-                    "A vaccine entry is in progress. Finish or cancel it before switching versions.",
-                    "Vaccine Assist",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
                 return;
             }
 
@@ -642,6 +655,13 @@ public partial class MainWindow : Window
                 MessageBoxImage.Question,
                 MessageBoxResult.No);
             if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            // The modal dialog pumps messages: a hotkey may have started an
+            // entry while it was open. Never exit mid-automation.
+            if (WarnIfVaccineEntryBusy())
             {
                 return;
             }
@@ -914,17 +934,10 @@ public partial class MainWindow : Window
 
         AppFileLog.Log($"[VaccineEntry] flu preference prompt: selected {prompt.SelectedName}, preferred {prompt.PreferredName}, age {ageYears}");
 
-        PreferredFluResult preferred;
-        try
-        {
-            preferred = await FluPreferenceResolver.ResolvePreferredAsync(
-                _vaccineApiService, prompt, DateOnly.FromDateTime(DateTime.Today));
-        }
-        catch (Exception ex)
-        {
-            AppFileLog.LogException("MainWindow.ApplyFluPreferenceAsync", ex);
-            preferred = PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up right now.");
-        }
+        // Bounded: a slow API must not hold the entry hostage (timeout = "unavailable").
+        var preferred = await FluPreferenceResolver.ResolvePreferredWithTimeoutAsync(
+            _vaccineApiService, prompt, DateOnly.FromDateTime(DateTime.Today), FluPreferenceResolver.LookupTimeout,
+            ex => AppFileLog.LogException("MainWindow.ApplyFluPreferenceAsync", ex));
 
         var window = new FluPreferenceWindow(prompt, preferred.IsAvailable, preferred.UnavailableReason);
         _openFluPreferenceWindow = window;

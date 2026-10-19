@@ -113,8 +113,11 @@ public static class GitRemoteLister
             {
                 startInfo.ArgumentList.Add(arg);
             }
-            // Never let git block waiting for a credentials prompt.
+            // Never let git (or Git Credential Manager's GUI login) block
+            // waiting for a credentials prompt - a menu lookup must not
+            // pop a sign-in window.
             startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            startInfo.Environment["GCM_INTERACTIVE"] = "never";
 
             using var process = Process.Start(startInfo);
             if (process is null) return null;

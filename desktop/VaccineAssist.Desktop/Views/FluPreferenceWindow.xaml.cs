@@ -69,6 +69,7 @@ public partial class FluPreferenceWindow : Window
         else
         {
             PreferredButton.Visibility = Visibility.Collapsed;
+            PreferredButton.IsDefault = false;
             CancelButton.Visibility = Visibility.Visible;
             UnavailableTextBlock.Text = string.IsNullOrWhiteSpace(unavailableReason)
                 ? $"{prompt.PreferredName} can't be entered right now."

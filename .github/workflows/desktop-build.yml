@@ -23,6 +23,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The launcher script runs on workstations under Windows PowerShell
+      # 5.1 with no compile step: parse it, require -Ref/-WaitForPid, and
+      # assert its pure helpers (ref validation, commit/stamp sanitizing).
+      - name: Check update-and-run.ps1
+        shell: powershell
+        run: .\desktop\tests\check-launcher.ps1
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:

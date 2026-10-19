@@ -171,15 +171,12 @@ public sealed partial class PioneerOverlayWindow : Window
         // The Version submenu's popup lies outside the main menu's rect: a
         // click on one of its rows must not count as an outside click (it
         // would close the menu before the row's Click fires). If the
-        // submenu is open but its bounds are unknown, err on the side of
-        // keeping the menu open — Esc / choosing a row still close it.
-        if (_versionMenuItem is { IsSubmenuOpen: true })
+        // submenu's bounds are unknown, fall through and close normally.
+        if (_versionMenuItem is { IsSubmenuOpen: true }
+            && _openSubmenuScreenBounds is { } submenuBounds
+            && !OverlayMenuGeometry.IsPointOutsideMenu(submenuBounds, screenX, screenY))
         {
-            if (_openSubmenuScreenBounds is not { } submenuBounds
-                || !OverlayMenuGeometry.IsPointOutsideMenu(submenuBounds, screenX, screenY))
-            {
-                return;
-            }
+            return;
         }
 
         // Posted back through the Dispatcher: the hook callback runs
@@ -287,7 +284,7 @@ public sealed partial class PioneerOverlayWindow : Window
         }
         catch
         {
-            _openSubmenuScreenBounds = null; // see OnGlobalMouseDown: unknown bounds keep the menu open
+            _openSubmenuScreenBounds = null; // unknown bounds: OnGlobalMouseDown closes the menu normally
         }
     }
 

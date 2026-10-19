@@ -265,4 +265,34 @@ public class FluPreferenceTests
         Assert.False(expired.IsAvailable);
         Assert.Contains("expired", expired.UnavailableReason);
     }
+
+    [Fact]
+    public async Task SlowLookupTimesOutAsUnavailable()
+    {
+        var api = new FakeVaccineApiService();
+        var mflusiva = V("mflusiva", "mFLUSIVA");
+        api.Vaccines.Add(mflusiva);
+        api.LotsByVaccineId[mflusiva.Id] = new List<Lot> { L(mflusiva, "SLOW", Today.AddDays(30)) };
+        api.DelayNextGetLotsCall = new TaskCompletionSource<bool>(); // never completes
+        var prompt = FluPreferenceRules.Evaluate(55, "fluad")!;
+
+        var result = await FluPreferenceResolver.ResolvePreferredWithTimeoutAsync(api, prompt, Today, TimeSpan.FromMilliseconds(150));
+
+        Assert.False(result.IsAvailable);
+        Assert.Contains("in time", result.UnavailableReason);
+    }
+
+    [Fact]
+    public async Task LookupWithinTheTimeoutStillSucceeds()
+    {
+        var api = new FakeVaccineApiService();
+        var mflusiva = V("mflusiva", "mFLUSIVA");
+        api.Vaccines.Add(mflusiva);
+        api.LotsByVaccineId[mflusiva.Id] = new List<Lot> { L(mflusiva, "FAST", Today.AddDays(30)) };
+        var prompt = FluPreferenceRules.Evaluate(55, "fluad")!;
+
+        var result = await FluPreferenceResolver.ResolvePreferredWithTimeoutAsync(api, prompt, Today, TimeSpan.FromSeconds(10));
+
+        Assert.True(result.IsAvailable);
+    }
 }

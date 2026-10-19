@@ -93,4 +93,37 @@ public static class FluPreferenceResolver
 
         return PreferredFluResult.Available(new PreferredFluChoice(vaccine, lot, BuildSwappedMacroCode(vaccine, lot)));
     }
+
+    /// <summary>How long the preferred-vaccine lookup may take before it counts as unavailable.</summary>
+    public static readonly TimeSpan LookupTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// ResolvePreferredAsync with a time limit. A timeout or ANY error
+    /// (reported through onError, e.g. for logging) becomes "unavailable",
+    /// so the dialog still appears offering only the selected product.
+    /// </summary>
+    public static async Task<PreferredFluResult> ResolvePreferredWithTimeoutAsync(
+        IVaccineApiService api,
+        FluPreferencePrompt prompt,
+        DateOnly today,
+        TimeSpan timeout,
+        Action<Exception>? onError = null)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            return await ResolvePreferredAsync(api, prompt, today, cts.Token)
+                .WaitAsync(timeout, CancellationToken.None)
+                .ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
+        {
+            return PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up in time.");
+        }
+        catch (Exception ex)
+        {
+            onError?.Invoke(ex);
+            return PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up right now.");
+        }
+    }
 }
