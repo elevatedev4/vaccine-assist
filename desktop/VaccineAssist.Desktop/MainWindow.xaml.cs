@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Fax;
+using VaccineAssist.Desktop.FluPreference;
 using VaccineAssist.Desktop.Hotkeys;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Models;
@@ -82,6 +83,9 @@ public partial class MainWindow : Window
 {
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     private readonly IAuthService _authService;
     private readonly IVaccineApiService _vaccineApiService;
@@ -211,6 +215,17 @@ public partial class MainWindow : Window
     /// start a second overlapping one).
     /// </summary>
     private CancellationTokenSource? _vaccineEntryCts;
+
+    /// <summary>
+    /// Testing version "flu-preferred": true from the moment a macro is
+    /// picked until the automation run actually starts - covers the flu
+    /// preference lookup + dialog, so a repeat Ctrl+Keypad 7 press in that
+    /// window is ignored just like it is mid-run (see ShowDataEntryPopup).
+    /// </summary>
+    private bool _vaccineEntryPreRunPending;
+
+    /// <summary>The open flu-preference dialog, if any - closed with the rest of this window's popups (MainWindow_OnClosed) so it can't outlive sign-out/exit.</summary>
+    private FluPreferenceWindow? _openFluPreferenceWindow;
 
     /// <summary>The most recent step name LogVaccineEntryStep parsed out of
     /// a "[StepName] ..." log line for the run _vaccineEntryCts is tracking
@@ -599,7 +614,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (_vaccineEntryCts is not null)
+            if (_vaccineEntryCts is not null || _vaccineEntryPreRunPending)
             {
                 MessageBox.Show(
                     "A vaccine entry is in progress. Finish or cancel it before switching versions.",
@@ -703,6 +718,9 @@ public partial class MainWindow : Window
 
         _openVaccineEntryMacroPopup?.Close();
         _openVaccineEntryMacroPopup = null;
+
+        _openFluPreferenceWindow?.Close();
+        _openFluPreferenceWindow = null;
     }
 
     /// <summary>
@@ -729,7 +747,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void ShowDataEntryPopup()
     {
-        if (_vaccineEntryCts is not null)
+        if (_vaccineEntryCts is not null || _vaccineEntryPreRunPending)
         {
             return;
         }
@@ -819,7 +837,7 @@ public partial class MainWindow : Window
 
             if (pickedCode is not null)
             {
-                _ = RunVaccineEntryAutomationAsync(pickedCode, pickedLabel ?? "", pickedProduct ?? "", ageYears);
+                _ = ContinueVaccineEntryAfterPickAsync(pickedCode, pickedLabel ?? "", pickedProduct ?? "", ageYears, previousForegroundWindow);
             }
             else
             {
@@ -831,6 +849,117 @@ public partial class MainWindow : Window
         AppFileLog.Log("[VaccineEntry] macro picker opened");
         popup.Show();
         popup.ActivateAndFocusWebView();
+    }
+
+    /// <summary>The macro text + names the automation will run with (what was picked, or the preferred flu vaccine swapped in).</summary>
+    private sealed record VaccineEntryPick(string MacroCode, string Label, string Product);
+
+    /// <summary>
+    /// Testing version "flu-preferred": between the picker closing and the
+    /// automation starting. For a flu product that is NOT the preferred one
+    /// for the patient's age (FluPreferenceRules), shows FluPreferenceWindow
+    /// first; Cancel / X / Esc ends the entry here (automation never runs).
+    /// Everything else (any non-flu product, age under 3, already-preferred
+    /// flu) goes straight to RunVaccineEntryAutomationAsync exactly as before.
+    /// </summary>
+    private async Task ContinueVaccineEntryAfterPickAsync(string macroCode, string label, string product, int ageYears, IntPtr previousForegroundWindow)
+    {
+        _vaccineEntryPreRunPending = true;
+        Task? run = null;
+        try
+        {
+            var pick = await ApplyFluPreferenceAsync(macroCode, label, product, ageYears, previousForegroundWindow);
+            if (pick is null)
+            {
+                AppFileLog.Log("[VaccineEntry] cancelled at the flu preference prompt");
+                return;
+            }
+
+            // RunVaccineEntryAutomationAsync claims _vaccineEntryCts
+            // synchronously before its first await, so the pending flag
+            // below can drop right after this call without a gap.
+            run = RunVaccineEntryAutomationAsync(pick.MacroCode, pick.Label, pick.Product, ageYears);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.ContinueVaccineEntryAfterPickAsync", ex);
+        }
+        finally
+        {
+            _vaccineEntryPreRunPending = false;
+        }
+
+        if (run is not null)
+        {
+            await run;
+        }
+    }
+
+    /// <summary>Null = the pharmacist cancelled. Never throws for a lookup failure: the preferred option is then simply offered as unavailable.</summary>
+    private async Task<VaccineEntryPick?> ApplyFluPreferenceAsync(string macroCode, string label, string product, int ageYears, IntPtr previousForegroundWindow)
+    {
+        var original = new VaccineEntryPick(macroCode, label, product);
+
+        var parsed = MacroCodeParser.TryParse(macroCode);
+        if (parsed is null)
+        {
+            return original; // RunVaccineEntryAutomationAsync logs the parse failure as before
+        }
+
+        var prompt = FluPreferenceRules.Evaluate(ageYears, parsed.Value.ShortCode);
+        if (prompt is null)
+        {
+            return original;
+        }
+
+        AppFileLog.Log($"[VaccineEntry] flu preference prompt: selected {prompt.SelectedName}, preferred {prompt.PreferredName}, age {ageYears}");
+
+        PreferredFluResult preferred;
+        try
+        {
+            preferred = await FluPreferenceResolver.ResolvePreferredAsync(
+                _vaccineApiService, prompt, DateOnly.FromDateTime(DateTime.Today));
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.ApplyFluPreferenceAsync", ex);
+            preferred = PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up right now.");
+        }
+
+        var window = new FluPreferenceWindow(prompt, preferred.IsAvailable, preferred.UnavailableReason);
+        _openFluPreferenceWindow = window;
+        FluPreferenceChoice choice;
+        try
+        {
+            window.ShowDialog();
+            choice = window.Choice;
+        }
+        finally
+        {
+            if (ReferenceEquals(_openFluPreferenceWindow, window))
+            {
+                _openFluPreferenceWindow = null;
+            }
+        }
+
+        // Focus back where the pharmacist was (PioneerRx), same as the
+        // macro picker does when it closes.
+        if (choice != FluPreferenceChoice.Cancel && previousForegroundWindow != IntPtr.Zero)
+        {
+            try { SetForegroundWindow(previousForegroundWindow); } catch { /* best-effort */ }
+        }
+
+        switch (choice)
+        {
+            case FluPreferenceChoice.ProceedPreferred when preferred.Choice is { } chosen:
+                AppFileLog.Log($"[VaccineEntry] flu preference: proceeding with preferred {prompt.PreferredName} ({chosen.Vaccine.ShortCode}) instead of {prompt.SelectedName}");
+                return new VaccineEntryPick(chosen.MacroCode, chosen.Vaccine.Name, prompt.PreferredName);
+            case FluPreferenceChoice.ProceedSelected:
+                AppFileLog.Log($"[VaccineEntry] flu preference: proceeding with selected {prompt.SelectedName}");
+                return original;
+            default:
+                return null;
+        }
     }
 
     /// <summary>
