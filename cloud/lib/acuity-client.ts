@@ -1,5 +1,6 @@
 import "server-only";
 import { addDaysToChicagoDate, chicagoDateString, chicagoHour } from "@/lib/chicago-date";
+import { fluOrderingBandForAge, type FluOrderingBand } from "@/lib/flu-preference";
 
 /**
  * Minimal server-side Acuity Scheduling API client. Acuity uses HTTP
@@ -191,6 +192,16 @@ export type CountableAppointment = {
    */
   fluAgeBucket: FluAgeBucket;
   /**
+   * Finer Flu age band for the Ordering tab (V-Q11, Will 2026-10-20:
+   * 50-64 now orders mFLUSIVA, not Flucelvax): "3-49" | "50-64" | "65+" |
+   * "unknown" - the preferred-flu rule's bands (lib/flu-preference.ts).
+   * Optional so existing fixtures/callers that only know fluAgeBucket keep
+   * working; when absent, aggregateAppointmentCounts falls back to the
+   * coarse fluAgeBucket label ("Flu · 3-64"). Same PHI rule as
+   * fluAgeBucket: a bucketed value only, the raw age/DOB is discarded.
+   */
+  fluAgeBand?: FluCompositeBand;
+  /**
    * PHI boundary, extension of the CountableAppointment doc comment above
    * (V-T-hourly-table, Will 2026-09-05: "hourly breakdown of how many
    * vaccines are scheduled by the hour"). 0-23, derived from the SAME
@@ -262,6 +273,9 @@ export type CovidAgeBucket = "3-11" | "12-64" | "65+" | "unknown";
  * COVID's existing <3 -> unknown rule (see bucketCovidAge/bucketFluAge).
  */
 export type FluAgeBucket = "3-64" | "65+" | "unknown";
+
+/** Finer Flu band carried in the composite name - see CountableAppointment.fluAgeBand. */
+export type FluCompositeBand = FluOrderingBand | "unknown";
 
 export type AppointmentRangeResult = {
   appointments: CountableAppointment[];
@@ -1122,6 +1136,16 @@ function bucketFluAge(age: number | null): FluAgeBucket {
 }
 
 /**
+ * 3-49 / 50-64 / 65+ / unknown - the preferred-flu rule's bands
+ * (lib/flu-preference.ts), used for the Ordering tab's flu attribution.
+ * Same [3, 110] valid-range rule as bucketFluAge.
+ */
+function bucketFluAgeBand(age: number | null): FluCompositeBand {
+  if (age === null || !Number.isFinite(age) || age < 3 || age > 110) return "unknown";
+  return fluOrderingBandForAge(age) ?? "unknown";
+}
+
+/**
  * PHI boundary: reads the raw age-question answer ONCE (via
  * extractFormFieldAnswer/isAgeFormFieldName) and immediately converts it
  * to a plain number of years — neither the raw age number nor a raw DOB
@@ -1172,7 +1196,13 @@ const COVID_AGE_BUCKET_LABELS: Record<CovidAgeBucket, string> = {
   "65+": "65+",
   unknown: "Unknown",
 };
-const FLU_AGE_BUCKET_LABELS: Record<FluAgeBucket, string> = { "3-64": "3-64", "65+": "65+", unknown: "Unknown" };
+const FLU_AGE_BUCKET_LABELS: Record<FluAgeBucket | FluCompositeBand, string> = {
+  "3-64": "3-64",
+  "3-49": "3-49",
+  "50-64": "50-64",
+  "65+": "65+",
+  unknown: "Unknown",
+};
 
 /**
  * Builds the composite COVID column name — "COVID · Pfizer · 12+" — that
@@ -1194,7 +1224,7 @@ function covidCompositeName(brand: CovidBrand, ageBucket: CovidAgeBucket): strin
  * exact "Flu · {Age}" shape to map onto the fixed Flu <65/65+/(unk)
  * columns — keep the two in sync if this format ever changes.
  */
-function fluCompositeName(ageBucket: FluAgeBucket): string {
+function fluCompositeName(ageBucket: FluAgeBucket | FluCompositeBand): string {
   return `Flu · ${FLU_AGE_BUCKET_LABELS[ageBucket]}`;
 }
 
@@ -1311,6 +1341,7 @@ async function fetchAppointmentWindow(
         covidBrand: deriveCovidBrand(entry.forms),
         covidAgeBucket: bucketCovidAge(ageInYears),
         fluAgeBucket: bucketFluAge(ageInYears),
+        fluAgeBand: bucketFluAgeBand(ageInYears),
         createdDate: acuityDatetimeToChicagoDate(entry.datetimeCreated),
         acuityId: Number.isFinite(rawId) ? rawId : null,
       };
@@ -1571,7 +1602,7 @@ export function aggregateAppointmentCounts(
 ): VaccineCount[] {
   const groups = new Map<string, VaccineCount>();
 
-  for (const { date, appointmentTypeId, vaccineNames, testNames, covidBrand, covidAgeBucket, fluAgeBucket } of appointments) {
+  for (const { date, appointmentTypeId, vaccineNames, testNames, covidBrand, covidAgeBucket, fluAgeBucket, fluAgeBand } of appointments) {
     let names: string[];
     if (vaccineNames.length > 0) {
       names = vaccineNames;
@@ -1585,7 +1616,7 @@ export function aggregateAppointmentCounts(
       const vaccineName = isCovidVaccineName(rawName)
         ? covidCompositeName(covidBrand ?? "any", covidAgeBucket ?? "unknown")
         : isFluVaccineName(rawName)
-          ? fluCompositeName(fluAgeBucket ?? "unknown")
+          ? fluCompositeName(fluAgeBand ?? fluAgeBucket ?? "unknown")
           : rawName;
       const key = `${date}::${vaccineName}`;
       const existing = groups.get(key);

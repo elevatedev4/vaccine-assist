@@ -11,6 +11,7 @@ import {
   computeTodayAndNext7Summaries,
   compositeNameToMatchableBase,
   heatmapCellBackground,
+  parseFluCompositeAgeBucket,
   HOURLY_TABLE_HOURS,
   type AppointmentTableColumn,
   type BookingActivityRow,
@@ -1256,5 +1257,35 @@ describe("buildBookingActivityTable", () => {
 
     const total = table.rows.reduce((sum: number, row: BookingActivityRow) => sum + row.total, 0);
     expect(total).toBe(0);
+  });
+});
+
+describe("V-Q11 finer Flu composites (3-49 / 50-64) on the appointments table", () => {
+  it("lands 3-49, 50-64 and the legacy 3-64 together in the one 3-64 Flu column", () => {
+    const table = buildAppointmentTable(
+      [
+        { date: "2026-08-17", vaccineName: "Flu · 3-49", count: 4 },
+        { date: "2026-08-17", vaccineName: "Flu · 50-64", count: 3 },
+        { date: "2026-08-17", vaccineName: "Flu · 3-64", count: 2 },
+        { date: "2026-08-17", vaccineName: "Flu · 65+", count: 1 },
+      ],
+      DAYS
+    );
+    expect(table.rows.find((r) => r.vaccineName === "flu_3-64")!.countsByDay["2026-08-17"]).toBe(9);
+    expect(table.rows.find((r) => r.vaccineName === "flu_65+")!.countsByDay["2026-08-17"]).toBe(1);
+  });
+
+  it("parseFluCompositeAgeBucket returns the band as written, normalizing Unknown", () => {
+    expect(parseFluCompositeAgeBucket("Flu · 3-49")).toBe("3-49");
+    expect(parseFluCompositeAgeBucket("Flu · 50-64")).toBe("50-64");
+    expect(parseFluCompositeAgeBucket("Flu · 3-64")).toBe("3-64");
+    expect(parseFluCompositeAgeBucket("Flu · 65+")).toBe("65+");
+    expect(parseFluCompositeAgeBucket("Flu · Unknown")).toBe("unknown");
+    expect(parseFluCompositeAgeBucket("COVID · Pfizer · 12-64")).toBeNull();
+  });
+
+  it("still maps Flu composites to the same base name for the generic matcher", () => {
+    expect(compositeNameToMatchableBase("Flu · 50-64")).toBe("Flu");
+    expect(compositeNameToMatchableBase("Flu · 3-49")).toBe("Flu");
   });
 });

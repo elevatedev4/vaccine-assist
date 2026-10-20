@@ -1,5 +1,5 @@
 import { ORDERING_GROUP_FLU, getOrderingGroup } from "@/lib/ordering-group";
-import type { FluAgeBucket } from "@/lib/appointment-table";
+import type { FluCompositeAgeBand } from "@/lib/appointment-table";
 
 /**
  * Resolves a Flu appointment's age band to the catalog product its
@@ -19,6 +19,14 @@ import type { FluAgeBucket } from "@/lib/appointment-table";
  * uses INSTEAD of compositeNameToMatchableBase for a Flu composite, to
  * get the real age band before calling matchFluAgeBandToVaccine below.
  *
+ * V-Q11 (Will 2026-10-20: "Switch 50-64 to mFlusiva."): the Flu age
+ * composite is now split into "3-49" / "50-64" / "65+" (see
+ * lib/flu-preference.ts, shared with the macro-codes "F" hotkey so the
+ * ordering rule and the preferred-flu rule cannot disagree). "3-49" takes
+ * the old "3-64" Flucelvax rule below, "50-64" resolves to mFLUSIVA, and
+ * the legacy "3-64" name (counts cached before this change, up to one
+ * poll TTL) keeps resolving to Flucelvax exactly as it always did.
+ *
  * "3-64" resolves by exact (trimmed, case-insensitive) name "Flucelvax
  * PFS" — the pharmacy's seeded catalog name for that product (see
  * supabase/seed/vaccines.sql) — rather than a name-prefix/substring
@@ -36,6 +44,7 @@ export type FluMappingCatalogVaccine = {
 
 const FLUCELVAX_PFS_NAME = "flucelvax pfs";
 const FLUAD_NAME = "fluad";
+const MFLUSIVA_NAME_PREFIX = "mflusiva";
 
 function normalizedName(vaccine: FluMappingCatalogVaccine): string {
   return vaccine.name.trim().toLowerCase();
@@ -56,18 +65,32 @@ function isFluProduct(vaccine: FluMappingCatalogVaccine): boolean {
  * as every other unmatched-appointment path there).
  */
 export function matchFluAgeBandToVaccine(
-  ageBand: FluAgeBucket,
+  ageBand: FluCompositeAgeBand,
   catalog: readonly FluMappingCatalogVaccine[]
 ): FluMappingCatalogVaccine | null {
   if (ageBand === "65+") {
     return catalog.find((v) => v.active && normalizedName(v) === FLUAD_NAME) ?? null;
   }
 
-  if (ageBand === "3-64") {
+  if (ageBand === "50-64") {
+    // The on-file name carries the season ("mFLUSIVA 2026-27"), so match
+    // by prefix.
+    return catalog.find((v) => v.active && normalizedName(v).startsWith(MFLUSIVA_NAME_PREFIX)) ?? null;
+  }
+
+  if (ageBand === "3-49" || ageBand === "3-64") {
     const activeFlucelvax = catalog.find((v) => v.active && normalizedName(v) === FLUCELVAX_PFS_NAME);
     if (activeFlucelvax) return activeFlucelvax;
 
-    const fallback = catalog.find((v) => v.active && isFluProduct(v) && normalizedName(v) !== FLUAD_NAME);
+    // Never Fluad (65+) and never mFLUSIVA (50-64): neither may absorb
+    // this younger band's demand.
+    const fallback = catalog.find(
+      (v) =>
+        v.active &&
+        isFluProduct(v) &&
+        normalizedName(v) !== FLUAD_NAME &&
+        !normalizedName(v).startsWith(MFLUSIVA_NAME_PREFIX)
+    );
     return fallback ?? null;
   }
 

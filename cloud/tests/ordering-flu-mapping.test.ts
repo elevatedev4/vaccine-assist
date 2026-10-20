@@ -58,4 +58,46 @@ describe("matchFluAgeBandToVaccine", () => {
     const match = matchFluAgeBandToVaccine("3-64", onlyMdv);
     expect(match?.id).toBe("v-flucelvax-mdv");
   });
+
+  describe("V-Q11 (2026-10-20): 50-64 orders mFLUSIVA", () => {
+    const withMflusiva: FluMappingCatalogVaccine[] = [
+      { id: "v-flucelvax-pfs", name: "Flucelvax PFS", active: true },
+      { id: "v-mflusiva", name: "mFLUSIVA 2026-27", active: true },
+      { id: "v-fluad", name: "Fluad", active: true },
+    ];
+
+    it("3-49 resolves to Flucelvax PFS", () => {
+      expect(matchFluAgeBandToVaccine("3-49", withMflusiva)?.id).toBe("v-flucelvax-pfs");
+    });
+
+    it("50-64 resolves to the active mFLUSIVA product (season suffix ignored)", () => {
+      expect(matchFluAgeBandToVaccine("50-64", withMflusiva)?.id).toBe("v-mflusiva");
+    });
+
+    it("65+ still resolves to Fluad", () => {
+      expect(matchFluAgeBandToVaccine("65+", withMflusiva)?.id).toBe("v-fluad");
+    });
+
+    it("50-64 returns null when mFLUSIVA is inactive or not on file (never Flucelvax or Fluad)", () => {
+      const inactive = withMflusiva.map((v) => (v.id === "v-mflusiva" ? { ...v, active: false } : v));
+      expect(matchFluAgeBandToVaccine("50-64", inactive)).toBeNull();
+      expect(matchFluAgeBandToVaccine("50-64", withMflusiva.filter((v) => v.id !== "v-mflusiva"))).toBeNull();
+    });
+
+    it("3-49 fallback never lands on mFLUSIVA or Fluad", () => {
+      const onlyNewer: FluMappingCatalogVaccine[] = [
+        { id: "v-mflusiva", name: "mFLUSIVA 2026-27", active: true },
+        { id: "v-fluad", name: "Fluad", active: true },
+      ];
+      expect(matchFluAgeBandToVaccine("3-49", onlyNewer)).toBeNull();
+    });
+
+    it("the legacy cached '3-64' band keeps resolving to Flucelvax PFS", () => {
+      expect(matchFluAgeBandToVaccine("3-64", withMflusiva)?.id).toBe("v-flucelvax-pfs");
+    });
+
+    it("'unknown' still has no product-level mapping", () => {
+      expect(matchFluAgeBandToVaccine("unknown", withMflusiva)).toBeNull();
+    });
+  });
 });
