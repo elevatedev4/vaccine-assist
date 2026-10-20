@@ -132,6 +132,7 @@ public partial class MainWindow : Window
 
     /// <summary>Version control: what the Version submenu in the tray and Pioneer overlay menus draws from (the running build + the remote testing-branch lookup).</summary>
     private readonly VersionMenuSource _versionMenuSource;
+    private readonly VersionSwitchGuard _versionSwitchGuard = new();
 
     /// <summary>Part 4 — null if construction ever throws (belt-and-suspenders, same posture as _trayIconController above); a missing overlay just means no Pioneer icon, never a broken MainWindow.</summary>
     private readonly PioneerOverlayController? _pioneerOverlayController;
@@ -590,6 +591,15 @@ public partial class MainWindow : Window
         // front of everything (VersionDialogs) and logs the reason.
         var current = BuildInfo.Current;
         AppFileLog.Log($"[Version] switch requested: '{versionRef}' (running {current.Describe()})");
+
+        // A confirm box from an earlier click is already on screen (topmost,
+        // task-modal): ignore this click instead of stacking a second box.
+        if (!_versionSwitchGuard.TryEnter())
+        {
+            AppFileLog.Log($"[Version] switch to '{versionRef}' ignored: another switch is already in progress");
+            return;
+        }
+
         try
         {
             var primaryRoot = PrimaryCheckoutLocator.ResolveForCurrentProcess();
@@ -625,6 +635,10 @@ public partial class MainWindow : Window
         {
             AppFileLog.LogException("MainWindow.SwitchVersion", ex);
             VersionDialogs.ShowNotice($"Could not switch versions: {ex.Message}\n\nVaccine Assist is still running.");
+        }
+        finally
+        {
+            _versionSwitchGuard.Exit();
         }
     }
 

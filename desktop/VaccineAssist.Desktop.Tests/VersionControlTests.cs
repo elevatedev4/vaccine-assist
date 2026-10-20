@@ -476,6 +476,8 @@ public class VersionControlTests
         Assert.NotEqual(0u, VersionDialogs.NoticeFlags & VersionDialogs.MB_SETFOREGROUND);
         Assert.NotEqual(0u, VersionDialogs.ConfirmFlags & VersionDialogs.MB_TOPMOST);
         Assert.NotEqual(0u, VersionDialogs.ConfirmFlags & VersionDialogs.MB_SETFOREGROUND);
+        Assert.NotEqual(0u, VersionDialogs.NoticeFlags & VersionDialogs.MB_TASKMODAL);
+        Assert.NotEqual(0u, VersionDialogs.ConfirmFlags & VersionDialogs.MB_TASKMODAL);
     }
 
     // ---- repainting an open submenu ----
@@ -526,5 +528,38 @@ public class VersionControlTests
     public void SubmenuAreaCountsAsOutsideWhenTheSubmenuIsNotOpen()
     {
         Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: false, SubMenu, x: 300, y: 430));
+    }
+
+    [Fact]
+    public void UnknownSubmenuBoundsKeepTheMenuOpenOnlyNearTheMainMenu()
+    {
+        // 150x300 menu at (100,200); slack 400 -> expanded rect is x -300..650, y -200..900.
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 300, y: 430));
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 600, y: 850));
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 1200, y: 430));
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 300, y: 1500));
+    }
+
+    [Fact]
+    public void UnknownSubmenuSlackScalesWithTheGivenPixelDistance()
+    {
+        // 150% DPI: 600 physical px. A click 500px right of the menu edge is still "near".
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, true, null, x: 250 + 500, y: 300, unknownBoundsSlackPx: 600));
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, true, null, x: 250 + 500, y: 300, unknownBoundsSlackPx: 400));
+    }
+
+    [Fact]
+    public void OnlyOneVersionSwitchMayRunAtATime()
+    {
+        var guard = new VersionSwitchGuard();
+
+        Assert.False(guard.IsActive);
+        Assert.True(guard.TryEnter());
+        Assert.True(guard.IsActive);
+        Assert.False(guard.TryEnter()); // a second click while the confirm box is up is refused
+
+        guard.Exit();
+        Assert.False(guard.IsActive);
+        Assert.True(guard.TryEnter());  // usable again after the first finished
     }
 }

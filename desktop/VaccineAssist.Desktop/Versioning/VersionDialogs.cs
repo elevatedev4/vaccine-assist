@@ -21,13 +21,14 @@ public static class VersionDialogs
     private const uint MB_YESNO = 0x0004;
     private const uint MB_ICONWARNING = 0x0030;
     private const uint MB_ICONQUESTION = 0x0020;
+    public const uint MB_TASKMODAL = 0x00002000;
     private const uint MB_DEFBUTTON2 = 0x0100;
     public const uint MB_SETFOREGROUND = 0x00010000;
     public const uint MB_TOPMOST = 0x00040000;
     private const int IDYES = 6;
 
-    public const uint NoticeFlags = MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST;
-    public const uint ConfirmFlags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST;
+    public const uint NoticeFlags = MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST | MB_TASKMODAL;
+    public const uint ConfirmFlags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST | MB_TASKMODAL;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
