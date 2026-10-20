@@ -833,6 +833,7 @@ public partial class MainWindow : Window
 
             if (pickedCode is not null)
             {
+                AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 7 pick, build {BuildInfo.Current.Describe()}, age {ageYears}");
                 _ = ContinueVaccineEntryAfterPickAsync(pickedCode, pickedLabel ?? "", pickedProduct ?? "", ageYears, previousForegroundWindow);
             }
             else
@@ -899,9 +900,11 @@ public partial class MainWindow : Window
         var parsed = MacroCodeParser.TryParse(macroCode);
         if (parsed is null)
         {
+            AppFileLog.Log($"[FluPrompt] no prompt: could not read a short code from the picked macro text (age {ageYears})");
             return original; // RunVaccineEntryAutomationAsync logs the parse failure as before
         }
 
+        AppFileLog.Log($"[FluPrompt] evaluating: {FluPreferenceRules.DescribeDecision(ageYears, parsed.Value.ShortCode)}");
         var prompt = FluPreferenceRules.Evaluate(ageYears, parsed.Value.ShortCode);
         if (prompt is null)
         {
@@ -1158,7 +1161,16 @@ public partial class MainWindow : Window
         }
 
         var previousForegroundWindow = GetForegroundWindow();
-        var popup = new MacroCodesWindow(_settings.CloudApiBaseUrl, _clipboardService, previousForegroundWindow);
+        var popup = new MacroCodesWindow(
+            _settings.CloudApiBaseUrl,
+            _clipboardService,
+            previousForegroundWindow,
+            onCodeCopied: (code, _, _) =>
+            {
+                // Ctrl+Keypad 8 has no patient age, so the preferred-flu prompt cannot run here.
+                // Logged so a log shows which path a pick took (short code only, no lot).
+                AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 8 pick '{MacroCodeParser.TryParse(code)?.ShortCode}': no prompt - this popup has no patient age (use Ctrl+Keypad 2 or 7)");
+            });
 
         popup.Closed += (_, _) =>
         {
@@ -1251,7 +1263,26 @@ public partial class MainWindow : Window
             _clipboardService,
             previousForegroundWindow,
             overrideUrl: url,
-            sendCtrlNumPad5OnClose: true);
+            sendCtrlNumPad5OnClose: true,
+            // Testing version "flu-preferred": this flow's entry is done by the
+            // external macro (Ctrl+NumPad5), so the preferred-flu prompt has to
+            // run here, after the picker closed and before that keypress.
+            beforeSendCtrlNumPad5Async: async (code, label, product) =>
+            {
+                AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 2 pick, build {BuildInfo.Current.Describe()}, age {result.Years}");
+                // Hold the "age prompt showing" guard so a repeat Ctrl+Keypad 2
+                // press while the dialog is up can't stack a second flow.
+                _ageMacroPromptShowing = true;
+                try
+                {
+                    var pick = await ApplyFluPreferenceAsync(code, label, product, result.Years, previousForegroundWindow);
+                    return pick?.MacroCode;
+                }
+                finally
+                {
+                    _ageMacroPromptShowing = false;
+                }
+            });
 
         popup.Closed += (_, _) =>
         {

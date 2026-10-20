@@ -106,6 +106,23 @@ public partial class MacroCodesWindow : Window
     private readonly Action<string, string, string>? _onCodeCopied;
 
     /// <summary>
+    /// Testing version "flu-preferred": the Ctrl+Keypad 2 flow hands the picked
+    /// code to an external on-computer macro (synthetic Ctrl+NumPad5), so the
+    /// desktop never sees the entry itself. This hook runs after the window has
+    /// closed and focus is back on PioneerRx, just BEFORE that keypress, with
+    /// the copied (code, label, product). Return the code the macro should use
+    /// (the same code, or a swapped one - it is put on the clipboard), or null
+    /// to cancel (no keypress is sent). An exception is logged and the original
+    /// code goes ahead, so a bug here can never block the entry. Null (default)
+    /// = no hook, exactly the previous behavior.
+    /// </summary>
+    private readonly Func<string, string, string, Task<string?>>? _beforeSendCtrlNumPad5Async;
+
+    private string _copiedCode = "";
+    private string _copiedLabel = "";
+    private string _copiedProduct = "";
+
+    /// <summary>
     /// MACRO-POPUP ROUND 3: this window's own non-WebView chrome height
     /// (title bar + borders — see MacroCodesWindowSizing's doc comment
     /// for why there's nothing else to measure here), captured once in
@@ -180,7 +197,8 @@ public partial class MacroCodesWindow : Window
         IntPtr previousForegroundWindow,
         string? overrideUrl = null,
         bool sendCtrlNumPad5OnClose = false,
-        Action<string, string, string>? onCodeCopied = null)
+        Action<string, string, string>? onCodeCopied = null,
+        Func<string, string, string, Task<string?>>? beforeSendCtrlNumPad5Async = null)
     {
         InitializeComponent();
         _clipboardService = clipboardService ?? throw new ArgumentNullException(nameof(clipboardService));
@@ -188,6 +206,7 @@ public partial class MacroCodesWindow : Window
         _macroCodesUrl = overrideUrl ?? BuildMacroCodesUrl(cloudApiBaseUrl);
         _sendCtrlNumPad5OnClose = sendCtrlNumPad5OnClose;
         _onCodeCopied = onCodeCopied;
+        _beforeSendCtrlNumPad5Async = beforeSendCtrlNumPad5Async;
 
         // MACRO-POPUP ROUND 3 (Will, verbatim, 2026-09-25): "Make it
         // wider... and make the height fit only what it needs..." Width
@@ -219,11 +238,8 @@ public partial class MacroCodesWindow : Window
         Activated += MacroCodesWindow_OnActivated;
     }
 
-    private static string BuildMacroCodesUrl(string cloudApiBaseUrl)
-    {
-        var baseUrl = (cloudApiBaseUrl ?? "").TrimEnd('/');
-        return $"{baseUrl}/macro-codes?embed=1";
-    }
+    private static string BuildMacroCodesUrl(string cloudApiBaseUrl) =>
+        AgeMacroCodesUrlBuilder.BuildUrlWithoutAge(cloudApiBaseUrl);
 
     /// <summary>
     /// MainWindow.ShowMacroCodesPopup calls this instead of opening a
@@ -590,6 +606,13 @@ public partial class MacroCodesWindow : Window
                         {
                             _codeCopiedInAgeMacroFlow = true;
                             AppFileLog.Log($"[AgeMacro] copied {code}");
+                            _copiedCode = code;
+                            _copiedLabel = message.RootElement.TryGetProperty("label", out var copiedLabelElement)
+                                ? copiedLabelElement.GetString() ?? ""
+                                : "";
+                            _copiedProduct = message.RootElement.TryGetProperty("product", out var copiedProductElement)
+                                ? copiedProductElement.GetString() ?? ""
+                                : "";
                         }
 
                         // V-T41 R5 (item 3): fires REGARDLESS of
@@ -828,6 +851,30 @@ public partial class MacroCodesWindow : Window
         }
 
         AppFileLog.Log("[AgeMacro] focus restored");
+
+        if (_beforeSendCtrlNumPad5Async is not null)
+        {
+            try
+            {
+                var finalCode = await _beforeSendCtrlNumPad5Async(_copiedCode, _copiedLabel, _copiedProduct);
+                if (finalCode is null)
+                {
+                    AppFileLog.Log("[AgeMacro] cancelled before the macro ran (flu preference prompt) - Ctrl+Num5 NOT sent");
+                    return;
+                }
+
+                if (!string.Equals(finalCode, _copiedCode, StringComparison.Ordinal))
+                {
+                    _clipboardService.SetText(finalCode);
+                    AppFileLog.Log("[AgeMacro] clipboard swapped to the preferred flu vaccine");
+                }
+            }
+            catch (Exception ex)
+            {
+                // Never block the entry on a bug in the pre-send hook: go ahead with what was picked.
+                AppFileLog.LogException("MacroCodesWindow.BeforeSendCtrlNumPad5", ex);
+            }
+        }
 
         try
         {
