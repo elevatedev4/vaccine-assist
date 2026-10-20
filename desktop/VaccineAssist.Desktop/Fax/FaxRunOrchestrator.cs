@@ -219,6 +219,7 @@ public sealed class FaxRunOrchestrator
             entry.FaxId = result.FaxId;
             entry.Status = FaxLedgerStatus.InProcess;
             entry.Error = null;
+            entry.NotFoundFailure = false;
             entry.QueuedAtUtc = DateTime.UtcNow;
         }
         else

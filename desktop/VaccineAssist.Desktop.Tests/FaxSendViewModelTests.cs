@@ -252,6 +252,60 @@ public class FaxSendViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task RefreshNowRaisesPropertyChangedOnTheRowSoTheGridRepaints()
+    {
+        // V-T65 (Will, 2026-10-20: "sent the fax successfully but didn't
+        // change the status in the app"): the grid binds plain CLR
+        // properties on the row; only INotifyPropertyChanged repaints it.
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+        var row = vm.Rows.Single();
+        var changed = new System.Collections.Generic.List<string?>();
+        row.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        var entries = faxLedger.Load();
+        entries.Single().Status = FaxLedgerStatus.Sent;
+        faxLedger.Save(entries);
+        coordinator.RefreshNow();
+
+        Assert.Contains(nameof(FaxRunRowSummary.Status), changed);
+        Assert.Equal(nameof(FaxLedgerStatus.Sent), row.Status);
+    }
+
+    [Fact]
+    public async Task ARowShowingFailedIsOverriddenByALaterSent()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+        var row = vm.Rows.Single();
+
+        var entries = faxLedger.Load();
+        entries.Single().Status = FaxLedgerStatus.Failed;
+        entries.Single().Error = "Fax x wasn't found in Notifyre's sent faxes.";
+        entries.Single().NotFoundFailure = true;
+        faxLedger.Save(entries);
+        coordinator.RefreshNow();
+        Assert.Equal(nameof(FaxLedgerStatus.Failed), row.Status);
+
+        entries = faxLedger.Load();
+        entries.Single().Status = FaxLedgerStatus.Sent;
+        entries.Single().Error = null;
+        entries.Single().NotFoundFailure = false;
+        faxLedger.Save(entries);
+        coordinator.RefreshNow();
+
+        Assert.Equal(nameof(FaxLedgerStatus.Sent), row.Status);
+        Assert.Null(row.Error);
+        Assert.Equal("Done: 1 sent, 0 failed", vm.SummaryLine);
+    }
+
+    [Fact]
     public async Task InProcessCountChangedFiresWhenARowResolves()
     {
         var reportPath = WriteReport("report.csv");

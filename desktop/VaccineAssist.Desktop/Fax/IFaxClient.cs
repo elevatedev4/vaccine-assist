@@ -26,8 +26,12 @@ public sealed record FaxQueueResult(bool Success, string? FaxId, string? ErrorMe
 /// log "vendor said X, we mapped it to Y" (V-T65 R7: Will, 2026-09-30,
 /// "never reports back a successful fax" — this is the poll-result log
 /// line FaxReceiptPoller writes on every check) without re-deriving vendor
-/// text from the already-mapped enum.</summary>
-public sealed record FaxStatusResult(bool Success, FaxSendStatus Status, string? ErrorMessage, int? Pages, string? RawStatus = null);
+/// text from the already-mapped enum. <paramref name="NotFound"/> (V-T65,
+/// 2026-10-20) is true only when the vendor call worked but didn't list this
+/// fax id — Notifyre's sent list lags a fresh submit — so it is NOT a
+/// delivery failure; FaxReceiptPoller treats it as still in process inside
+/// FaxPollSchedule.NotFoundGrace.</summary>
+public sealed record FaxStatusResult(bool Success, FaxSendStatus Status, string? ErrorMessage, int? Pages, string? RawStatus = null, bool NotFound = false);
 
 /// <summary>Result of a "test connection" call — Will's brief: "also
 /// implement Get_FaxUsage for a 'test connection' button," generalized
