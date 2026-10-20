@@ -46,6 +46,14 @@ const FLUCELVAX_PFS_NAME = "flucelvax pfs";
 const FLUAD_NAME = "fluad";
 const MFLUSIVA_NAME_PREFIX = "mflusiva";
 
+/** Shown on the Ordering page when 50-64 appointments were counted as Flucelvax because no active mFLUSIVA product is on file. */
+export const MFLUSIVA_FALLBACK_NOTE = "mFLUSIVA not in catalog \u2014 50\u201364 counted as Flucelvax";
+
+/** True when an active catalog product is mFLUSIVA (what the 50-64 band orders). */
+export function hasActiveMflusiva(catalog: readonly FluMappingCatalogVaccine[]): boolean {
+  return catalog.some((v) => v.active && normalizedName(v).startsWith(MFLUSIVA_NAME_PREFIX));
+}
+
 function normalizedName(vaccine: FluMappingCatalogVaccine): string {
   return vaccine.name.trim().toLowerCase();
 }
@@ -57,6 +65,8 @@ function isFluProduct(vaccine: FluMappingCatalogVaccine): boolean {
 /**
  * ageBand "65+" -> the active catalog vaccine named exactly "Fluad", or
  * null if none is on file/active.
+ * ageBand "50-64" -> mFLUSIVA, or (no active mFLUSIVA on file) the same
+ * product as "3-49" so the demand is not dropped.
  * ageBand "3-64" -> the active catalog vaccine named exactly "Flucelvax
  * PFS"; if none is active, falls back to any OTHER active Flu-group
  * product that isn't Fluad (Fluad is 65+-only and must never absorb <65
@@ -74,8 +84,13 @@ export function matchFluAgeBandToVaccine(
 
   if (ageBand === "50-64") {
     // The on-file name carries the season ("mFLUSIVA 2026-27"), so match
-    // by prefix.
-    return catalog.find((v) => v.active && normalizedName(v).startsWith(MFLUSIVA_NAME_PREFIX)) ?? null;
+    // by prefix. When mFLUSIVA is not an active catalog product, 50-64
+    // demand must not vanish: it falls back to the Flucelvax rule below
+    // (the pre-V-Q11 behavior), and the ordering route surfaces
+    // MFLUSIVA_FALLBACK_NOTE so the substitution is visible.
+    const mflusiva = catalog.find((v) => v.active && normalizedName(v).startsWith(MFLUSIVA_NAME_PREFIX));
+    if (mflusiva) return mflusiva;
+    return matchFluAgeBandToVaccine("3-49", catalog);
   }
 
   if (ageBand === "3-49" || ageBand === "3-64") {

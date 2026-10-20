@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchFluAgeBandToVaccine, type FluMappingCatalogVaccine } from "@/lib/ordering-flu-mapping";
+import { hasActiveMflusiva, matchFluAgeBandToVaccine, type FluMappingCatalogVaccine } from "@/lib/ordering-flu-mapping";
 
 describe("matchFluAgeBandToVaccine", () => {
   const catalog: FluMappingCatalogVaccine[] = [
@@ -78,10 +78,20 @@ describe("matchFluAgeBandToVaccine", () => {
       expect(matchFluAgeBandToVaccine("65+", withMflusiva)?.id).toBe("v-fluad");
     });
 
-    it("50-64 returns null when mFLUSIVA is inactive or not on file (never Flucelvax or Fluad)", () => {
+    it("50-64 falls back to Flucelvax PFS (demand not dropped) when mFLUSIVA is inactive or not on file", () => {
       const inactive = withMflusiva.map((v) => (v.id === "v-mflusiva" ? { ...v, active: false } : v));
-      expect(matchFluAgeBandToVaccine("50-64", inactive)).toBeNull();
-      expect(matchFluAgeBandToVaccine("50-64", withMflusiva.filter((v) => v.id !== "v-mflusiva"))).toBeNull();
+      expect(matchFluAgeBandToVaccine("50-64", inactive)?.id).toBe("v-flucelvax-pfs");
+      expect(matchFluAgeBandToVaccine("50-64", withMflusiva.filter((v) => v.id !== "v-mflusiva"))?.id).toBe("v-flucelvax-pfs");
+    });
+
+    it("50-64 fallback never lands on Fluad", () => {
+      expect(matchFluAgeBandToVaccine("50-64", [{ id: "v-fluad", name: "Fluad", active: true }])).toBeNull();
+    });
+
+    it("hasActiveMflusiva reports whether the 50-64 product is on file", () => {
+      expect(hasActiveMflusiva(withMflusiva)).toBe(true);
+      expect(hasActiveMflusiva(withMflusiva.filter((v) => v.id !== "v-mflusiva"))).toBe(false);
+      expect(hasActiveMflusiva(withMflusiva.map((v) => (v.id === "v-mflusiva" ? { ...v, active: false } : v)))).toBe(false);
     });
 
     it("3-49 fallback never lands on mFLUSIVA or Fluad", () => {

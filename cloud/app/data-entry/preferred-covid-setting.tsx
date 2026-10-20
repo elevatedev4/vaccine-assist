@@ -1,20 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   DEFAULT_PREFERRED_COVID,
   PREFERRED_COVID_ADULT_OPTIONS,
   PREFERRED_COVID_KIDS_OPTIONS,
-  normalizePreferredCovid,
   type PreferredCovidSetting,
 } from "@/lib/preferred-covid";
+import { loadPreferredCovid } from "@/lib/preferred-covid-client";
 
 /**
  * Data Entry tab: which COVID vaccine the C hotkey picks (V-Q11, Will
  * 2026-10-20: "make it where you can choose the preferred covid vaccine in
  * data entry tab"). One choice for patients 12+, one for children 3-11;
  * each change saves immediately to /api/settings/preferred-covid. Shows
- * the defaults (Pfizer 12+, Moderna 3-11) until a saved value loads.
+ * the saved value only once it has loaded; a failed load shows an error with
+ * Retry and keeps the selects disabled, so the defaults are never mistaken for
+ * (or saved over) the real setting.
  */
 
 type SaveStatus = "idle" | "saving" | "saved" | "error" | "pending";
@@ -33,23 +35,24 @@ const styles = {
 export function PreferredCovidSettingEditor({ accessToken }: { accessToken: string }) {
   const [setting, setSetting] = useState<PreferredCovidSetting>({ ...DEFAULT_PREFERRED_COVID });
   const [status, setStatus] = useState<SaveStatus>("idle");
+  const [loadState, setLoadState] = useState<"loading" | "loaded" | "error">("loading");
+
+  const load = useCallback(async () => {
+    setLoadState("loading");
+    const result = await loadPreferredCovid(accessToken);
+    if (result.ok) {
+      setSetting(result.setting);
+      setLoadState("loaded");
+    } else {
+      setLoadState("error");
+    }
+  }, [accessToken]);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetch("/api/settings/preferred-covid", { headers: { Authorization: `Bearer ${accessToken}` } });
-        if (!response.ok) return;
-        const body: unknown = await response.json();
-        if (!cancelled) setSetting(normalizePreferredCovid(body));
-      } catch {
-        // Keep showing the defaults.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken]);
+    void load();
+  }, [load]);
+
+  const editable = loadState === "loaded" && status !== "saving";
 
   async function save(next: PreferredCovidSetting) {
     const previous = setting;
@@ -84,7 +87,7 @@ export function PreferredCovidSettingEditor({ accessToken }: { accessToken: stri
           id="preferred-covid-adult"
           style={styles.select}
           value={setting.adult}
-          disabled={status === "saving"}
+          disabled={!editable}
           onChange={(e) => void save({ ...setting, adult: e.target.value as PreferredCovidSetting["adult"] })}
         >
           {PREFERRED_COVID_ADULT_OPTIONS.map((o) => (
@@ -98,7 +101,7 @@ export function PreferredCovidSettingEditor({ accessToken }: { accessToken: stri
           id="preferred-covid-kids"
           style={styles.select}
           value={setting.kids}
-          disabled={status === "saving"}
+          disabled={!editable}
           onChange={(e) => void save({ ...setting, kids: e.target.value as PreferredCovidSetting["kids"] })}
         >
           {PREFERRED_COVID_KIDS_OPTIONS.map((o) => (
@@ -106,6 +109,13 @@ export function PreferredCovidSettingEditor({ accessToken }: { accessToken: stri
           ))}
         </select>
       </div>
+      {loadState === "error" && (
+        <div role="alert" style={styles.error}>
+          Couldn&apos;t load the saved setting.{" "}
+          <button type="button" onClick={() => void load()}>Retry</button>
+        </div>
+      )}
+      {loadState === "loading" && <div style={styles.status}>Loading…</div>}
       <div role="status" aria-live="polite" style={status === "error" ? styles.error : styles.status}>
         {status === "saving" && "Saving…"}
         {status === "saved" && "Saved."}

@@ -931,6 +931,50 @@ describe("GET /api/ordering/recommendation", () => {
       expect(mdvRow.upcoming7d).toBe(1);
     });
 
+    describe("50-64 band (V-Q11)", () => {
+      function fluBandAppointment(fluAgeBand: "3-49" | "50-64" | "65+") {
+        return { ...fluAppointment("3-64"), fluAgeBand };
+      }
+
+      async function run(catalog: Array<{ id: string; name: string; short_code: string; ndc: string | null; active: boolean }>, bands: Array<"3-49" | "50-64" | "65+">) {
+        vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+        vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+        vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+        vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+          appointments: bands.map(fluBandAppointment),
+          possiblyTruncated: false,
+        });
+        const response = await GET(authedRequest());
+        return response.json();
+      }
+
+      const withMflusiva = [
+        ...fluCatalog,
+        { id: "v-mflusiva", name: "mFLUSIVA 2026-27", short_code: "mflusiva", ndc: "80777-0500-20", active: true },
+      ];
+
+      it("routes 3-49 to Flucelvax, 50-64 to mFLUSIVA and 65+ to Fluad, with no note", async () => {
+        const body = await run(withMflusiva, ["3-49", "50-64", "50-64", "65+"]);
+
+        expect(body.rows.find((r: { key: string }) => r.key === "vaccine:v-flucelvax-pfs").upcoming7d).toBe(1);
+        expect(body.rows.find((r: { key: string }) => r.key === "80777050020").upcoming7d).toBe(2);
+        expect(body.rows.find((r: { key: string }) => r.key === "70461012303").upcoming7d).toBe(1);
+        expect(body.fluNote).toBeNull();
+      });
+
+      it("counts 50-64 as Flucelvax and says so when mFLUSIVA is not in the catalog", async () => {
+        const body = await run(fluCatalog, ["3-49", "50-64", "50-64"]);
+
+        expect(body.rows.find((r: { key: string }) => r.key === "vaccine:v-flucelvax-pfs").upcoming7d).toBe(3);
+        expect(body.fluNote).toBe("mFLUSIVA not in catalog \u2014 50\u201364 counted as Flucelvax");
+      });
+
+      it("shows no note when mFLUSIVA is missing but there are no 50-64 appointments", async () => {
+        const body = await run(fluCatalog, ["3-49", "65+"]);
+        expect(body.fluNote).toBeNull();
+      });
+    });
+
     it("an 'unknown'-band flu appointment still falls through to the generic matcher unchanged", async () => {
       const catalog = [{ id: "v-flu", name: "Flu Quad 2025-26", short_code: "fluquad", ndc: null, active: true }];
       vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
