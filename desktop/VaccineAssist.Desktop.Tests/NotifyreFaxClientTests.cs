@@ -471,6 +471,7 @@ public class NotifyreFaxClientTests
         var result = await client.GetStatusAsync("fax-123");
 
         Assert.False(result.Success);
+        Assert.True(result.NotFound); // lets FaxReceiptPoller apply its grace window
         Assert.Contains("fax-123", result.ErrorMessage);
         Assert.Single(handler.Requests); // Total was fully accounted for on page 1 — never asked for page 2.
     }

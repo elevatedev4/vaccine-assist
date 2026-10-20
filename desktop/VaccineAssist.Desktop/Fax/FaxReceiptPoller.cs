@@ -41,9 +41,7 @@ public sealed class FaxReceiptPoller
     {
         var nowUtc = DateTime.UtcNow;
         var entries = _ledger.Load();
-        var pending = entries.Where(e =>
-            (e.Status == FaxLedgerStatus.Queued || e.Status == FaxLedgerStatus.InProcess) &&
-            !string.IsNullOrWhiteSpace(e.FaxId)).ToList();
+        var pending = entries.Where(IsPollable).ToList();
 
         if (pending.Count == 0) return 0;
 
@@ -53,6 +51,19 @@ public sealed class FaxReceiptPoller
         {
             if (FaxPollSchedule.HasExpired(entry.QueuedAtUtc, nowUtc))
             {
+                if (entry.Status == FaxLedgerStatus.Failed)
+                {
+                    // A "not found" Failed that never resolved to Sent in 2h
+                    // is final: stop re-checking, file the PDF under failed\.
+                    entry.NotFoundFailure = false;
+                    entry.NeverConfirmed = true;
+                    entry.LastCheckedAtUtc = nowUtc;
+                    MovePdf(entry, "failed");
+                    changed = true;
+                    AppFileLog.Log($"[FaxReceiptPoller] {entry.Id} still not found after 2h — Failed is final.");
+                    continue;
+                }
+
                 entry.Status = FaxLedgerStatus.Unknown;
                 entry.Error = "Unknown — check Notifyre";
                 entry.LastCheckedAtUtc = nowUtc;
@@ -81,29 +92,60 @@ public sealed class FaxReceiptPoller
             entry.LastCheckedAtUtc = DateTime.UtcNow;
             changed = true;
 
+            // V-T65 (Will, 2026-10-20): Notifyre's sent list lags a fresh
+            // submit — "fax id not found" inside the grace window is
+            // still in process, never Failed (the first poll, 81 ms after
+            // submit, used to map to Failed).
+            var inGrace = result.NotFound && FaxPollSchedule.IsWithinNotFoundGrace(entry.QueuedAtUtc, nowUtc);
+
             // V-T65 R7 (Will, verbatim, 2026-09-30: "It still stays on 'in
             // process' ... never reports back a successful fax. Need to
             // fix that with Notifyre."): one log line per poll result —
             // ledger entry id (not patient data), the vendor's own raw
             // status text, and what this mapped it to — so a stuck entry
-            // is diagnosable from app.log alone (was it never found?
-            // found but unmapped? mapped but never terminal?) instead of
-            // only showing up as "still InProcess" in the UI. No PHI:
-            // entry.Id is a random guid, FaxId is Notifyre's own
-            // identifier, RawStatus is vendor delivery-status text.
+            // is diagnosable from app.log alone. No PHI: entry.Id is a
+            // random guid, FaxId is Notifyre's own identifier, RawStatus is
+            // vendor delivery-status text.
             AppFileLog.Log(
                 $"[FaxReceiptPoller] poll {entry.Id} (faxId={entry.FaxId}) — " +
-                $"success={result.Success} raw=\"{result.RawStatus ?? "(none)"}\" mapped={result.Status}" +
+                $"success={result.Success} raw=\"{result.RawStatus ?? "(none)"}\" " +
+                $"mapped={(inGrace ? FaxSendStatus.InProcess : result.Status)}" +
+                (inGrace ? " (not listed yet, within grace window)" : "") +
                 (result.Success ? "" : $" error=\"{result.ErrorMessage}\""));
+
+            if (inGrace)
+            {
+                continue; // still in process; try again next pass.
+            }
 
             if (!result.Success)
             {
-                // A failed STATUS CHECK (network hiccup, vendor 5xx after
-                // retries) is not the same as the fax itself failing —
-                // leave the entry Queued/InProcess and try again next
-                // pass rather than marking it Failed on a check we
-                // couldn't even complete.
+                if (result.NotFound)
+                {
+                    // Past the grace window and still not listed: Failed with
+                    // the existing message, but re-checkable — a later
+                    // "successful" overrides it (entry stays pollable).
+                    if (entry.Status != FaxLedgerStatus.Failed)
+                    {
+                        transitioned++;
+                    }
+                    entry.Status = FaxLedgerStatus.Failed;
+                    entry.Error = result.ErrorMessage;
+                    entry.NotFoundFailure = true;
+                }
+
+                // Any other failed STATUS CHECK (network hiccup, vendor 5xx
+                // after retries) is not the fax itself failing — leave the
+                // entry as-is and try again next pass.
                 continue;
+            }
+
+            // A vendor answer overrides a re-checkable "not found" Failed.
+            entry.NotFoundFailure = false;
+            if (entry.Status == FaxLedgerStatus.Failed && result.Status != FaxSendStatus.Failed)
+            {
+                entry.Status = FaxLedgerStatus.InProcess;
+                entry.Error = null;
             }
 
             switch (result.Status)
@@ -136,6 +178,14 @@ public sealed class FaxReceiptPoller
         }
         return transitioned;
     }
+
+    /// <summary>Queued/InProcess with a FaxId, plus a Failed entry that is
+    /// only Failed because the fax was "not found" (FaxLedgerEntry.
+    /// NotFoundFailure) — so a later Sent can still override it.</summary>
+    internal static bool IsPollable(FaxLedgerEntry e) =>
+        !string.IsNullOrWhiteSpace(e.FaxId) &&
+        (e.Status == FaxLedgerStatus.Queued || e.Status == FaxLedgerStatus.InProcess ||
+         (e.Status == FaxLedgerStatus.Failed && e.NotFoundFailure));
 
     private static void MovePdf(FaxLedgerEntry entry, string subfolder) =>
         FaxOutboxPaths.MoveToTerminalFolder(entry, subfolder);

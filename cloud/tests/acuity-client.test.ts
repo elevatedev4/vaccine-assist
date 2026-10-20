@@ -113,6 +113,7 @@ const DEFAULT_BUCKETS = {
   covidBrand: "any",
   covidAgeBucket: "unknown",
   fluAgeBucket: "unknown",
+  fluAgeBand: "unknown",
   createdDate: "2026-08-10",
   // V-T-poc-testing: every fixture below uses acuityAppointmentFixture()'s
   // default (no `type` field, no "Select tests:" form field), so
@@ -178,6 +179,7 @@ describe("fetchAppointmentsForRange", () => {
           "covidBrand",
           "createdDate",
           "date",
+          "fluAgeBand",
           "fluAgeBucket",
           "hourOfDay",
           "testNames",
@@ -488,6 +490,7 @@ describe("fetchAppointmentsForRange", () => {
           covidBrand: "any",
           covidAgeBucket: "unknown",
           fluAgeBucket: "unknown",
+          fluAgeBand: "unknown",
           createdDate: "2026-08-25",
           testNames: [],
         },
@@ -1036,6 +1039,29 @@ describe("fetchAppointmentsForRange", () => {
       ]);
     });
 
+    // V-Q11 (2026-10-20): the finer Flu band the Ordering tab uses
+    // (lib/flu-preference.ts) - 3-49 / 50-64 / 65+, same [3, 110] range.
+    it("buckets the exact Flu ordering-band boundaries: 2->unknown, 3&49->3-49, 50&64->50-64, 65&110->65+, 111->unknown", async () => {
+      const boundaryAges = [2, 3, 11, 12, 49, 50, 64, 65, 110, 111];
+      const fixture = boundaryAges.map((age) => fixtureWithForms([{ name: "Age", value: String(age) }]));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(fixture), { status: 200 })));
+
+      const result = await fetchAppointmentsForRange("user-1", "key-1", "2026-08-17", "2026-08-24");
+
+      expect(result.appointments.map((a) => a.fluAgeBand)).toEqual([
+        "unknown", // 2
+        "3-49", // 3
+        "3-49", // 11
+        "3-49", // 12
+        "3-49", // 49
+        "50-64", // 50
+        "50-64", // 64
+        "65+", // 65
+        "65+", // 110
+        "unknown", // 111
+      ]);
+    });
+
     it("computes age from a parseable date of birth, bucketing both covidAgeBucket and fluAgeBucket off the same answer", async () => {
       const now = new Date();
       // Exactly 8 years old today (or turning 8 today) -> COVID "3-11",
@@ -1127,6 +1153,7 @@ describe("fetchAppointmentsForRange", () => {
           "covidBrand",
           "createdDate",
           "date",
+          "fluAgeBand",
           "fluAgeBucket",
           "hourOfDay",
           "testNames",
@@ -1846,6 +1873,35 @@ describe("aggregateAppointmentCounts", () => {
         { date: "2026-08-17", vaccineName: "Flu · 3-64", count: 1 },
         { date: "2026-08-17", vaccineName: "Flu · 65+", count: 1 },
         { date: "2026-08-17", vaccineName: "Flu · Unknown", count: 1 },
+      ]);
+    });
+
+    it("uses the finer fluAgeBand for the composite name when present (3-49 / 50-64 / 65+), the coarse bucket otherwise", () => {
+      const base = {
+        date: "2026-08-17",
+        appointmentTypeId: 111,
+        hourOfDay: 10,
+        vaccineNames: ["Flu"],
+        testNames: [],
+        covidBrand: "any" as const,
+        covidAgeBucket: "unknown" as const,
+        createdDate: "2026-08-10",
+      };
+      const appointments: CountableAppointment[] = [
+        { ...base, fluAgeBucket: "3-64", fluAgeBand: "3-49" },
+        { ...base, fluAgeBucket: "3-64", fluAgeBand: "50-64" },
+        { ...base, fluAgeBucket: "3-64", fluAgeBand: "50-64" },
+        { ...base, fluAgeBucket: "65+", fluAgeBand: "65+" },
+        { ...base, fluAgeBucket: "3-64" },
+      ];
+
+      const result = aggregateAppointmentCounts(appointments, new Map());
+
+      expect(result).toEqual([
+        { date: "2026-08-17", vaccineName: "Flu · 3-49", count: 1 },
+        { date: "2026-08-17", vaccineName: "Flu · 3-64", count: 1 },
+        { date: "2026-08-17", vaccineName: "Flu · 50-64", count: 2 },
+        { date: "2026-08-17", vaccineName: "Flu · 65+", count: 1 },
       ]);
     });
 

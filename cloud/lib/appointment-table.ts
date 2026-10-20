@@ -199,7 +199,11 @@ const FIXED_COLUMN_BY_ID = new Map(FIXED_COLUMNS.map((c) => [c.id, c]));
 // (lib/acuity-client.ts) build — "COVID · Pfizer · 12-64", "Flu · 3-64",
 // etc. Keep these in sync with that module if the format ever changes.
 const COVID_COMPOSITE_PATTERN = /^COVID · (Pfizer|Moderna|Any) · (3-11|12-64|65\+|Unknown)$/;
-const FLU_COMPOSITE_PATTERN = /^Flu · (3-64|65\+|Unknown)$/;
+// "3-49" / "50-64" are the finer bands lib/acuity-client.ts now writes
+// (V-Q11, 2026-10-20: the Ordering tab needs 50-64 apart); "3-64" is the
+// legacy name still sitting in cached poll counts. The appointments table
+// keeps ONE "3-64" column, so all three land there (FLU_COMBO_IDS).
+const FLU_COMPOSITE_PATTERN = /^Flu · (3-64|3-49|50-64|65\+|Unknown)$/;
 
 /**
  * Converts a composite vaccine name (COVID's "COVID · {Brand} · {Age}" or
@@ -262,8 +266,11 @@ export function compositeNameToMatchableBase(rawName: string): string {
  */
 export type FluAgeBucket = "3-64" | "65+" | "unknown";
 
+/** Flu band as written in a composite name: the legacy "3-64" or the finer "3-49" / "50-64" (see FLU_COMPOSITE_PATTERN). */
+export type FluCompositeAgeBand = "3-64" | "3-49" | "50-64" | "65+" | "unknown";
+
 /**
- * Extracts the Flu age band ("3-64" | "65+" | "unknown") from a raw
+ * Extracts the Flu age band ("3-64" | "3-49" | "50-64" | "65+" | "unknown") from a raw
  * aggregated vaccineName, or null when it isn't a Flu composite at all
  * (V-T-flu-map, Will 2026-09-09: "flu age <65 ... Flucelvax ... 65+ ...
  * Fluad" — see app/api/ordering/recommendation/route.ts's use of this).
@@ -277,9 +284,10 @@ export type FluAgeBucket = "3-64" | "65+" | "unknown";
  * this module), not a change to compositeNameToMatchableBase's existing
  * (already-tested, already-relied-upon) return shape.
  */
-export function parseFluCompositeAgeBucket(rawName: string): FluAgeBucket | null {
+export function parseFluCompositeAgeBucket(rawName: string): FluCompositeAgeBand | null {
   const match = FLU_COMPOSITE_PATTERN.exec(rawName);
-  return match ? (match[1] as FluAgeBucket) : null;
+  if (!match) return null;
+  return match[1] === "Unknown" ? "unknown" : (match[1] as FluCompositeAgeBand);
 }
 
 // Header label per brand. ROUND 2 originally shortened Moderna to "Mod";
@@ -326,6 +334,8 @@ const FIXED_COVID_COMBO_IDS: Record<string, string> = {
 
 const FLU_COMBO_IDS: Record<string, string> = {
   "3-64": "flu_3-64",
+  "3-49": "flu_3-64",
+  "50-64": "flu_3-64",
   "65+": "flu_65+",
   Unknown: "flu_unknown",
 };

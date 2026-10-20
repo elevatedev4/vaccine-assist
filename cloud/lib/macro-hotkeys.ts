@@ -23,6 +23,8 @@
 
 import { macroBaseShortCode } from "@/lib/macro-catalog";
 import type { MacroDoseButton, MacroProductGroup, MacroRow, MacroTopGroupBlock } from "@/lib/macro-codes";
+import { preferredFluForAge } from "@/lib/flu-preference";
+import { preferredCovidForAge, type PreferredCovidSetting } from "@/lib/preferred-covid";
 
 /**
  * Lowercase key -> the catalog short code(s) (see lib/macro-catalog.ts's
@@ -58,6 +60,102 @@ export const MACRO_HOTKEYS: Readonly<Record<string, readonly string[]>> = {
   i: ["mmr", "priorix"],
 };
 
+/** A letter/digit -> catalog short code(s) table (see MACRO_HOTKEYS). */
+export type HotkeyMap = Readonly<Record<string, readonly string[]>>;
+
+/**
+ * "flu2" hotkey profile (V-Q11, Will 2026-10-20, verbatim): "Update
+ * hotkeys. F picks the recommended flu for that age. Flucelvax is X.
+ * Fluad is D. mFLUSIVA is V. C chooses the preferred COVID vaccine based
+ * on the location settings ... P and M still map to the Pfizer and
+ * Moderna."
+ *
+ * Only the testing desktop opts in (it adds hk=flu2 to the macro-codes
+ * URL - see HOTKEY_PROFILE_PARAM below), so the stable desktop and the
+ * plain web page keep MACRO_HOTKEYS exactly as it was.
+ *
+ * Fixed letters here: X Flucelvax, D Fluad, V mFLUSIVA (L, mFLUSIVA's old
+ * key, is released). F and C are NOT in this table - they resolve per
+ * patient through a SmartHotkeyResolver (see SMART_HOTKEYS_FLU2).
+ *
+ * Collisions this profile had to resolve (the old map used C and V):
+ *   - C was Capvaxive  -> moved to A (it has an "a": cApvaxive)
+ *   - V was Vaqta      -> moved to Q (it has a "q": vaQta)
+ *   - F was Flucelvax  -> now the smart "recommended flu" key; Flucelvax is X
+ * Every other letter/digit is unchanged.
+ */
+export const MACRO_HOTKEYS_FLU2: HotkeyMap = {
+  x: ["flucelvaxmdv", "flucelvaxpfs"],
+  u: ["flumist"],
+  v: ["mflusiva"],
+  d: ["fluad"],
+  "3": ["spikevax6mo11"],
+  p: ["comirnaty12"],
+  m: ["mnexspike"],
+  r: ["abrysvo"],
+  s: ["shingrix"],
+  n: ["prevnar20"],
+  a: ["capvaxive"],
+  b: ["boostrix"],
+  g: ["gardasil"],
+  e: ["engerix"],
+  o: ["menveo"],
+  q: ["vaqtaadult"],
+  t: ["typhim"],
+  i: ["mmr", "priorix"],
+};
+
+/** The keys the flu2 profile resolves per patient instead of from a fixed table. */
+export const SMART_HOTKEYS_FLU2: readonly string[] = ["f", "c"];
+
+/** URL query param the desktop uses to opt into a hotkey profile, e.g. /macro-codes?embed=1&age=55&hk=flu2. */
+export const HOTKEY_PROFILE_PARAM = "hk";
+
+export type HotkeyProfile = "classic" | "flu2";
+
+/** Reads the profile from the raw query param value; anything unknown (or absent) is "classic". */
+export function parseHotkeyProfile(raw: string | null | undefined): HotkeyProfile {
+  return (raw ?? "").trim().toLowerCase() === "flu2" ? "flu2" : "classic";
+}
+
+export function hotkeyMapForProfile(profile: HotkeyProfile): HotkeyMap {
+  return profile === "flu2" ? MACRO_HOTKEYS_FLU2 : MACRO_HOTKEYS;
+}
+
+/** What a smart key resolves to for the current patient: the short codes to select, or a short message when it cannot. */
+export type SmartHotkeyResult = { codes: readonly string[]; label: string } | { message: string };
+export type SmartHotkeyResolver = (lowerKey: string) => SmartHotkeyResult | null;
+
+/** Everything hotkeyTransition needs beyond the key itself; omitted = the classic map, no smart keys. */
+export type HotkeyContext = { map?: HotkeyMap; smart?: SmartHotkeyResolver };
+
+/**
+ * Builds the flu2 profile's smart-key resolver for one patient:
+ *   F -> the preferred flu product for the age (lib/flu-preference.ts, the
+ *        same rule as the desktop prompt, so F never triggers it)
+ *   C -> the preferred COVID vaccine for the age under the location setting
+ *        (12+ -> the 12+ preference, 3-11 -> the kids preference)
+ * An unknown age, or one with no product (under 3), yields a short
+ * message instead of codes. Any other key returns null (not a smart key).
+ */
+export function makeFlu2SmartResolver(ageYears: number | null, covid: PreferredCovidSetting): SmartHotkeyResolver {
+  return (lowerKey) => {
+    if (lowerKey === "f") {
+      if (ageYears === null) return { message: "F needs the patient's age - use Ctrl+Keypad 2." };
+      const product = preferredFluForAge(ageYears);
+      if (!product) return { message: "No flu vaccine under age 3." };
+      return { codes: product.shortCodes, label: product.displayName };
+    }
+    if (lowerKey === "c") {
+      if (ageYears === null) return { message: "C needs the patient's age - use Ctrl+Keypad 2." };
+      const choice = preferredCovidForAge(ageYears, covid);
+      if (!choice) return { message: "No COVID vaccine under age 3." };
+      return { codes: [choice.shortCode], label: choice.label };
+    }
+    return null;
+  };
+}
+
 /** True when `shortCode` (a real dose row's MacroRow.shortCode) is one of
  * `codes` — tried verbatim first, then digit-stripped (macroBaseShortCode)
  * — same two-step resolution lib/macro-catalog.ts's lookupMacroCatalog
@@ -82,10 +180,10 @@ function shortCodeMatchesHotkeyCodes(shortCode: string | null, codes: readonly s
  * "which product does THIS keypress select" direction is
  * resolveHotkeyTarget's job, not this function's.
  */
-export function hotkeyForProduct(baseKey: string): string | null {
+export function hotkeyForProduct(baseKey: string, map: HotkeyMap = MACRO_HOTKEYS): string | null {
   const lower = (baseKey ?? "").trim().toLowerCase();
   if (!lower) return null;
-  for (const [key, codes] of Object.entries(MACRO_HOTKEYS)) {
+  for (const [key, codes] of Object.entries(map)) {
     if (shortCodeMatchesHotkeyCodes(lower, codes)) return key;
   }
   return null;
@@ -110,12 +208,20 @@ export type MacroHotkeyTarget = {
  */
 export function resolveHotkeyTarget(
   key: string,
-  visibleTopGroups: readonly MacroTopGroupBlock[]
+  visibleTopGroups: readonly MacroTopGroupBlock[],
+  map: HotkeyMap = MACRO_HOTKEYS
 ): MacroHotkeyTarget | null {
   const lowerKey = (key ?? "").trim().toLowerCase();
-  const codes = MACRO_HOTKEYS[lowerKey];
+  const codes = map[lowerKey];
   if (!codes || codes.length === 0) return null;
+  return resolveTargetForCodes(codes, visibleTopGroups);
+}
 
+/** The dose-1 row of the first visible product whose short code is one of `codes` (same walk as resolveHotkeyTarget), or null. */
+export function resolveTargetForCodes(
+  codes: readonly string[],
+  visibleTopGroups: readonly MacroTopGroupBlock[]
+): MacroHotkeyTarget | null {
   for (const block of visibleTopGroups) {
     for (const section of block.sections) {
       for (const product of section.products) {
@@ -194,6 +300,7 @@ export type HotkeyAction =
   | { type: "copy"; product: MacroProductGroup; row: MacroRow }
   | { type: "arm"; product: MacroProductGroup }
   | { type: "clear" }
+  | { type: "notice"; message: string }
   | { type: "none" };
 
 export type HotkeyTransitionResult = { state: HotkeyState; action: HotkeyAction };
@@ -242,9 +349,21 @@ export function findArmedProduct(
 function armOrCopyForLetter(
   state: HotkeyState,
   lowerKey: string,
-  visibleTopGroups: readonly MacroTopGroupBlock[]
+  visibleTopGroups: readonly MacroTopGroupBlock[],
+  context: HotkeyContext
 ): HotkeyTransitionResult {
-  const target = resolveHotkeyTarget(lowerKey, visibleTopGroups);
+  // A smart key (flu2: F, C) resolves per patient: either to short codes
+  // that then go through the same arm-or-copy path as a fixed letter, or
+  // to a message ("needs the patient's age") shown without changing state.
+  let target: MacroHotkeyTarget | null;
+  const smart = context.smart?.(lowerKey) ?? null;
+  if (smart) {
+    if ("message" in smart) return { state, action: { type: "notice", message: smart.message } };
+    target = resolveTargetForCodes(smart.codes, visibleTopGroups);
+    if (!target) return { state, action: { type: "notice", message: `${smart.label} isn't on the list right now.` } };
+  } else {
+    target = resolveHotkeyTarget(lowerKey, visibleTopGroups, context.map ?? MACRO_HOTKEYS);
+  }
   // An unmapped key, or a mapped key whose product is currently hidden
   // by a filter, changes nothing — in particular it does NOT clear an
   // existing armed state (only Escape, a successful dose copy, or the
@@ -282,7 +401,8 @@ function armOrCopyForLetter(
 export function hotkeyTransition(
   state: HotkeyState,
   key: string,
-  visibleTopGroups: readonly MacroTopGroupBlock[]
+  visibleTopGroups: readonly MacroTopGroupBlock[],
+  context: HotkeyContext = {}
 ): HotkeyTransitionResult {
   const lowerKey = (key ?? "").trim().toLowerCase();
   if (!lowerKey) return { state, action: { type: "none" } };
@@ -303,7 +423,7 @@ export function hotkeyTransition(
     return { state: { armedProductKey: null }, action: { type: "copy", product, row: dose.row } };
   }
 
-  return armOrCopyForLetter(state, lowerKey, visibleTopGroups);
+  return armOrCopyForLetter(state, lowerKey, visibleTopGroups, context);
 }
 
 /** The armed-mode hint text shown near the highlighted row/page header
