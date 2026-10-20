@@ -454,7 +454,16 @@ describe("GET /api/acuity/poll — validation", () => {
   // V-T-booking-activity (Will, 2026-09-05/07) — same "separate, later
   // request" shape as `?afterTodayOnly=1` above.
   describe("?activity=1 (V-T-booking-activity)", () => {
+    // The route derives its created-date window from the live clock
+    // (todayInChicago -> bookingActivityCreatedRange), and the fixtures
+    // below book on 2026-09-01. Pin ONLY Date (timers stay real) so that
+    // fixture date always sits inside the lookback window.
+    beforeEach(() => {
+      vi.useFakeTimers({ now: new Date("2026-09-05T17:00:00Z"), toFake: ["Date"] });
+    });
+
     afterEach(() => {
+      vi.useRealTimers();
       vi.unstubAllGlobals();
       for (const key of ACUITY_ENV_KEYS) delete process.env[key];
       vi.mocked(getCachedActivityCounts).mockReset();
