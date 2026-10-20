@@ -28,11 +28,17 @@ import {
   decideEmbedEscape,
   findArmedProduct,
   hotkeyForProduct,
+  hotkeyMapForProfile,
   hotkeyTransition,
+  HOTKEY_PROFILE_PARAM,
+  makeFlu2SmartResolver,
+  parseHotkeyProfile,
   underlineHotkey,
   INITIAL_HOTKEY_STATE,
+  type HotkeyContext,
   type HotkeyState,
 } from "@/lib/macro-hotkeys";
+import { DEFAULT_PREFERRED_COVID, isValidPreferredCovid, normalizePreferredCovid, type PreferredCovidSetting } from "@/lib/preferred-covid";
 import { formatNdcDisplay } from "@/lib/lots-grouping";
 import { todayInChicago } from "@/lib/chicago-date";
 import { modalDatesBlocked } from "@/lib/lot-expiry";
@@ -353,6 +359,30 @@ function modalBlockedDatesMessage(
     : "Expiration/beyond-use date is still in the past — enter the new lot's dates.";
 }
 
+const PREFERRED_COVID_STORAGE_KEY = "vaccine-assist:preferred-covid";
+
+/** Last preferred-COVID setting seen on this machine, or the defaults. Storage can throw (private mode, blocked) - never fatal. */
+function readStoredPreferredCovid(): PreferredCovidSetting {
+  try {
+    const raw = window.localStorage.getItem(PREFERRED_COVID_STORAGE_KEY);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (isValidPreferredCovid(parsed)) return parsed;
+    }
+  } catch {
+    // fall through to the defaults
+  }
+  return { ...DEFAULT_PREFERRED_COVID };
+}
+
+function writeStoredPreferredCovid(setting: PreferredCovidSetting): void {
+  try {
+    window.localStorage.setItem(PREFERRED_COVID_STORAGE_KEY, JSON.stringify(setting));
+  } catch {
+    // best effort
+  }
+}
+
 const styles = {
   // `position: relative` so refreshIndicator (below) can anchor to this
   // box instead of the document — see V-T48.
@@ -481,6 +511,9 @@ const styles = {
   // do, so it reads oddly small next to them at the old size.
   ageFilterNoteEmbed: { margin: 0, fontSize: 14, color: "#333" },
   ageFilterClearLink: { marginLeft: "0.5rem", color: "#0b63c5" },
+  // Smart-hotkey notice (flu2 F/C could not act) - shares the age-note slot so it never shifts the grid.
+  hotkeyNotice: { margin: 0, fontSize: "0.85rem", color: "#b00020" },
+  hotkeyNoticeEmbed: { margin: 0, fontSize: 14, color: "#b00020" },
 } as const;
 
 // Round 11: CopyFallback/copyToClipboard/missingNote/SECTION_COLORS now
@@ -522,6 +555,13 @@ function MacroCodesPageContent() {
   // negative, a non-integer ageMonths) is treated the same as the
   // param being absent: no filter, no note shown — this page never
   // errors out of a malformed query string.
+  // V-Q11 (2026-10-20): the testing desktop adds hk=flu2 to opt into the
+  // new hotkey profile (F = recommended flu for the age, X/D/V = Flucelvax
+  // / Fluad / mFLUSIVA, C = preferred COVID from the location setting).
+  // Absent or unknown = the classic map, so every other caller is
+  // unchanged.
+  const hotkeyProfile = parseHotkeyProfile(searchParams.get(HOTKEY_PROFILE_PARAM));
+  const hotkeyMap = useMemo(() => hotkeyMapForProfile(hotkeyProfile), [hotkeyProfile]);
   const ageParam = searchParams.get("age");
   const ageMonthsParam = searchParams.get("ageMonths");
   const requestedAgeYears = useMemo(() => {
@@ -576,6 +616,14 @@ function MacroCodesPageContent() {
   // the whole armed/unarmed state, driven by lib/macro-hotkeys.ts's pure
   // hotkeyTransition reducer (see the hotkeys keydown effect below).
   const [hotkeyState, setHotkeyState] = useState<HotkeyState>(INITIAL_HOTKEY_STATE);
+  // flu2 profile only: the location's preferred COVID vaccine (C key),
+  // loaded from /api/settings/preferred-covid once signed in. Starts from
+  // the last value seen on this machine (so C answers correctly before the
+  // fetch lands), else the defaults; a failed fetch just keeps that.
+  const [preferredCovid, setPreferredCovid] = useState<PreferredCovidSetting>(() => readStoredPreferredCovid());
+  // A short transient message from a smart hotkey that could not act
+  // (e.g. "F needs the patient's age"), shown in the note slot above the grid.
+  const [hotkeyNotice, setHotkeyNotice] = useState<string | null>(null);
 
   type ModalState = {
     row: MacroRow;
@@ -750,6 +798,46 @@ function MacroCodesPageContent() {
       window.clearInterval(interval);
     };
   }, [session, loadAll]);
+
+  useEffect(() => {
+    if (!session || hotkeyProfile !== "flu2") return;
+    let cancelled = false;
+    const token = session.accessToken;
+    void (async () => {
+      try {
+        const response = await fetch("/api/settings/preferred-covid", { headers: { Authorization: `Bearer ${token}` } });
+        if (!response.ok) return;
+        const body: unknown = await response.json();
+        if (cancelled) return;
+        const next = normalizePreferredCovid(body);
+        setPreferredCovid(next);
+        writeStoredPreferredCovid(next);
+      } catch {
+        // Keep the stored/default value - C must still work offline.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, hotkeyProfile]);
+
+  useEffect(() => {
+    if (!hotkeyNotice) return;
+    const timer = window.setTimeout(() => setHotkeyNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [hotkeyNotice]);
+
+  // Context handed to the pure hotkeyTransition reducer: the active key
+  // map plus (flu2 only) the per-patient resolver for F and C. The age is
+  // the patient's REAL age from the URL, not the display filter - "Show
+  // all" must not make F/C forget who the patient is.
+  const hotkeyContext = useMemo<HotkeyContext>(
+    () =>
+      hotkeyProfile === "flu2"
+        ? { map: hotkeyMap, smart: makeFlu2SmartResolver(requestedAgeYears, preferredCovid) }
+        : { map: hotkeyMap },
+    [hotkeyProfile, hotkeyMap, requestedAgeYears, preferredCovid]
+  );
 
   const refetchLots = useCallback(
     async (token: string) => {
@@ -1164,10 +1252,15 @@ function MacroCodesPageContent() {
         const tag = target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
       }
-      const result = hotkeyTransition(hotkeyState, event.key, ageFilteredTopGroups);
+      const result = hotkeyTransition(hotkeyState, event.key, ageFilteredTopGroups, hotkeyContext);
       if (result.action.type === "none") return;
       setHotkeyState(result.state);
       event.preventDefault();
+      if (result.action.type === "notice") {
+        setHotkeyNotice(result.action.message);
+        return;
+      }
+      setHotkeyNotice(null);
       if (result.action.type === "copy") {
         const { product, row } = result.action;
         const dose = product.doses.find((d) => d.row === row);
@@ -1178,7 +1271,7 @@ function MacroCodesPageContent() {
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [modal, ageFilteredTopGroups, hotkeyState, handleCopy]);
+  }, [modal, ageFilteredTopGroups, hotkeyState, hotkeyContext, handleCopy]);
 
   // Macro-codes hotkeys round 2: arming is only meaningful against the
   // CURRENT visible set — an age-filter or search change can hide the
@@ -1567,7 +1660,7 @@ function MacroCodesPageContent() {
           // (same representative row groupMacroRowsBySection already
           // uses) — null when no hotkey covers this product, in which
           // case renderHotkeyLabel below is a no-op.
-          const hotkeyKey = hotkeyForProduct(product.doses[0]?.row.shortCode ?? "");
+          const hotkeyKey = hotkeyForProduct(product.doses[0]?.row.shortCode ?? "", hotkeyMap);
           const displayLabel = macroProductDisplayLabel(product.displayName, product.age);
           // Macro-codes hotkeys round 2 (Will's verbatim answer,
           // 2026-09-28): a multi-dose product's row gets highlighted
@@ -1758,9 +1851,14 @@ function MacroCodesPageContent() {
        * the one remaining unfixed case of the bug already fixed for the
        * armed-row note and the "Refreshing…" indicator). A normal visit
        * with no age param renders nothing here at all. */}
-      {requestedAgeYears !== null && (
+      {(requestedAgeYears !== null || hotkeyProfile === "flu2") && (
         <div style={embed ? styles.ageFilterSlotEmbed : styles.ageFilterSlot}>
-          {activeAgeYears !== null && (
+          {hotkeyNotice && (
+            <p role="status" aria-live="polite" style={embed ? styles.hotkeyNoticeEmbed : styles.hotkeyNotice}>
+              {hotkeyNotice}
+            </p>
+          )}
+          {!hotkeyNotice && activeAgeYears !== null && (
             <p style={embed ? styles.ageFilterNoteEmbed : styles.ageFilterNote}>
               Showing vaccines for age {ageFilterLabel}
               <a

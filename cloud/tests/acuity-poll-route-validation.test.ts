@@ -738,6 +738,7 @@ describe("GET /api/acuity/poll — validation", () => {
           covidBrand: "any",
           covidAgeBucket: "unknown",
           fluAgeBucket: "unknown",
+          fluAgeBand: "unknown",
           hourOfDay: 10,
         },
       ]);

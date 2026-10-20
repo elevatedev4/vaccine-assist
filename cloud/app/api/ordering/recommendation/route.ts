@@ -16,7 +16,12 @@ import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { normalizeNdc } from "@/lib/ndc";
 import { collapseVaccinesByNdc, type CollapsibleVaccine } from "@/lib/ordering-ndc-collapse";
 import { getOrderingGroup } from "@/lib/ordering-group";
-import { matchFluAgeBandToVaccine, type FluMappingCatalogVaccine } from "@/lib/ordering-flu-mapping";
+import {
+  MFLUSIVA_FALLBACK_NOTE,
+  hasActiveMflusiva,
+  matchFluAgeBandToVaccine,
+  type FluMappingCatalogVaccine,
+} from "@/lib/ordering-flu-mapping";
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
 import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradation";
 import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
@@ -107,6 +112,7 @@ import { remainingPackages } from "@/lib/ordering-ordered-today";
  *     "targetsPending": false,   // true before 0011 has been applied
  *     "walkInPct": 25,           // the effective walk-up % this response was computed with
  *     "walkInPctPending": false, // true before 0012 has been applied (walkInPct is the default, 25)
+ *     "fluNote": null,           // set (string) when 50-64 flu was counted as Flucelvax because no active mFLUSIVA is on file
  *     "trendUnavailable": false, // true when administeredSummary threw — every row's given7d is 0 for this response
  *     "groupTargets": { "Flu": 200 },  // group-scoped overrides still on file, by group display name — NOT applied to any row below, see doc comment above
  *     "rows": [
@@ -330,6 +336,8 @@ export async function GET(request: Request) {
     const end = addDaysToChicagoDate(start, 6);
 
     const upcomingByVaccineId = new Map<string, number>();
+    // Set when 50-64 flu appointments had to be counted as Flucelvax because no active mFLUSIVA is on file.
+    let fluNote: string | null = null;
 
     const credentials = await getAcuityCredentials();
     if (credentials) {
@@ -362,10 +370,10 @@ export async function GET(request: Request) {
 
         for (const { vaccineName, count } of counts) {
           // V-T-flu-map (Will 2026-09-09): a Flu appointment's KNOWN age
-          // band ("3-64" vs "65+" — the SAME data the /appointments
-          // table's "Flu 3-64"/"Flu 65+" columns already split on)
-          // determines which flu PRODUCT the count should land on —
-          // Flucelvax for <65, Fluad for 65+ — so a Flu composite with a
+          // band ("3-49" / "50-64" / "65+", V-Q11 2026-10-20 — the legacy
+          // "3-64" still parses for cached counts) determines which flu
+          // PRODUCT the count should land on — Flucelvax for 3-49,
+          // mFLUSIVA for 50-64, Fluad for 65+ — so a Flu composite with a
           // known band is routed through matchFluAgeBandToVaccine BEFORE
           // falling through to the generic brand/name matcher below.
           // "unknown"-band Flu composites (no age question answered)
@@ -375,7 +383,10 @@ export async function GET(request: Request) {
           // "Flu · Unknown" -> "Flu" -> substring-match behavior (see
           // compositeNameToMatchableBase) already covers that case.
           const fluAgeBand = parseFluCompositeAgeBucket(vaccineName);
-          if (fluAgeBand === "3-64" || fluAgeBand === "65+") {
+          if (fluAgeBand !== null && fluAgeBand !== "unknown") {
+            if (fluAgeBand === "50-64" && count > 0 && !hasActiveMflusiva(fluMappingCatalog)) {
+              fluNote = MFLUSIVA_FALLBACK_NOTE;
+            }
             const fluMatch = matchFluAgeBandToVaccine(fluAgeBand, fluMappingCatalog);
             if (fluMatch) {
               upcomingByVaccineId.set(fluMatch.id, (upcomingByVaccineId.get(fluMatch.id) ?? 0) + count);
@@ -774,6 +785,7 @@ export async function GET(request: Request) {
       walkInPct,
       walkInPctPending,
       trendUnavailable,
+      fluNote,
       orderedTodayPending,
       groupTargets: groupOverrides,
       rows,

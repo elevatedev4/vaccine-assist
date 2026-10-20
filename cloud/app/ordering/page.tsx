@@ -162,6 +162,8 @@ type RecommendationResponse = {
   // muted note under the table so staff know the trend column is stale/
   // unavailable rather than genuinely zero.
   trendUnavailable: boolean;
+  /** Note to show when 50-64 flu was counted as Flucelvax (no active mFLUSIVA on file); null/absent otherwise. */
+  fluNote?: string | null;
   // V-ordering-ordered-today: true when ordering_ordered_today doesn't
   // exist yet (0015 pending) — every row's orderedToday is 0 for this
   // response (not yet persistable), never an error.
@@ -1068,6 +1070,7 @@ export default function OrderingPage() {
   // toolbar round used to render.
   const statusParts: string[] = [];
   if (data) statusParts.push(onHandStatusMessage(data.onHandLastReceivedAt));
+  if (data?.fluNote) statusParts.push(data.fluNote);
   if (data?.trendUnavailable) statusParts.push("Last-7-days-given trend unavailable — using scheduled estimate only.");
 
   // The "To order" table's one <tr> (V-ordering-ordered-colors, round 2
