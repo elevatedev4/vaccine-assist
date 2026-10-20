@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
@@ -161,20 +162,8 @@ function formatHourLabel(hour: number): string {
   return `${twelveHour}:00`;
 }
 
-// Anchor styled as a button (it navigates), sized to sit beside Refresh.
-const viewMoreButtonStyle = {
-  ...styles.button,
-  display: "inline-block",
-  border: "1px solid #0a58ca",
-  background: "#0a58ca",
-  color: "#fff",
-  borderRadius: 4,
-  fontSize: "0.85rem",
-  fontWeight: 600,
-  textDecoration: "none",
-} as const;
-
 export default function AppointmentsPage() {
+  const router = useRouter();
   // Same shared-pharmacy-login session pattern as app/settings/page.tsx.
   const [session, setSession] = useState<SessionState>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -509,9 +498,9 @@ export default function AppointmentsPage() {
         {/* Will, 2026-10-07: "a 'View more' button that takes you to a new
             screen where you can select a date range and see farther out."
             A real, visible button next to Refresh (not a footer link). */}
-        <a href="/appointments/range" style={viewMoreButtonStyle}>
+        <button style={styles.button} type="button" onClick={() => router.push("/appointments/range")}>
           View more
-        </a>
+        </button>
         {poll?.asOf && (
           <span style={styles.muted}>
             Data as of {new Date(poll.asOf).toLocaleString()}
