@@ -275,6 +275,10 @@ public partial class MainWindow : Window
         // altogether, or only send non-duplicates" — the coordinator can't
         // show a real WPF Window itself, so MainWindow supplies this.
         _faxSendCoordinator.ConfirmDuplicates = ShowFaxDuplicateConfirmDialog;
+        // Topmost, task-modal, default No (VersionDialogs) — a possible
+        // duplicate fax must never be one Enter away or hidden behind PioneerRx.
+        _faxSendCoordinator.ConfirmRetryNeverConfirmed = () =>
+            VersionDialogs.Confirm("Notifyre never confirmed this fax. Send it again?", VersionDialogs.Caption);
 
         InitializeComponent();
 

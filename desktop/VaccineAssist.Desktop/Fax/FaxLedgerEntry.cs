@@ -67,4 +67,17 @@ public sealed class FaxLedgerEntry
     public DateTime? LastCheckedAtUtc { get; set; }
 
     public string? Error { get; set; }
+
+    /// <summary>V-T65 (Will, 2026-10-20): true when Status is Failed ONLY
+    /// because the vendor's sent list never showed this fax id after
+    /// FaxPollSchedule.NotFoundGrace — not a vendor-reported delivery
+    /// failure. FaxReceiptPoller keeps re-checking such an entry (until the
+    /// 2h give-up) so a later "successful" overrides the Failed; its PDF
+    /// stays in outbox\ until then.</summary>
+    public bool NotFoundFailure { get; set; }
+
+    /// <summary>True once a NotFoundFailure entry's 2h re-check window ended
+    /// with Notifyre never listing the fax — Failed is final, but the fax
+    /// may still have gone out, so Retry asks for confirmation first.</summary>
+    public bool NeverConfirmed { get; set; }
 }

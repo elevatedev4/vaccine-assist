@@ -1,11 +1,31 @@
 using System.Text.Json.Serialization;
+using VaccineAssist.Desktop.Common;
 
 namespace VaccineAssist.Desktop.Fax;
 
 /// <summary>One row of a FaxRunSummary's grid — never a patient's full
-/// name (PatientInitials only, matching the ledger/log convention).</summary>
-public sealed class FaxRunRowSummary
+/// name (PatientInitials only, matching the ledger/log convention).
+/// V-T65 (Will, 2026-10-20: "It sent the fax successfully but didn't change
+/// the status in the app"): Status/Error raise PropertyChanged — the grid
+/// binds plain CLR properties, and the old "Rows[i] = sameRow" Replace
+/// trick does not refresh a DataGrid when the item instance is unchanged,
+/// so a poller-resolved Sent never reached the visible row.</summary>
+public sealed class FaxRunRowSummary : ObservableObject
 {
+    /// <summary>Row status text while a "not found" Failed is still being
+    /// re-checked (FaxLedgerEntry.NotFoundFailure) — not Failed yet, and
+    /// not retryable (the original fax may have gone out).</summary>
+    public const string CheckingStatus = "Checking with Notifyre…";
+
+    /// <summary>The row status text for a ledger entry.</summary>
+    public static string StatusFor(FaxLedgerEntry entry) =>
+        entry.Status == FaxLedgerStatus.Failed && entry.NotFoundFailure
+            ? CheckingStatus
+            : entry.Status.ToString();
+
+    private string _status = "";
+    private string? _error;
+
     public string PatientInitials { get; set; } = "";
     public string PrescriberName { get; set; } = "";
 
@@ -14,8 +34,23 @@ public sealed class FaxRunRowSummary
     /// since there is none (fax-report-layout brief, 2026-09-28).</summary>
     public string FaxNumberLast4 { get; set; } = "";
 
-    public string Status { get; set; } = ""; // FaxLedgerStatus.ToString(), or FaxRunOrchestrator.SkippedNoFaxStatus
-    public string? Error { get; set; }
+    /// <summary>FaxLedgerStatus.ToString(), or FaxRunOrchestrator.SkippedNoFaxStatus.</summary>
+    public string Status
+    {
+        get => _status;
+        set => SetProperty(ref _status, value);
+    }
+
+    /// <summary>True for a Failed row whose fax Notifyre never confirmed
+    /// within the 2h re-check window — Retry asks first.</summary>
+    public bool NeverConfirmed { get; set; }
+
+    public string? Error
+    {
+        get => _error;
+        set => SetProperty(ref _error, value);
+    }
+
     public string LedgerEntryId { get; set; } = "";
 }
 
