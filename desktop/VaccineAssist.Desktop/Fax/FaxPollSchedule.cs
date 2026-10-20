@@ -20,18 +20,6 @@ public static class FaxPollSchedule
     public static readonly TimeSpan BackoffAfter = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan GiveUpAfter = TimeSpan.FromHours(2);
 
-    /// <summary>V-T65 (Will, 2026-10-20): Notifyre's sent list lags a fresh
-    /// submit, so "fax id not found" in the first minutes after queuing
-    /// (Will's log: 81 ms after submit) means "not listed yet", never
-    /// Failed.</summary>
-    public static readonly TimeSpan NotFoundGrace = TimeSpan.FromMinutes(5);
-
-    /// <summary>True while a "not found" status result should still be
-    /// treated as in-process (under <see cref="NotFoundGrace"/> since
-    /// queuing).</summary>
-    public static bool IsWithinNotFoundGrace(DateTime queuedAtUtc, DateTime nowUtc) =>
-        nowUtc - queuedAtUtc < NotFoundGrace;
-
     /// <summary>True once <paramref name="nowUtc"/> is 2+ hours past
     /// <paramref name="queuedAtUtc"/> — FaxReceiptPoller stops checking
     /// this entry and marks it Unknown instead.</summary>

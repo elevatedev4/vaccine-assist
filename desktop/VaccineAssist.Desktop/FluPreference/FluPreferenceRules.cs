@@ -124,25 +124,6 @@ public static class FluPreferenceRules
             approvedNote);
     }
 
-    /// <summary>
-    /// One log-friendly line saying what Evaluate decided and why ("[FluPrompt]"
-    /// lines in app.log). Operational text only - product names, ages and short
-    /// codes, never patient data.
-    /// </summary>
-    public static string DescribeDecision(int ageYears, string? selectedShortCode)
-    {
-        var code = (selectedShortCode ?? "").Trim();
-        if (!IsFluCode(code)) return $"no prompt: '{code}' is not a flu vaccine code (age {ageYears})";
-
-        var preferred = PreferredFor(ageYears);
-        if (preferred is null) return $"no prompt: age {ageYears} is under {MinimumRuleAge}, no preferred flu vaccine ('{code}')";
-
-        var selectedProduct = ProductFor(code);
-        if (ReferenceEquals(selectedProduct, preferred)) return $"no prompt: '{code}' already is the preferred flu vaccine ({preferred.DisplayName}) for age {ageYears}";
-
-        return $"PROMPT: '{code}' ({selectedProduct?.DisplayName ?? FriendlyName(code)}) is not preferred at age {ageYears}; preferred is {preferred.DisplayName}";
-    }
-
     /// <summary>Readable name for the flu products outside the three-product table; the raw code when unknown.</summary>
     public static string FriendlyName(string shortCode)
     {

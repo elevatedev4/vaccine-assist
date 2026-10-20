@@ -295,30 +295,4 @@ public class FluPreferenceTests
 
         Assert.True(result.IsAvailable);
     }
-
-    // ---- [FluPrompt] log line: says why a prompt did or did not appear ----
-
-    [Theory]
-    [InlineData(55, "fluad", "PROMPT: 'fluad' (Fluad) is not preferred at age 55; preferred is mFLUSIVA")]
-    [InlineData(65, "fluzonehd", "PROMPT: 'fluzonehd' (Fluzone High-Dose) is not preferred at age 65; preferred is Fluad")]
-    [InlineData(30, "flucelvaxpfs", "no prompt: 'flucelvaxpfs' already is the preferred flu vaccine (Flucelvax) for age 30")]
-    [InlineData(2, "fluad", "no prompt: age 2 is under 3, no preferred flu vaccine ('fluad')")]
-    [InlineData(40, "shingrix", "no prompt: 'shingrix' is not a flu vaccine code (age 40)")]
-    public void DescribeDecision_StatesWhyAPromptDidOrDidNotAppear(int age, string code, string expected)
-    {
-        Assert.Equal(expected, FluPreferenceRules.DescribeDecision(age, code));
-    }
-
-    [Theory]
-    [InlineData(2, "fluad")]
-    [InlineData(3, "mflusiva")]
-    [InlineData(50, "flucelvaxmdv")]
-    [InlineData(65, "mflusiva")]
-    [InlineData(30, "flucelvaxmdv")]
-    [InlineData(30, "shingrix1")]
-    public void DescribeDecision_AgreesWithEvaluate(int age, string code)
-    {
-        var prompts = FluPreferenceRules.Evaluate(age, code) is not null;
-        Assert.Equal(prompts, FluPreferenceRules.DescribeDecision(age, code).StartsWith("PROMPT:", StringComparison.Ordinal));
-    }
 }

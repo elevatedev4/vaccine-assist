@@ -43,8 +43,7 @@ public static class FaxSendSummaryLine
     }
 
     private static bool IsInProcess(FaxRunRowSummary row) =>
-        row.Status == nameof(FaxLedgerStatus.InProcess) || row.Status == nameof(FaxLedgerStatus.Queued) ||
-        row.Status == FaxRunRowSummary.CheckingStatus;
+        row.Status == nameof(FaxLedgerStatus.InProcess) || row.Status == nameof(FaxLedgerStatus.Queued);
 
     /// <summary>Only the duplicate-dedupe skip (FaxRunOrchestrator's
     /// "Skipped — duplicate of &lt;date&gt; batch" text) — deliberately excludes

@@ -290,10 +290,6 @@ public partial class MainWindow : Window
         // altogether, or only send non-duplicates" — the coordinator can't
         // show a real WPF Window itself, so MainWindow supplies this.
         _faxSendCoordinator.ConfirmDuplicates = ShowFaxDuplicateConfirmDialog;
-        // Topmost, task-modal, default No (VersionDialogs) — a possible
-        // duplicate fax must never be one Enter away or hidden behind PioneerRx.
-        _faxSendCoordinator.ConfirmRetryNeverConfirmed = () =>
-            VersionDialogs.Confirm("Notifyre never confirmed this fax. Send it again?", VersionDialogs.Caption);
 
         InitializeComponent();
 
@@ -837,7 +833,6 @@ public partial class MainWindow : Window
 
             if (pickedCode is not null)
             {
-                AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 7 pick, build {BuildInfo.Current.Describe()}, age {ageYears}");
                 _ = ContinueVaccineEntryAfterPickAsync(pickedCode, pickedLabel ?? "", pickedProduct ?? "", ageYears, previousForegroundWindow);
             }
             else
@@ -904,11 +899,9 @@ public partial class MainWindow : Window
         var parsed = MacroCodeParser.TryParse(macroCode);
         if (parsed is null)
         {
-            AppFileLog.Log($"[FluPrompt] no prompt: could not read a short code from the picked macro text (age {ageYears})");
             return original; // RunVaccineEntryAutomationAsync logs the parse failure as before
         }
 
-        AppFileLog.Log($"[FluPrompt] evaluating: {FluPreferenceRules.DescribeDecision(ageYears, parsed.Value.ShortCode)}");
         var prompt = FluPreferenceRules.Evaluate(ageYears, parsed.Value.ShortCode);
         if (prompt is null)
         {
@@ -1165,16 +1158,7 @@ public partial class MainWindow : Window
         }
 
         var previousForegroundWindow = GetForegroundWindow();
-        var popup = new MacroCodesWindow(
-            _settings.CloudApiBaseUrl,
-            _clipboardService,
-            previousForegroundWindow,
-            onCodeCopied: (code, _, _) =>
-            {
-                // Ctrl+Keypad 8 has no patient age, so the preferred-flu prompt cannot run here.
-                // Logged so a log shows which path a pick took (short code only, no lot).
-                AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 8 pick '{MacroCodeParser.TryParse(code)?.ShortCode}': no prompt - this popup has no patient age (use Ctrl+Keypad 2 or 7)");
-            });
+        var popup = new MacroCodesWindow(_settings.CloudApiBaseUrl, _clipboardService, previousForegroundWindow);
 
         popup.Closed += (_, _) =>
         {
@@ -1261,73 +1245,13 @@ public partial class MainWindow : Window
 
         AppFileLog.Log($"[AgeMacro] age {result.Years}");
 
-        // What the clipboard held before the picker puts a vaccine code on it (restored if the flu prompt is cancelled).
-        var clipboardBefore = ClipboardSnapshot.Capture();
         var url = AgeMacroCodesUrlBuilder.BuildUrl(_settings.CloudApiBaseUrl, result.Years);
         var popup = new MacroCodesWindow(
             _settings.CloudApiBaseUrl,
             _clipboardService,
             previousForegroundWindow,
             overrideUrl: url,
-            sendCtrlNumPad5OnClose: true,
-            // Testing version "flu-preferred": this flow's entry is done by the
-            // external macro (Ctrl+NumPad5), so the preferred-flu prompt has to
-            // run here, after the picker closed and before that keypress.
-            beforeSendCtrlNumPad5Async: async (code, label, product) =>
-            {
-                AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 2 pick, build {BuildInfo.Current.Describe()}, age {result.Years}");
-                // Hold the "age prompt showing" guard so a repeat Ctrl+Keypad 2
-                // press while the dialog is up can't stack a second flow.
-                _ageMacroPromptShowing = true;
-                try
-                {
-                    VaccineEntryPick? pick;
-                    try
-                    {
-                        pick = await ApplyFluPreferenceAsync(code, label, product, result.Years, previousForegroundWindow);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Nothing was chosen: let the macro run with what was picked.
-                        AppFileLog.LogException("MainWindow.AgeMacroFluPrompt", ex);
-                        return true;
-                    }
-
-                    if (pick is null)
-                    {
-                        // Cancelled: the page already put the non-preferred code on the clipboard.
-                        await clipboardBefore.RestoreAsync();
-                        return false;
-                    }
-
-                    if (!string.Equals(pick.MacroCode, code, StringComparison.Ordinal))
-                    {
-                        var swapped = await ClipboardRetry.TrySetAsync(
-                            _clipboardService.SetText,
-                            pick.MacroCode,
-                            onFailure: (attempt, ex) => AppFileLog.Log($"[FluPrompt] clipboard swap attempt {attempt} failed: {ex.GetType().Name}"));
-                        if (!swapped)
-                        {
-                            AppFileLog.Log($"[FluPrompt] could not switch the clipboard to {pick.Product}; macro NOT run");
-                            await clipboardBefore.RestoreAsync();
-                            MessageBox.Show(
-                                $"Couldn't switch to {pick.Product} \u2014 try again.",
-                                "Vaccine Assist",
-                                MessageBoxButton.OK,
-                                MessageBoxImage.Warning);
-                            return false;
-                        }
-
-                        AppFileLog.Log($"[FluPrompt] clipboard switched to the preferred flu vaccine {pick.Product}");
-                    }
-
-                    return true;
-                }
-                finally
-                {
-                    _ageMacroPromptShowing = false;
-                }
-            });
+            sendCtrlNumPad5OnClose: true);
 
         popup.Closed += (_, _) =>
         {

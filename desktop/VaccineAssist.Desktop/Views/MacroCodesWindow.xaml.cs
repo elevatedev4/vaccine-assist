@@ -106,25 +106,6 @@ public partial class MacroCodesWindow : Window
     private readonly Action<string, string, string>? _onCodeCopied;
 
     /// <summary>
-    /// Testing version "flu-preferred": the Ctrl+Keypad 2 flow hands the picked
-    /// code to an external on-computer macro (synthetic Ctrl+NumPad5), so the
-    /// desktop never sees the entry itself. This hook runs after the window has
-    /// closed and focus is back on PioneerRx, just BEFORE that keypress, with
-    /// the copied (code, label, product). It owns the clipboard: it may swap in
-    /// the preferred vaccine's code (retrying a locked clipboard) or restore the
-    /// clipboard on cancel. Return true to send Ctrl+NumPad5, false to skip it
-    /// (cancelled, or the swap failed - never send with a wrong code on the
-    /// clipboard). Only an unexpected exception from the hook itself falls
-    /// through to sending what was picked. Null (default) = no hook, exactly the
-    /// previous behavior.
-    /// </summary>
-    private readonly Func<string, string, string, Task<bool>>? _beforeSendCtrlNumPad5Async;
-
-    private string _copiedCode = "";
-    private string _copiedLabel = "";
-    private string _copiedProduct = "";
-
-    /// <summary>
     /// MACRO-POPUP ROUND 3: this window's own non-WebView chrome height
     /// (title bar + borders — see MacroCodesWindowSizing's doc comment
     /// for why there's nothing else to measure here), captured once in
@@ -199,8 +180,7 @@ public partial class MacroCodesWindow : Window
         IntPtr previousForegroundWindow,
         string? overrideUrl = null,
         bool sendCtrlNumPad5OnClose = false,
-        Action<string, string, string>? onCodeCopied = null,
-        Func<string, string, string, Task<bool>>? beforeSendCtrlNumPad5Async = null)
+        Action<string, string, string>? onCodeCopied = null)
     {
         InitializeComponent();
         _clipboardService = clipboardService ?? throw new ArgumentNullException(nameof(clipboardService));
@@ -208,7 +188,6 @@ public partial class MacroCodesWindow : Window
         _macroCodesUrl = overrideUrl ?? BuildMacroCodesUrl(cloudApiBaseUrl);
         _sendCtrlNumPad5OnClose = sendCtrlNumPad5OnClose;
         _onCodeCopied = onCodeCopied;
-        _beforeSendCtrlNumPad5Async = beforeSendCtrlNumPad5Async;
 
         // MACRO-POPUP ROUND 3 (Will, verbatim, 2026-09-25): "Make it
         // wider... and make the height fit only what it needs..." Width
@@ -240,8 +219,11 @@ public partial class MacroCodesWindow : Window
         Activated += MacroCodesWindow_OnActivated;
     }
 
-    private static string BuildMacroCodesUrl(string cloudApiBaseUrl) =>
-        AgeMacroCodesUrlBuilder.BuildUrlWithoutAge(cloudApiBaseUrl);
+    private static string BuildMacroCodesUrl(string cloudApiBaseUrl)
+    {
+        var baseUrl = (cloudApiBaseUrl ?? "").TrimEnd('/');
+        return $"{baseUrl}/macro-codes?embed=1";
+    }
 
     /// <summary>
     /// MainWindow.ShowMacroCodesPopup calls this instead of opening a
@@ -608,13 +590,6 @@ public partial class MacroCodesWindow : Window
                         {
                             _codeCopiedInAgeMacroFlow = true;
                             AppFileLog.Log($"[AgeMacro] copied {code}");
-                            _copiedCode = code;
-                            _copiedLabel = message.RootElement.TryGetProperty("label", out var copiedLabelElement)
-                                ? copiedLabelElement.GetString() ?? ""
-                                : "";
-                            _copiedProduct = message.RootElement.TryGetProperty("product", out var copiedProductElement)
-                                ? copiedProductElement.GetString() ?? ""
-                                : "";
                         }
 
                         // V-T41 R5 (item 3): fires REGARDLESS of
@@ -853,23 +828,6 @@ public partial class MacroCodesWindow : Window
         }
 
         AppFileLog.Log("[AgeMacro] focus restored");
-
-        if (_beforeSendCtrlNumPad5Async is not null)
-        {
-            try
-            {
-                if (!await _beforeSendCtrlNumPad5Async(_copiedCode, _copiedLabel, _copiedProduct))
-                {
-                    AppFileLog.Log("[AgeMacro] Ctrl+Num5 NOT sent (flu preference prompt cancelled or the preferred vaccine could not be put on the clipboard)");
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                // A bug in the hook itself must not block the entry: go ahead with what was picked.
-                AppFileLog.LogException("MacroCodesWindow.BeforeSendCtrlNumPad5", ex);
-            }
-        }
 
         try
         {
