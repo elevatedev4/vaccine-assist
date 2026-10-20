@@ -1257,6 +1257,8 @@ public partial class MainWindow : Window
 
         AppFileLog.Log($"[AgeMacro] age {result.Years}");
 
+        // What the clipboard held before the picker puts a vaccine code on it (restored if the flu prompt is cancelled).
+        var clipboardBefore = ClipboardSnapshot.Capture();
         var url = AgeMacroCodesUrlBuilder.BuildUrl(_settings.CloudApiBaseUrl, result.Years);
         var popup = new MacroCodesWindow(
             _settings.CloudApiBaseUrl,
@@ -1275,8 +1277,47 @@ public partial class MainWindow : Window
                 _ageMacroPromptShowing = true;
                 try
                 {
-                    var pick = await ApplyFluPreferenceAsync(code, label, product, result.Years, previousForegroundWindow);
-                    return pick?.MacroCode;
+                    VaccineEntryPick? pick;
+                    try
+                    {
+                        pick = await ApplyFluPreferenceAsync(code, label, product, result.Years, previousForegroundWindow);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Nothing was chosen: let the macro run with what was picked.
+                        AppFileLog.LogException("MainWindow.AgeMacroFluPrompt", ex);
+                        return true;
+                    }
+
+                    if (pick is null)
+                    {
+                        // Cancelled: the page already put the non-preferred code on the clipboard.
+                        await clipboardBefore.RestoreAsync();
+                        return false;
+                    }
+
+                    if (!string.Equals(pick.MacroCode, code, StringComparison.Ordinal))
+                    {
+                        var swapped = await ClipboardRetry.TrySetAsync(
+                            _clipboardService.SetText,
+                            pick.MacroCode,
+                            onFailure: (attempt, ex) => AppFileLog.Log($"[FluPrompt] clipboard swap attempt {attempt} failed: {ex.GetType().Name}"));
+                        if (!swapped)
+                        {
+                            AppFileLog.Log($"[FluPrompt] could not switch the clipboard to {pick.Product}; macro NOT run");
+                            await clipboardBefore.RestoreAsync();
+                            MessageBox.Show(
+                                $"Couldn't switch to {pick.Product} \u2014 try again.",
+                                "Vaccine Assist",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning);
+                            return false;
+                        }
+
+                        AppFileLog.Log($"[FluPrompt] clipboard switched to the preferred flu vaccine {pick.Product}");
+                    }
+
+                    return true;
                 }
                 finally
                 {

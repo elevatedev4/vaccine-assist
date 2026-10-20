@@ -110,13 +110,15 @@ public partial class MacroCodesWindow : Window
     /// code to an external on-computer macro (synthetic Ctrl+NumPad5), so the
     /// desktop never sees the entry itself. This hook runs after the window has
     /// closed and focus is back on PioneerRx, just BEFORE that keypress, with
-    /// the copied (code, label, product). Return the code the macro should use
-    /// (the same code, or a swapped one - it is put on the clipboard), or null
-    /// to cancel (no keypress is sent). An exception is logged and the original
-    /// code goes ahead, so a bug here can never block the entry. Null (default)
-    /// = no hook, exactly the previous behavior.
+    /// the copied (code, label, product). It owns the clipboard: it may swap in
+    /// the preferred vaccine's code (retrying a locked clipboard) or restore the
+    /// clipboard on cancel. Return true to send Ctrl+NumPad5, false to skip it
+    /// (cancelled, or the swap failed - never send with a wrong code on the
+    /// clipboard). Only an unexpected exception from the hook itself falls
+    /// through to sending what was picked. Null (default) = no hook, exactly the
+    /// previous behavior.
     /// </summary>
-    private readonly Func<string, string, string, Task<string?>>? _beforeSendCtrlNumPad5Async;
+    private readonly Func<string, string, string, Task<bool>>? _beforeSendCtrlNumPad5Async;
 
     private string _copiedCode = "";
     private string _copiedLabel = "";
@@ -198,7 +200,7 @@ public partial class MacroCodesWindow : Window
         string? overrideUrl = null,
         bool sendCtrlNumPad5OnClose = false,
         Action<string, string, string>? onCodeCopied = null,
-        Func<string, string, string, Task<string?>>? beforeSendCtrlNumPad5Async = null)
+        Func<string, string, string, Task<bool>>? beforeSendCtrlNumPad5Async = null)
     {
         InitializeComponent();
         _clipboardService = clipboardService ?? throw new ArgumentNullException(nameof(clipboardService));
@@ -856,22 +858,15 @@ public partial class MacroCodesWindow : Window
         {
             try
             {
-                var finalCode = await _beforeSendCtrlNumPad5Async(_copiedCode, _copiedLabel, _copiedProduct);
-                if (finalCode is null)
+                if (!await _beforeSendCtrlNumPad5Async(_copiedCode, _copiedLabel, _copiedProduct))
                 {
-                    AppFileLog.Log("[AgeMacro] cancelled before the macro ran (flu preference prompt) - Ctrl+Num5 NOT sent");
+                    AppFileLog.Log("[AgeMacro] Ctrl+Num5 NOT sent (flu preference prompt cancelled or the preferred vaccine could not be put on the clipboard)");
                     return;
-                }
-
-                if (!string.Equals(finalCode, _copiedCode, StringComparison.Ordinal))
-                {
-                    _clipboardService.SetText(finalCode);
-                    AppFileLog.Log("[AgeMacro] clipboard swapped to the preferred flu vaccine");
                 }
             }
             catch (Exception ex)
             {
-                // Never block the entry on a bug in the pre-send hook: go ahead with what was picked.
+                // A bug in the hook itself must not block the entry: go ahead with what was picked.
                 AppFileLog.LogException("MacroCodesWindow.BeforeSendCtrlNumPad5", ex);
             }
         }
