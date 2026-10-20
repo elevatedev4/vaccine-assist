@@ -574,6 +574,8 @@ public partial class MainWindow : Window
         Application.Current.Shutdown();
     }
 
+    private bool IsVaccineEntryBusy() => _vaccineEntryCts is not null;
+
     /// <summary>
     /// Version control (Will, 2026-10-18): a Version submenu row was picked
     /// (tray or Pioneer overlay menu). Confirms, starts the launcher
@@ -582,71 +584,35 @@ public partial class MainWindow : Window
     /// The choice is never persisted: the desktop shortcut always opens
     /// Stable. A failure to start the launcher leaves this app running.
     /// </summary>
-    private bool IsVaccineEntryBusy() => _vaccineEntryCts is not null;
-
-    private bool WarnIfVaccineEntryBusy()
-    {
-        if (!IsVaccineEntryBusy())
-        {
-            return false;
-        }
-
-        MessageBox.Show(
-            "A vaccine entry is in progress. Finish or cancel it before switching versions.",
-            "Vaccine Assist",
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
-        return true;
-    }
-
     private void SwitchVersion(string versionRef)
     {
+        // No silent path: every early return below shows a message box in
+        // front of everything (VersionDialogs) and logs the reason.
+        var current = BuildInfo.Current;
+        AppFileLog.Log($"[Version] switch requested: '{versionRef}' (running {current.Describe()})");
         try
         {
-            var current = BuildInfo.Current;
-            var currentRef = current.IsTesting ? current.Ref : BuildInfo.StableRef;
-            if (string.Equals(versionRef, currentRef, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            if (!TestingBranchParser.IsLaunchableRef(versionRef))
-            {
-                AppFileLog.Log($"[Version] refusing to switch to invalid ref '{versionRef}'");
-                return;
-            }
-
-            if (WarnIfVaccineEntryBusy())
-            {
-                return;
-            }
-
             var primaryRoot = PrimaryCheckoutLocator.ResolveForCurrentProcess();
-            if (primaryRoot is null)
+            var plan = VersionSwitchPlanner.Evaluate(current, versionRef, primaryRoot, IsVaccineEntryBusy());
+            if (plan.Outcome != VersionSwitchOutcome.Proceed || primaryRoot is null)
             {
-                MessageBox.Show(
-                    "Could not find the Vaccine Assist install folder, so the version cannot be switched. Nothing was changed.",
-                    "Vaccine Assist",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
+                AppFileLog.Log($"[Version] switch to '{versionRef}' refused: {plan.Outcome}");
+                VersionDialogs.ShowNotice(plan.Message ?? VersionSwitchPlanner.CheckoutNotFoundMessage);
                 return;
             }
 
-            var answer = MessageBox.Show(
-                VersionMenuBuilder.ConfirmMessage(versionRef),
-                "Switch version",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question,
-                MessageBoxResult.No);
-            if (answer != MessageBoxResult.Yes)
+            if (!VersionDialogs.Confirm(VersionMenuBuilder.ConfirmMessage(versionRef)))
             {
+                AppFileLog.Log($"[Version] switch to '{versionRef}' cancelled at the confirm box");
                 return;
             }
 
             // The modal dialog pumps messages: a hotkey may have started an
             // entry while it was open. Never exit mid-automation.
-            if (WarnIfVaccineEntryBusy())
+            if (IsVaccineEntryBusy())
             {
+                AppFileLog.Log($"[Version] switch to '{versionRef}' refused: entry started during confirm");
+                VersionDialogs.ShowNotice(VersionSwitchPlanner.EntryBusyMessage);
                 return;
             }
 
@@ -658,11 +624,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppFileLog.LogException("MainWindow.SwitchVersion", ex);
-            MessageBox.Show(
-                $"Could not switch versions: {ex.Message}\n\nVaccine Assist is still running.",
-                "Vaccine Assist",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+            VersionDialogs.ShowNotice($"Could not switch versions: {ex.Message}\n\nVaccine Assist is still running.");
         }
     }
 

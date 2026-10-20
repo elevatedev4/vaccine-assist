@@ -35,4 +35,19 @@ public static class OverlayMenuGeometry
         var insideY = y >= menuBounds.Y && y < menuBounds.Y + menuBounds.Height;
         return !(insideX && insideY);
     }
+
+    /// <summary>
+    /// Whether a mouse-down at (x, y) should close the overlay menu: only
+    /// when it is outside the main menu AND outside the Version submenu's
+    /// popup. While the submenu is open but its bounds are unknown, never
+    /// close - closing on mouse-down is what swallows a submenu row's Click.
+    /// </summary>
+    public static bool ShouldCloseOnOutsideClick(
+        OverlayRect menuBounds, bool submenuOpen, OverlayRect? submenuBounds, int x, int y)
+    {
+        if (!IsPointOutsideMenu(menuBounds, x, y)) return false;
+        if (!submenuOpen) return true;
+        if (submenuBounds is not { } sub) return false;
+        return IsPointOutsideMenu(sub, x, y);
+    }
 }

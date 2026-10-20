@@ -6,6 +6,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Navigation;
 using VaccineAssist.Desktop.Versioning;
 
@@ -37,6 +38,19 @@ public sealed partial class PioneerOverlayWindow : Window
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+
     /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a cloud-route menu item is clicked.</summary>
     public event EventHandler<string>? NavigationRequested;
     public event EventHandler? DataEntryRequested;
@@ -55,6 +69,7 @@ public sealed partial class PioneerOverlayWindow : Window
     public VersionMenuSource? Versions { get; set; }
 
     private MenuItem? _versionMenuItem;
+    private string _versionRowsSignature = "";
     private OverlayRect? _openSubmenuScreenBounds;
 
     /// <summary>Raw HWND for PioneerOverlayController's SetWindowPos calls — IntPtr.Zero until SourceInitialized has run.</summary>
@@ -149,11 +164,13 @@ public sealed partial class PioneerOverlayWindow : Window
         try
         {
             var origin = menu.PointToScreen(new Point(0, 0));
+            // PointToScreen is physical pixels; ActualWidth/Height are DIPs.
+            var dpi = VisualTreeHelper.GetDpi(menu);
             _openMenuScreenBounds = new OverlayRect(
                 (int)Math.Round(origin.X),
                 (int)Math.Round(origin.Y),
-                (int)Math.Round(menu.ActualWidth),
-                (int)Math.Round(menu.ActualHeight));
+                (int)Math.Round(menu.ActualWidth * dpi.DpiScaleX),
+                (int)Math.Round(menu.ActualHeight * dpi.DpiScaleY));
             _outsideClickHook.Install();
         }
         catch
@@ -166,17 +183,31 @@ public sealed partial class PioneerOverlayWindow : Window
     {
         var menu = _openMenu;
         if (menu is null || !menu.IsOpen) return;
-        if (!OverlayMenuGeometry.IsPointOutsideMenu(_openMenuScreenBounds, screenX, screenY)) return;
 
         // The Version submenu's popup lies outside the main menu's rect: a
-        // click on one of its rows must not count as an outside click (it
-        // would close the menu before the row's Click fires). If the
-        // submenu's bounds are unknown, fall through and close normally.
-        if (_versionMenuItem is { IsSubmenuOpen: true }
-            && _openSubmenuScreenBounds is { } submenuBounds
-            && !OverlayMenuGeometry.IsPointOutsideMenu(submenuBounds, screenX, screenY))
+        // click on one of its rows must not count as an outside click (the
+        // menu would close on mouse-DOWN, before the row's Click fires on
+        // mouse-up - the "I click the version and nothing happens" bug).
+        // Its bounds are read live, at the moment of the click, because the
+        // popup can move or resize after the bounds were first taken; when
+        // they still cannot be read the menu stays open rather than risk
+        // swallowing the click (Escape or a click elsewhere still closes it).
+        var versionItem = _versionMenuItem;
+        var submenuOpen = false;
+        if (versionItem is { IsSubmenuOpen: true })
+        {
+            submenuOpen = true;
+            TryUpdateSubmenuBounds(versionItem);
+        }
+
+        if (!OverlayMenuGeometry.ShouldCloseOnOutsideClick(_openMenuScreenBounds, submenuOpen, _openSubmenuScreenBounds, screenX, screenY))
         {
             return;
+        }
+
+        if (submenuOpen)
+        {
+            AppFileLog.Log($"[Version] overlay menu closed by an outside click at ({screenX},{screenY}); main={_openMenuScreenBounds}, submenu={_openSubmenuScreenBounds?.ToString() ?? "unknown"}");
         }
 
         // Posted back through the Dispatcher: the hook callback runs
@@ -224,6 +255,7 @@ public sealed partial class PioneerOverlayWindow : Window
     private MenuItem BuildVersionMenuItem()
     {
         var versionItem = new MenuItem { Header = "Version" };
+        _versionRowsSignature = "";
         PopulateVersionRows(versionItem);
         versionItem.SubmenuOpened += (_, _) => OnVersionSubmenuOpened(versionItem);
         versionItem.SubmenuClosed += (_, _) => _openSubmenuScreenBounds = null;
@@ -232,15 +264,23 @@ public sealed partial class PioneerOverlayWindow : Window
 
     private void PopulateVersionRows(MenuItem versionItem)
     {
-        versionItem.Items.Clear();
         if (Versions is null) return;
 
-        foreach (var row in Versions.BuildItems())
+        var rows = Versions.BuildItems();
+
+        // Same rows as already drawn: leave the open submenu alone (a
+        // rebuild under the pointer can swallow a click that is in flight).
+        var signature = VersionMenuBuilder.Signature(rows);
+        if (versionItem.Items.Count == rows.Count && signature == _versionRowsSignature) return;
+        _versionRowsSignature = signature;
+
+        versionItem.Items.Clear();
+        foreach (var row in rows)
         {
             var rowItem = new MenuItem { Header = row.Text, IsEnabled = row.Enabled, IsChecked = row.Checked };
             if (row.Enabled && row.Ref is { Length: > 0 } versionRef)
             {
-                rowItem.Click += (_, _) => VersionSwitchRequested?.Invoke(this, versionRef);
+                rowItem.Click += (_, _) => RaiseVersionSwitch(versionRef);
             }
             versionItem.Items.Add(rowItem);
         }
@@ -273,6 +313,17 @@ public sealed partial class PioneerOverlayWindow : Window
             if (versionItem.Template?.FindName("PART_Popup", versionItem) is Popup { Child: FrameworkElement child })
             {
                 child.UpdateLayout();
+
+                // Exact physical-pixel rectangle of the popup's own window.
+                if (PresentationSource.FromVisual(child) is HwndSource source
+                    && GetWindowRect(source.Handle, out var rect)
+                    && rect.Right > rect.Left
+                    && rect.Bottom > rect.Top)
+                {
+                    _openSubmenuScreenBounds = new OverlayRect(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+                    return;
+                }
+
                 var origin = child.PointToScreen(new Point(0, 0));
                 var dpi = VisualTreeHelper.GetDpi(child);
                 _openSubmenuScreenBounds = new OverlayRect(
@@ -285,6 +336,28 @@ public sealed partial class PioneerOverlayWindow : Window
         catch
         {
             _openSubmenuScreenBounds = null; // unknown bounds: OnGlobalMouseDown closes the menu normally
+        }
+    }
+
+    /// <summary>A Version row was clicked: logged first, then raised; a missing or throwing handler is reported in a message box, never swallowed.</summary>
+    private void RaiseVersionSwitch(string versionRef)
+    {
+        AppFileLog.Log($"[Version] overlay menu click: '{versionRef}'");
+        try
+        {
+            var handler = VersionSwitchRequested;
+            if (handler is null)
+            {
+                AppFileLog.Log($"[Version] overlay menu click '{versionRef}' has no handler");
+                VersionDialogs.ShowNotice("Version switching is not available right now. Nothing was changed.");
+                return;
+            }
+            handler(this, versionRef);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("PioneerOverlayWindow.VersionSwitch", ex);
+            VersionDialogs.ShowNotice($"Could not switch versions: {ex.Message}\n\nVaccine Assist is still running.");
         }
     }
 

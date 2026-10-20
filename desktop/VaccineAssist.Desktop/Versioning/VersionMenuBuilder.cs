@@ -71,6 +71,15 @@ public static class VersionMenuBuilder
         return items;
     }
 
+    /// <summary>
+    /// Identity of a rendered row set. The native menus compare it before
+    /// repainting so an open submenu is not torn down and rebuilt (which can
+    /// swallow a click that is in flight) when the background lookup finds
+    /// nothing new.
+    /// </summary>
+    public static string Signature(IReadOnlyList<VersionMenuItem> items) =>
+        string.Join("\n", items.Select(i => $"{i.Text}|{i.Enabled}|{i.Checked}|{i.Ref}"));
+
     public static string RowText(string testingRef) =>
         $"Testing — {testingRef.Substring(BuildInfo.TestingPrefix.Length)}";
 
