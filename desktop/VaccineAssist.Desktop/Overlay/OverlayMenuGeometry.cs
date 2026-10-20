@@ -35,4 +35,32 @@ public static class OverlayMenuGeometry
         var insideY = y >= menuBounds.Y && y < menuBounds.Y + menuBounds.Height;
         return !(insideX && insideY);
     }
+
+    /// <summary>Default distance (DIPs) around the main menu within which a click is still assumed to be aimed at an unmeasurable submenu.</summary>
+    public const int UnknownSubmenuSlackDips = 400;
+
+    /// <summary>
+    /// Whether a mouse-down at (x, y) should close the overlay menu: only
+    /// when it is outside the main menu AND outside the Version submenu's
+    /// popup. While the submenu is open but its bounds are unknown, the menu
+    /// stays open for clicks within `unknownBoundsSlackPx` (physical pixels)
+    /// of the main menu - closing on mouse-down is what swallows a submenu
+    /// row's Click - but a click farther away still closes it, so the menu
+    /// can never get stuck (the overlay is WS_EX_NOACTIVATE, Escape may not arrive).
+    /// </summary>
+    public static bool ShouldCloseOnOutsideClick(
+        OverlayRect menuBounds, bool submenuOpen, OverlayRect? submenuBounds, int x, int y,
+        int unknownBoundsSlackPx = UnknownSubmenuSlackDips)
+    {
+        if (!IsPointOutsideMenu(menuBounds, x, y)) return false;
+        if (!submenuOpen) return true;
+        if (submenuBounds is { } sub) return IsPointOutsideMenu(sub, x, y);
+
+        var nearby = new OverlayRect(
+            menuBounds.X - unknownBoundsSlackPx,
+            menuBounds.Y - unknownBoundsSlackPx,
+            menuBounds.Width + 2 * unknownBoundsSlackPx,
+            menuBounds.Height + 2 * unknownBoundsSlackPx);
+        return IsPointOutsideMenu(nearby, x, y);
+    }
 }

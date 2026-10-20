@@ -42,6 +42,7 @@ public sealed class TrayIconController : IDisposable
     private readonly string _baseTooltipText;
     private readonly NotifyIcon _notifyIcon;
     private readonly VersionMenuSource? _versions;
+    private string _versionRowsSignature = "";
     private readonly SynchronizationContext? _uiContext;
 
     public event EventHandler? OpenRequested;
@@ -185,6 +186,18 @@ public sealed class TrayIconController : IDisposable
             return;
         }
 
+        var rows = _versions.BuildItems();
+
+        // Same rows as already drawn: leave the open submenu alone. Tearing
+        // it down and rebuilding it under the pointer can swallow a click
+        // that is in flight.
+        var signature = VersionMenuBuilder.Signature(rows);
+        if (versionItem.DropDownItems.Count == rows.Count && signature == _versionRowsSignature)
+        {
+            return;
+        }
+        _versionRowsSignature = signature;
+
         var old = new System.Collections.Generic.List<ToolStripItem>();
         foreach (ToolStripItem existing in versionItem.DropDownItems)
         {
@@ -196,14 +209,54 @@ public sealed class TrayIconController : IDisposable
             existing.Dispose();
         }
 
-        foreach (var row in _versions.BuildItems())
+        foreach (var row in rows)
         {
             var rowItem = new ToolStripMenuItem(row.Text) { Enabled = row.Enabled, Checked = row.Checked };
             if (row.Enabled && row.Ref is { Length: > 0 } versionRef)
             {
-                rowItem.Click += (_, _) => VersionSwitchRequested?.Invoke(this, versionRef);
+                rowItem.Click += (_, _) => RaiseVersionSwitch(versionRef);
             }
             versionItem.DropDownItems.Add(rowItem);
+        }
+    }
+
+    /// <summary>
+    /// A Version row was clicked. Logged first (so a missing click shows up
+    /// in the log), then run on the UI loop AFTER the dropdown has closed so
+    /// the confirm box never competes with the menu. A missing handler or a
+    /// throwing one is reported in a message box, never swallowed.
+    /// </summary>
+    private void RaiseVersionSwitch(string versionRef)
+    {
+        AppFileLog.Log($"[Version] tray menu click: '{versionRef}'");
+
+        void Run()
+        {
+            try
+            {
+                var handler = VersionSwitchRequested;
+                if (handler is null)
+                {
+                    AppFileLog.Log($"[Version] tray menu click '{versionRef}' has no handler");
+                    VersionDialogs.ShowNotice("Version switching is not available right now. Nothing was changed.");
+                    return;
+                }
+                handler(this, versionRef);
+            }
+            catch (Exception ex)
+            {
+                AppFileLog.LogException("TrayIconController.VersionSwitch", ex);
+                VersionDialogs.ShowNotice($"Could not switch versions: {ex.Message}\n\nVaccine Assist is still running.");
+            }
+        }
+
+        if (_uiContext is null)
+        {
+            Run();
+        }
+        else
+        {
+            _uiContext.Post(_ => Run(), null);
         }
     }
 

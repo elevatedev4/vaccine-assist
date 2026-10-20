@@ -114,4 +114,13 @@ public class TrayMenuBuilderTests
         Assert.True(version.Enabled);
         Assert.False(version.IsCheckable);
     }
+
+    [Fact]
+    public void VersionRowIsAParentNotAClickTarget()
+    {
+        // Its children (Stable + testing versions) raise the switch; the parent itself carries no route or checkbox.
+        var version = TrayMenuBuilder.Build().Single(i => i.Action == TrayMenuAction.Version);
+        Assert.Null(version.RelativePath);
+        Assert.False(version.IsCheckable);
+    }
 }

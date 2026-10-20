@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using VaccineAssist.Desktop.Overlay;
 using VaccineAssist.Desktop.Versioning;
 using Xunit;
 
@@ -371,5 +372,194 @@ public class VersionControlTests
 
         gate.SetResult(null);
         Assert.Equal(TestingVersionsStatus.Unavailable, (await pending).Status);
+    }
+
+    // ---- no silent path: the switch decision ----
+
+    private const string Root = @"C:\va";
+
+    private static BuildInfo StableBuild => new("stable", "abc1234", Root);
+    private static BuildInfo TestingBuild => new("testing/flu-preferred", "abc1234", Root);
+
+    [Fact]
+    public void StableBuildMayProceedToATestingVersion()
+    {
+        var plan = VersionSwitchPlanner.Evaluate(StableBuild, "testing/flu-preferred", Root, entryBusy: false);
+        Assert.Equal(VersionSwitchOutcome.Proceed, plan.Outcome);
+        Assert.Null(plan.Message);
+    }
+
+    [Fact]
+    public void TestingBuildCanSwitchBackToStableThroughTheSameMenu()
+    {
+        // The row exists, is enabled and carries the ref the launcher accepts...
+        var rows = VersionMenuBuilder.Build(
+            TestingBuild,
+            new TestingVersionsSnapshot(TestingVersionsStatus.Loaded, new[] { "testing/flu-preferred" }));
+        var stableRow = rows.Single(r => r.Ref == BuildInfo.StableRef);
+        Assert.True(stableRow.Enabled);
+        Assert.False(stableRow.Checked);
+        Assert.True(TestingBranchParser.IsLaunchableRef(stableRow.Ref));
+
+        // ...the planner lets it through, and the launcher builds a command for it.
+        var plan = VersionSwitchPlanner.Evaluate(TestingBuild, stableRow.Ref, Root, entryBusy: false);
+        Assert.Equal(VersionSwitchOutcome.Proceed, plan.Outcome);
+        var cmd = VersionLauncher.BuildCommand(Root, stableRow.Ref!, 99);
+        Assert.Contains("-Ref \"stable\"", cmd.Arguments);
+    }
+
+    [Fact]
+    public void TestingBuildCanSwitchToAnotherTestingVersion()
+    {
+        var plan = VersionSwitchPlanner.Evaluate(TestingBuild, "testing/other", Root, entryBusy: false);
+        Assert.Equal(VersionSwitchOutcome.Proceed, plan.Outcome);
+    }
+
+    public static TheoryData<string?, string?, bool, VersionSwitchOutcome> RefusedSwitches => new()
+    {
+        { "stable", Root, false, VersionSwitchOutcome.AlreadyRunning },
+        { "main", Root, false, VersionSwitchOutcome.InvalidRef },
+        { null, Root, false, VersionSwitchOutcome.InvalidRef },
+        { "", Root, false, VersionSwitchOutcome.InvalidRef },
+        { "testing/flu-preferred", Root, true, VersionSwitchOutcome.EntryBusy },
+        { "testing/flu-preferred", null, false, VersionSwitchOutcome.CheckoutNotFound },
+        { "testing/flu-preferred", "  ", false, VersionSwitchOutcome.CheckoutNotFound },
+    };
+
+    [Theory]
+    [MemberData(nameof(RefusedSwitches))]
+    public void EveryRefusalExplainsItselfInPlainWords(string? requestedRef, string? root, bool busy, VersionSwitchOutcome expected)
+    {
+        var plan = VersionSwitchPlanner.Evaluate(StableBuild, requestedRef, root, busy);
+
+        Assert.Equal(expected, plan.Outcome);
+        Assert.False(string.IsNullOrWhiteSpace(plan.Message));
+    }
+
+    [Fact]
+    public void RunningTestingVersionClickedAgainSaysSo()
+    {
+        var plan = VersionSwitchPlanner.Evaluate(TestingBuild, "testing/flu-preferred", Root, entryBusy: false);
+
+        Assert.Equal(VersionSwitchOutcome.AlreadyRunning, plan.Outcome);
+        Assert.Contains("Testing: flu-preferred", plan.Message);
+    }
+
+    [Fact]
+    public void EveryOutcomeOtherThanProceedIsCoveredByARefusalCase()
+    {
+        var covered = RefusedSwitches.Select(r => (VersionSwitchOutcome)r[3]).ToHashSet();
+        foreach (var outcome in Enum.GetValues<VersionSwitchOutcome>().Where(o => o != VersionSwitchOutcome.Proceed))
+        {
+            Assert.Contains(outcome, covered);
+        }
+    }
+
+    [Fact]
+    public void EveryRefListedInTheMenuIsAcceptedByThePlanner()
+    {
+        // The menu only lists refs the parser accepts; the click path must never reject one of them as "invalid".
+        var snap = new TestingVersionsSnapshot(
+            TestingVersionsStatus.Loaded,
+            TestingBranchParser.ParseLsRemote($"{Sha}\trefs/heads/testing/flu-preferred\n{Sha}\trefs/heads/testing/v1.2_rc\n"));
+
+        foreach (var row in VersionMenuBuilder.Build(StableBuild, snap).Where(r => r.Ref is not null && r.Ref != "stable"))
+        {
+            Assert.Equal(VersionSwitchOutcome.Proceed, VersionSwitchPlanner.Evaluate(StableBuild, row.Ref, Root, false).Outcome);
+        }
+    }
+
+    [Fact]
+    public void VersionMessageBoxesAlwaysOpenInFrontOfEverything()
+    {
+        Assert.NotEqual(0u, VersionDialogs.NoticeFlags & VersionDialogs.MB_TOPMOST);
+        Assert.NotEqual(0u, VersionDialogs.NoticeFlags & VersionDialogs.MB_SETFOREGROUND);
+        Assert.NotEqual(0u, VersionDialogs.ConfirmFlags & VersionDialogs.MB_TOPMOST);
+        Assert.NotEqual(0u, VersionDialogs.ConfirmFlags & VersionDialogs.MB_SETFOREGROUND);
+        Assert.NotEqual(0u, VersionDialogs.NoticeFlags & VersionDialogs.MB_TASKMODAL);
+        Assert.NotEqual(0u, VersionDialogs.ConfirmFlags & VersionDialogs.MB_TASKMODAL);
+    }
+
+    // ---- repainting an open submenu ----
+
+    [Fact]
+    public void SignatureIsStableForIdenticalRowsAndChangesWhenRowsChange()
+    {
+        var loading = VersionMenuBuilder.Build(StableBuild, TestingVersionsSnapshot.Loading);
+        var loadingAgain = VersionMenuBuilder.Build(StableBuild, TestingVersionsSnapshot.Loading);
+        var loaded = VersionMenuBuilder.Build(
+            StableBuild, new TestingVersionsSnapshot(TestingVersionsStatus.Loaded, new[] { "testing/alpha" }));
+
+        Assert.Equal(VersionMenuBuilder.Signature(loading), VersionMenuBuilder.Signature(loadingAgain));
+        Assert.NotEqual(VersionMenuBuilder.Signature(loading), VersionMenuBuilder.Signature(loaded));
+    }
+
+    // ---- overlay outside-click hook (root cause: menu closed on mouse-down before the row's Click) ----
+
+    private static readonly OverlayRect MainMenu = new(100, 200, 150, 300);
+    private static readonly OverlayRect SubMenu = new(250, 400, 180, 90);
+
+    [Fact]
+    public void ClickOnAVersionRowOutsideTheMainMenuDoesNotCloseTheMenu()
+    {
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, SubMenu, x: 300, y: 430));
+    }
+
+    [Fact]
+    public void ClickOnAVersionRowWithUnknownSubmenuBoundsDoesNotCloseTheMenu()
+    {
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 300, y: 430));
+    }
+
+    [Fact]
+    public void ClickAwayFromBothMenusStillClosesIt()
+    {
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, SubMenu, x: 900, y: 900));
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: false, null, x: 900, y: 900));
+    }
+
+    [Fact]
+    public void ClickInsideTheMainMenuNeverClosesIt()
+    {
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: false, null, x: 150, y: 250));
+    }
+
+    [Fact]
+    public void SubmenuAreaCountsAsOutsideWhenTheSubmenuIsNotOpen()
+    {
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: false, SubMenu, x: 300, y: 430));
+    }
+
+    [Fact]
+    public void UnknownSubmenuBoundsKeepTheMenuOpenOnlyNearTheMainMenu()
+    {
+        // 150x300 menu at (100,200); slack 400 -> expanded rect is x -300..650, y -200..900.
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 300, y: 430));
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 600, y: 850));
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 1200, y: 430));
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, submenuOpen: true, submenuBounds: null, x: 300, y: 1500));
+    }
+
+    [Fact]
+    public void UnknownSubmenuSlackScalesWithTheGivenPixelDistance()
+    {
+        // 150% DPI: 600 physical px. A click 500px right of the menu edge is still "near".
+        Assert.False(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, true, null, x: 250 + 500, y: 300, unknownBoundsSlackPx: 600));
+        Assert.True(OverlayMenuGeometry.ShouldCloseOnOutsideClick(MainMenu, true, null, x: 250 + 500, y: 300, unknownBoundsSlackPx: 400));
+    }
+
+    [Fact]
+    public void OnlyOneVersionSwitchMayRunAtATime()
+    {
+        var guard = new VersionSwitchGuard();
+
+        Assert.False(guard.IsActive);
+        Assert.True(guard.TryEnter());
+        Assert.True(guard.IsActive);
+        Assert.False(guard.TryEnter()); // a second click while the confirm box is up is refused
+
+        guard.Exit();
+        Assert.False(guard.IsActive);
+        Assert.True(guard.TryEnter());  // usable again after the first finished
     }
 }

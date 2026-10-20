@@ -208,8 +208,7 @@ public sealed class PioneerOverlayController : IDisposable
         window.MacroCodesRequested += (_, _) => SafeInvoke(_showMacroCodesPopup);
         window.ExitRequested += (_, _) => SafeInvoke(_exit);
         window.Versions = _versions;
-        window.VersionSwitchRequested += (_, versionRef) =>
-            SafeInvoke(() => VersionSwitchRequested?.Invoke(this, versionRef));
+        window.VersionSwitchRequested += (_, versionRef) => RaiseVersionSwitch(versionRef);
         // ShowActivated="False" + the WS_EX_NOACTIVATE/WS_EX_TOOLWINDOW
         // styles set in its own OnSourceInitialized mean this never
         // steals focus from PioneerRx.
@@ -250,6 +249,27 @@ public sealed class PioneerOverlayController : IDisposable
         }
         NativeOverlayPositioning.Reposition(_window.Handle, 0, 0, 0, 0, show: false);
         _shown = false;
+    }
+
+    /// <summary>Version row picked in the overlay menu. Unlike the other menu actions, a failure here is shown to the user, not only logged.</summary>
+    private void RaiseVersionSwitch(string versionRef)
+    {
+        try
+        {
+            var handler = VersionSwitchRequested;
+            if (handler is null)
+            {
+                AppFileLog.Log($"[Version] overlay controller has no switch handler for '{versionRef}'");
+                VersionDialogs.ShowNotice("Version switching is not available right now. Nothing was changed.");
+                return;
+            }
+            handler(this, versionRef);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("PioneerOverlayController.VersionSwitch", ex);
+            VersionDialogs.ShowNotice($"Could not switch versions: {ex.Message}\n\nVaccine Assist is still running.");
+        }
     }
 
     private static void SafeInvoke(Action action)
