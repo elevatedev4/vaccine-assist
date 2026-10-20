@@ -275,6 +275,9 @@ public partial class MainWindow : Window
         // altogether, or only send non-duplicates" — the coordinator can't
         // show a real WPF Window itself, so MainWindow supplies this.
         _faxSendCoordinator.ConfirmDuplicates = ShowFaxDuplicateConfirmDialog;
+        _faxSendCoordinator.ConfirmRetryNeverConfirmed = () =>
+            MessageBox.Show(this, "Notifyre never confirmed this fax. Send it again?", "Vaccine Assist",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
 
         InitializeComponent();
 

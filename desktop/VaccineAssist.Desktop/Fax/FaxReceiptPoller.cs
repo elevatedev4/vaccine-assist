@@ -56,6 +56,7 @@ public sealed class FaxReceiptPoller
                     // A "not found" Failed that never resolved to Sent in 2h
                     // is final: stop re-checking, file the PDF under failed\.
                     entry.NotFoundFailure = false;
+                    entry.NeverConfirmed = true;
                     entry.LastCheckedAtUtc = nowUtc;
                     MovePdf(entry, "failed");
                     changed = true;

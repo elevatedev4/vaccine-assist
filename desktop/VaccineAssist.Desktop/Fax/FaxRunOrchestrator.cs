@@ -188,6 +188,9 @@ public sealed class FaxRunOrchestrator
         var entries = _ledger.Load();
         var entry = entries.FirstOrDefault(e => e.Id == ledgerEntryId);
         if (entry is null || entry.Status != FaxLedgerStatus.Failed) return false;
+        // Still being re-checked: Notifyre's list lags, the original fax may
+        // have gone out — queuing again could double-send it.
+        if (entry.NotFoundFailure) return false;
         if (string.IsNullOrWhiteSpace(entry.PdfPath) || !File.Exists(entry.PdfPath)) return false;
 
         var faxNumber = FaxNumberNormalizer.ToDialableOrNull(entry.FaxNumber);
@@ -220,6 +223,7 @@ public sealed class FaxRunOrchestrator
             entry.Status = FaxLedgerStatus.InProcess;
             entry.Error = null;
             entry.NotFoundFailure = false;
+            entry.NeverConfirmed = false;
             entry.QueuedAtUtc = DateTime.UtcNow;
         }
         else
@@ -461,9 +465,10 @@ public sealed class FaxRunOrchestrator
                 PatientInitials = entry.PatientInitials,
                 PrescriberName = entry.PrescriberName ?? "(unknown prescriber)",
                 FaxNumberLast4 = entry.FaxNumberLast4,
-                Status = entry.Status.ToString(),
+                Status = FaxRunRowSummary.StatusFor(entry),
                 Error = entry.Error,
                 LedgerEntryId = entry.Id,
+                NeverConfirmed = entry.NeverConfirmed,
             });
         }
 

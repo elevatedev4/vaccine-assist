@@ -219,4 +219,23 @@ public class FaxReceiptPollerTests : IDisposable
         var queued = new DateTime(2026, 10, 20, 16, 5, 47, DateTimeKind.Utc);
         Assert.Equal(expectedInGrace, FaxPollSchedule.IsWithinNotFoundGrace(queued, queued.AddSeconds(secondsSinceQueued)));
     }
+
+    [Fact]
+    public async Task ANotFoundFailedStillNotFoundAfterTwoHoursBecomesFinalAndNeverConfirmed()
+    {
+        var ledger = new FaxLedger(_ledgerPath);
+        var entry = MakeEntry("fax-1", DateTime.UtcNow.AddHours(-3), lastCheckedAtUtc: DateTime.UtcNow.AddMinutes(-5));
+        entry.Status = FaxLedgerStatus.Failed;
+        entry.NotFoundFailure = true;
+        ledger.Save(new List<FaxLedgerEntry> { entry });
+        var faxClient = new FakeFaxClient();
+
+        await new FaxReceiptPoller(ledger, faxClient).PollAsync();
+
+        var saved = ledger.Load().Single();
+        Assert.Equal(FaxLedgerStatus.Failed, saved.Status);
+        Assert.False(saved.NotFoundFailure);
+        Assert.True(saved.NeverConfirmed);
+        Assert.Empty(faxClient.StatusChecks);
+    }
 }

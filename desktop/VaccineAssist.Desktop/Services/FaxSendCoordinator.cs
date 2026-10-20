@@ -142,6 +142,12 @@ public sealed class FaxSendCoordinator : ObservableObject
     /// confirm.</summary>
     public Func<IReadOnlyList<FaxDuplicateMatch>, FaxDuplicateChoice?>? ConfirmDuplicates { get; set; }
 
+    /// <summary>Set by MainWindow (a real MessageBox): asked before
+    /// retrying a fax Notifyre never confirmed ("Notifyre never confirmed
+    /// this fax. Send it again?"). Left null = never retry such a row —
+    /// safe default, same posture as ConfirmDuplicates.</summary>
+    public Func<bool>? ConfirmRetryNeverConfirmed { get; set; }
+
     public FaxRunSummary? Summary
     {
         get => _summary;
@@ -157,7 +163,8 @@ public sealed class FaxSendCoordinator : ObservableObject
     /// <summary>How many current rows are still Queued/InProcess — drives
     /// the tray tooltip via InProcessCountChanged.</summary>
     public int InProcessCount => Rows.Count(r =>
-        r.Status == nameof(FaxLedgerStatus.InProcess) || r.Status == nameof(FaxLedgerStatus.Queued));
+        r.Status == nameof(FaxLedgerStatus.InProcess) || r.Status == nameof(FaxLedgerStatus.Queued) ||
+        r.Status == FaxRunRowSummary.CheckingStatus);
 
     public ObservableCollection<FaxRunRowSummary> Rows { get; }
 
@@ -269,15 +276,25 @@ public sealed class FaxSendCoordinator : ObservableObject
     {
         if (row is null) return;
 
+        // Still being re-checked: the original may have gone out — never
+        // queue a second copy (RetryCommand.CanExecute is already false).
+        if (row.Status == FaxRunRowSummary.CheckingStatus) return;
+
+        if (row.NeverConfirmed)
+        {
+            if (ConfirmRetryNeverConfirmed?.Invoke() != true) return;
+        }
+
         var succeeded = await _orchestrator.RetryFailedAsync(row.LedgerEntryId, _settings.Fax);
         if (succeeded)
         {
+            row.NeverConfirmed = false;
             ApplyRowStatus(row, nameof(FaxLedgerStatus.InProcess), null);
             StatusMessage = $"Requeued fax for {row.PatientInitials}.";
         }
         else
         {
-            StatusMessage = $"Retry failed for {row.PatientInitials} — no fax number on file for this entry.";
+            StatusMessage = $"Retry didn't send for {row.PatientInitials} — no fax number on file, or Notifyre is still checking the original.";
         }
 
         OnPropertyChanged(nameof(SummaryLine));
@@ -319,7 +336,8 @@ public sealed class FaxSendCoordinator : ObservableObject
             if (string.IsNullOrEmpty(row.LedgerEntryId)) continue;
             if (!entries.TryGetValue(row.LedgerEntryId, out var entry)) continue;
 
-            var newStatus = entry.Status.ToString();
+            var newStatus = FaxRunRowSummary.StatusFor(entry);
+            row.NeverConfirmed = entry.NeverConfirmed;
             if (row.Status == newStatus && row.Error == entry.Error) continue;
 
             ApplyRowStatus(row, newStatus, entry.Error);

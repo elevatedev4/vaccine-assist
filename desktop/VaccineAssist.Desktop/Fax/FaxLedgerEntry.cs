@@ -75,4 +75,9 @@ public sealed class FaxLedgerEntry
     /// 2h give-up) so a later "successful" overrides the Failed; its PDF
     /// stays in outbox\ until then.</summary>
     public bool NotFoundFailure { get; set; }
+
+    /// <summary>True once a NotFoundFailure entry's 2h re-check window ended
+    /// with Notifyre never listing the fax — Failed is final, but the fax
+    /// may still have gone out, so Retry asks for confirmation first.</summary>
+    public bool NeverConfirmed { get; set; }
 }

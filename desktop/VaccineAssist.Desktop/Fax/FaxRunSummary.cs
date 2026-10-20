@@ -12,6 +12,17 @@ namespace VaccineAssist.Desktop.Fax;
 /// so a poller-resolved Sent never reached the visible row.</summary>
 public sealed class FaxRunRowSummary : ObservableObject
 {
+    /// <summary>Row status text while a "not found" Failed is still being
+    /// re-checked (FaxLedgerEntry.NotFoundFailure) — not Failed yet, and
+    /// not retryable (the original fax may have gone out).</summary>
+    public const string CheckingStatus = "Checking with Notifyre…";
+
+    /// <summary>The row status text for a ledger entry.</summary>
+    public static string StatusFor(FaxLedgerEntry entry) =>
+        entry.Status == FaxLedgerStatus.Failed && entry.NotFoundFailure
+            ? CheckingStatus
+            : entry.Status.ToString();
+
     private string _status = "";
     private string? _error;
 
@@ -29,6 +40,10 @@ public sealed class FaxRunRowSummary : ObservableObject
         get => _status;
         set => SetProperty(ref _status, value);
     }
+
+    /// <summary>True for a Failed row whose fax Notifyre never confirmed
+    /// within the 2h re-check window — Retry asks first.</summary>
+    public bool NeverConfirmed { get; set; }
 
     public string? Error
     {
