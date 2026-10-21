@@ -142,6 +142,12 @@ public sealed class FaxSendCoordinator : ObservableObject
     /// confirm.</summary>
     public Func<IReadOnlyList<FaxDuplicateMatch>, FaxDuplicateChoice?>? ConfirmDuplicates { get; set; }
 
+    /// <summary>Set by MainWindow (a real MessageBox): asked before
+    /// retrying a fax Notifyre never confirmed ("Notifyre never confirmed
+    /// this fax. Send it again?"). Left null = never retry such a row —
+    /// safe default, same posture as ConfirmDuplicates.</summary>
+    public Func<bool>? ConfirmRetryNeverConfirmed { get; set; }
+
     public FaxRunSummary? Summary
     {
         get => _summary;
@@ -157,7 +163,8 @@ public sealed class FaxSendCoordinator : ObservableObject
     /// <summary>How many current rows are still Queued/InProcess — drives
     /// the tray tooltip via InProcessCountChanged.</summary>
     public int InProcessCount => Rows.Count(r =>
-        r.Status == nameof(FaxLedgerStatus.InProcess) || r.Status == nameof(FaxLedgerStatus.Queued));
+        r.Status == nameof(FaxLedgerStatus.InProcess) || r.Status == nameof(FaxLedgerStatus.Queued) ||
+        r.Status == FaxRunRowSummary.CheckingStatus);
 
     public ObservableCollection<FaxRunRowSummary> Rows { get; }
 
@@ -269,22 +276,25 @@ public sealed class FaxSendCoordinator : ObservableObject
     {
         if (row is null) return;
 
+        // Still being re-checked: the original may have gone out — never
+        // queue a second copy (RetryCommand.CanExecute is already false).
+        if (row.Status == FaxRunRowSummary.CheckingStatus) return;
+
+        if (row.NeverConfirmed)
+        {
+            if (ConfirmRetryNeverConfirmed?.Invoke() != true) return;
+        }
+
         var succeeded = await _orchestrator.RetryFailedAsync(row.LedgerEntryId, _settings.Fax);
         if (succeeded)
         {
-            row.Status = nameof(FaxLedgerStatus.InProcess);
-            row.Error = null;
+            row.NeverConfirmed = false;
+            ApplyRowStatus(row, nameof(FaxLedgerStatus.InProcess), null);
             StatusMessage = $"Requeued fax for {row.PatientInitials}.";
         }
         else
         {
-            StatusMessage = $"Retry failed for {row.PatientInitials} — no fax number on file for this entry.";
-        }
-
-        var index = Rows.IndexOf(row);
-        if (index >= 0)
-        {
-            Rows[index] = row;
+            StatusMessage = $"Retry didn't send for {row.PatientInitials} — no fax number on file, or Notifyre is still checking the original.";
         }
 
         OnPropertyChanged(nameof(SummaryLine));
@@ -326,16 +336,11 @@ public sealed class FaxSendCoordinator : ObservableObject
             if (string.IsNullOrEmpty(row.LedgerEntryId)) continue;
             if (!entries.TryGetValue(row.LedgerEntryId, out var entry)) continue;
 
-            var newStatus = entry.Status.ToString();
+            var newStatus = FaxRunRowSummary.StatusFor(entry);
+            row.NeverConfirmed = entry.NeverConfirmed;
             if (row.Status == newStatus && row.Error == entry.Error) continue;
 
-            row.Status = newStatus;
-            row.Error = entry.Error;
-            // Same "replace in place" trick RetryAsync already uses —
-            // FaxRunRowSummary isn't INotifyPropertyChanged, so the
-            // DataGrid only re-reads a row's cells on a CollectionChanged
-            // Replace notification, not on a plain field mutation.
-            Rows[i] = row;
+            ApplyRowStatus(row, newStatus, entry.Error);
             anyRowChanged = true;
         }
 
@@ -344,10 +349,23 @@ public sealed class FaxSendCoordinator : ObservableObject
             OnPropertyChanged(nameof(SummaryLine));
         }
 
-        UpdateInProcessCountAndTimer();
+        UpdateInProcessCountAndTimer(entries.Values);
     }
 
-    private void UpdateInProcessCountAndTimer()
+    /// <summary>V-T65 (Will, 2026-10-20): the one place a visible row's
+    /// status changes — FaxRunRowSummary raises PropertyChanged, so the grid
+    /// repaints on the UI thread (this runs from the DispatcherTimer tick),
+    /// and one log line proves the UI applied it.</summary>
+    private static void ApplyRowStatus(FaxRunRowSummary row, string status, string? error)
+    {
+        row.Status = status;
+        row.Error = error;
+        AppFileLog.Log($"[FaxUI] row {row.LedgerEntryId} → {status}");
+        // Retry's CanExecute reads row.Status — re-query it now that it moved.
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void UpdateInProcessCountAndTimer(IEnumerable<FaxLedgerEntry>? ledgerEntries = null)
     {
         var current = InProcessCount;
         if (current != _lastInProcessCount)
@@ -356,7 +374,7 @@ public sealed class FaxSendCoordinator : ObservableObject
             InProcessCountChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        if (current > 0)
+        if (current > 0 || HasRecheckableFailure(ledgerEntries))
         {
             _refreshTimer.Start();
         }
@@ -368,10 +386,22 @@ public sealed class FaxSendCoordinator : ObservableObject
 
     private void StopRefreshIfIdle()
     {
-        if (InProcessCount == 0)
+        if (InProcessCount == 0 && !HasRecheckableFailure(null))
         {
             _refreshTimer.Stop();
         }
+    }
+
+    /// <summary>True while a visible row is Failed only because the fax
+    /// wasn't found yet (FaxLedgerEntry.NotFoundFailure) — the poller keeps
+    /// re-checking it, so the refresh timer must keep running to show a
+    /// later Sent.</summary>
+    private bool HasRecheckableFailure(IEnumerable<FaxLedgerEntry>? ledgerEntries)
+    {
+        var rowIds = Rows.Where(r => !string.IsNullOrEmpty(r.LedgerEntryId)).Select(r => r.LedgerEntryId).ToHashSet();
+        if (rowIds.Count == 0) return false;
+        ledgerEntries ??= _ledger.Load();
+        return ledgerEntries.Any(e => e.Status == FaxLedgerStatus.Failed && e.NotFoundFailure && rowIds.Contains(e.Id));
     }
 
     private void LoadHistory()

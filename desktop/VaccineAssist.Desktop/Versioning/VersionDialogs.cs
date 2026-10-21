@@ -48,11 +48,14 @@ public static class VersionDialogs
     }
 
     /// <summary>Yes/No box (default No) in front of every window. A failure to show it counts as "No" and is logged.</summary>
-    public static bool Confirm(string message)
+    public static bool Confirm(string message) => Confirm(message, ConfirmCaption);
+
+    /// <summary>Same Yes/No box (default No, topmost, task-modal) with a caller-supplied caption.</summary>
+    public static bool Confirm(string message, string caption)
     {
         try
         {
-            return MessageBoxW(IntPtr.Zero, message, ConfirmCaption, ConfirmFlags) == IDYES;
+            return MessageBoxW(IntPtr.Zero, message, caption, ConfirmFlags) == IDYES;
         }
         catch (Exception ex)
         {

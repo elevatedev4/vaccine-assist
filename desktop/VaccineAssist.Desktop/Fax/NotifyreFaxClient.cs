@@ -213,7 +213,7 @@ public sealed class NotifyreFaxClient : IFaxClient
         }
 
         return new FaxStatusResult(false, FaxSendStatus.Failed,
-            $"Fax {faxId} wasn't found in Notifyre's sent faxes (checked up to {MaxStatusPages * StatusPageSize} most recent, within the last ~2.5h).", null);
+            $"Fax {faxId} wasn't found in Notifyre's sent faxes (checked up to {MaxStatusPages * StatusPageSize} most recent, within the last ~2.5h).", null, NotFound: true);
     }
 
     private static long ToUnixSeconds(DateTime utc) => new DateTimeOffset(utc, TimeSpan.Zero).ToUnixTimeSeconds();

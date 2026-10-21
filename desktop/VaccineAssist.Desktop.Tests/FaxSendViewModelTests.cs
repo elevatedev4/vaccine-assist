@@ -252,6 +252,141 @@ public class FaxSendViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task RefreshNowRaisesPropertyChangedOnTheRowSoTheGridRepaints()
+    {
+        // V-T65 (Will, 2026-10-20: "sent the fax successfully but didn't
+        // change the status in the app"): the grid binds plain CLR
+        // properties on the row; only INotifyPropertyChanged repaints it.
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+        var row = vm.Rows.Single();
+        var changed = new System.Collections.Generic.List<string?>();
+        row.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        var entries = faxLedger.Load();
+        entries.Single().Status = FaxLedgerStatus.Sent;
+        faxLedger.Save(entries);
+        coordinator.RefreshNow();
+
+        Assert.Contains(nameof(FaxRunRowSummary.Status), changed);
+        Assert.Equal(nameof(FaxLedgerStatus.Sent), row.Status);
+    }
+
+    [Fact]
+    public async Task ARowShowingFailedIsOverriddenByALaterSent()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out _, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+        var row = vm.Rows.Single();
+
+        var entries = faxLedger.Load();
+        entries.Single().Status = FaxLedgerStatus.Failed;
+        entries.Single().Error = "Fax x wasn't found in Notifyre's sent faxes.";
+        entries.Single().NotFoundFailure = true;
+        faxLedger.Save(entries);
+        coordinator.RefreshNow();
+        Assert.Equal(FaxRunRowSummary.CheckingStatus, row.Status); // re-checking, not plain Failed
+
+        entries = faxLedger.Load();
+        entries.Single().Status = FaxLedgerStatus.Sent;
+        entries.Single().Error = null;
+        entries.Single().NotFoundFailure = false;
+        faxLedger.Save(entries);
+        coordinator.RefreshNow();
+
+        Assert.Equal(nameof(FaxLedgerStatus.Sent), row.Status);
+        Assert.Null(row.Error);
+        Assert.Equal("Done: 1 sent, 0 failed", vm.SummaryLine);
+    }
+
+    private static void SetLedger(FaxLedger ledger, FaxLedgerStatus status, bool notFoundFailure, bool neverConfirmed)
+    {
+        var entries = ledger.Load();
+        entries.Single().Status = status;
+        entries.Single().Error = "Fax x wasn't found in Notifyre's sent faxes.";
+        entries.Single().NotFoundFailure = notFoundFailure;
+        entries.Single().NeverConfirmed = neverConfirmed;
+        ledger.Save(entries);
+    }
+
+    [Fact]
+    public async Task RetryIsBlockedWhileANotFoundFailureIsStillBeingRechecked()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+        var row = vm.Rows.Single();
+        SetLedger(faxLedger, FaxLedgerStatus.Failed, notFoundFailure: true, neverConfirmed: false);
+        coordinator.RefreshNow();
+
+        Assert.Equal(FaxRunRowSummary.CheckingStatus, row.Status);
+        Assert.False(vm.RetryCommand.CanExecute(row));
+        Assert.Contains("1 in process", vm.SummaryLine);
+
+        await vm.RetryAsync(row);
+        var orchestratorResult = await orchestrator.RetryFailedAsync(row.LedgerEntryId, MakeSettings().Fax);
+
+        Assert.False(orchestratorResult);
+        Assert.Single(faxClient.QueuedRequests); // never queued a second copy
+    }
+
+    [Fact]
+    public async Task RetryAfterTheGiveUpWindowAsksFirstAndOnlySendsOnYes()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient, out var faxLedger);
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        var prompts = 0;
+        var answer = false;
+        coordinator.ConfirmRetryNeverConfirmed = () => { prompts++; return answer; };
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+        var row = vm.Rows.Single();
+        SetLedger(faxLedger, FaxLedgerStatus.Failed, notFoundFailure: false, neverConfirmed: true);
+        coordinator.RefreshNow();
+
+        Assert.Equal(nameof(FaxLedgerStatus.Failed), row.Status);
+        Assert.True(row.NeverConfirmed);
+        Assert.True(vm.RetryCommand.CanExecute(row));
+
+        await vm.RetryAsync(row); // answer = No
+        Assert.Equal(1, prompts);
+        Assert.Single(faxClient.QueuedRequests);
+        Assert.Equal(nameof(FaxLedgerStatus.Failed), row.Status);
+
+        answer = true;
+        await vm.RetryAsync(row);
+        Assert.Equal(2, prompts);
+        Assert.Equal(2, faxClient.QueuedRequests.Count);
+        Assert.Equal(nameof(FaxLedgerStatus.InProcess), row.Status);
+    }
+
+    [Fact]
+    public async Task RetryOfAVendorReportedFailureDoesNotPrompt()
+    {
+        var reportPath = WriteReport("report.csv");
+        var orchestrator = MakeOrchestrator(out var faxClient, out var faxLedger);
+        faxClient.QueueResults.Enqueue(new FaxQueueResult(false, null, "vendor rejected the number"));
+        var vm = MakeViewModel(orchestrator, faxLedger, out var coordinator);
+        coordinator.ConfirmRetryNeverConfirmed = () => throw new InvalidOperationException("must not prompt");
+        vm.SetChosenFile(reportPath);
+        await vm.SendAsync();
+        var row = vm.Rows.Single();
+
+        await vm.RetryAsync(row);
+
+        Assert.Equal(nameof(FaxLedgerStatus.InProcess), row.Status);
+    }
+
+    [Fact]
     public async Task InProcessCountChangedFiresWhenARowResolves()
     {
         var reportPath = WriteReport("report.csv");
