@@ -81,6 +81,14 @@ public static class SingleInstancePolicy
         return SingleInstanceDecision.ShowAlreadyRunning;
     }
 
+    /// <summary>
+    /// Only a provably frozen process of this user and session is ever ended:
+    /// never Unknown (e.g. a concurrent launch that has no window yet) and
+    /// never Responsive.
+    /// </summary>
+    public static bool ShouldEnd(OtherInstance instance) =>
+        instance.Health == InstanceHealth.Hung && instance.Killable;
+
     /// <summary>A process may be closed only if it belongs to this user in this Windows session.</summary>
     public static bool IsKillable(int mySessionId, int otherSessionId, string? mySid, string? otherSid) =>
         mySessionId == otherSessionId
@@ -218,14 +226,9 @@ public static class SingleInstanceProbe
     private const int WmNull = 0x0000;
     private const uint SmtoBlock = 0x0001;
     private const uint SmtoAbortIfHung = 0x0002;
-    private const uint ProbeTimeoutMs = 2000;
+    private const uint ProbeTimeoutMs = 5000;
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint TokenQuery = 0x0008;
-
-    private delegate bool EnumThreadWndProc(IntPtr hwnd, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern bool EnumThreadWindows(uint threadId, EnumThreadWndProc callback, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SendMessageTimeoutW(
@@ -284,41 +287,32 @@ public static class SingleInstanceProbe
         }
     }
 
+    /// <summary>
+    /// Probes only the process's main window (Process.MainWindowHandle: its
+    /// first visible top-level window). No such window (still starting,
+    /// hidden to the tray, or not ours to see) is Unknown, never Hung. A
+    /// window that does not answer within the 5 s timeout is Hung.
+    /// </summary>
     private static InstanceHealth ProbeHealth(Process process)
     {
-        var windowsChecked = 0;
-        var hung = false;
         try
         {
-            foreach (ProcessThread thread in process.Threads)
+            process.Refresh();
+            var window = process.MainWindowHandle;
+            if (window == IntPtr.Zero)
             {
-                EnumThreadWindows((uint)thread.Id, (hwnd, _) =>
-                {
-                    windowsChecked++;
-                    var answered = SendMessageTimeoutW(
-                        hwnd, WmNull, IntPtr.Zero, IntPtr.Zero, SmtoAbortIfHung | SmtoBlock, ProbeTimeoutMs, out _);
-                    if (answered == IntPtr.Zero)
-                    {
-                        hung = true;
-                        return false; // stop at the first window that does not answer
-                    }
-
-                    return true;
-                }, IntPtr.Zero);
-
-                if (hung)
-                {
-                    return InstanceHealth.Hung;
-                }
+                return InstanceHealth.Unknown;
             }
+
+            var answered = SendMessageTimeoutW(
+                window, WmNull, IntPtr.Zero, IntPtr.Zero, SmtoAbortIfHung | SmtoBlock, ProbeTimeoutMs, out _);
+            return answered == IntPtr.Zero ? InstanceHealth.Hung : InstanceHealth.Responsive;
         }
         catch (Exception ex)
         {
             AppFileLog.LogException("SingleInstanceProbe.ProbeHealth", ex);
             return InstanceHealth.Unknown;
         }
-
-        return windowsChecked > 0 ? InstanceHealth.Responsive : InstanceHealth.Unknown;
     }
 
     private static string? GetProcessSid(int processId)

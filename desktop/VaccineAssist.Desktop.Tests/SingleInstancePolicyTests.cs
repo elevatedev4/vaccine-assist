@@ -67,4 +67,14 @@ public class SingleInstancePolicyTests
         Assert.False(SingleInstancePolicy.IsKillable(1, 1, null, null));
         Assert.False(SingleInstancePolicy.IsKillable(1, 1, "S-1-5-21-1", null));
     }
+
+    [Theory]
+    [InlineData(InstanceHealth.Hung, true, true)]
+    [InlineData(InstanceHealth.Hung, false, false)]
+    [InlineData(InstanceHealth.Unknown, true, false)]
+    [InlineData(InstanceHealth.Responsive, true, false)]
+    public void OnlyAFrozenKillableProcessIsEnded(InstanceHealth health, bool killable, bool expected)
+    {
+        Assert.Equal(expected, SingleInstancePolicy.ShouldEnd(new OtherInstance(7, health, killable)));
+    }
 }

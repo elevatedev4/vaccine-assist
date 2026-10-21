@@ -183,7 +183,7 @@ internal static class Program
         foreach (var process in processes)
         {
             var info = others.Find(o => o.ProcessId == process.Id);
-            if (info is null || !info.Killable)
+            if (info is null || !SingleInstancePolicy.ShouldEnd(info))
             {
                 continue;
             }
