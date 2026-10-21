@@ -54,4 +54,51 @@ public class ClipboardRetryTests
         Assert.True(ok);
         Assert.Equal(1, calls);
     }
+
+    [Fact]
+    public async Task Async_StopsWhenTheOneSecondBudgetIsUsedUp()
+    {
+        // Fake clock: each wait advances it by the pause (50 ms) - never more than ~1 s of waiting in total.
+        var now = TimeSpan.Zero;
+        var calls = 0;
+        var ok = await ClipboardRetry.TrySetAsync(
+            _ => { calls++; throw new InvalidOperationException("locked"); },
+            "x",
+            wait: pause => { now += pause; return Task.CompletedTask; },
+            elapsed: () => now);
+        Assert.False(ok);
+        Assert.InRange(now, TimeSpan.FromMilliseconds(900), TimeSpan.FromSeconds(1));
+        Assert.True(calls < ClipboardRetry.DefaultAttempts + 1);
+    }
+
+    [Fact]
+    public void Sync_BlockingIsCappedAtTheBudget_AndNeverThrows()
+    {
+        var now = TimeSpan.Zero;
+        var slept = TimeSpan.Zero;
+        var ok = ClipboardRetry.TryRun(
+            () => throw new InvalidOperationException("locked"),
+            attempts: 1000,
+            sleep: pause => { slept += pause; now += pause; },
+            elapsed: () => now);
+        Assert.False(ok);
+        Assert.True(slept <= TimeSpan.FromSeconds(1), $"slept {slept}");
+    }
+
+    [Fact]
+    public void Sync_SucceedsAfterABusyMoment()
+    {
+        var calls = 0;
+        var ok = ClipboardRetry.TryRun(() => { calls++; if (calls < 3) throw new InvalidOperationException("busy"); }, sleep: _ => { });
+        Assert.True(ok);
+        Assert.Equal(3, calls);
+    }
+
+    [Fact]
+    public void Sync_TrySet_PassesTheTextThrough()
+    {
+        string? seen = null;
+        Assert.True(ClipboardRetry.TrySet(t => seen = t, "code-b", sleep: _ => { }));
+        Assert.Equal("code-b", seen);
+    }
 }

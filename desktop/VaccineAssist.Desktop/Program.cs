@@ -1,6 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Windows;
+using VaccineAssist.Desktop.Logging;
+using VaccineAssist.Desktop.Startup;
+using VaccineAssist.Desktop.Versioning;
 
 namespace VaccineAssist.Desktop;
 
@@ -55,21 +60,32 @@ internal static class Program
         // check/download/apply calls out of that same unpackaged path.
         Velopack.VelopackApp.Build().Run();
 
+        AppFileLog.Log($"[Startup] process start: pid {Environment.ProcessId}, build {BuildInfo.Current.Describe()}, {SinceProcessStartMs()} ms since process creation");
+
         using var singleInstanceMutex = new Mutex(
             initiallyOwned: true, name: SingleInstanceMutexName, out var createdNew);
 
-        if (!createdNew)
+        AppFileLog.Log(createdNew
+            ? "[Startup] single-instance mutex: acquired"
+            : "[Startup] single-instance mutex: held by another instance");
+
+        if (!createdNew && !TryTakeOverFromExistingInstance(singleInstanceMutex))
         {
-            MessageBox.Show(
-                "Vaccine Assist is already running",
-                "Vaccine Assist",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            AppFileLog.Log("[Startup] exiting: another instance keeps running");
             return;
         }
 
         var app = new App();
         app.InitializeComponent();
+
+        // A second launch asks this instance to come to the front; the
+        // answer comes from the UI thread, which is how a frozen instance
+        // is told apart from a healthy one (see SingleInstancePolicy).
+        using var activationListener = ActivationListener.TryStart(
+            post => app.Dispatcher.BeginInvoke(post),
+            app.ActivateFromAnotherLaunch);
+
+        AppFileLog.Log($"[Startup] app.Run begins (+{SinceProcessStartMs()} ms since process start)");
         app.Run();
 
         // Explicit release on a clean shutdown (version switch / Exit) so a
@@ -85,5 +101,123 @@ internal static class Program
         catch (ObjectDisposedException)
         {
         }
+    }
+
+    /// <summary>Milliseconds since this process was created (log lines for startup timing); -1 when unknown.</summary>
+    internal static long SinceProcessStartMs()
+    {
+        try
+        {
+            using var me = Process.GetCurrentProcess();
+            return (long)(DateTime.Now - me.StartTime).TotalMilliseconds;
+        }
+        catch (Exception)
+        {
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// This launch did not get the mutex. A healthy instance is told to come
+    /// to the front (as before: this launch exits). A frozen one holds the
+    /// mutex forever, so after a Yes the frozen process(es) of this user and
+    /// session are ended and the mutex is taken. True = the mutex is ours.
+    /// Every step is logged.
+    /// </summary>
+    private static bool TryTakeOverFromExistingInstance(Mutex mutex)
+    {
+        try
+        {
+            var acknowledged = InstanceSignals.TrySignalExisting(TimeSpan.FromSeconds(3));
+            AppFileLog.Log($"[Startup] activation signal acknowledged by the running instance: {acknowledged}");
+
+            var others = new List<OtherInstance>();
+            var processes = new List<Process>();
+            if (!acknowledged)
+            {
+                others = SingleInstanceProbe.Probe(out processes);
+                foreach (var other in others)
+                {
+                    AppFileLog.Log($"[Startup] other instance pid {other.ProcessId}: {other.Health}, may close: {other.Killable}");
+                }
+            }
+
+            var decision = SingleInstancePolicy.Decide(false, acknowledged, others);
+            AppFileLog.Log($"[Startup] single-instance decision: {decision}");
+
+            switch (decision)
+            {
+                case SingleInstanceDecision.ActivatedExisting:
+                    return false;
+
+                case SingleInstanceDecision.OfferRecovery:
+                    return OfferRecoveryAndTakeOver(mutex, others, processes);
+
+                default:
+                    MessageBox.Show(
+                        "Vaccine Assist is already running",
+                        "Vaccine Assist",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("Program.TryTakeOverFromExistingInstance", ex);
+            return false;
+        }
+    }
+
+    private static bool OfferRecoveryAndTakeOver(Mutex mutex, List<OtherInstance> others, List<Process> processes)
+    {
+        var yes = VersionDialogs.Confirm(
+            "Vaccine Assist is already open but not responding. Close it and start again?",
+            VersionDialogs.Caption);
+        AppFileLog.Log($"[Startup] frozen-instance prompt answered: {(yes ? "Yes" : "No")}");
+        if (!yes)
+        {
+            return false;
+        }
+
+        foreach (var process in processes)
+        {
+            var info = others.Find(o => o.ProcessId == process.Id);
+            if (info is null || !info.Killable)
+            {
+                continue;
+            }
+
+            try
+            {
+                process.Kill();
+                var exited = process.WaitForExit(5000);
+                AppFileLog.Log($"[Startup] ended frozen instance pid {info.ProcessId}, exited: {exited}");
+            }
+            catch (Exception ex)
+            {
+                AppFileLog.LogException($"Program.EndFrozenInstance pid {info.ProcessId}", ex);
+            }
+        }
+
+        // A killed owner leaves the mutex abandoned: waiting on it hands us ownership.
+        var acquired = false;
+        try
+        {
+            acquired = mutex.WaitOne(TimeSpan.FromSeconds(5));
+        }
+        catch (AbandonedMutexException)
+        {
+            acquired = true;
+        }
+
+        AppFileLog.Log($"[Startup] single-instance mutex after closing the frozen instance: {(acquired ? "acquired" : "still held")}");
+        if (!acquired)
+        {
+            VersionDialogs.ShowNotice(
+                "Couldn't close the frozen Vaccine Assist. End VaccineAssist.Desktop.exe in Task Manager, or restart this PC, then try again.");
+        }
+
+        return acquired;
     }
 }

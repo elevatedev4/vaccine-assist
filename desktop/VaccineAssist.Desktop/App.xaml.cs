@@ -57,6 +57,23 @@ public partial class App : Application
     // Services/FaxSendCoordinator's own doc comment.
     private FaxSendCoordinator _faxSendCoordinator = null!;
 
+    /// <summary>
+    /// A second launch asked this (healthy) instance to come to the front
+    /// (Startup/SingleInstance.cs). Runs on the UI thread. Brings the main
+    /// window back from the tray, or whichever startup window is up.
+    /// </summary>
+    internal void ActivateFromAnotherLaunch()
+    {
+        AppFileLog.Log("[Startup] activating the running instance for a second launch");
+        if (_activeMainWindow is { } window)
+        {
+            window.ActivateFromAnotherLaunch();
+            return;
+        }
+
+        MainWindow?.Activate();
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -403,7 +420,7 @@ public partial class App : Application
 
         if (shown)
         {
-            AppFileLog.Log("[Startup] MainWindow shown");
+            AppFileLog.Log($"[Startup] MainWindow shown (+{Program.SinceProcessStartMs()} ms since process start)");
         }
         else
         {
@@ -432,7 +449,7 @@ public partial class App : Application
             loginViewModel.SetErrorMessage(MapStartupErrorMessage(errorMessage));
         }
 
-        AppFileLog.Log("[Startup] LoginWindow shown");
+        AppFileLog.Log($"[Startup] LoginWindow shown (+{Program.SinceProcessStartMs()} ms since process start)");
         ShowLoginWindowWithViewModel(loginViewModel);
     }
 

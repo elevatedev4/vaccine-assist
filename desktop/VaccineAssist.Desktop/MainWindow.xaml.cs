@@ -206,6 +206,9 @@ public partial class MainWindow : Window
     /// Ctrl+Keypad 7 flow's own AgePromptWindow.ShowAndGetResult call.</summary>
     private bool _vaccineEntryAgePromptShowing;
 
+    /// <summary>True while ShowDataEntryPopup is starting the Ctrl+Keypad 7 flow (the age prompt is a nested modal loop, so a repeat hotkey press re-enters).</summary>
+    private bool _dataEntryFlowStarting;
+
     /// <summary>
     /// Non-null for the whole life of an active Ctrl+Keypad 7
     /// PioneerEntryAutomation run — the entry-status overlay's X button
@@ -573,6 +576,9 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>A second launch of the app asked this instance to come to the front.</summary>
+    public void ActivateFromAnotherLaunch() => RestoreFromTray();
+
     private void RestoreFromTray()
     {
         Show();
@@ -752,6 +758,21 @@ public partial class MainWindow : Window
             return;
         }
 
+        // The Ctrl+Keypad 2 flow shares the picker, the clipboard and PioneerRx
+        // focus: never start this flow on top of it.
+        if (_ageMacroPromptShowing || _openAgeMacroPopup is not null)
+        {
+            AppFileLog.Log("[VaccineEntry] ignored: the Ctrl+Keypad 2 flow is in progress");
+            return;
+        }
+
+        // Re-entrancy guard for the whole synchronous start (age prompt is a
+        // nested modal loop, so a repeat hotkey press is delivered inside it).
+        if (_dataEntryFlowStarting)
+        {
+            return;
+        }
+
         if (_openVaccineEntryMacroPopup is not null)
         {
             _openVaccineEntryMacroPopup.BringToFront();
@@ -763,7 +784,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        ShowVaccineEntryAgeMacroPrompt();
+        _dataEntryFlowStarting = true;
+        try
+        {
+            ShowVaccineEntryAgeMacroPrompt();
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.ShowDataEntryPopup", ex);
+            VersionDialogs.ShowNotice("Couldn't start the vaccine entry. Please try again.");
+        }
+        finally
+        {
+            _dataEntryFlowStarting = false;
+        }
     }
 
     /// <summary>
@@ -1239,6 +1273,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Shares the picker, the clipboard and PioneerRx focus with the
+        // Ctrl+Keypad 7 flow: never start on top of it.
+        if (IsVaccineEntryBusy() || _vaccineEntryAgePromptShowing || _dataEntryFlowStarting || _openVaccineEntryMacroPopup is not null)
+        {
+            AppFileLog.Log("[AgeMacro] ignored: the Ctrl+Keypad 7 entry is in progress");
+            return;
+        }
+
         AppFileLog.Log("[AgeMacro] prompt");
 
         var previousForegroundWindow = GetForegroundWindow();
@@ -1288,9 +1330,13 @@ public partial class MainWindow : Window
                     }
                     catch (Exception ex)
                     {
-                        // Nothing was chosen: let the macro run with what was picked.
+                        // Never run the macro with a code the flu check did not clear:
+                        // log, put the clipboard back, tell the pharmacist, stop.
                         AppFileLog.LogException("MainWindow.AgeMacroFluPrompt", ex);
-                        return true;
+                        AppFileLog.Log("[FluPrompt] flu check failed; macro NOT run");
+                        await clipboardBefore.RestoreAsync();
+                        VersionDialogs.ShowNotice("Couldn't check the preferred flu vaccine, so nothing was entered. Please try again.");
+                        return false;
                     }
 
                     if (pick is null)
@@ -1303,18 +1349,14 @@ public partial class MainWindow : Window
                     if (!string.Equals(pick.MacroCode, code, StringComparison.Ordinal))
                     {
                         var swapped = await ClipboardRetry.TrySetAsync(
-                            _clipboardService.SetText,
+                            NativeClipboard.SetText,
                             pick.MacroCode,
                             onFailure: (attempt, ex) => AppFileLog.Log($"[FluPrompt] clipboard swap attempt {attempt} failed: {ex.GetType().Name}"));
                         if (!swapped)
                         {
                             AppFileLog.Log($"[FluPrompt] could not switch the clipboard to {pick.Product}; macro NOT run");
                             await clipboardBefore.RestoreAsync();
-                            MessageBox.Show(
-                                $"Couldn't switch to {pick.Product} \u2014 try again.",
-                                "Vaccine Assist",
-                                MessageBoxButton.OK,
-                                MessageBoxImage.Warning);
+                            VersionDialogs.ShowNotice($"Couldn't switch to {pick.Product} \u2014 the clipboard is busy. Nothing was entered; try again.");
                             return false;
                         }
 

@@ -1,16 +1,25 @@
-using System.Windows;
+using System;
+using VaccineAssist.Desktop.Logging;
 
 namespace VaccineAssist.Desktop.Services;
 
 /// <summary>
-/// Thin wrapper over System.Windows.Clipboard so ViewModels don't take a
-/// direct WPF dependency (keeps EntryViewModel trivially testable later,
-/// even though this phase has no C# test project yet).
+/// Thin wrapper over the clipboard so ViewModels don't take a direct WPF
+/// dependency. SetText is bounded (ClipboardRetry, about 1 s in total) and
+/// throws InvalidOperationException when another program keeps the clipboard
+/// locked, so callers can tell the user instead of the UI freezing.
 /// </summary>
 public sealed class ClipboardService : IClipboardService
 {
     public void SetText(string text)
     {
-        Clipboard.SetText(text);
+        var ok = ClipboardRetry.TrySet(
+            NativeClipboard.SetText,
+            text,
+            onFailure: (attempt, ex) => AppFileLog.Log($"[Clipboard] set attempt {attempt} failed: {ex.GetType().Name} {ex.Message}"));
+        if (!ok)
+        {
+            throw new InvalidOperationException("The clipboard is busy (another program is holding it).");
+        }
     }
 }

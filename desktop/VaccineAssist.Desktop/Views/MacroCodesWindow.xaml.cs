@@ -12,6 +12,7 @@ using FlaUI.Core.WindowsAPI;
 using Microsoft.Web.WebView2.Core;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Services;
+using VaccineAssist.Desktop.Versioning;
 
 namespace VaccineAssist.Desktop.Views;
 
@@ -603,7 +604,18 @@ public partial class MacroCodesWindow : Window
                     if (message.RootElement.TryGetProperty("code", out var codeElement) &&
                         codeElement.GetString() is { Length: > 0 } code)
                     {
-                        _clipboardService.SetText(code);
+                        try
+                        {
+                            _clipboardService.SetText(code);
+                        }
+                        catch (Exception clipboardEx)
+                        {
+                            // Bounded (about 1 s) and loud: keep the picker open so the pick can be repeated.
+                            AppFileLog.LogException("MacroCodesWindow.SetClipboard", clipboardEx);
+                            VersionDialogs.ShowNotice("Couldn't copy the vaccine code \u2014 the clipboard is busy. Nothing was entered; click it again.");
+                            return;
+                        }
+
                         if (_sendCtrlNumPad5OnClose)
                         {
                             _codeCopiedInAgeMacroFlow = true;
@@ -866,8 +878,11 @@ public partial class MacroCodesWindow : Window
             }
             catch (Exception ex)
             {
-                // A bug in the hook itself must not block the entry: go ahead with what was picked.
+                // Never run the macro with a code the flu check did not clear.
                 AppFileLog.LogException("MacroCodesWindow.BeforeSendCtrlNumPad5", ex);
+                AppFileLog.Log("[AgeMacro] Ctrl+Num5 NOT sent (the flu preference step failed)");
+                VersionDialogs.ShowNotice("Couldn't check the preferred flu vaccine, so nothing was entered. Please try again.");
+                return;
             }
         }
 
