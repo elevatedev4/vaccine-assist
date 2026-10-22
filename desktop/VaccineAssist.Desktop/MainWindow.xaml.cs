@@ -1073,10 +1073,28 @@ public partial class MainWindow : Window
             }
         }
 
-        // Completed by now: the preferred button is only enabled once the lookup is.
-        var preferred = preferredLookup.IsCompletedSuccessfully
-            ? preferredLookup.Result
-            : PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up right now.");
+        // The preferred button is clickable at once; the stock/lot lookup (started at age
+        // entry) is awaited only now, if it is still running. Never enters without a usable lot.
+        PreferredFluResult preferred = PreferredFluResult.Unavailable("");
+        if (choice == FluPreferenceChoice.ProceedPreferred)
+        {
+            try
+            {
+                preferred = await preferredLookup;
+            }
+            catch (Exception ex)
+            {
+                AppFileLog.LogException("MainWindow.PreferredFluLookupAwait", ex);
+                preferred = PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up right now.");
+            }
+
+            if (!preferred.IsAvailable)
+            {
+                AppFileLog.Log($"[VaccineEntry] flu preference: {prompt.PreferredName} chosen but not enterable: {preferred.UnavailableReason}");
+                VersionDialogs.ShowNotice($"{prompt.PreferredName} isn't in stock ({preferred.UnavailableReason}) so nothing was entered. Pick it again after fixing stock, or choose the other vaccine.");
+                return null;
+            }
+        }
 
         // Focus back where the pharmacist was (PioneerRx), same as the
         // macro picker does when it closes.

@@ -89,18 +89,18 @@ public partial class FluPreferenceWindow : Window
             return;
         }
 
+        // The preferred choice depends on the age alone, so it is clickable and the
+        // default (Enter) the moment the window shows. Stock/lot is checked in the
+        // background and only adds a note; it never disables a button.
+        PreferredButton.IsEnabled = true;
+        PreferredButton.IsDefault = true;
+
         if (preferredLookup.IsCompletedSuccessfully)
         {
-            ApplyLookup(preferredLookup.Result);
+            ShowStockNote(preferredLookup.Result);
             return;
         }
 
-        // Not ready yet: the preferred product cannot be chosen, and Enter must not land on "selected".
-        // Enter must not fall through to "selected", so no button takes the default.
-        PreferredButton.IsEnabled = false;
-        SelectedButton.IsDefault = false;
-        CheckingTextBlock.Text = $"Checking {prompt.PreferredName} stock...";
-        CheckingTextBlock.Visibility = Visibility.Visible;
         _ = AwaitLookupAsync(preferredLookup);
     }
 
@@ -121,28 +121,22 @@ public partial class FluPreferenceWindow : Window
             return;
         }
 
-        CheckingTextBlock.Visibility = Visibility.Collapsed;
-        ApplyLookup(result);
-        (PreferredButton.Visibility == Visibility.Visible ? PreferredButton : SelectedButton).Focus();
+        ShowStockNote(result);
     }
 
-    private void ApplyLookup(PreferredFluResult result)
+    /// <summary>Inline note only (the button stays selectable): if the preferred product has no usable stock/lot, say so on the button and below it.</summary>
+    private void ShowStockNote(PreferredFluResult result)
     {
         if (result.IsAvailable)
         {
-            PreferredButton.IsEnabled = true;
-            PreferredButton.IsDefault = true;
             return;
         }
 
-        PreferredButton.Visibility = Visibility.Collapsed;
-        PreferredButton.IsDefault = false;
-        CancelButton.Visibility = Visibility.Visible;
+        PreferredButton.Content = $"Proceed with {_prompt.PreferredName} (not in stock)";
         UnavailableTextBlock.Text = string.IsNullOrWhiteSpace(result.UnavailableReason)
             ? $"{_prompt.PreferredName} can't be entered right now."
             : result.UnavailableReason;
         UnavailableTextBlock.Visibility = Visibility.Visible;
-        SelectedButton.IsDefault = true;
     }
 
     private void FluPreferenceWindow_OnLoaded(object sender, RoutedEventArgs e)
@@ -165,16 +159,7 @@ public partial class FluPreferenceWindow : Window
         Topmost = true;
         FlowTiming.Mark("flu popup shown");
 
-        // While the lookup is pending keep keyboard focus on the window itself, so Enter
-        // cannot land on "Proceed with <selected>"; AwaitLookupAsync focuses the right button.
-        if (CheckingTextBlock.Visibility == Visibility.Visible)
-        {
-            Focus();
-        }
-        else
-        {
-            (PreferredButton.Visibility == Visibility.Visible ? PreferredButton : SelectedButton).Focus();
-        }
+        (PreferredButton.Visibility == Visibility.Visible ? PreferredButton : SelectedButton).Focus();
     }
 
     /// <summary>Same attach-thread-input foreground recipe as AgePromptWindow.TryAttachedSetForeground.</summary>
