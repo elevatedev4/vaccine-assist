@@ -43,10 +43,11 @@ public class AgeMacroCodesUrlBuilderTests
     }
 
     [Fact]
-    public void BuildUrl_OptsIntoTheFlu2HotkeyProfile()
+    public void BuildUrl_DoesNotAskTheCloudForAHotkeyProfile()
     {
-        Assert.Equal("hk=flu2", AgeMacroCodesUrlBuilder.HotkeyProfileQuery);
-        Assert.Contains("", AgeMacroCodesUrlBuilder.BuildUrl("https://vaccine-assist.vercel.app", 55));
+        // The desktop applies the new hotkeys itself (Flu2HotkeyPlan); the page keeps its classic letters.
+        Assert.DoesNotContain("hk=", AgeMacroCodesUrlBuilder.BuildUrl("https://vaccine-assist.vercel.app", 55));
+        Assert.DoesNotContain("hk=", AgeMacroCodesUrlBuilder.BuildUrlWithoutAge("https://vaccine-assist.vercel.app"));
     }
 
     [Fact]
