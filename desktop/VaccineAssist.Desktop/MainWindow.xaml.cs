@@ -973,6 +973,39 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>Small non-activating "Checking ... stock..." box (not a modal message box: it closes itself when the lookup lands). Null if it could not be shown.</summary>
+    private static Window? ShowCheckingNotice(string text)
+    {
+        try
+        {
+            var window = new Window
+            {
+                WindowStyle = WindowStyle.None,
+                ResizeMode = ResizeMode.NoResize,
+                Topmost = true,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                SizeToContent = SizeToContent.WidthAndHeight,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                Content = new System.Windows.Controls.Border
+                {
+                    Padding = new Thickness(24, 14, 24, 14),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = System.Windows.Media.Brushes.Gray,
+                    Background = System.Windows.Media.Brushes.White,
+                    Child = new System.Windows.Controls.TextBlock { Text = text, FontSize = 15 },
+                },
+            };
+            window.Show();
+            return window;
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.ShowCheckingNotice", ex);
+            return null;
+        }
+    }
+
     private string? _preferredFluPrefetchProduct;
     private DateTime _preferredFluPrefetchStartedUtc;
     private Task<PreferredFluResult>? _preferredFluPrefetch;
@@ -1078,6 +1111,8 @@ public partial class MainWindow : Window
         PreferredFluResult preferred = PreferredFluResult.Unavailable("");
         if (choice == FluPreferenceChoice.ProceedPreferred)
         {
+            // Still running: say so instead of leaving the screen blank (closed as soon as it lands).
+            Window? checking = preferredLookup.IsCompleted ? null : ShowCheckingNotice($"Checking {prompt.PreferredName} stock...");
             try
             {
                 preferred = await preferredLookup;
@@ -1086,6 +1121,10 @@ public partial class MainWindow : Window
             {
                 AppFileLog.LogException("MainWindow.PreferredFluLookupAwait", ex);
                 preferred = PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up right now.");
+            }
+            finally
+            {
+                try { checking?.Close(); } catch (Exception) { /* already gone */ }
             }
 
             if (!preferred.IsAvailable)

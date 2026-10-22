@@ -32,4 +32,23 @@ public class PioneerLogonScreenTests
     {
         Assert.True(PioneerOverlayVisibilityGate.ShouldShow(true, true, false, true));
     }
+
+    [Theory]
+    [InlineData("chrome", true)]
+    [InlineData("msedge", true)]
+    [InlineData("Firefox", true)]
+    [InlineData("brave", true)]
+    [InlineData("opera", true)]
+    [InlineData("iexplore", true)]
+    [InlineData("OUTLOOK", true)]
+    [InlineData("outlook.exe", true)]
+    [InlineData("VaccineAssist.Desktop", true)]
+    [InlineData("PioneerRx", false)]
+    [InlineData("PioneerRx.Login", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)] // a failed process lookup counts as not excluded
+    public void ExcludedProcesses(string? processName, bool expected)
+    {
+        Assert.Equal(expected, PioneerLogonScreen.IsExcludedProcess(processName));
+    }
 }

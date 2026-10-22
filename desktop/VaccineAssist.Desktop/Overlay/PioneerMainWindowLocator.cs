@@ -172,23 +172,69 @@ public static class PioneerMainWindowLocator
             var buffer = new StringBuilder(256);
             EnumWindows((hWnd, _) =>
             {
-                if (!IsWindowVisible(hWnd))
+                if (!IsWindowVisible(hWnd) || IsIconic(hWnd))
                 {
                     return true;
                 }
 
                 buffer.Clear();
                 var length = GetWindowText(hWnd, buffer, buffer.Capacity);
-                if (length > 0 && PioneerLogonScreen.IsLogonTitle(buffer.ToString()))
+                if (length <= 0 || !PioneerLogonScreen.IsLogonTitle(buffer.ToString()))
                 {
-                    found = true;
-                    return false; // stop enumerating
+                    return true;
                 }
 
-                return true;
+                // Title matched: only now the (more expensive) checks. A browser tab or an
+                // e-mail with that title, this app's own windows, and cloaked windows
+                // (other virtual desktop / hidden UWP) do not count.
+                if (IsCloaked(hWnd) || IsOwnedByExcludedProcess(hWnd))
+                {
+                    return true;
+                }
+
+                found = true;
+                return false; // stop enumerating
             }, IntPtr.Zero);
 
             return found;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private const int DwmwaCloaked = 14;
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
+
+    /// <summary>DWMWA_CLOAKED non-zero. A failed call counts as not cloaked.</summary>
+    private static bool IsCloaked(IntPtr hWnd)
+    {
+        try
+        {
+            return DwmGetWindowAttribute(hWnd, DwmwaCloaked, out var cloaked, sizeof(int)) == 0 && cloaked != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Owner process is a browser/e-mail client or this app (PioneerLogonScreen.IsExcludedProcess). A failed lookup counts as not excluded.</summary>
+    private static bool IsOwnedByExcludedProcess(IntPtr hWnd)
+    {
+        try
+        {
+            GetWindowThreadProcessId(hWnd, out var pid);
+            if (pid == (uint)Environment.ProcessId)
+            {
+                return true; // this app's own window
+            }
+
+            using var process = Process.GetProcessById((int)pid);
+            return PioneerLogonScreen.IsExcludedProcess(process.ProcessName);
         }
         catch
         {

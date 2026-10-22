@@ -153,7 +153,8 @@ public sealed class PioneerOverlayController : IDisposable
             var hasMainWindow = PioneerMainWindowLocator.TryGetMainWindow(out var bounds, out var isMinimized);
             var isPioneerForeground = PioneerMainWindowLocator.IsPioneerForegroundApp();
 
-            var isLogonScreen = PioneerMainWindowLocator.IsLogonScreenVisible();
+            // Only scan when the overlay is enabled at all (nothing to hide otherwise).
+            var isLogonScreen = _settings.ShowPioneerOverlay && PioneerMainWindowLocator.IsLogonScreenVisible();
             if (isLogonScreen != _logonScreenWasVisible)
             {
                 _logonScreenWasVisible = isLogonScreen;

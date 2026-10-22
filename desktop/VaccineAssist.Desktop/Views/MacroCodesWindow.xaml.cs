@@ -669,6 +669,12 @@ public partial class MacroCodesWindow : Window
                     Close();
                     break;
 
+                case "vaccine-assist:hotkey-guard":
+                    // The page's classic letters no longer match what the desktop hotkey plan rewrites to.
+                    AppFileLog.Log("[Hotkeys] new-hotkey rewriting switched off for this page load: " +
+                        (message.RootElement.TryGetProperty("reason", out var guardReason) ? guardReason.GetString() : "(no reason)"));
+                    break;
+
                 case "vaccine-assist:macro-cancel":
                     Close();
                     break;

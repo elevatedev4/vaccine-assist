@@ -12,6 +12,9 @@ public sealed record HotkeyAction(string? To, string? Notice);
 /// <summary>Product label (lower-case text match) whose underlined classic hotkey letter is replaced by a "[Key]" badge.</summary>
 public sealed record HotkeyRelabel(string Match, string Key);
 
+/// <summary>A product label (lower-case text) and the classic hotkey letter the page is expected to underline in it.</summary>
+public sealed record ClassicLabel(string Match, string Letter);
+
 /// <summary>Which classic key a PREFERRED COVID product has, and why.</summary>
 public sealed record PreferredCovidChoice(string ClassicKey, string Label);
 
@@ -52,6 +55,22 @@ public sealed class Flu2HotkeyPlan
 
     /// <summary>Labels whose hotkey underline is wrong in the classic page and is replaced by a badge.</summary>
     public IReadOnlyList<HotkeyRelabel> Relabel { get; }
+
+    /// <summary>
+    /// The classic letters this plan rewrites TO (cloud lib/macro-hotkeys.ts
+    /// MACRO_HOTKEYS). Before rewriting, the page script checks the page still
+    /// underlines exactly these letters in these labels; if a label shows a
+    /// different letter (the website changed), rewriting is switched off for
+    /// that page load so a key can never enter the wrong product.
+    /// </summary>
+    public static IReadOnlyList<ClassicLabel> ClassicLabels { get; } = new[]
+    {
+        new ClassicLabel("flucelvax", "f"),
+        new ClassicLabel("mflusiva", "l"),
+        new ClassicLabel("fluad", "d"),
+        new ClassicLabel("capvaxive", "c"),
+        new ClassicLabel("vaqta", "v"),
+    };
 
     private Flu2HotkeyPlan(
         IReadOnlyList<string> blocked,
@@ -142,5 +161,5 @@ public sealed class Flu2HotkeyPlan
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public string ToJson() => JsonSerializer.Serialize(new { blocked = Blocked, keys = Keys, relabel = Relabel }, JsonOptions);
+    public string ToJson() => JsonSerializer.Serialize(new { blocked = Blocked, keys = Keys, relabel = Relabel, classic = ClassicLabels }, JsonOptions);
 }

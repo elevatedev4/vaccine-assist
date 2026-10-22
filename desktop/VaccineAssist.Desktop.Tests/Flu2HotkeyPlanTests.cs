@@ -122,6 +122,46 @@ public class Flu2HotkeyPlanTests
     }
 }
 
+public class Flu2HotkeyGuardTests
+{
+    [Fact]
+    public void EveryLetterTheRewriteTargetsIsInTheClassicGuardList()
+    {
+        // The page is trusted only while it still underlines these classic letters.
+        var expected = new System.Collections.Generic.Dictionary<string, string>
+        {
+            ["flucelvax"] = "f", ["mflusiva"] = "l", ["fluad"] = "d", ["capvaxive"] = "c", ["vaqta"] = "v",
+        };
+        foreach (var label in Flu2HotkeyPlan.ClassicLabels)
+        {
+            Assert.Equal(expected[label.Match], label.Letter);
+        }
+        Assert.Equal(expected.Count, Flu2HotkeyPlan.ClassicLabels.Count);
+
+        // Every key the fixed rewrites and F (all ages) can produce is a letter the guard covers.
+        var covered = new System.Collections.Generic.HashSet<string>();
+        foreach (var l in Flu2HotkeyPlan.ClassicLabels) covered.Add(l.Letter);
+        for (var age = 3; age <= 100; age++)
+        {
+            Assert.Contains(Flu2HotkeyPlan.For(age, "pfizer").Keys["f"].To!, covered);
+        }
+        foreach (var key in new[] { "x", "v", "a", "q" })
+        {
+            Assert.Contains(Flu2HotkeyPlan.For(30, "pfizer").Keys[key].To!, covered);
+        }
+    }
+
+    [Fact]
+    public void ScriptDisablesRewritingAndReportsOnceWhenALabelLetterDiffers()
+    {
+        var plan = Flu2HotkeyPlan.For(30, "pfizer");
+        var script = Flu2HotkeyScript.Build(plan);
+        Assert.Contains("hotkey-guard", script);
+        Assert.Contains("disabled = true", script);
+        Assert.Contains("classic", plan.ToJson());
+    }
+}
+
 public class FlowTimingTests
 {
     [Fact]

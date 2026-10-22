@@ -15,6 +15,32 @@ public static class Flu2HotkeyScript
     if (window.top !== window) return;
     var cfg = __PLAN__;
     var busy = false;
+    var disabled = false;
+    function guard() {
+      // The page must still underline the classic letters we rewrite to. Evidence
+      // = a visible label naming exactly one known product with a different letter.
+      try {
+        var us = document.querySelectorAll('u.macro-hotkey');
+        for (var i = 0; i < us.length; i++) {
+          var p = us[i].parentElement;
+          if (!p) continue;
+          var txt = (p.textContent || '').toLowerCase();
+          var hit = null, hits = 0;
+          for (var j = 0; j < cfg.classic.length; j++) {
+            if (txt.indexOf(cfg.classic[j].match) >= 0) { hit = cfg.classic[j]; hits++; }
+          }
+          if (hits !== 1) continue;
+          if ((us[i].textContent || '').toLowerCase() !== hit.letter) {
+            disabled = true;
+            var why = hit.match + ' shows ' + (us[i].textContent || '') + ', expected ' + hit.letter;
+            try { window.chrome.webview.postMessage({ type: 'vaccine-assist:hotkey-guard', reason: why }); } catch (e1) { }
+            notice('The page hotkeys changed - the new hotkeys are off; use the underlined letters.');
+            return false;
+          }
+        }
+      } catch (err) { }
+      return true;
+    }
     function notice(msg) {
       var d = document.getElementById('va-hk-notice');
       if (!d) {
@@ -30,7 +56,7 @@ public static class Flu2HotkeyScript
     }
     window.addEventListener('keydown', function (e) {
       try {
-        if (busy || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+        if (busy || disabled || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
         var t = e.target;
         if (t && t.tagName) {
           var tag = t.tagName;
@@ -38,9 +64,10 @@ public static class Flu2HotkeyScript
         }
         var k = (e.key || '').toLowerCase();
         if (k.length !== 1) return;
-        if (cfg.blocked.indexOf(k) >= 0) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+        if (cfg.blocked.indexOf(k) >= 0) { if (!guard()) return; e.stopImmediatePropagation(); e.preventDefault(); return; }
         var m = cfg.keys[k];
         if (!m) return;
+        if (!m.notice && !guard()) return;
         e.stopImmediatePropagation();
         e.preventDefault();
         if (m.notice) { notice(m.notice); return; }
@@ -53,6 +80,7 @@ public static class Flu2HotkeyScript
 
     function relabel() {
       try {
+        if (disabled) return;
         var us = document.querySelectorAll('u.macro-hotkey');
         for (var i = 0; i < us.length; i++) {
           var p = us[i].parentElement;
