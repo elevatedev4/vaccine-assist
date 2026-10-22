@@ -19,8 +19,10 @@ namespace VaccineAssist.Desktop.Views;
 /// here supplies it.
 ///
 /// 2026-10-20 (V-Q11, testing version "flu-preferred"): every macro-codes URL
-/// the testing desktop opens carries <see cref="HotkeyProfileQuery"/>
-/// (hk=flu2). The cloud page only switches to the new hotkeys (F = the
+/// the testing desktop opens used to carry hk=flu2. Superseded 2026-10-22:
+/// the new hotkeys are applied by the desktop itself (Hotkeys/Flu2HotkeyPlan.cs)
+/// so they work against any cloud version; the URL no longer carries hk.
+/// The cloud page only switched to the new hotkeys (F = the
 /// recommended flu for the age, X Flucelvax, D Fluad, V mFLUSIVA, C = the
 /// preferred COVID vaccine from the location settings) when it sees that
 /// param, so the stable desktop and a browser keep the classic letters.
@@ -28,19 +30,16 @@ namespace VaccineAssist.Desktop.Views;
 /// </summary>
 public static class AgeMacroCodesUrlBuilder
 {
-    /// <summary>Query pair that opts the cloud macro-codes page into the flu2 hotkey profile.</summary>
-    public const string HotkeyProfileQuery = "hk=flu2";
-
     public static string BuildUrl(string? cloudApiBaseUrl, int ageYears)
     {
         var baseUrl = (cloudApiBaseUrl ?? string.Empty).TrimEnd('/');
-        return $"{baseUrl}/macro-codes?embed=1&age={ageYears}&{HotkeyProfileQuery}";
+        return $"{baseUrl}/macro-codes?embed=1&age={ageYears}";
     }
 
     /// <summary>The plain Ctrl+Keypad 8 URL (no age filter). F and C show a "needs the age" message there.</summary>
     public static string BuildUrlWithoutAge(string? cloudApiBaseUrl)
     {
         var baseUrl = (cloudApiBaseUrl ?? string.Empty).TrimEnd('/');
-        return $"{baseUrl}/macro-codes?embed=1&{HotkeyProfileQuery}";
+        return $"{baseUrl}/macro-codes?embed=1";
     }
 }

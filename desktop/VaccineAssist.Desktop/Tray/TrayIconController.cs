@@ -68,6 +68,9 @@ public sealed class TrayIconController : IDisposable
     /// <summary>Raised with the chosen version ref ("stable" or "testing/&lt;slug&gt;") when a Version submenu row is clicked.</summary>
     public event EventHandler<string>? VersionSwitchRequested;
 
+    /// <summary>Raised with "pfizer" or "moderna" when a Preferred COVID row is clicked.</summary>
+    public event EventHandler<string>? PreferredCovidAdultChosen;
+
     /// <summary>Raised with the NEW checked state when "Show Pioneer overlay" is clicked.</summary>
     public event EventHandler<bool>? ShowOverlayToggled;
 
@@ -77,13 +80,15 @@ public sealed class TrayIconController : IDisposable
     /// so the tray menu reflects the real setting instead of always
     /// starting unchecked.</param>
     /// <param name="versions">Source for the Version submenu; null disables the submenu row.</param>
-    public TrayIconController(bool showPioneerOverlayInitiallyChecked, VersionMenuSource? versions = null)
+    /// <param name="preferredCovidAdult">AppSettings.PreferredCovidAdult ("pfizer" or "moderna"): which row of the Preferred COVID submenu starts checked.</param>
+    public TrayIconController(bool showPioneerOverlayInitiallyChecked, VersionMenuSource? versions = null, string? preferredCovidAdult = null)
     {
         _versions = versions;
         _uiContext = SynchronizationContext.Current;
         _baseTooltipText = (versions?.Current ?? BuildInfo.Current).TrayTooltip;
 
         var menu = new ContextMenuStrip();
+        ToolStripMenuItem? versionMenuItem = null;
         foreach (var item in TrayMenuBuilder.Build())
         {
             if (item.Action == TrayMenuAction.Separator)
@@ -102,6 +107,7 @@ public sealed class TrayIconController : IDisposable
                     menuItem.DropDownOpening += (_, _) => OnVersionDropDownOpening(menuItem);
                 }
                 menu.Items.Add(menuItem);
+                versionMenuItem = menuItem;
                 continue;
             }
 
@@ -116,6 +122,24 @@ public sealed class TrayIconController : IDisposable
             menu.Items.Add(menuItem);
         }
 
+        try
+        {
+            var covidMenu = BuildPreferredCovidMenu(preferredCovidAdult);
+            var at = versionMenuItem is null ? -1 : menu.Items.IndexOf(versionMenuItem);
+            if (at >= 0)
+            {
+                menu.Items.Insert(at, covidMenu);
+            }
+            else
+            {
+                menu.Items.Add(covidMenu);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("TrayIconController.PreferredCovidMenu", ex);
+        }
+
         _notifyIcon = new NotifyIcon
         {
             Icon = LoadAppIcon(),
@@ -124,6 +148,35 @@ public sealed class TrayIconController : IDisposable
             Visible = true,
         };
         _notifyIcon.DoubleClick += (_, _) => OpenRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Testing version "flu-preferred": "Preferred COVID vaccine (12+)" with the
+    /// two choices for the C hotkey. 3-11 is always Moderna kids, so it has no row.
+    /// </summary>
+    private ToolStripMenuItem BuildPreferredCovidMenu(string? current)
+    {
+        var parent = new ToolStripMenuItem("Preferred COVID vaccine (12+)");
+        var pfizer = new ToolStripMenuItem("Pfizer (Comirnaty)");
+        var moderna = new ToolStripMenuItem("Moderna (Mnexspike)");
+        var isModerna = string.Equals(current, "moderna", StringComparison.OrdinalIgnoreCase);
+        pfizer.Checked = !isModerna;
+        moderna.Checked = isModerna;
+        pfizer.Click += (_, _) =>
+        {
+            pfizer.Checked = true;
+            moderna.Checked = false;
+            PreferredCovidAdultChosen?.Invoke(this, "pfizer");
+        };
+        moderna.Click += (_, _) =>
+        {
+            moderna.Checked = true;
+            pfizer.Checked = false;
+            PreferredCovidAdultChosen?.Invoke(this, "moderna");
+        };
+        parent.DropDownItems.Add(pfizer);
+        parent.DropDownItems.Add(moderna);
+        return parent;
     }
 
     /// <summary>V-T65 R5 (Will, verbatim, 2026-09-29: "allow the app to

@@ -25,9 +25,16 @@ namespace VaccineAssist.Desktop.Overlay;
 /// </summary>
 public static class PioneerOverlayVisibilityGate
 {
-    public static bool ShouldShow(bool settingEnabled, bool hasMainWindow, bool isMainWindowMinimized, bool isPioneerForegroundApp)
+    public static bool ShouldShow(
+        bool settingEnabled,
+        bool hasMainWindow,
+        bool isMainWindowMinimized,
+        bool isPioneerForegroundApp,
+        bool isLogonScreenVisible = false)
     {
         if (!settingEnabled) return false;
+        // PioneerRx's "Logon to PioneerRx" screen: hidden for as long as it is visible, shown again once it is gone.
+        if (isLogonScreenVisible) return false;
         if (!hasMainWindow || isMainWindowMinimized) return false;
         return isPioneerForegroundApp;
     }

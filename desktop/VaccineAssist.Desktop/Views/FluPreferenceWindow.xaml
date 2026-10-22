@@ -31,6 +31,8 @@
         <TextBlock x:Name="PreferredTextBlock" Margin="0,10,0,0" FontSize="14" TextWrapping="Wrap"/>
         <TextBlock x:Name="ApprovedNoteTextBlock" Margin="0,10,0,0" Foreground="#B45309" FontWeight="SemiBold"
                    TextWrapping="Wrap" Visibility="Collapsed"/>
+        <TextBlock x:Name="CheckingTextBlock" Margin="0,10,0,0" Foreground="#555555" TextWrapping="Wrap"
+                   Visibility="Collapsed"/>
         <TextBlock x:Name="UnavailableTextBlock" Margin="0,10,0,0" Foreground="#B91C1C" FontWeight="SemiBold"
                    TextWrapping="Wrap" Visibility="Collapsed"/>
 

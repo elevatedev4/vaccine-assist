@@ -36,7 +36,8 @@ public sealed record FluPreferencePrompt(
     string PreferredName,
     IReadOnlyList<string> PreferredShortCodes,
     string PreferredBandText,
-    string? ApprovedNote);
+    string? ApprovedNote,
+    bool RangeWarningOnly = false);
 
 /// <summary>
 /// Will's flu rules (2026-10-18, verbatim): "Flucelvax is available for 3+
@@ -55,6 +56,18 @@ public static class FluPreferenceRules
 {
     /// <summary>Youngest age the rules cover; below this nothing is prompted.</summary>
     public const int MinimumRuleAge = 3;
+
+    /// <summary>
+    /// FluMist's approved ages, as the codebase already has them: "age 2-49"
+    /// (cloud/lib/macro-catalog.ts flumist: age "2-49", ageMinMonths 24;
+    /// cloud/lib/vaccine-product-catalog.ts "FluMist (age 2-49)"). Inclusive.
+    /// </summary>
+    public const int FluMistMinAge = 2;
+    public const int FluMistMaxAge = 49;
+
+    /// <summary>True for a FluMist short code (flumist...).</summary>
+    public static bool IsFluMist(string? shortCode) =>
+        Normalize(shortCode).StartsWith("flumist", StringComparison.Ordinal);
 
     public static IReadOnlyList<FluProduct> Products { get; } = new[]
     {
@@ -101,6 +114,21 @@ public static class FluPreferenceRules
     {
         if (!IsFluCode(selectedShortCode)) return null;
 
+        // FluMist: never compared with the preferred product - only its own age range is checked.
+        if (IsFluMist(selectedShortCode))
+        {
+            if (ageYears >= FluMistMinAge && ageYears <= FluMistMaxAge) return null;
+            return new FluPreferencePrompt(
+                ageYears,
+                "FluMist",
+                (selectedShortCode ?? "").Trim(),
+                "",
+                Array.Empty<string>(),
+                "",
+                $"FluMist is only approved for ages {FluMistMinAge} to {FluMistMaxAge}.",
+                RangeWarningOnly: true);
+        }
+
         var preferred = PreferredFor(ageYears);
         if (preferred is null) return null;
 
@@ -133,6 +161,13 @@ public static class FluPreferenceRules
     {
         var code = (selectedShortCode ?? "").Trim();
         if (!IsFluCode(code)) return $"no prompt: '{code}' is not a flu vaccine code (age {ageYears})";
+
+        if (IsFluMist(code))
+        {
+            return ageYears >= FluMistMinAge && ageYears <= FluMistMaxAge
+                ? $"no prompt: FluMist is approved for age {ageYears} ({FluMistMinAge}-{FluMistMaxAge}); preferred product not applied ('{code}')"
+                : $"WARNING: FluMist is only approved for ages {FluMistMinAge}-{FluMistMaxAge}, patient age {ageYears} ('{code}')";
+        }
 
         var preferred = PreferredFor(ageYears);
         if (preferred is null) return $"no prompt: age {ageYears} is under {MinimumRuleAge}, no preferred flu vaccine ('{code}')";

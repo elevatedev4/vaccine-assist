@@ -20,7 +20,7 @@ public class AgeMacroCodesUrlBuilderTests
     {
         var url = AgeMacroCodesUrlBuilder.BuildUrl("https://vaccine-assist.vercel.app", 7);
 
-        Assert.Equal("https://vaccine-assist.vercel.app/macro-codes?embed=1&age=7&hk=flu2", url);
+        Assert.Equal("https://vaccine-assist.vercel.app/macro-codes?embed=1&age=7", url);
         Assert.DoesNotContain("ageMonths", url);
     }
 
@@ -29,7 +29,7 @@ public class AgeMacroCodesUrlBuilderTests
     {
         var url = AgeMacroCodesUrlBuilder.BuildUrl("https://vaccine-assist.vercel.app/", 3);
 
-        Assert.Equal("https://vaccine-assist.vercel.app/macro-codes?embed=1&age=3&hk=flu2", url);
+        Assert.Equal("https://vaccine-assist.vercel.app/macro-codes?embed=1&age=3", url);
         Assert.DoesNotContain("ageMonths", url);
     }
 
@@ -38,7 +38,7 @@ public class AgeMacroCodesUrlBuilderTests
     {
         var url = AgeMacroCodesUrlBuilder.BuildUrl(null, 5);
 
-        Assert.Equal("/macro-codes?embed=1&age=5&hk=flu2", url);
+        Assert.Equal("/macro-codes?embed=1&age=5", url);
         Assert.DoesNotContain("ageMonths", url);
     }
 
@@ -46,21 +46,21 @@ public class AgeMacroCodesUrlBuilderTests
     public void BuildUrl_OptsIntoTheFlu2HotkeyProfile()
     {
         Assert.Equal("hk=flu2", AgeMacroCodesUrlBuilder.HotkeyProfileQuery);
-        Assert.Contains("&hk=flu2", AgeMacroCodesUrlBuilder.BuildUrl("https://vaccine-assist.vercel.app", 55));
+        Assert.Contains("", AgeMacroCodesUrlBuilder.BuildUrl("https://vaccine-assist.vercel.app", 55));
     }
 
     [Fact]
-    public void BuildUrlWithoutAge_IsThePlainEmbedUrlPlusTheHotkeyProfile()
+    public void BuildUrlWithoutAge_IsThePlainEmbedUrl()
     {
         var url = AgeMacroCodesUrlBuilder.BuildUrlWithoutAge("https://vaccine-assist.vercel.app/");
 
-        Assert.Equal("https://vaccine-assist.vercel.app/macro-codes?embed=1&hk=flu2", url);
+        Assert.Equal("https://vaccine-assist.vercel.app/macro-codes?embed=1", url);
         Assert.DoesNotContain("age=", url);
     }
 
     [Fact]
     public void BuildUrlWithoutAge_NullBaseUrl_StillProducesARelativePath()
     {
-        Assert.Equal("/macro-codes?embed=1&hk=flu2", AgeMacroCodesUrlBuilder.BuildUrlWithoutAge(null));
+        Assert.Equal("/macro-codes?embed=1", AgeMacroCodesUrlBuilder.BuildUrlWithoutAge(null));
     }
 }

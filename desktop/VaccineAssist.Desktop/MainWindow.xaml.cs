@@ -351,7 +351,8 @@ public partial class MainWindow : Window
 
         try
         {
-            var trayIconController = new TrayIconController(_settings.ShowPioneerOverlay, _versionMenuSource);
+            var trayIconController = new TrayIconController(_settings.ShowPioneerOverlay, _versionMenuSource, _settings.PreferredCovidAdult);
+            trayIconController.PreferredCovidAdultChosen += (_, choice) => SetPreferredCovidAdult(choice);
             trayIconController.OpenRequested += (_, _) => RestoreFromTray();
             trayIconController.SignOutRequested += async (_, _) => await SignOutAndRaiseLoggedOutAsync();
             trayIconController.ExitRequested += (_, _) => ExitApplication();
@@ -446,6 +447,24 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppFileLog.LogException("MainWindow.SetShowPioneerOverlay", ex);
+        }
+    }
+
+    /// <summary>Tray menu: the COVID vaccine the C hotkey picks for patients 12 and older ("pfizer" = Comirnaty, or "moderna"). Saved to settings.json; the next picker opened uses it.</summary>
+    private void SetPreferredCovidAdult(string choice)
+    {
+        var normalized = string.Equals(choice, Flu2HotkeyPlan.AdultModerna, StringComparison.OrdinalIgnoreCase)
+            ? Flu2HotkeyPlan.AdultModerna
+            : Flu2HotkeyPlan.AdultPfizer;
+        _settings.PreferredCovidAdult = normalized;
+        AppFileLog.Log($"[Settings] preferred COVID (12+) set to {normalized}");
+        try
+        {
+            _localSettingsService.Save(_settings);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.SetPreferredCovidAdult", ex);
         }
     }
 
@@ -843,6 +862,8 @@ public partial class MainWindow : Window
 
         var ageYears = result.Years;
         AppFileLog.Log($"[VaccineEntry] age {ageYears}");
+        FlowTiming.Start("Ctrl+Keypad 7 picker");
+        PrefetchPreferredFlu(ageYears);
 
         string? pickedCode = null;
         string? pickedLabel = null;
@@ -860,7 +881,8 @@ public partial class MainWindow : Window
                 pickedCode = code;
                 pickedLabel = label;
                 pickedProduct = product;
-            });
+            },
+            pageScript: BuildHotkeyScript(ageYears));
 
         popup.Closed += (_, _) =>
         {
@@ -871,6 +893,7 @@ public partial class MainWindow : Window
 
             if (pickedCode is not null)
             {
+                FlowTiming.Start("Ctrl+Keypad 7 flu check");
                 AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 7 pick, build {BuildInfo.Current.Describe()}, age {ageYears}");
                 _ = ContinueVaccineEntryAfterPickAsync(pickedCode, pickedLabel ?? "", pickedProduct ?? "", ageYears, previousForegroundWindow);
             }
@@ -884,6 +907,7 @@ public partial class MainWindow : Window
         AppFileLog.Log("[VaccineEntry] macro picker opened");
         popup.Show();
         popup.ActivateAndFocusWebView();
+        FlowTiming.Mark("picker window shown");
     }
 
     /// <summary>The macro text + names the automation will run with (what was picked, or the preferred flu vaccine swapped in).</summary>
@@ -930,6 +954,73 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Testing version "flu-preferred": the page script that gives the macro
+    /// picker Will's hotkeys (F preferred flu for the age, X Flucelvax, D Fluad,
+    /// V mFLUSIVA, C preferred COVID) on any cloud version. Null (plain page)
+    /// if building it fails - never blocks the popup.
+    /// </summary>
+    private string? BuildHotkeyScript(int? ageYears)
+    {
+        try
+        {
+            return Flu2HotkeyScript.Build(Flu2HotkeyPlan.For(ageYears, _settings.PreferredCovidAdult));
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.BuildHotkeyScript", ex);
+            return null;
+        }
+    }
+
+    private string? _preferredFluPrefetchProduct;
+    private DateTime _preferredFluPrefetchStartedUtc;
+    private Task<PreferredFluResult>? _preferredFluPrefetch;
+
+    private static readonly TimeSpan PreferredFluPrefetchFreshFor = TimeSpan.FromMinutes(3);
+
+    /// <summary>Starts looking up the preferred flu product (and its current lot) for this age now, so it is ready when the flu popup needs it. Never throws.</summary>
+    private void PrefetchPreferredFlu(int ageYears)
+    {
+        try
+        {
+            var product = FluPreferenceRules.PreferredFor(ageYears);
+            if (product is null) return;
+            StartPreferredFluLookup(new FluPreferencePrompt(
+                ageYears, "", "", product.DisplayName, product.PreferredShortCodes, product.PreferredBandText, null));
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.PrefetchPreferredFlu", ex);
+        }
+    }
+
+    private Task<PreferredFluResult> StartPreferredFluLookup(FluPreferencePrompt prompt)
+    {
+        var task = FluPreferenceResolver.ResolvePreferredWithTimeoutAsync(
+            _vaccineApiService, prompt, DateOnly.FromDateTime(DateTime.Today), FluPreferenceResolver.LookupTimeout,
+            ex => AppFileLog.LogException("MainWindow.PreferredFluLookup", ex));
+        _preferredFluPrefetchProduct = prompt.PreferredName;
+        _preferredFluPrefetchStartedUtc = DateTime.UtcNow;
+        _preferredFluPrefetch = task;
+        return task;
+    }
+
+    /// <summary>The prefetched lookup when it is for this product, recent, and not a failure; otherwise a new one.</summary>
+    private Task<PreferredFluResult> GetPreferredFluLookup(FluPreferencePrompt prompt)
+    {
+        var cached = _preferredFluPrefetch;
+        if (cached is not null
+            && string.Equals(_preferredFluPrefetchProduct, prompt.PreferredName, StringComparison.Ordinal)
+            && DateTime.UtcNow - _preferredFluPrefetchStartedUtc < PreferredFluPrefetchFreshFor
+            && (!cached.IsCompleted || (cached.IsCompletedSuccessfully && cached.Result.IsAvailable)))
+        {
+            return cached;
+        }
+
+        return StartPreferredFluLookup(prompt);
+    }
+
     /// <summary>Null = the pharmacist cancelled. Never throws for a lookup failure: the preferred option is then simply offered as unavailable.</summary>
     private async Task<VaccineEntryPick?> ApplyFluPreferenceAsync(string macroCode, string label, string product, int ageYears, IntPtr previousForegroundWindow)
     {
@@ -949,14 +1040,24 @@ public partial class MainWindow : Window
             return original;
         }
 
-        AppFileLog.Log($"[VaccineEntry] flu preference prompt: selected {prompt.SelectedName}, preferred {prompt.PreferredName}, age {ageYears}");
+        AppFileLog.Log(prompt.RangeWarningOnly
+            ? $"[VaccineEntry] flu age-range warning: selected {prompt.SelectedName}, age {ageYears}"
+            : $"[VaccineEntry] flu preference prompt: selected {prompt.SelectedName}, preferred {prompt.PreferredName}, age {ageYears}");
 
-        // Bounded: a slow API must not hold the entry hostage (timeout = "unavailable").
-        var preferred = await FluPreferenceResolver.ResolvePreferredWithTimeoutAsync(
-            _vaccineApiService, prompt, DateOnly.FromDateTime(DateTime.Today), FluPreferenceResolver.LookupTimeout,
-            ex => AppFileLog.LogException("MainWindow.ApplyFluPreferenceAsync", ex));
+        // INSTANT popup (Will, 2026-10-22: "not fast enough ... should really
+        // be instant"): the window used to appear only AFTER two sequential
+        // cloud calls (vaccines, then lots; up to 10 s). It now shows at once
+        // and the preferred button enables when the lookup lands. The lookup
+        // was started when the age was entered (PrefetchPreferredFlu), so it
+        // is normally already done.
+        FlowTiming.Mark("flu popup opening");
+        // FluMist (Will, 2026-10-22: "People who want flumist want flumist"): only an
+        // age-range warning, no preferred product, so nothing to look up.
+        var preferredLookup = prompt.RangeWarningOnly
+            ? Task.FromResult(PreferredFluResult.Unavailable(prompt.ApprovedNote ?? ""))
+            : GetPreferredFluLookup(prompt);
 
-        var window = new FluPreferenceWindow(prompt, preferred.IsAvailable, preferred.UnavailableReason);
+        var window = new FluPreferenceWindow(prompt, preferredLookup);
         _openFluPreferenceWindow = window;
         FluPreferenceChoice choice;
         try
@@ -971,6 +1072,11 @@ public partial class MainWindow : Window
                 _openFluPreferenceWindow = null;
             }
         }
+
+        // Completed by now: the preferred button is only enabled once the lookup is.
+        var preferred = preferredLookup.IsCompletedSuccessfully
+            ? preferredLookup.Result
+            : PreferredFluResult.Unavailable($"{prompt.PreferredName} could not be looked up right now.");
 
         // Focus back where the pharmacist was (PioneerRx), same as the
         // macro picker does when it closes.
@@ -1198,6 +1304,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        FlowTiming.Start("Ctrl+Keypad 8");
         var previousForegroundWindow = GetForegroundWindow();
         var popup = new MacroCodesWindow(
             _settings.CloudApiBaseUrl,
@@ -1208,7 +1315,8 @@ public partial class MainWindow : Window
                 // Ctrl+Keypad 8 has no patient age, so the preferred-flu prompt cannot run here.
                 // Logged so a log shows which path a pick took (short code only, no lot).
                 AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 8 pick '{MacroCodeParser.TryParse(code)?.ShortCode}': no prompt - this popup has no patient age (use Ctrl+Keypad 2 or 7)");
-            });
+            },
+            pageScript: BuildHotkeyScript(null));
 
         popup.Closed += (_, _) =>
         {
@@ -1225,6 +1333,7 @@ public partial class MainWindow : Window
         // of (typically PioneerRx) — see
         // MacroCodesWindow.ActivateAndFocusWebView's doc comment.
         popup.ActivateAndFocusWebView();
+        FlowTiming.Mark("picker window shown");
     }
 
     /// <summary>
@@ -1302,6 +1411,8 @@ public partial class MainWindow : Window
         }
 
         AppFileLog.Log($"[AgeMacro] age {result.Years}");
+        FlowTiming.Start("Ctrl+Keypad 2 picker");
+        PrefetchPreferredFlu(result.Years);
 
         // What the clipboard held before the picker puts a vaccine code on it (restored if the flu prompt is cancelled).
         var clipboardBefore = ClipboardSnapshot.Capture();
@@ -1317,6 +1428,7 @@ public partial class MainWindow : Window
             // run here, after the picker closed and before that keypress.
             beforeSendCtrlNumPad5Async: async (code, label, product) =>
             {
+                FlowTiming.Start("Ctrl+Keypad 2 flu check");
                 AppFileLog.Log($"[FluPrompt] Ctrl+Keypad 2 pick, build {BuildInfo.Current.Describe()}, age {result.Years}");
                 // Hold the "age prompt showing" guard so a repeat Ctrl+Keypad 2
                 // press while the dialog is up can't stack a second flow.
@@ -1369,7 +1481,8 @@ public partial class MainWindow : Window
                 {
                     _ageMacroPromptShowing = false;
                 }
-            });
+            },
+            pageScript: BuildHotkeyScript(result.Years));
 
         popup.Closed += (_, _) =>
         {
@@ -1392,6 +1505,7 @@ public partial class MainWindow : Window
         // DataEntryPopupWindow uses — see
         // MacroCodesWindow.ActivateAndFocusWebView's doc comment.
         popup.ActivateAndFocusWebView();
+        FlowTiming.Mark("picker window shown");
     }
 
     /// <summary>V-T53: tray menu's "Vaccine faxes — Settings" — same

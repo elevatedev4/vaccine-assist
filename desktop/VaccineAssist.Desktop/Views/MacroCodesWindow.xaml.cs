@@ -121,6 +121,9 @@ public partial class MacroCodesWindow : Window
     /// </summary>
     private readonly Func<string, string, string, Task<bool>>? _beforeSendCtrlNumPad5Async;
 
+    /// <summary>Script run on every page load of this window (the desktop-side hotkey plan, Hotkeys/Flu2HotkeyScript); null = the plain page.</summary>
+    private readonly string? _pageScript;
+
     private string _copiedCode = "";
     private string _copiedLabel = "";
     private string _copiedProduct = "";
@@ -201,8 +204,10 @@ public partial class MacroCodesWindow : Window
         string? overrideUrl = null,
         bool sendCtrlNumPad5OnClose = false,
         Action<string, string, string>? onCodeCopied = null,
-        Func<string, string, string, Task<bool>>? beforeSendCtrlNumPad5Async = null)
+        Func<string, string, string, Task<bool>>? beforeSendCtrlNumPad5Async = null,
+        string? pageScript = null)
     {
+        _pageScript = pageScript;
         InitializeComponent();
         _clipboardService = clipboardService ?? throw new ArgumentNullException(nameof(clipboardService));
         _previousForegroundWindow = previousForegroundWindow;
@@ -550,6 +555,20 @@ public partial class MacroCodesWindow : Window
 
             WebView.CoreWebView2.WebMessageReceived += CoreWebView2_OnWebMessageReceived;
             WebView.CoreWebView2.NavigationCompleted += CoreWebView2_OnNavigationCompleted;
+            FlowTiming.Mark("picker WebView ready");
+            if (_pageScript is not null)
+            {
+                try
+                {
+                    await WebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(_pageScript);
+                }
+                catch (Exception scriptEx)
+                {
+                    // The plain page (classic letters) still works.
+                    AppFileLog.LogException("MacroCodesWindow.AddHotkeyScript", scriptEx);
+                }
+            }
+
             WebView.CoreWebView2.Navigate(_macroCodesUrl);
 
             // FOCUS FIX (Will, 2026-09-28): CoreWebView2 init can finish
@@ -700,6 +719,7 @@ public partial class MacroCodesWindow : Window
         // keeps closing the window directly instead of relying on a page
         // that never finished loading.
         _pageReady = e.IsSuccess;
+        FlowTiming.Mark("picker page loaded");
 
         ScheduleFocusWebView();
 

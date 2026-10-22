@@ -157,6 +157,45 @@ public static class PioneerMainWindowLocator
         }
     }
 
+    /// <summary>
+    /// True while any visible top-level window's title contains "Logon to
+    /// PioneerRx" (PioneerLogonScreen). Same cadence as the other locator
+    /// calls (one cheap EnumWindows + GetWindowText per visible window per
+    /// tick). Never throws; any failure reads as "not visible", so the
+    /// overlay can never be hidden permanently by an error here.
+    /// </summary>
+    public static bool IsLogonScreenVisible()
+    {
+        try
+        {
+            var found = false;
+            var buffer = new StringBuilder(256);
+            EnumWindows((hWnd, _) =>
+            {
+                if (!IsWindowVisible(hWnd))
+                {
+                    return true;
+                }
+
+                buffer.Clear();
+                var length = GetWindowText(hWnd, buffer, buffer.Capacity);
+                if (length > 0 && PioneerLogonScreen.IsLogonTitle(buffer.ToString()))
+                {
+                    found = true;
+                    return false; // stop enumerating
+                }
+
+                return true;
+            }, IntPtr.Zero);
+
+            return found;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool IsSaneRect(NativeRect rect) => rect.Right > rect.Left && rect.Bottom > rect.Top;
 
     private static Rectangle ToRectangle(NativeRect rect) => Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);

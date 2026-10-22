@@ -1,9 +1,11 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using VaccineAssist.Desktop.FluPreference;
+using VaccineAssist.Desktop.Logging;
 
 namespace VaccineAssist.Desktop.Views;
 
@@ -45,11 +47,21 @@ public partial class FluPreferenceWindow : Window
 
     public FluPreferenceChoice Choice { get; private set; } = FluPreferenceChoice.Cancel;
 
-    /// <param name="preferredAvailable">False when the preferred product can't be entered; then only "Proceed with &lt;selected&gt;" and Cancel are offered.</param>
-    /// <param name="unavailableReason">Shown when preferredAvailable is false.</param>
-    public FluPreferenceWindow(FluPreferencePrompt prompt, bool preferredAvailable, string? unavailableReason)
+    private readonly FluPreferencePrompt _prompt;
+    private bool _closed;
+
+    /// <summary>
+    /// Shows at once (Will, 2026-10-22: the popup "should really be instant").
+    /// <paramref name="preferredLookup"/> (product + current lot) usually has
+    /// finished already; when it has not, the preferred button stays disabled
+    /// ("checking stock") until it does, then enables - or, when the preferred
+    /// product can't be entered, collapses with the reason shown. No lookup
+    /// result is needed to show the selected/preferred names or the age.
+    /// </summary>
+    public FluPreferenceWindow(FluPreferencePrompt prompt, Task<PreferredFluResult> preferredLookup)
     {
         InitializeComponent();
+        _prompt = prompt;
 
         SelectedTextBlock.Text = $"You selected {prompt.SelectedName}.";
         AgeTextBlock.Text = $"Patient age: {prompt.AgeYears}.";
@@ -62,21 +74,75 @@ public partial class FluPreferenceWindow : Window
         }
 
         SelectedButton.Content = $"Proceed with {prompt.SelectedName}";
-        if (preferredAvailable)
+        PreferredButton.Content = $"Proceed with {prompt.PreferredName}";
+        Closed += (_, _) => _closed = true;
+
+        if (prompt.RangeWarningOnly)
         {
-            PreferredButton.Content = $"Proceed with {prompt.PreferredName}";
-        }
-        else
-        {
+            // FluMist outside its approved ages: a warning only, no preferred product.
+            Title = "Age range";
+            PreferredTextBlock.Visibility = Visibility.Collapsed;
             PreferredButton.Visibility = Visibility.Collapsed;
             PreferredButton.IsDefault = false;
             CancelButton.Visibility = Visibility.Visible;
-            UnavailableTextBlock.Text = string.IsNullOrWhiteSpace(unavailableReason)
-                ? $"{prompt.PreferredName} can't be entered right now."
-                : unavailableReason;
-            UnavailableTextBlock.Visibility = Visibility.Visible;
             SelectedButton.IsDefault = true;
+            return;
         }
+
+        if (preferredLookup.IsCompletedSuccessfully)
+        {
+            ApplyLookup(preferredLookup.Result);
+            return;
+        }
+
+        // Not ready yet: the preferred product cannot be chosen, and Enter must not land on "selected".
+        // Enter must not fall through to "selected", so no button takes the default.
+        PreferredButton.IsEnabled = false;
+        SelectedButton.IsDefault = false;
+        CheckingTextBlock.Text = $"Checking {prompt.PreferredName} stock...";
+        CheckingTextBlock.Visibility = Visibility.Visible;
+        _ = AwaitLookupAsync(preferredLookup);
+    }
+
+    private async Task AwaitLookupAsync(Task<PreferredFluResult> preferredLookup)
+    {
+        PreferredFluResult result;
+        try
+        {
+            result = await preferredLookup;
+        }
+        catch (Exception)
+        {
+            result = PreferredFluResult.Unavailable($"{_prompt.PreferredName} could not be looked up right now.");
+        }
+
+        if (_closed)
+        {
+            return;
+        }
+
+        CheckingTextBlock.Visibility = Visibility.Collapsed;
+        ApplyLookup(result);
+        (PreferredButton.Visibility == Visibility.Visible ? PreferredButton : SelectedButton).Focus();
+    }
+
+    private void ApplyLookup(PreferredFluResult result)
+    {
+        if (result.IsAvailable)
+        {
+            PreferredButton.IsEnabled = true;
+            PreferredButton.IsDefault = true;
+            return;
+        }
+
+        PreferredButton.Visibility = Visibility.Collapsed;
+        PreferredButton.IsDefault = false;
+        CancelButton.Visibility = Visibility.Visible;
+        UnavailableTextBlock.Text = string.IsNullOrWhiteSpace(result.UnavailableReason)
+            ? $"{_prompt.PreferredName} can't be entered right now."
+            : result.UnavailableReason;
+        UnavailableTextBlock.Visibility = Visibility.Visible;
+        SelectedButton.IsDefault = true;
     }
 
     private void FluPreferenceWindow_OnLoaded(object sender, RoutedEventArgs e)
@@ -97,7 +163,18 @@ public partial class FluPreferenceWindow : Window
 
         Topmost = false;
         Topmost = true;
-        (PreferredButton.Visibility == Visibility.Visible ? PreferredButton : SelectedButton).Focus();
+        FlowTiming.Mark("flu popup shown");
+
+        // While the lookup is pending keep keyboard focus on the window itself, so Enter
+        // cannot land on "Proceed with <selected>"; AwaitLookupAsync focuses the right button.
+        if (CheckingTextBlock.Visibility == Visibility.Visible)
+        {
+            Focus();
+        }
+        else
+        {
+            (PreferredButton.Visibility == Visibility.Visible ? PreferredButton : SelectedButton).Focus();
+        }
     }
 
     /// <summary>Same attach-thread-input foreground recipe as AgePromptWindow.TryAttachedSetForeground.</summary>

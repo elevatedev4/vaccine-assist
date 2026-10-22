@@ -41,6 +41,7 @@ public sealed class PioneerOverlayController : IDisposable
     private readonly AppSettings _settings;
     private readonly VersionMenuSource? _versions;
     private readonly DispatcherTimer _timer;
+    private bool _logonScreenWasVisible;
 
     private PioneerOverlayWindow? _window;
     private bool _shown;
@@ -152,7 +153,16 @@ public sealed class PioneerOverlayController : IDisposable
             var hasMainWindow = PioneerMainWindowLocator.TryGetMainWindow(out var bounds, out var isMinimized);
             var isPioneerForeground = PioneerMainWindowLocator.IsPioneerForegroundApp();
 
-            if (!PioneerOverlayVisibilityGate.ShouldShow(_settings.ShowPioneerOverlay, hasMainWindow, isMinimized, isPioneerForeground))
+            var isLogonScreen = PioneerMainWindowLocator.IsLogonScreenVisible();
+            if (isLogonScreen != _logonScreenWasVisible)
+            {
+                _logonScreenWasVisible = isLogonScreen;
+                AppFileLog.Log(isLogonScreen
+                    ? "[Overlay] PioneerRx logon screen visible: overlay hidden"
+                    : "[Overlay] PioneerRx logon screen gone: overlay allowed again");
+            }
+
+            if (!PioneerOverlayVisibilityGate.ShouldShow(_settings.ShowPioneerOverlay, hasMainWindow, isMinimized, isPioneerForeground, isLogonScreen))
             {
                 HideIfShown();
                 HideEntryStatusWindowIfShown();
