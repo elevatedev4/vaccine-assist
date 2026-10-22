@@ -125,7 +125,7 @@ public class FluPreferenceTests
     [Theory]
     [InlineData("afluriapfs", "Afluria")]
     [InlineData("fluzonehd", "Fluzone High-Dose")]
-    [InlineData("flumist", "FluMist")]
+    // FluMist is deliberately absent: it is only range-checked, never compared with the preferred product (FluMistRangeTests).
     public void OtherFluProductsPromptToTheAgePreferredWithNoApprovedNote(string code, string expectedName)
     {
         var prompt = FluPreferenceRules.Evaluate(40, code);
