@@ -9,8 +9,24 @@ namespace VaccineAssist.Desktop.Hotkeys;
 /// <summary>What one pressed letter does on the macro-codes page: press <see cref="To"/> instead, or show <see cref="Notice"/>.</summary>
 public sealed record HotkeyAction(string? To, string? Notice);
 
-/// <summary>Product label (lower-case text match) whose underlined classic hotkey letter is replaced by a "[Key]" badge.</summary>
-public sealed record HotkeyRelabel(string Match, string Key);
+/// <summary>
+/// Product label (lower-case text match) whose classic underlined letter is not its key any more.
+/// <see cref="At"/> is the offset of <see cref="Key"/> inside the product name (the letter the page
+/// underlines instead), or -1 when the name has no such letter (the page then shows a "[Key]" badge).
+/// </summary>
+public sealed record HotkeyRelabel(string Match, string Key, int At)
+{
+    public static HotkeyRelabel For(string match, string key) => new(match, key, HotkeyLabel.UnderlineIndex(match, key));
+}
+
+/// <summary>
+/// A section heading (lower-case exact text, e.g. "flu") whose hotkey letter <see cref="Key"/> is underlined at
+/// offset <see cref="At"/> and followed by the explainer <see cref="Text"/>.
+/// </summary>
+public sealed record HotkeyHint(string Match, string Key, int At, string Text)
+{
+    public static HotkeyHint For(string heading, string key, string text) => new(heading.ToLowerInvariant(), key, HotkeyLabel.UnderlineIndex(heading, key), text);
+}
 
 /// <summary>A product label (lower-case text) and the classic hotkey letter the page is expected to underline in it.</summary>
 public sealed record ClassicLabel(string Match, string Letter);
@@ -53,8 +69,11 @@ public sealed class Flu2HotkeyPlan
     /// <summary>New key -> what it does. Keys not listed pass through to the page unchanged.</summary>
     public IReadOnlyDictionary<string, HotkeyAction> Keys { get; }
 
-    /// <summary>Labels whose hotkey underline is wrong in the classic page and is replaced by a badge.</summary>
+    /// <summary>Labels whose classic hotkey underline is wrong; the page script underlines the new key's letter in the name instead.</summary>
     public IReadOnlyList<HotkeyRelabel> Relabel { get; }
+
+    /// <summary>"Flu" / "COVID" section headings that get their F / C underlined plus a short explainer.</summary>
+    public IReadOnlyList<HotkeyHint> Hints { get; }
 
     /// <summary>
     /// The classic letters this plan rewrites TO (cloud lib/macro-hotkeys.ts
@@ -75,11 +94,13 @@ public sealed class Flu2HotkeyPlan
     private Flu2HotkeyPlan(
         IReadOnlyList<string> blocked,
         IReadOnlyDictionary<string, HotkeyAction> keys,
-        IReadOnlyList<HotkeyRelabel> relabel)
+        IReadOnlyList<HotkeyRelabel> relabel,
+        IReadOnlyList<HotkeyHint> hints)
     {
         Blocked = blocked;
         Keys = keys;
         Relabel = relabel;
+        Hints = hints;
     }
 
     /// <param name="ageYears">The patient's age when the picker was opened with one (Ctrl+Keypad 2/7); null for the plain Ctrl+Keypad 8 popup.</param>
@@ -99,13 +120,34 @@ public sealed class Flu2HotkeyPlan
 
         var relabel = new List<HotkeyRelabel>
         {
-            new("flucelvax", "X"),
-            new("mflusiva", "V"),
-            new("capvaxive", "A"),
-            new("vaqta", "Q"),
+            HotkeyRelabel.For("flucelvax", "X"),
+            HotkeyRelabel.For("mflusiva", "V"),
+            HotkeyRelabel.For("capvaxive", "A"),
+            HotkeyRelabel.For("vaqta", "Q"),
         };
 
-        return new Flu2HotkeyPlan(new[] { "l" }, keys, relabel);
+        return new Flu2HotkeyPlan(new[] { "l" }, keys, relabel, HintsFor(ageYears));
+    }
+
+    /// <summary>
+    /// The F and C explainers for the "Flu" and "COVID" headings. No age -> say how to get one (same wording
+    /// as the key's own notice); under age 3 neither key picks anything, so no hint is shown.
+    /// </summary>
+    public static IReadOnlyList<HotkeyHint> HintsFor(int? ageYears)
+    {
+        if (ageYears is int age && age < 3) return Array.Empty<HotkeyHint>();
+
+        return ageYears is null
+            ? new[]
+            {
+                HotkeyHint.For("Flu", "F", "\u2014 F needs the patient's age (use Ctrl+Keypad 2)"),
+                HotkeyHint.For("COVID", "C", "\u2014 C needs the patient's age (use Ctrl+Keypad 2)"),
+            }
+            : new[]
+            {
+                HotkeyHint.For("Flu", "F", "\u2014 press F for the preferred flu shot for this patient's age"),
+                HotkeyHint.For("COVID", "C", "\u2014 press C for the preferred COVID vaccine"),
+            };
     }
 
     /// <summary>F: the preferred flu for the age (3-49 Flucelvax, 50-64 mFLUSIVA, 65+ Fluad), as that product's classic key.</summary>
@@ -161,5 +203,5 @@ public sealed class Flu2HotkeyPlan
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public string ToJson() => JsonSerializer.Serialize(new { blocked = Blocked, keys = Keys, relabel = Relabel, classic = ClassicLabels }, JsonOptions);
+    public string ToJson() => JsonSerializer.Serialize(new { blocked = Blocked, keys = Keys, relabel = Relabel, hints = Hints, classic = ClassicLabels }, JsonOptions);
 }
