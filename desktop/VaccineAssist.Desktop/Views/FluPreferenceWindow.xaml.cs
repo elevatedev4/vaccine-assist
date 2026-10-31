@@ -21,7 +21,7 @@ public enum FluPreferenceChoice
 /// Shown after a flu product is picked that is NOT the preferred one for the
 /// patient's age (see FluPreferenceRules). Says what was selected, the age,
 /// and the preferred product (plus the approval note when the selected
-/// product is outside its approved ages). Two buttons - "Proceed with
+/// product is outside its approved ages). Two buttons - "Switch to
 /// &lt;preferred&gt;" (highlighted default) and "Proceed with &lt;selected&gt;".
 /// Contains no patient identifiers: only an age in years and product names.
 /// </summary>
@@ -73,8 +73,8 @@ public partial class FluPreferenceWindow : Window
             ApprovedNoteTextBlock.Visibility = Visibility.Visible;
         }
 
-        SelectedButton.Content = $"Proceed with {prompt.SelectedName}";
-        PreferredButton.Content = $"Proceed with {prompt.PreferredName}";
+        SelectedButton.Content = FluPreferenceLabels.ConfirmButtonText(false, prompt.SelectedName);
+        PreferredButton.Content = FluPreferenceLabels.ConfirmButtonText(RecommendsSwitch(prompt), prompt.PreferredName);
         Closed += (_, _) => _closed = true;
 
         if (prompt.RangeWarningOnly)
@@ -104,6 +104,11 @@ public partial class FluPreferenceWindow : Window
         _ = AwaitLookupAsync(preferredLookup);
     }
 
+    /// <summary>True when the preferred button recommends a product other than the one picked (never for the FluMist range warning, which has no preferred button).</summary>
+    private static bool RecommendsSwitch(FluPreferencePrompt prompt) =>
+        !prompt.RangeWarningOnly
+        && !string.Equals(prompt.PreferredName, prompt.SelectedName, StringComparison.OrdinalIgnoreCase);
+
     private async Task AwaitLookupAsync(Task<PreferredFluResult> preferredLookup)
     {
         PreferredFluResult result;
@@ -132,7 +137,7 @@ public partial class FluPreferenceWindow : Window
             return;
         }
 
-        PreferredButton.Content = $"Proceed with {_prompt.PreferredName} (not in stock)";
+        PreferredButton.Content = $"{FluPreferenceLabels.ConfirmButtonText(RecommendsSwitch(_prompt), _prompt.PreferredName)} (not in stock)";
         UnavailableTextBlock.Text = string.IsNullOrWhiteSpace(result.UnavailableReason)
             ? $"{_prompt.PreferredName} can't be entered right now."
             : result.UnavailableReason;

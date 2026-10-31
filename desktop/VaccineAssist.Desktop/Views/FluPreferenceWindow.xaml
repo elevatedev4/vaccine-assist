@@ -24,6 +24,7 @@
         The X button and Esc cancel the whole entry. When the preferred
         product can't be entered (not on file, or no usable lot), the
         reason is shown, only "Proceed with <selected>" and Cancel remain.
+        2026-10-30: the recommended button reads "Switch to <preferred>".
     -->
     <StackPanel Margin="18">
         <TextBlock x:Name="SelectedTextBlock" FontWeight="Bold" FontSize="15" TextWrapping="Wrap"/>
