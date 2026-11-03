@@ -65,6 +65,62 @@ public class PreferredCovidApiTests
     }
 
     [Theory]
+    [InlineData("{\"adult\":\"moderna\",\"kids\":\"moderna\",\"saved\":true,\"pending\":false}", true)]
+    [InlineData("{\"adult\":\"pfizer\",\"kids\":\"moderna\",\"saved\":false,\"pending\":false}", false)]
+    [InlineData("{\"adult\":\"pfizer\",\"kids\":\"moderna\",\"pending\":false}", false)] // older cloud: no "saved" key
+    public async Task GetReportsWhetherTheCloudHasAStoredValue(string json, bool expectedSaved)
+    {
+        var service = await CreateAsync(new RecordingHandler(HttpStatusCode.OK, json));
+
+        var setting = await service.GetPreferredCovidAsync();
+
+        Assert.NotNull(setting);
+        Assert.Equal(expectedSaved, setting!.Saved);
+    }
+
+    [Fact]
+    public async Task AuthCallsNeverReceiveTheCallersCancellationToken()
+    {
+        // A cancel (the sync's 3 s limit) in the middle of a Supabase token refresh could lose the rotated refresh token.
+        var handler = new RecordingHandler(HttpStatusCode.OK, "{\"adult\":\"pfizer\",\"kids\":\"moderna\"}");
+        var auth = new FakeAuthService(AuthResult.Ok());
+        await auth.SignInAsync("pharmacy@example.test", "pw");
+        var service = new VaccineApiService(new HttpClient(handler) { BaseAddress = new Uri("https://cloud.example.test") }, auth);
+        using var cts = new CancellationTokenSource();
+
+        await service.GetPreferredCovidAsync(cts.Token);
+        await service.SetPreferredCovidAsync("pfizer", "moderna", cts.Token);
+
+        Assert.NotEmpty(auth.AuthCallCancellationTokens);
+        Assert.All(auth.AuthCallCancellationTokens, ct => Assert.False(ct.CanBeCanceled));
+    }
+
+    [Fact]
+    public async Task TheRetryAfter401AlsoUsesANonCancellableAuthRefresh()
+    {
+        var handler = new SequenceStatusHandler();
+        var auth = new FakeAuthService(AuthResult.Ok());
+        await auth.SignInAsync("pharmacy@example.test", "pw");
+        var service = new VaccineApiService(new HttpClient(handler) { BaseAddress = new Uri("https://cloud.example.test") }, auth);
+        using var cts = new CancellationTokenSource();
+
+        await service.GetPreferredCovidAsync(cts.Token);
+
+        Assert.Equal(new[] { "fake-token" }, auth.RejectedAccessTokens);
+        Assert.All(auth.AuthCallCancellationTokens, ct => Assert.False(ct.CanBeCanceled));
+    }
+
+    private sealed class SequenceStatusHandler : HttpMessageHandler
+    {
+        private int _calls;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(_calls++ == 0
+                ? new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("{\"error\":\"Unauthorized.\"}") }
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"adult\":\"pfizer\",\"kids\":\"moderna\"}") });
+    }
+
+    [Theory]
     [InlineData("{\"adult\":\"pfizer\",\"kids\":\"moderna\",\"pending\":true}")] // table not created yet: defaults only, nothing to follow
     [InlineData("{\"adult\":\"novavax\",\"kids\":\"moderna\",\"pending\":false}")] // unknown product
     [InlineData("{\"kids\":\"moderna\"}")]                                          // adult missing

@@ -287,8 +287,8 @@ public partial class MainWindow : Window
         _settings = settings;
         _preferredCovidSync = new PreferredCovidSync(
             _vaccineApiService,
-            () => _settings.PreferredCovidAdult,
-            ApplyCloudPreferredCovidAdult);
+            _settings,
+            OnPreferredCovidSyncStateChanged);
         _faxRunScheduler = faxRunScheduler;
         _faxRunOrchestrator = faxRunOrchestrator;
         _faxCredentialStore = faxCredentialStore;
@@ -462,7 +462,10 @@ public partial class MainWindow : Window
         var normalized = string.Equals(choice, Flu2HotkeyPlan.AdultModerna, StringComparison.OrdinalIgnoreCase)
             ? Flu2HotkeyPlan.AdultModerna
             : Flu2HotkeyPlan.AdultPfizer;
-        _settings.PreferredCovidAdult = normalized;
+        // Order matters: the sync records the pick as unsynced and bumps its version
+        // BEFORE _settings.PreferredCovidAdult changes, so a cloud read already in
+        // flight can't overwrite it; then save locally; then tell the cloud.
+        _preferredCovidSync.MarkLocalPick(normalized);
         AppFileLog.Log($"[Settings] preferred COVID (12+) set to {normalized}");
         try
         {
@@ -473,20 +476,18 @@ public partial class MainWindow : Window
             AppFileLog.LogException("MainWindow.SetPreferredCovidAdult", ex);
         }
 
-        // Local save is done; tell the cloud so the website shows the same pick
-        // (fire-and-forget - failures are logged and retried by the sync).
-        _ = _preferredCovidSync.PushFromTrayAsync(normalized);
+        // Fire-and-forget: failures are logged and retried (the pick stays in settings.json).
+        _ = _preferredCovidSync.PushPendingAsync();
     }
 
     /// <summary>
-    /// The cloud's preferred COVID vaccine differs from ours (picked on the
-    /// website): follow it. Called from a background thread by
-    /// PreferredCovidSync. The in-memory value flips immediately so the next
-    /// hotkey script uses it; the file save and tray check mark run on the UI thread.
+    /// PreferredCovidSync changed the preferred-COVID settings (adopted the website's
+    /// value, seeded the cloud, confirmed a push). Called from a background thread:
+    /// the file save and the tray check mark run on the UI thread, and the check
+    /// mark is set from the CURRENT setting, not a value captured earlier.
     /// </summary>
-    private void ApplyCloudPreferredCovidAdult(string adult)
+    private void OnPreferredCovidSyncStateChanged()
     {
-        _settings.PreferredCovidAdult = adult;
         try
         {
             Dispatcher.BeginInvoke(new Action(() =>
@@ -494,17 +495,17 @@ public partial class MainWindow : Window
                 try
                 {
                     _localSettingsService.Save(_settings);
-                    _trayIconController?.SetPreferredCovidAdult(adult);
+                    _trayIconController?.SetPreferredCovidAdult(_settings.PreferredCovidAdult);
                 }
                 catch (Exception ex)
                 {
-                    AppFileLog.LogException("MainWindow.ApplyCloudPreferredCovidAdult", ex);
+                    AppFileLog.LogException("MainWindow.OnPreferredCovidSyncStateChanged", ex);
                 }
             }));
         }
         catch (Exception ex)
         {
-            AppFileLog.LogException("MainWindow.ApplyCloudPreferredCovidAdult.Dispatch", ex);
+            AppFileLog.LogException("MainWindow.OnPreferredCovidSyncStateChanged.Dispatch", ex);
         }
     }
 

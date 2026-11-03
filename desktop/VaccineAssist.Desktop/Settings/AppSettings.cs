@@ -71,4 +71,20 @@ public sealed class AppSettings
     /// hotkey just uses what is saved here. Also editable in settings.json.
     /// </summary>
     public string PreferredCovidAdult { get; set; } = "pfizer";
+
+    /// <summary>
+    /// False until this machine has either adopted a value the cloud had
+    /// actually stored or seeded the cloud with its own (first-run rule in
+    /// PreferredCovidSync) - so a never-saved cloud default can't overwrite
+    /// a local choice. Once true, the cloud value wins.
+    /// </summary>
+    public bool PreferredCovidSynced { get; set; }
+
+    /// <summary>
+    /// A tray pick ("pfizer"/"moderna") the cloud has not confirmed yet
+    /// (offline, error, setting table pending). Kept in settings.json so it
+    /// survives a restart and is retried before the cloud is read; null when
+    /// nothing is waiting.
+    /// </summary>
+    public string? PreferredCovidUnsyncedAdult { get; set; }
 }

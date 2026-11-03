@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Models;
+using VaccineAssist.Desktop.Settings;
 
 namespace VaccineAssist.Desktop.Services;
 
@@ -14,13 +15,24 @@ namespace VaccineAssist.Desktop.Services;
 /// hotkey path - callers fire RefreshIfStaleAsync() and keep using the local
 /// value; a refresh that lands applies from then on. Every failure (offline,
 /// 401, 404, timeout, bad payload) is logged and swallowed, and the local value
-/// stays. Neither public method ever throws.
+/// stays. The public methods never throw.
 ///
-/// Rules: a successful refresh is cached CacheWindow (60 s); a failed one
-/// retries after FailureRetryWindow; one request in flight at a time; each call
-/// times out after RequestTimeout (3 s). A tray pick is saved locally by the
-/// caller first, then pushed here; if the push fails it is retried on the next
-/// refresh (instead of the cloud's older value overwriting the pick).
+/// Rules:
+///  - A successful refresh is cached CacheWindow (60 s); a failed one retries
+///    after FailureRetryWindow; one refresh runs at a time; each cloud call is
+///    capped at RequestTimeout (3 s) - the cap covers only that call, auth
+///    token refreshes inside VaccineApiService are never cancelled by it.
+///  - FIRST RUN (settings.PreferredCovidSynced == false): if the cloud says it
+///    has a stored value (saved:true) adopt it; if it says saved:false or does
+///    not say (older cloud) seed the cloud with the local value instead of
+///    pulling, so the cloud's never-saved default can't flip a local choice.
+///    Either success sets PreferredCovidSynced; after that the cloud wins.
+///  - A tray pick goes through MarkLocalPick (records it as unsynced and bumps
+///    the version under the lock, BEFORE the setting changes) so a refresh
+///    already in flight can never overwrite it, then PushPendingAsync PUTs it.
+///    The unsynced pick lives in settings.json and is retried (before any pull)
+///    until the cloud confirms - including across restarts. A PUT answered
+///    pending:true is NOT confirmation.
 /// </summary>
 public sealed class PreferredCovidSync
 {
@@ -29,39 +41,39 @@ public sealed class PreferredCovidSync
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(3);
 
     private readonly IPreferredCovidApi _api;
-    private readonly Func<string?> _getLocalAdult;
-    private readonly Action<string> _applyRemoteAdult;
+    private readonly AppSettings _settings;
+    private readonly Action _stateChanged;
     private readonly Func<DateTimeOffset> _now;
     private readonly TimeSpan _timeout;
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _pushGate = new(1, 1);
 
     private DateTimeOffset _nextRefreshAt = DateTimeOffset.MinValue;
     private Task? _refreshInFlight;
-    private string? _unsyncedAdult;
     private int _localVersion;
 
-    /// <param name="getLocalAdult">Current local value (AppSettings.PreferredCovidAdult).</param>
-    /// <param name="applyRemoteAdult">Called with "pfizer"/"moderna" when the cloud differs from the local value; the caller saves it and refreshes the tray. May run on a thread-pool thread.</param>
+    /// <param name="settings">The live settings object; this class reads and writes PreferredCovidAdult / PreferredCovidSynced / PreferredCovidUnsyncedAdult.</param>
+    /// <param name="stateChanged">Called after a change to those settings (cloud adopted, pick recorded, sync state flipped): the caller saves settings.json and refreshes the tray check from settings.PreferredCovidAdult. May run on a thread-pool thread.</param>
     /// <param name="now">Test seam for the cache window.</param>
     /// <param name="timeout">Test seam; defaults to RequestTimeout.</param>
     public PreferredCovidSync(
         IPreferredCovidApi api,
-        Func<string?> getLocalAdult,
-        Action<string> applyRemoteAdult,
+        AppSettings settings,
+        Action stateChanged,
         Func<DateTimeOffset>? now = null,
         TimeSpan? timeout = null)
     {
         _api = api;
-        _getLocalAdult = getLocalAdult;
-        _applyRemoteAdult = applyRemoteAdult;
+        _settings = settings;
+        _stateChanged = stateChanged;
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _timeout = timeout ?? RequestTimeout;
     }
 
     /// <summary>
-    /// Pulls the cloud value unless one was tried recently or a request is
-    /// already running. Returns a task that completes when the attempt is done
-    /// (callers on the hotkey path ignore it). Never throws.
+    /// Pulls (or, first run, seeds) unless one was tried recently or a refresh is
+    /// already running. The returned task completes when the attempt is done
+    /// (hotkey-path callers ignore it). Never throws.
     /// </summary>
     public Task RefreshIfStaleAsync()
     {
@@ -83,58 +95,171 @@ public sealed class PreferredCovidSync
     }
 
     /// <summary>
-    /// A tray pick (already saved locally by the caller): push it to the cloud
-    /// so the website agrees. Failures are logged and the pick is retried on
-    /// the next refresh. Never throws.
+    /// A tray pick, step 1 (synchronous, UI thread): record it as unsynced and bump
+    /// the version FIRST, then set PreferredCovidAdult - all under the lock a
+    /// refresh's apply step takes - so an in-flight refresh can't overwrite it.
+    /// The caller then saves settings.json and calls PushPendingAsync.
     /// </summary>
-    public Task PushFromTrayAsync(string adult)
+    public void MarkLocalPick(string adult)
     {
         var normalized = PreferredCovidSetting.NormalizeAdult(adult) ?? PreferredCovidSetting.AdultPfizer;
         lock (_gate)
         {
-            _unsyncedAdult = normalized;
+            _settings.PreferredCovidUnsyncedAdult = normalized;
             _localVersion++;
+            _settings.PreferredCovidAdult = normalized;
+        }
+    }
+
+    /// <summary>
+    /// PUTs the unsynced pick (if any) to the cloud. Failures, timeouts and a
+    /// pending:true answer are logged and leave it unsynced for the next refresh.
+    /// Pushes are serialized and always send the newest pick. Never throws.
+    /// </summary>
+    public async Task PushPendingAsync()
+    {
+        try
+        {
+            await _pushGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await PushLockedAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _pushGate.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("PreferredCovidSync.Push", ex);
+            MarkAttempt(FailureRetryWindow);
+        }
+    }
+
+    private async Task PushLockedAsync()
+    {
+        string? adult;
+        lock (_gate)
+        {
+            adult = _settings.PreferredCovidUnsyncedAdult;
         }
 
-        return Task.Run(() => PushAsync(normalized));
+        if (adult is null)
+        {
+            return;
+        }
+
+        bool stored;
+        try
+        {
+            stored = await WithTimeout(ct => _api.SetPreferredCovidAsync(adult, PreferredCovidSetting.KidsModerna, ct)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("PreferredCovidSync.Push", ex);
+            MarkAttempt(FailureRetryWindow);
+            return;
+        }
+
+        if (!stored)
+        {
+            // Cloud setting table not created yet: not confirmed - keep the pick, keep retrying.
+            AppFileLog.Log("[Settings] preferred COVID: cloud setting not available yet (pending); will retry");
+            MarkAttempt(FailureRetryWindow);
+            return;
+        }
+
+        lock (_gate)
+        {
+            // Only clear if the user has not picked something newer meanwhile.
+            if (_settings.PreferredCovidUnsyncedAdult == adult)
+            {
+                _settings.PreferredCovidUnsyncedAdult = null;
+            }
+
+            _settings.PreferredCovidSynced = true;
+        }
+
+        _stateChanged();
+        MarkAttempt(CacheWindow);
     }
 
     private async Task RefreshCoreAsync()
     {
         try
         {
-            string? pending;
+            bool hasUnsynced;
             int versionBefore;
             lock (_gate)
             {
-                pending = _unsyncedAdult;
+                hasUnsynced = _settings.PreferredCovidUnsyncedAdult is not null;
                 versionBefore = _localVersion;
             }
 
-            if (pending is not null)
+            if (hasUnsynced)
             {
                 // The local pick never reached the cloud - finish that first; pulling now would undo it.
-                await PushAsync(pending).ConfigureAwait(false);
+                await PushPendingAsync().ConfigureAwait(false);
                 return;
             }
 
             var remote = await WithTimeout(ct => _api.GetPreferredCovidAsync(ct)).ConfigureAwait(false);
-            if (remote is not null)
+            var remoteAdult = PreferredCovidSetting.NormalizeAdult(remote?.Adult);
+            if (remote is null || remoteAdult is null)
             {
-                var remoteAdult = PreferredCovidSetting.NormalizeAdult(remote.Adult);
-                var localAdult = PreferredCovidSetting.NormalizeAdult(_getLocalAdult()) ?? PreferredCovidSetting.AdultPfizer;
-                bool apply;
-                lock (_gate)
+                // Nothing usable to follow (cloud setting pending / unrecognized): keep local, not synced.
+                MarkAttempt(CacheWindow);
+                return;
+            }
+
+            var seed = false;
+            var changed = false;
+            lock (_gate)
+            {
+                // A tray pick that happened while this request was out wins over its (older) answer.
+                if (_localVersion != versionBefore || _settings.PreferredCovidUnsyncedAdult is not null)
                 {
-                    // A tray pick that happened while this request was out wins over its (older) answer.
-                    apply = remoteAdult is not null && remoteAdult != localAdult && _localVersion == versionBefore && _unsyncedAdult is null;
+                    MarkAttemptLocked(CacheWindow);
+                    return;
                 }
 
-                if (apply)
+                if (!_settings.PreferredCovidSynced && !remote.Saved)
                 {
-                    AppFileLog.Log($"[Settings] preferred COVID (12+) follows the website: {localAdult} -> {remoteAdult}");
-                    _applyRemoteAdult(remoteAdult!);
+                    // First run and the cloud only has its never-saved default (or is an older
+                    // version that can't say): seed it with our value instead of adopting that default.
+                    _settings.PreferredCovidUnsyncedAdult = PreferredCovidSetting.NormalizeAdult(_settings.PreferredCovidAdult) ?? PreferredCovidSetting.AdultPfizer;
+                    seed = true;
                 }
+                else
+                {
+                    var localAdult = PreferredCovidSetting.NormalizeAdult(_settings.PreferredCovidAdult) ?? PreferredCovidSetting.AdultPfizer;
+                    if (remoteAdult != localAdult)
+                    {
+                        AppFileLog.Log($"[Settings] preferred COVID (12+) follows the website: {localAdult} -> {remoteAdult}");
+                        _settings.PreferredCovidAdult = remoteAdult;
+                        changed = true;
+                    }
+
+                    if (!_settings.PreferredCovidSynced)
+                    {
+                        _settings.PreferredCovidSynced = true;
+                        changed = true;
+                    }
+                }
+            }
+
+            if (seed)
+            {
+                AppFileLog.Log("[Settings] preferred COVID: cloud has no saved value yet; seeding it with this machine's choice");
+                _stateChanged();
+                await PushPendingAsync().ConfigureAwait(false);
+                return;
+            }
+
+            if (changed)
+            {
+                _stateChanged();
             }
 
             MarkAttempt(CacheWindow);
@@ -146,38 +271,17 @@ public sealed class PreferredCovidSync
         }
     }
 
-    private async Task PushAsync(string adult)
-    {
-        try
-        {
-            await WithTimeout(async ct => await _api.SetPreferredCovidAsync(adult, PreferredCovidSetting.KidsModerna, ct).ConfigureAwait(false)).ConfigureAwait(false);
-            lock (_gate)
-            {
-                // Only clear if the user has not picked something newer meanwhile.
-                if (_unsyncedAdult == adult)
-                {
-                    _unsyncedAdult = null;
-                }
-            }
-
-            MarkAttempt(CacheWindow);
-        }
-        catch (Exception ex)
-        {
-            AppFileLog.LogException("PreferredCovidSync.Push", ex);
-            MarkAttempt(FailureRetryWindow);
-        }
-    }
-
     private void MarkAttempt(TimeSpan window)
     {
         lock (_gate)
         {
-            _nextRefreshAt = _now() + window;
+            MarkAttemptLocked(window);
         }
     }
 
-    /// <summary>Runs one cloud call under the request timeout - both a cancellation token (the real HttpClient honors it) and a hard wait, so a call that ignores its token still cannot hang past the limit.</summary>
+    private void MarkAttemptLocked(TimeSpan window) => _nextRefreshAt = _now() + window;
+
+    /// <summary>Runs one cloud call under the request timeout - a cancellation token (the real HttpClient honors it) plus a hard wait, so a call that ignores its token still cannot hang past the limit.</summary>
     private async Task<T> WithTimeout<T>(Func<CancellationToken, Task<T>> call)
     {
         using var cts = new CancellationTokenSource(_timeout);

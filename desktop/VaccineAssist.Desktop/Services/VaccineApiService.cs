@@ -213,7 +213,7 @@ public sealed class VaccineApiService : IVaccineApiService
         if (result.Pending == true) return null;
         var adult = PreferredCovidSetting.NormalizeAdult(result.Adult);
         if (adult is null) return null;
-        return new PreferredCovidSetting(adult, PreferredCovidSetting.KidsModerna);
+        return new PreferredCovidSetting(adult, PreferredCovidSetting.KidsModerna, result.Saved == true);
     }
 
     public async Task<bool> SetPreferredCovidAsync(string adult, string kids, CancellationToken cancellationToken = default)
@@ -266,7 +266,12 @@ public sealed class VaccineApiService : IVaccineApiService
         // CreateRequest stamped the snapshot token; the access token only
         // lives ~1 h, so ask the auth service for one that is still good
         // (a no-op when it is — refresh is serialized and persisted there).
-        var sentToken = await _authService.GetValidAccessTokenAsync(cancellationToken);
+        // Auth/token-refresh calls deliberately get CancellationToken.None, never the
+        // caller's token: a cancel (e.g. the 3 s preferred-COVID limit) landing in the
+        // middle of a Supabase refresh could lose the rotated refresh token and force a
+        // re-login. The token endpoint has its own timeout; callers that must stay
+        // bounded cap the wait themselves.
+        var sentToken = await _authService.GetValidAccessTokenAsync(CancellationToken.None);
         if (sentToken is not null)
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", sentToken);
@@ -280,7 +285,7 @@ public sealed class VaccineApiService : IVaccineApiService
         // 401 (a cloud-side problem) can't turn into a refresh storm.
         if (response.StatusCode == HttpStatusCode.Unauthorized && sentToken is not null)
         {
-            var retryToken = await _authService.RefreshAfterUnauthorizedAsync(sentToken, cancellationToken);
+            var retryToken = await _authService.RefreshAfterUnauthorizedAsync(sentToken, CancellationToken.None);
             if (retryToken is not null && retryToken != sentToken)
             {
                 response.Dispose();
@@ -353,6 +358,10 @@ public sealed class VaccineApiService : IVaccineApiService
 
         [JsonPropertyName("pending")]
         public bool? Pending { get; set; }
+
+        /// <summary>GET only: true when a value is actually stored (absent on older cloud versions = not saved).</summary>
+        [JsonPropertyName("saved")]
+        public bool? Saved { get; set; }
     }
 
     private sealed record PreferredCovidRequest(

@@ -88,8 +88,14 @@ internal sealed class FakeAuthService : IAuthService
 
     public event EventHandler<string>? SessionEnded;
 
-    public Task<string?> GetValidAccessTokenAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult(AccessToken);
+    /// <summary>The CancellationToken each auth call received (VaccineApiService must pass CancellationToken.None).</summary>
+    public List<CancellationToken> AuthCallCancellationTokens { get; } = new();
+
+    public Task<string?> GetValidAccessTokenAsync(CancellationToken cancellationToken = default)
+    {
+        AuthCallCancellationTokens.Add(cancellationToken);
+        return Task.FromResult(AccessToken);
+    }
 
     /// <summary>Every access token VaccineApiService reported as 401-rejected.</summary>
     public List<string> RejectedAccessTokens { get; } = new();
@@ -100,6 +106,7 @@ internal sealed class FakeAuthService : IAuthService
 
     public Task<string?> RefreshAfterUnauthorizedAsync(string rejectedAccessToken, CancellationToken cancellationToken = default)
     {
+        AuthCallCancellationTokens.Add(cancellationToken);
         RejectedAccessTokens.Add(rejectedAccessToken);
         AccessToken = TokenAfterUnauthorizedRefresh;
         return Task.FromResult(TokenAfterUnauthorizedRefresh);

@@ -8,7 +8,8 @@ namespace VaccineAssist.Desktop.Models;
 /// Adult is "pfizer" or "moderna" (ages 12+); Kids is always "moderna"
 /// (ages 3-11 - the only product stocked, same as the cloud's own list).
 /// </summary>
-public sealed record PreferredCovidSetting(string Adult, string Kids)
+/// <param name="Saved">True only when the cloud reports a value actually stored in app_setting (GET "saved":true); false for the never-saved default and for older cloud versions that lack the field.</param>
+public sealed record PreferredCovidSetting(string Adult, string Kids, bool Saved = false)
 {
     public const string AdultPfizer = "pfizer";
     public const string AdultModerna = "moderna";
