@@ -280,6 +280,12 @@ internal sealed class FakeVaccineApiService : IVaccineApiService
     /// outcome in production but not what this test is isolating.</summary>
     public Exception? ResolvePhysicianException { get; set; }
 
+    public Task<PreferredCovidSetting?> GetPreferredCovidAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<PreferredCovidSetting?>(null);
+
+    public Task<bool> SetPreferredCovidAsync(string adult, string kids, CancellationToken cancellationToken = default) =>
+        Task.FromResult(true);
+
     public Task<IReadOnlyList<Vaccine>> GetVaccinesAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Vaccine>>(Vaccines);
 

@@ -62,11 +62,13 @@ public sealed class AppSettings
     /// Testing version "flu-preferred" (Will, 2026-10-22): the COVID vaccine
     /// the C hotkey picks for patients 12 and older - "pfizer" (Comirnaty,
     /// the default) or "moderna" (Mnexspike); 3-11 is always Moderna kids.
-    /// Desktop-local so it works against any cloud version (the cloud's own
-    /// Data Entry setting, /api/settings/preferred-covid, is not deployed).
-    /// To sync later: seed this from the cloud setting's "adult" value at
-    /// startup (the values are the same strings) and PUT it back on change.
-    /// Edited from the tray menu; also editable in settings.json.
+    /// Follows the cloud setting (GET/PUT /api/settings/preferred-covid, the
+    /// one the website's Lots / Entry values pages edit): Services/
+    /// PreferredCovidSync pulls the cloud's "adult" value at startup and
+    /// before the hotkey script is built (cached ~60 s) and overwrites this
+    /// when it differs; a tray pick saves here first, then PUTs to the cloud.
+    /// This stays the offline/failure fallback - on any cloud error the
+    /// hotkey just uses what is saved here. Also editable in settings.json.
     /// </summary>
     public string PreferredCovidAdult { get; set; } = "pfizer";
 }

@@ -243,6 +243,12 @@ public class DataEntryPopupViewModelAutoValidateTests
 
         public Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<PreferredCovidSetting?> GetPreferredCovidAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> SetPreferredCovidAsync(string adult, string kids, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class NoOpClipboardService : IClipboardService

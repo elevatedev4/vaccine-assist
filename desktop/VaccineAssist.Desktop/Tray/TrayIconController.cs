@@ -44,6 +44,8 @@ public sealed class TrayIconController : IDisposable
     private readonly VersionMenuSource? _versions;
     private string _versionRowsSignature = "";
     private readonly SynchronizationContext? _uiContext;
+    private ToolStripMenuItem? _covidPfizerItem;
+    private ToolStripMenuItem? _covidModernaItem;
 
     public event EventHandler? OpenRequested;
     public event EventHandler? SignOutRequested;
@@ -176,7 +178,18 @@ public sealed class TrayIconController : IDisposable
         };
         parent.DropDownItems.Add(pfizer);
         parent.DropDownItems.Add(moderna);
+        _covidPfizerItem = pfizer;
+        _covidModernaItem = moderna;
         return parent;
+    }
+
+    /// <summary>The cloud (website) changed the preferred COVID vaccine: move the check mark to match. Call on the UI thread; does not raise PreferredCovidAdultChosen.</summary>
+    public void SetPreferredCovidAdult(string choice)
+    {
+        if (_covidPfizerItem is null || _covidModernaItem is null) return;
+        var isModerna = string.Equals(choice, "moderna", StringComparison.OrdinalIgnoreCase);
+        _covidModernaItem.Checked = isModerna;
+        _covidPfizerItem.Checked = !isModerna;
     }
 
     /// <summary>V-T65 R5 (Will, verbatim, 2026-09-29: "allow the app to

@@ -206,6 +206,25 @@ public sealed class VaccineApiService : IVaccineApiService
         return result.Physician;
     }
 
+    public async Task<PreferredCovidSetting?> GetPreferredCovidAsync(CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, "/api/settings/preferred-covid");
+        var result = await SendAsync<PreferredCovidResponse>(request, cancellationToken);
+        if (result.Pending == true) return null;
+        var adult = PreferredCovidSetting.NormalizeAdult(result.Adult);
+        if (adult is null) return null;
+        return new PreferredCovidSetting(adult, PreferredCovidSetting.KidsModerna);
+    }
+
+    public async Task<bool> SetPreferredCovidAsync(string adult, string kids, CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Put, "/api/settings/preferred-covid");
+        request.Content = JsonContent.Create(new PreferredCovidRequest(adult, kids));
+
+        var result = await SendAsync<PreferredCovidResponse>(request, cancellationToken);
+        return result.Pending != true;
+    }
+
     private HttpRequestMessage CreateRequest(HttpMethod method, string relativePath)
     {
         var request = new HttpRequestMessage(method, relativePath);
@@ -322,6 +341,23 @@ public sealed class VaccineApiService : IVaccineApiService
         [JsonPropertyName("lot")]
         public Lot Lot { get; set; } = new();
     }
+
+    /// <summary>GET -> {adult, kids, pending}; PUT -> {adult, kids} or {pending:true}.</summary>
+    private sealed class PreferredCovidResponse
+    {
+        [JsonPropertyName("adult")]
+        public string? Adult { get; set; }
+
+        [JsonPropertyName("kids")]
+        public string? Kids { get; set; }
+
+        [JsonPropertyName("pending")]
+        public bool? Pending { get; set; }
+    }
+
+    private sealed record PreferredCovidRequest(
+        [property: JsonPropertyName("adult")] string Adult,
+        [property: JsonPropertyName("kids")] string Kids);
 
     private sealed class ErrorResponse
     {

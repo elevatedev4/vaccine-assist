@@ -93,6 +93,8 @@ public partial class MainWindow : Window
     private readonly IPioneerEntrySequence _pioneerEntrySequence;
     private readonly ILocalSettingsService _localSettingsService;
     private readonly AppSettings _settings;
+    /// <summary>Keeps _settings.PreferredCovidAdult following the cloud's preferred-COVID setting (website); see Services/PreferredCovidSync.cs. Never blocks or throws.</summary>
+    private readonly PreferredCovidSync _preferredCovidSync;
     private readonly CloudPageView _cloudPageView;
 
     /// <summary>V-T53 (vaccine -> PCP fax): owns the daily-run/receipt-poll
@@ -283,6 +285,10 @@ public partial class MainWindow : Window
         _cloudPageView = cloudPageView;
         _localSettingsService = localSettingsService;
         _settings = settings;
+        _preferredCovidSync = new PreferredCovidSync(
+            _vaccineApiService,
+            () => _settings.PreferredCovidAdult,
+            ApplyCloudPreferredCovidAdult);
         _faxRunScheduler = faxRunScheduler;
         _faxRunOrchestrator = faxRunOrchestrator;
         _faxCredentialStore = faxCredentialStore;
@@ -465,6 +471,40 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppFileLog.LogException("MainWindow.SetPreferredCovidAdult", ex);
+        }
+
+        // Local save is done; tell the cloud so the website shows the same pick
+        // (fire-and-forget - failures are logged and retried by the sync).
+        _ = _preferredCovidSync.PushFromTrayAsync(normalized);
+    }
+
+    /// <summary>
+    /// The cloud's preferred COVID vaccine differs from ours (picked on the
+    /// website): follow it. Called from a background thread by
+    /// PreferredCovidSync. The in-memory value flips immediately so the next
+    /// hotkey script uses it; the file save and tray check mark run on the UI thread.
+    /// </summary>
+    private void ApplyCloudPreferredCovidAdult(string adult)
+    {
+        _settings.PreferredCovidAdult = adult;
+        try
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    _localSettingsService.Save(_settings);
+                    _trayIconController?.SetPreferredCovidAdult(adult);
+                }
+                catch (Exception ex)
+                {
+                    AppFileLog.LogException("MainWindow.ApplyCloudPreferredCovidAdult", ex);
+                }
+            }));
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.ApplyCloudPreferredCovidAdult.Dispatch", ex);
         }
     }
 
@@ -699,6 +739,7 @@ public partial class MainWindow : Window
     {
         _pioneerOverlayController?.Start();
         _faxRunScheduler.Start();
+        _ = _preferredCovidSync.RefreshIfStaleAsync();
     }
 
     private void MainWindow_OnClosed(object? sender, EventArgs e)
@@ -841,6 +882,7 @@ public partial class MainWindow : Window
     private void ShowVaccineEntryAgeMacroPrompt()
     {
         AppFileLog.Log("[VaccineEntry] age prompt");
+        _ = _preferredCovidSync.RefreshIfStaleAsync(); // lands while the age prompt is open
 
         var previousForegroundWindow = GetForegroundWindow();
         AgePromptResult result;
@@ -964,6 +1006,9 @@ public partial class MainWindow : Window
     {
         try
         {
+            // Never waits on the cloud: refresh in the background (no-op inside the
+            // 60 s cache window) and build from the value saved right now.
+            _ = _preferredCovidSync.RefreshIfStaleAsync();
             return Flu2HotkeyScript.Build(Flu2HotkeyPlan.For(ageYears, _settings.PreferredCovidAdult));
         }
         catch (Exception ex)
@@ -1448,6 +1493,7 @@ public partial class MainWindow : Window
         }
 
         AppFileLog.Log("[AgeMacro] prompt");
+        _ = _preferredCovidSync.RefreshIfStaleAsync(); // lands while the age prompt is open
 
         var previousForegroundWindow = GetForegroundWindow();
         AgePromptResult result;

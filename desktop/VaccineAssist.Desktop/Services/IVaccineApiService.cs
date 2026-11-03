@@ -12,7 +12,7 @@ namespace VaccineAssist.Desktop.Services;
 /// requires an active sign-in (see IAuthService) — the cloud side
 /// rejects requests with no valid bearer token.
 /// </summary>
-public interface IVaccineApiService
+public interface IVaccineApiService : IPreferredCovidApi
 {
     Task<IReadOnlyList<Vaccine>> GetVaccinesAsync(CancellationToken cancellationToken = default);
 
@@ -188,4 +188,28 @@ public interface IVaccineApiService
     /// unconfirmed alternate ID into a real patient's chart.
     /// </summary>
     Task<Physician?> ResolvePhysicianAsync(Guid vaccineId, int ageYears, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// The preferred-COVID slice of the cloud API, split out so
+/// PreferredCovidSync depends on (and tests fake) only these two calls.
+/// </summary>
+public interface IPreferredCovidApi
+{
+    /// <summary>
+    /// Calls GET /api/settings/preferred-covid — the pharmacy-wide preferred
+    /// COVID vaccine the website's Lots / Entry values pages edit. Returns
+    /// null when the cloud has no usable value to follow (the route answers
+    /// pending:true before its table exists, or the adult value is
+    /// unrecognized); the caller then keeps its local value. Throws on
+    /// transport/HTTP failure like every other call here.
+    /// </summary>
+    Task<PreferredCovidSetting?> GetPreferredCovidAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Calls PUT /api/settings/preferred-covid with {adult, kids}. Returns
+    /// true when the cloud stored it, false when it answered pending:true
+    /// (setting table not created yet). Throws on transport/HTTP failure.
+    /// </summary>
+    Task<bool> SetPreferredCovidAsync(string adult, string kids, CancellationToken cancellationToken = default);
 }
