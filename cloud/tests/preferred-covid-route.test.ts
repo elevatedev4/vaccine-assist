@@ -60,7 +60,7 @@ describe("GET /api/settings/preferred-covid", () => {
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({}) as never);
     const response = await GET(authedRequest());
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false });
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false, saved: false });
   });
 
   it("returns the saved choice", async () => {
@@ -68,13 +68,21 @@ describe("GET /api/settings/preferred-covid", () => {
       fakeSupabase({ storedValue: { adult: "moderna", kids: "moderna" } }) as never
     );
     const response = await GET(authedRequest());
-    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna", pending: false });
+    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna", pending: false, saved: true });
+  });
+
+  it("reports saved:true for a stored row even when it equals the built-in default", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(
+      fakeSupabase({ storedValue: { adult: "pfizer", kids: "moderna" } }) as never
+    );
+    const response = await GET(authedRequest());
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false, saved: true });
   });
 
   it("falls back to the defaults for a malformed stored value", async () => {
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ storedValue: { adult: "novavax" } }) as never);
     const response = await GET(authedRequest());
-    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false });
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false, saved: false });
   });
 
   it("degrades to the defaults with pending:true before app_setting exists", async () => {
@@ -83,7 +91,7 @@ describe("GET /api/settings/preferred-covid", () => {
     );
     const response = await GET(authedRequest());
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: true });
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: true, saved: false });
   });
 
   it("500s on any other database error", async () => {

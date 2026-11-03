@@ -13,9 +13,11 @@ import { PREFERRED_COVID_SETTING_KEY, isValidPreferredCovid } from "@/lib/prefer
  * like every other settings route (requireAuthenticatedUser).
  *
  * RESPONSE CONTRACTS:
- *   GET -> { adult: "pfizer" | "moderna", kids: "moderna", pending: boolean }
+ *   GET -> { adult: "pfizer" | "moderna", kids: "moderna", pending: boolean, saved: boolean }
  *          (defaults pfizer / moderna when nothing is saved; pending:true
- *          means app_setting does not exist yet)
+ *          means app_setting does not exist yet; saved:true only when a
+ *          valid macro.preferred_covid row is stored, false for the
+ *          built-in default)
  *   PUT body { adult, kids } (both required, both valid)
  *       -> { adult, kids } on success
  *       or { pending: true } (200) before 0012 has been applied
@@ -36,8 +38,8 @@ export async function GET(request: Request) {
   }
 
   try {
-    const { setting, pending } = await getPreferredCovid(supabase);
-    return NextResponse.json({ ...setting, pending });
+    const { setting, pending, saved } = await getPreferredCovid(supabase);
+    return NextResponse.json({ ...setting, pending, saved });
   } catch (err) {
     console.error("GET /api/settings/preferred-covid: failed to load the setting", err);
     return NextResponse.json({ error: "Failed to load the preferred COVID setting." }, { status: 500 });
