@@ -6,6 +6,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using VaccineAssist.Desktop.Logging;
 using VaccineAssist.Desktop.Models;
 using VaccineAssist.Desktop.Navigation;
@@ -282,6 +283,8 @@ public sealed partial class PioneerOverlayWindow : Window
         versionItem.SubmenuOpened += (_, _) =>
         {
             _activeSubmenuItem = versionItem;
+            _submenuPopupHwnd = IntPtr.Zero; // drop a previous submenu's stale popup/bounds
+            _openSubmenuScreenBounds = null;
             OnVersionSubmenuOpened(versionItem);
         };
         versionItem.SubmenuClosed += (_, _) => OnSubmenuClosed(versionItem);
@@ -329,7 +332,17 @@ public sealed partial class PioneerOverlayWindow : Window
         parent.SubmenuOpened += (_, _) =>
         {
             _activeSubmenuItem = parent;
+            _submenuPopupHwnd = IntPtr.Zero; // drop a previous submenu's stale popup/bounds
+            _openSubmenuScreenBounds = null;
             TryUpdateSubmenuBounds(parent);
+            // The popup window may not exist yet at this moment: read the bounds again once it is laid out.
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (parent.IsSubmenuOpen && ReferenceEquals(_activeSubmenuItem, parent))
+                {
+                    TryUpdateSubmenuBounds(parent);
+                }
+            }));
         };
         parent.SubmenuClosed += (_, _) => OnSubmenuClosed(parent);
         return parent;

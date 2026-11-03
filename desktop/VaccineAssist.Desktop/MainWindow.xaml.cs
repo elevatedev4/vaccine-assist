@@ -468,9 +468,6 @@ public partial class MainWindow : Window
         // flight can't overwrite it; then save locally; then tell the cloud.
         _preferredCovidSync.MarkLocalPick(normalized);
         AppFileLog.Log($"[Settings] preferred COVID (12+) set to {normalized}");
-        // A pick made in the blue icon's menu moves the tray's check mark too (the
-        // blue icon's menu re-reads the setting each time it opens).
-        _trayIconController?.SetPreferredCovidAdult(normalized);
         try
         {
             _localSettingsService.Save(_settings);
@@ -482,6 +479,18 @@ public partial class MainWindow : Window
 
         // Fire-and-forget: failures are logged and retried (the pick stays in settings.json).
         _ = _preferredCovidSync.PushPendingAsync();
+
+        // A pick made in the blue icon's menu moves the tray's check mark too (the
+        // blue icon's menu re-reads the setting each time it opens). Last, so a
+        // failure here can never cost the save or the push.
+        try
+        {
+            _trayIconController?.SetPreferredCovidAdult(normalized);
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.SetPreferredCovidAdult.TrayCheck", ex);
+        }
     }
 
     /// <summary>
