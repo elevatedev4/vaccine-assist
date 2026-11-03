@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadPreferredCovid } from "@/lib/preferred-covid-client";
+import { loadPreferredCovid, preferredCovidSaveOutcome } from "@/lib/preferred-covid-client";
 
 function fetchReturning(response: Response | Error) {
   return vi.fn(async () => {
@@ -32,5 +32,22 @@ describe("loadPreferredCovid", () => {
   it("a successful response with nothing saved yields the defaults as a real loaded value", async () => {
     const result = await loadPreferredCovid("tok", fetchReturning(new Response(JSON.stringify({ adult: "pfizer", kids: "moderna", pending: true }), { status: 200 })));
     expect(result).toEqual({ ok: true, setting: { adult: "pfizer", kids: "moderna" } });
+  });
+});
+
+describe("preferredCovidSaveOutcome", () => {
+  it("is saved only for an ok response that is not pending", () => {
+    expect(preferredCovidSaveOutcome(true, { adult: "moderna", kids: "moderna" })).toBe("saved");
+    expect(preferredCovidSaveOutcome(true, {})).toBe("saved");
+    expect(preferredCovidSaveOutcome(true, null)).toBe("saved");
+  });
+
+  it("is pending when nothing was stored (settings table not set up), so the editor reverts", () => {
+    expect(preferredCovidSaveOutcome(true, { pending: true })).toBe("pending");
+  });
+
+  it("is failed for a non-ok response, whatever the body", () => {
+    expect(preferredCovidSaveOutcome(false, {})).toBe("failed");
+    expect(preferredCovidSaveOutcome(false, { pending: true })).toBe("failed");
   });
 });

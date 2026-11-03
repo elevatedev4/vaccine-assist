@@ -24,6 +24,9 @@ import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import DateTextInput from "@/app/date-text-input";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
+import { PreferredCovidSettingEditor, PreferredBadge } from "@/app/preferred-covid-setting";
+import { isPreferredAdultCovidRow } from "@/lib/preferred-covid-badge";
+import type { PreferredCovidSetting } from "@/lib/preferred-covid";
 
 /**
  * /lots page, round 3 (V-T-ordering-lots-round3, Will 2026-09-09
@@ -309,6 +312,9 @@ function persistInactiveOpenPreference(open: boolean) {
 
 export default function LotsPage() {
   const [session, setSession] = useState<SessionState>(null);
+  // Shared pharmacy-wide setting (also edited on Data Entry / Entry values);
+  // null until the editor has loaded it, so no row is badged on a guess.
+  const [preferredCovid, setPreferredCovid] = useState<PreferredCovidSetting | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
@@ -1227,7 +1233,10 @@ export default function LotsPage() {
 
     return (
       <tr key={view.productKey} style={rowStyle}>
-        <td style={styles.td}>{vaccineDisplayName(view.displayName)}</td>
+        <td style={styles.td}>
+          {vaccineDisplayName(view.displayName)}
+          {isPreferredAdultCovidRow({ name: view.displayName, active: view.active, expired: rowStatus === "expired" }, preferredCovid) && <PreferredBadge />}
+        </td>
         <td style={styles.td}>
           {/* One NDC per product (V-T66 round 2, Will 2026-09-30: "Don't
               list both") — view.ndc is already the canonical/primary NDC
@@ -1380,6 +1389,7 @@ export default function LotsPage() {
     <main style={styles.main}>
       <ErrorToast toasts={toasts} onDismiss={dismiss} />
       <h1>Lots</h1>
+      <PreferredCovidSettingEditor accessToken={session.accessToken} variant="compact" onSettingChange={setPreferredCovid} />
 
       {!beyondUseDateSupported && (
         <p style={styles.note}>Beyond-use date isn&apos;t available yet on this environment (pending migration).</p>

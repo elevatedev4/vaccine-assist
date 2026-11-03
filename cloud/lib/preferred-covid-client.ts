@@ -25,3 +25,18 @@ export async function loadPreferredCovid(
     return { ok: false };
   }
 }
+
+/**
+ * What a PUT /api/settings/preferred-covid response means for the editor:
+ * only an ok response without `pending` actually stored the choice. A failed
+ * or pending save ("pending" = the settings table isn't set up, nothing was
+ * stored) must put the previous value back, so a page never badges a brand
+ * the C hotkey won't pick.
+ */
+export type PreferredCovidSaveOutcome = "saved" | "pending" | "failed";
+
+export function preferredCovidSaveOutcome(responseOk: boolean, body: unknown): PreferredCovidSaveOutcome {
+  if (!responseOk) return "failed";
+  const pending = !!body && typeof body === "object" && (body as { pending?: unknown }).pending === true;
+  return pending ? "pending" : "saved";
+}
