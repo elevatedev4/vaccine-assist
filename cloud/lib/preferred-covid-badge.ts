@@ -11,7 +11,7 @@ import { PREFERRED_COVID_ADULT_OPTIONS, type PreferredCovidSetting } from "@/lib
  * products the macro catalog calls comirnaty12 / mnexspike). Matching is
  * deliberately conservative - Spikevax (Moderna 3-11) never matches the
  * Moderna 12+ choice, and a Comirnaty name that carries a child age band
- * (3-4, 5-11, 6 mo) never matches Pfizer 12+. Missing setting, missing
+ * (3-4, 5-11, 6 mo) never matches Pfizer 12+. Inactive or expired rows, a missing setting, missing
  * name, or no match all return false: the badge simply doesn't show.
  */
 
@@ -20,6 +20,10 @@ export type PreferredCovidRowInput = {
   name: string | null | undefined;
   /** The row's short_code when the page has one (Entry values does; Lots does not). */
   shortCode?: string | null;
+  /** False for an inactive product (an old prior-season row): never badged. Default true. */
+  active?: boolean;
+  /** True when the row's lot is expired: not badged. Default false. */
+  expired?: boolean;
 };
 
 const NAME_BY_ADULT_CHOICE = {
@@ -35,6 +39,7 @@ export function isPreferredAdultCovidRow(
   setting: PreferredCovidSetting | null | undefined
 ): boolean {
   if (!setting) return false;
+  if (row.active === false || row.expired === true) return false;
   const option = PREFERRED_COVID_ADULT_OPTIONS.find((o) => o.value === setting.adult);
   if (!option) return false;
 

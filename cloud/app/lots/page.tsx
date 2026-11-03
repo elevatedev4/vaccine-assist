@@ -1235,7 +1235,7 @@ export default function LotsPage() {
       <tr key={view.productKey} style={rowStyle}>
         <td style={styles.td}>
           {vaccineDisplayName(view.displayName)}
-          {isPreferredAdultCovidRow({ name: view.displayName }, preferredCovid) && <PreferredBadge />}
+          {isPreferredAdultCovidRow({ name: view.displayName, active: view.active, expired: rowStatus === "expired" }, preferredCovid) && <PreferredBadge />}
         </td>
         <td style={styles.td}>
           {/* One NDC per product (V-T66 round 2, Will 2026-09-30: "Don't

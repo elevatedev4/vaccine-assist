@@ -7,7 +7,7 @@ import {
   PREFERRED_COVID_KIDS_OPTIONS,
   type PreferredCovidSetting,
 } from "@/lib/preferred-covid";
-import { loadPreferredCovid } from "@/lib/preferred-covid-client";
+import { loadPreferredCovid, preferredCovidSaveOutcome } from "@/lib/preferred-covid-client";
 
 /**
  * Data Entry tab: which COVID vaccine the C hotkey picks (V-Q11, Will
@@ -112,14 +112,19 @@ export function PreferredCovidSettingEditor({
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify(next),
       });
-      const body: { pending?: boolean } = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      const body: unknown = await response.json().catch(() => ({}));
+      const outcome = preferredCovidSaveOutcome(response.ok, body);
+      if (outcome !== "saved") {
+        // Nothing was stored (failed, or the settings table isn't set up so
+        // the C hotkey keeps using the defaults): show the previous value
+        // again and let the page drop any badge for a brand the hotkey
+        // won't pick.
         setSetting(previous);
         onChangeRef.current?.(previous);
-        setStatus("error");
+        setStatus(outcome === "pending" ? "pending" : "error");
         return;
       }
-      setStatus(body.pending ? "pending" : "saved");
+      setStatus("saved");
     } catch {
       setSetting(previous);
       onChangeRef.current?.(previous);

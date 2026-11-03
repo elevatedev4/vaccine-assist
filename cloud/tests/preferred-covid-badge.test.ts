@@ -48,4 +48,11 @@ describe("isPreferredAdultCovidRow", () => {
   it("does not match a name that merely contains a brand later in the text", () => {
     expect(isPreferredAdultCovidRow({ name: "Not Comirnaty" }, PFIZER)).toBe(false);
   });
+
+  it("does not badge an inactive (old prior-season) or expired row", () => {
+    expect(isPreferredAdultCovidRow({ name: "Comirnaty 2025-26", active: false }, PFIZER)).toBe(false);
+    expect(isPreferredAdultCovidRow({ name: "Comirnaty 2026-27", expired: true }, PFIZER)).toBe(false);
+    expect(isPreferredAdultCovidRow({ name: "mNEXSPIKE", shortCode: "mnexspike", active: false }, MODERNA)).toBe(false);
+    expect(isPreferredAdultCovidRow({ name: "Comirnaty 2026-27", active: true, expired: false }, PFIZER)).toBe(true);
+  });
 });

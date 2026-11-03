@@ -35,6 +35,12 @@ describe("PreferredCovidSettingEditor rendering", () => {
     expect(html).not.toContain("Preferred COVID (C hotkey)");
   });
 
+  it("reverts on a failed or pending save (source guard for the editor wiring)", () => {
+    const src = read("app/preferred-covid-setting.tsx");
+    expect(src).toContain('outcome !== "saved"');
+    expect(src).toMatch(/outcome !== "saved"[\s\S]*setSetting\(previous\);[\s\S]*onChangeRef\.current\?\.\(previous\)/);
+  });
+
   it("badge renders the word Preferred", () => {
     expect(renderToStaticMarkup(createElement(PreferredBadge))).toContain("Preferred");
   });
@@ -48,6 +54,8 @@ describe("pages use the one shared control", () => {
     expect(src).toMatch(importLine);
     expect(src).toMatch(/<h1>Lots<\/h1>\s*<PreferredCovidSettingEditor[^>]*variant="compact"/);
     expect(src).toContain("isPreferredAdultCovidRow(");
+    expect(src).toContain("active: view.active");
+    expect(src).toContain('expired: rowStatus === "expired"');
     expect(src).toContain("<PreferredBadge />");
   });
 
