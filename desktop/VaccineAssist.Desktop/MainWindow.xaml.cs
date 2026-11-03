@@ -401,6 +401,7 @@ public partial class MainWindow : Window
                 settings: _settings,
                 versions: _versionMenuSource);
             pioneerOverlayController.VersionSwitchRequested += (_, versionRef) => SwitchVersion(versionRef);
+            pioneerOverlayController.PreferredCovidAdultChosen += (_, choice) => SetPreferredCovidAdult(choice);
             // V-T41 R5 (item 4): the entry-status panel's X button.
             pioneerOverlayController.EntryStatusCancelRequested += (_, _) => CancelVaccineEntryRun();
             _pioneerOverlayController = pioneerOverlayController;
@@ -456,7 +457,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Tray menu: the COVID vaccine the C hotkey picks for patients 12 and older ("pfizer" = Comirnaty, or "moderna"). Saved to settings.json; the next picker opened uses it.</summary>
+    /// <summary>Tray menu AND blue Pioneer icon menu: the COVID vaccine the C hotkey picks for patients 12 and older ("pfizer" = Comirnaty, or "moderna"). Saved to settings.json; the next picker opened uses it.</summary>
     private void SetPreferredCovidAdult(string choice)
     {
         var normalized = string.Equals(choice, Flu2HotkeyPlan.AdultModerna, StringComparison.OrdinalIgnoreCase)
@@ -467,6 +468,9 @@ public partial class MainWindow : Window
         // flight can't overwrite it; then save locally; then tell the cloud.
         _preferredCovidSync.MarkLocalPick(normalized);
         AppFileLog.Log($"[Settings] preferred COVID (12+) set to {normalized}");
+        // A pick made in the blue icon's menu moves the tray's check mark too (the
+        // blue icon's menu re-reads the setting each time it opens).
+        _trayIconController?.SetPreferredCovidAdult(normalized);
         try
         {
             _localSettingsService.Save(_settings);

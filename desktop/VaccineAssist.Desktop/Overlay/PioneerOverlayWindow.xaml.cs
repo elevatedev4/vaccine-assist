@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using VaccineAssist.Desktop.Logging;
+using VaccineAssist.Desktop.Models;
 using VaccineAssist.Desktop.Navigation;
 using VaccineAssist.Desktop.Versioning;
 
@@ -68,7 +69,16 @@ public sealed partial class PioneerOverlayWindow : Window
     /// <summary>Source for the menu's "Version" submenu; null (never set) omits the submenu.</summary>
     public VersionMenuSource? Versions { get; set; }
 
-    private MenuItem? _versionMenuItem;
+    /// <summary>Raised with "pfizer" or "moderna" when a row of the menu's "Preferred COVID vaccine (12+)" submenu is clicked (same shape as the tray menu's event).</summary>
+    public event EventHandler<string>? PreferredCovidAdultChosen;
+
+    /// <summary>Returns the current preferred COVID vaccine ("pfizer" / "moderna"); read each time the menu opens so the check mark is always current. Null (never set) checks the default.</summary>
+    public Func<string?>? GetPreferredCovidAdult { get; set; }
+
+    // The submenu (Version or Preferred COVID) that is currently open, if any:
+    // its popup lies outside the main menu's rect, so the outside-click check
+    // needs its bounds.
+    private MenuItem? _activeSubmenuItem;
     private string _versionRowsSignature = "";
     private OverlayRect? _openSubmenuScreenBounds;
     private IntPtr _submenuPopupHwnd = IntPtr.Zero; // cached for the hook callback (GetWindowRect only)
@@ -134,10 +144,10 @@ public sealed partial class PioneerOverlayWindow : Window
         var exitItem = new MenuItem { Header = "Exit" };
         exitItem.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
         menu.Items.Add(new Separator());
+        menu.Items.Add(BuildPreferredCovidMenuItem());
         if (Versions is not null)
         {
-            _versionMenuItem = BuildVersionMenuItem();
-            menu.Items.Add(_versionMenuItem);
+            menu.Items.Add(BuildVersionMenuItem());
         }
         menu.Items.Add(exitItem);
 
@@ -196,8 +206,8 @@ public sealed partial class PioneerOverlayWindow : Window
         // GetWindowRect on the popup window cached when the submenu opened.
         // When the bounds still cannot be read, clicks near the main menu
         // keep it open and farther clicks close it (never stuck open).
-        var versionItem = _versionMenuItem;
-        var submenuOpen = versionItem is { IsSubmenuOpen: true };
+        var activeSubmenu = _activeSubmenuItem;
+        var submenuOpen = activeSubmenu is { IsSubmenuOpen: true };
         if (submenuOpen && _submenuPopupHwnd != IntPtr.Zero
             && GetWindowRect(_submenuPopupHwnd, out var rect)
             && rect.Right > rect.Left
@@ -252,7 +262,7 @@ public sealed partial class PioneerOverlayWindow : Window
         _outsideClickHook.Uninstall();
         if (sender is ContextMenu menu)
         {
-            _versionMenuItem = null;
+            _activeSubmenuItem = null;
             _openSubmenuScreenBounds = null;
             _submenuPopupHwnd = IntPtr.Zero;
             menu.Closed -= Menu_OnClosed;
@@ -269,9 +279,60 @@ public sealed partial class PioneerOverlayWindow : Window
         var versionItem = new MenuItem { Header = "Version" };
         _versionRowsSignature = "";
         PopulateVersionRows(versionItem);
-        versionItem.SubmenuOpened += (_, _) => OnVersionSubmenuOpened(versionItem);
-        versionItem.SubmenuClosed += (_, _) => { _openSubmenuScreenBounds = null; _submenuPopupHwnd = IntPtr.Zero; };
+        versionItem.SubmenuOpened += (_, _) =>
+        {
+            _activeSubmenuItem = versionItem;
+            OnVersionSubmenuOpened(versionItem);
+        };
+        versionItem.SubmenuClosed += (_, _) => OnSubmenuClosed(versionItem);
         return versionItem;
+    }
+
+    /// <summary>Forgets the open submenu's bounds, unless another submenu has already taken over (moving the pointer from one submenu parent to the next).</summary>
+    private void OnSubmenuClosed(MenuItem item)
+    {
+        if (!ReferenceEquals(_activeSubmenuItem, item)) return;
+        _activeSubmenuItem = null;
+        _openSubmenuScreenBounds = null;
+        _submenuPopupHwnd = IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// "Preferred COVID vaccine (12+)": title, options and the checked rule come
+    /// from Models/PreferredCovidMenu (the same list the tray menu uses). The menu
+    /// is rebuilt on every click of the icon, so the check always shows the current setting.
+    /// </summary>
+    private MenuItem BuildPreferredCovidMenuItem()
+    {
+        var parent = new MenuItem { Header = PreferredCovidMenu.Title };
+        string? current = null;
+        try { current = GetPreferredCovidAdult?.Invoke(); }
+        catch (Exception ex) { AppFileLog.LogException("PioneerOverlayWindow.GetPreferredCovidAdult", ex); }
+
+        var rows = new System.Collections.Generic.List<(string Value, MenuItem Item)>();
+        foreach (var option in PreferredCovidMenu.Options)
+        {
+            var value = option.Value;
+            var item = new MenuItem { Header = option.Label, IsChecked = PreferredCovidMenu.IsChecked(value, current) };
+            item.Click += (_, _) =>
+            {
+                foreach (var (rowValue, row) in rows)
+                {
+                    row.IsChecked = PreferredCovidMenu.IsChecked(rowValue, value);
+                }
+                PreferredCovidAdultChosen?.Invoke(this, value);
+            };
+            rows.Add((value, item));
+            parent.Items.Add(item);
+        }
+
+        parent.SubmenuOpened += (_, _) =>
+        {
+            _activeSubmenuItem = parent;
+            TryUpdateSubmenuBounds(parent);
+        };
+        parent.SubmenuClosed += (_, _) => OnSubmenuClosed(parent);
+        return parent;
     }
 
     private void PopulateVersionRows(MenuItem versionItem)

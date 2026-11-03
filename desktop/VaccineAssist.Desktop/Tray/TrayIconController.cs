@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 using VaccineAssist.Desktop.Logging;
+using VaccineAssist.Desktop.Models;
 using VaccineAssist.Desktop.Versioning;
 
 namespace VaccineAssist.Desktop.Tray;
@@ -44,8 +45,7 @@ public sealed class TrayIconController : IDisposable
     private readonly VersionMenuSource? _versions;
     private string _versionRowsSignature = "";
     private readonly SynchronizationContext? _uiContext;
-    private ToolStripMenuItem? _covidPfizerItem;
-    private ToolStripMenuItem? _covidModernaItem;
+    private readonly System.Collections.Generic.List<(string Value, ToolStripMenuItem Item)> _covidItems = new();
 
     public event EventHandler? OpenRequested;
     public event EventHandler? SignOutRequested;
@@ -153,43 +153,35 @@ public sealed class TrayIconController : IDisposable
     }
 
     /// <summary>
-    /// Testing version "flu-preferred": "Preferred COVID vaccine (12+)" with the
-    /// two choices for the C hotkey. 3-11 is always Moderna kids, so it has no row.
+    /// "Preferred COVID vaccine (12+)" with the choices for the C hotkey. Title,
+    /// options and the checked rule come from Models/PreferredCovidMenu (shared
+    /// with the blue Pioneer icon's menu); 3-11 is always Moderna kids, so it has no row.
     /// </summary>
     private ToolStripMenuItem BuildPreferredCovidMenu(string? current)
     {
-        var parent = new ToolStripMenuItem("Preferred COVID vaccine (12+)");
-        var pfizer = new ToolStripMenuItem("Pfizer (Comirnaty)");
-        var moderna = new ToolStripMenuItem("Moderna (Mnexspike)");
-        var isModerna = string.Equals(current, "moderna", StringComparison.OrdinalIgnoreCase);
-        pfizer.Checked = !isModerna;
-        moderna.Checked = isModerna;
-        pfizer.Click += (_, _) =>
+        var parent = new ToolStripMenuItem(PreferredCovidMenu.Title);
+        foreach (var option in PreferredCovidMenu.Options)
         {
-            pfizer.Checked = true;
-            moderna.Checked = false;
-            PreferredCovidAdultChosen?.Invoke(this, "pfizer");
-        };
-        moderna.Click += (_, _) =>
-        {
-            moderna.Checked = true;
-            pfizer.Checked = false;
-            PreferredCovidAdultChosen?.Invoke(this, "moderna");
-        };
-        parent.DropDownItems.Add(pfizer);
-        parent.DropDownItems.Add(moderna);
-        _covidPfizerItem = pfizer;
-        _covidModernaItem = moderna;
+            var value = option.Value;
+            var item = new ToolStripMenuItem(option.Label) { Checked = PreferredCovidMenu.IsChecked(value, current) };
+            item.Click += (_, _) =>
+            {
+                SetPreferredCovidAdult(value);
+                PreferredCovidAdultChosen?.Invoke(this, value);
+            };
+            parent.DropDownItems.Add(item);
+            _covidItems.Add((value, item));
+        }
         return parent;
     }
 
-    /// <summary>The cloud (website) changed the preferred COVID vaccine: move the check mark to match. Call on the UI thread; does not raise PreferredCovidAdultChosen.</summary>
+    /// <summary>The preferred COVID vaccine changed (website sync, or a pick in the blue icon's menu): move the check mark to match. Call on the UI thread; does not raise PreferredCovidAdultChosen.</summary>
     public void SetPreferredCovidAdult(string choice)
     {
-        if (_covidPfizerItem is null || _covidModernaItem is null) return;
-        var isModerna = string.Equals(choice, "moderna", StringComparison.OrdinalIgnoreCase);
-        _covidModernaItem.Checked = isModerna;
-        _covidPfizerItem.Checked = !isModerna;
+        foreach (var (value, item) in _covidItems)
+        {
+            item.Checked = PreferredCovidMenu.IsChecked(value, choice);
+        }
     }
 
     /// <summary>V-T65 R5 (Will, verbatim, 2026-09-29: "allow the app to

@@ -70,6 +70,9 @@ public sealed class PioneerOverlayController : IDisposable
     /// <summary>Raised with the chosen version ref when a row of the icon menu's Version submenu is clicked.</summary>
     public event EventHandler<string>? VersionSwitchRequested;
 
+    /// <summary>Raised with "pfizer" or "moderna" when a row of the icon menu's Preferred COVID submenu is clicked.</summary>
+    public event EventHandler<string>? PreferredCovidAdultChosen;
+
     public PioneerOverlayController(
         Action<string> navigateTo,
         Action showDataEntryPopup,
@@ -219,6 +222,8 @@ public sealed class PioneerOverlayController : IDisposable
         window.MacroCodesRequested += (_, _) => SafeInvoke(_showMacroCodesPopup);
         window.ExitRequested += (_, _) => SafeInvoke(_exit);
         window.Versions = _versions;
+        window.GetPreferredCovidAdult = () => _settings.PreferredCovidAdult;
+        window.PreferredCovidAdultChosen += (_, choice) => SafeInvoke(() => PreferredCovidAdultChosen?.Invoke(this, choice));
         window.VersionSwitchRequested += (_, versionRef) => RaiseVersionSwitch(versionRef);
         // ShowActivated="False" + the WS_EX_NOACTIVATE/WS_EX_TOOLWINDOW
         // styles set in its own OnSourceInitialized mean this never
