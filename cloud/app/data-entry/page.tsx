@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { subscribeToSessionState, toSessionState, type SessionState } from "@/lib/supabase/session";
 import { DataEntryInstructions } from "@/app/data-entry/instructions";
-import { PreferredCovidSettingEditor } from "@/app/data-entry/preferred-covid-setting";
+import { PreferredCovidSettingEditor } from "@/app/preferred-covid-setting";
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 
 /**

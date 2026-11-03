@@ -17,6 +17,9 @@ import { createDebouncedRunner, type DebouncedRunner } from "@/lib/lots-autosave
 import SignInGate, { AuthLoading } from "@/app/sign-in-gate";
 import ErrorToast, { useErrorToasts } from "@/app/error-toast";
 import { vaccineDisplayName } from "@/lib/vaccine-display-name";
+import { PreferredCovidSettingEditor, PreferredBadge } from "@/app/preferred-covid-setting";
+import { isPreferredAdultCovidRow } from "@/lib/preferred-covid-badge";
+import type { PreferredCovidSetting } from "@/lib/preferred-covid";
 
 /**
  * /entry-values tab (V-entry-values, Will's brief verbatim): "it seems
@@ -92,6 +95,9 @@ function isBlank(value: string | null | undefined): boolean {
 
 export default function EntryValuesPage() {
   const [session, setSession] = useState<SessionState>(null);
+  // Shared pharmacy-wide setting (also edited on Data Entry / Lots); null
+  // until the editor has loaded it, so no row is badged on a guess.
+  const [preferredCovid, setPreferredCovid] = useState<PreferredCovidSetting | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
@@ -469,7 +475,10 @@ export default function EntryValuesPage() {
     return (
       <tr key={row.id}>
         <td style={{ ...styles.td, ...styles.type, ...groupBorder }}>{row.catalogType}</td>
-        <td style={{ ...styles.td, ...groupBorder }}>{vaccineDisplayName(row.displayName)}</td>
+        <td style={{ ...styles.td, ...groupBorder }}>
+          {vaccineDisplayName(row.displayName)}
+          {isPreferredAdultCovidRow({ name: row.displayName, shortCode: row.shortCode }, preferredCovid) && <PreferredBadge />}
+        </td>
         <td style={{ ...styles.td, ...groupBorder }}>{formatNdcDashed(row.ndc)}</td>
         <td style={{ ...styles.td, ...groupBorder }}>{doseColumnLabel(row.doseNumber)}</td>
         <td style={{ ...styles.td, ...groupBorder, background: quantityBlank ? BLANK_QUANTITY_HIGHLIGHT : undefined }}>
@@ -540,6 +549,7 @@ export default function EntryValuesPage() {
   return (
     <main style={styles.main}>
       <h1>Entry values</h1>
+      <PreferredCovidSettingEditor accessToken={session.accessToken} variant="compact" onSettingChange={setPreferredCovid} />
       <p style={styles.muted}>
         Quantity and directions used for Pioneer prescription entry, per dose. Cash price is per vaccine — set it on
         the first dose row. Changes save automatically.
