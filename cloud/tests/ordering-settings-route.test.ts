@@ -101,6 +101,30 @@ describe("GET /api/ordering/settings", () => {
     expect(body.mflusivaPct).toBe(40);
   });
 
+  it("still returns the walk-up % (mFLUSIVA share 40) when only the mFLUSIVA read fails", async () => {
+    const supabase = fakeSupabase({ storedByKey: { "ordering.walk_in_pct": 30 } }) as unknown as {
+      from: (t: string) => { select: () => { eq: (c: string, k: string) => { maybeSingle: () => Promise<unknown> } } };
+    };
+    const originalFrom = supabase.from;
+    supabase.from = (table: string) => {
+      const real = originalFrom(table);
+      return {
+        ...real,
+        select: () => ({
+          eq: (col: string, key: string) =>
+            key === "ordering.mflusiva_pct"
+              ? { maybeSingle: async () => ({ data: null, error: new Error("connection reset") }) }
+              : real.select().eq(col, key),
+        }),
+      };
+    };
+    vi.mocked(getSupabaseServerClient).mockReturnValue(supabase as never);
+
+    const response = await GET(authedRequest());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ walkInPct: 30, mflusivaPct: 40, pending: false });
+  });
+
   it("returns 401 without a bearer token (real auth, unmocked path exercised elsewhere in this repo's convention)", async () => {
     vi.mocked(requireAuthenticatedUser).mockResolvedValueOnce({
       error: new Response(JSON.stringify({ error: "Missing bearer token." }), { status: 401 }) as never,

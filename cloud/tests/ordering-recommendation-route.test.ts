@@ -1012,6 +1012,47 @@ describe("GET /api/ordering/recommendation", () => {
         expect(upcoming(two, FLUCELVAX)).toBe(1);
       });
 
+      it("reports the saved share (70) even when there are no 50-64 appointments", async () => {
+        const body = await run(withMflusiva, ["3-49", "65+"], 70);
+        expect(body.mflusivaPct).toBe(70);
+      });
+
+      it("reports the saved share (70) even when no mFLUSIVA is on file", async () => {
+        const body = await run(fluCatalog, ["50-64", "50-64"], 70);
+        expect(body.mflusivaPct).toBe(70);
+        expect(upcoming(body, FLUCELVAX)).toBe(2);
+      });
+
+      it("reports the saved share (70) even when Acuity is not configured", async () => {
+        vi.mocked(getSupabaseServerClient).mockReturnValue(
+          fakeSupabase([], withMflusiva, "missing-table", [], "missing-table", [], 70) as never
+        );
+        vi.mocked(getAcuityCredentials).mockResolvedValue(null);
+        const response = await GET(authedRequest());
+        expect(response.status).toBe(200);
+        expect((await response.json()).mflusivaPct).toBe(70);
+      });
+
+      it("an Acuity fetch failure is still a 502 for the whole page (unchanged; no recommendation data, so no cog)", async () => {
+        vi.mocked(getSupabaseServerClient).mockReturnValue(
+          fakeSupabase([], withMflusiva, "missing-table", [], "missing-table", [], 70) as never
+        );
+        vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+        vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+        vi.mocked(fetchAppointmentsForRange).mockRejectedValue(new Error("boom"));
+        const response = await GET(authedRequest());
+        expect(response.status).toBe(502);
+      });
+
+      it("never drops a dose: with no Flucelvax product to take the remainder, all 50-64 stays on mFLUSIVA", async () => {
+        const mflusivaAndFluad = [
+          { id: "v-fluad", name: "Fluad", short_code: "fluad", ndc: "70461-0123-03", active: true },
+          { id: "v-mflusiva", name: "mFLUSIVA 2026-27", short_code: "mflusiva", ndc: "80777-0500-20", active: true },
+        ];
+        const body = await run(mflusivaAndFluad, ["50-64", "50-64", "50-64", "50-64", "50-64"]);
+        expect(upcoming(body, MFLUSIVA)).toBe(5);
+      });
+
       it("falls back to the 40% default when the share cannot be read", async () => {
         const body = await run(withMflusiva, ["50-64", "50-64", "50-64", "50-64", "50-64"], "error");
         expect(upcoming(body, MFLUSIVA)).toBe(2);

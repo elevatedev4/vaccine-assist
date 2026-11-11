@@ -3,6 +3,7 @@ import { requireAuthenticatedUser } from "@/lib/auth";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { isMissingTableError } from "@/lib/schema-degradation";
 import {
+  DEFAULT_MFLUSIVA_PCT,
   MFLUSIVA_PCT_SETTING_KEY,
   WALK_IN_PCT_SETTING_KEY,
   getMflusivaPct,
@@ -56,8 +57,14 @@ export async function GET(request: Request) {
 
   try {
     const { pct, pending } = await getWalkInPct(supabase);
-    const mflusiva = await getMflusivaPct(supabase);
-    return NextResponse.json({ walkInPct: pct, mflusivaPct: mflusiva.pct, pending });
+    // A failed mFLUSIVA read must not hide the walk-up %: fall back to 40.
+    let mflusivaPct = DEFAULT_MFLUSIVA_PCT;
+    try {
+      mflusivaPct = (await getMflusivaPct(supabase)).pct;
+    } catch (err) {
+      console.error("GET /api/ordering/settings: failed to load ordering.mflusiva_pct", err);
+    }
+    return NextResponse.json({ walkInPct: pct, mflusivaPct, pending });
   } catch (err) {
     console.error("GET /api/ordering/settings: failed to load ordering.walk_in_pct", err);
     return NextResponse.json({ error: "Failed to load ordering settings." }, { status: 500 });

@@ -342,7 +342,15 @@ export async function GET(request: Request) {
     let fluNote: string | null = null;
     // V-Q16: total 50-64 flu appointments seen; split mFLUSIVA / Flucelvax after the loop.
     let flu5064Count = 0;
+    // V-Q16: the saved share is ALWAYS read (the Ordering page's cog shows
+    // it even with no 50-64 appointments); a failed read falls back to
+    // the default rather than breaking the page.
     let mflusivaPct = DEFAULT_MFLUSIVA_PCT;
+    try {
+      mflusivaPct = (await getMflusivaPct(supabase)).pct;
+    } catch (err) {
+      console.error("GET /api/ordering/recommendation: failed to load ordering.mflusiva_pct", err);
+    }
     let fluMappingCatalogForSplit: FluMappingCatalogVaccine[] = [];
 
     const credentials = await getAcuityCredentials();
@@ -431,19 +439,15 @@ export async function GET(request: Request) {
 
         // V-Q16 (Will 2026-11-11): count mflusivaPct% of the 50-64 flu
         // appointments as mFLUSIVA and the rest as Flucelvax, the
-        // pre-V-Q11 product for that band. Read only when needed; a
-        // failed read falls back to the default rather than breaking the page.
+        // pre-V-Q11 product for that band. No dose is ever dropped: if
+        // there is no Flucelvax product to take the remainder, all of
+        // the 50-64 count stays on mFLUSIVA (the pre-split behavior).
         if (flu5064Count > 0) {
-          let pct = DEFAULT_MFLUSIVA_PCT;
-          try {
-            pct = (await getMflusivaPct(supabase)).pct;
-          } catch (err) {
-            console.error("GET /api/ordering/recommendation: failed to load ordering.mflusiva_pct", err);
-          }
-          mflusivaPct = pct;
-          const split = splitFlu5064(flu5064Count, pct);
           const mflusivaMatch = matchFluAgeBandToVaccine("50-64", fluMappingCatalogForSplit);
           const flucelvaxMatch = matchFluAgeBandToVaccine("3-49", fluMappingCatalogForSplit);
+          const split = flucelvaxMatch
+            ? splitFlu5064(flu5064Count, mflusivaPct)
+            : { mflusiva: flu5064Count, flucelvax: 0 };
           if (mflusivaMatch && split.mflusiva > 0) {
             upcomingByVaccineId.set(mflusivaMatch.id, (upcomingByVaccineId.get(mflusivaMatch.id) ?? 0) + split.mflusiva);
           }
