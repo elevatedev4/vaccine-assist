@@ -102,7 +102,9 @@ function fakeSupabase(
   address: FakeAddress | "missing-table" | "error" = "missing-table",
   targetRows: FakeTargetRow[] | null = [],
   walkInPct: number | "missing-table" | "error" = "missing-table",
-  orderedTodayRows: FakeOrderedTodayRow[] | null | "error" = []
+  orderedTodayRows: FakeOrderedTodayRow[] | null | "error" = [],
+  // V-Q16: stored "ordering.mflusiva_pct" (undefined = no row saved yet).
+  mflusivaPct?: number | "error"
 ) {
   return {
     from: (table: string) => {
@@ -187,8 +189,13 @@ function fakeSupabase(
       if (table === "app_setting") {
         return {
           select: () => ({
-            eq: () => ({
+            eq: (_col: string, key: string) => ({
               maybeSingle: async () => {
+                if (key === "ordering.mflusiva_pct") {
+                  if (mflusivaPct === "error") return { data: null, error: new Error("connection reset") };
+                  if (mflusivaPct === undefined) return { data: null, error: null };
+                  return { data: { value: mflusivaPct }, error: null };
+                }
                 if (walkInPct === "missing-table") {
                   return { data: null, error: { code: "42P01", message: 'relation "app_setting" does not exist' } };
                 }
@@ -936,8 +943,14 @@ describe("GET /api/ordering/recommendation", () => {
         return { ...fluAppointment("3-64"), fluAgeBand };
       }
 
-      async function run(catalog: Array<{ id: string; name: string; short_code: string; ndc: string | null; active: boolean }>, bands: Array<"3-49" | "50-64" | "65+">) {
-        vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalog) as never);
+      async function run(
+        catalog: Array<{ id: string; name: string; short_code: string; ndc: string | null; active: boolean }>,
+        bands: Array<"3-49" | "50-64" | "65+">,
+        mflusivaPct?: number | "error"
+      ) {
+        vi.mocked(getSupabaseServerClient).mockReturnValue(
+          fakeSupabase([], catalog, "missing-table", [], "missing-table", [], mflusivaPct) as never
+        );
         vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
         vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
         vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
@@ -953,13 +966,56 @@ describe("GET /api/ordering/recommendation", () => {
         { id: "v-mflusiva", name: "mFLUSIVA 2026-27", short_code: "mflusiva", ndc: "80777-0500-20", active: true },
       ];
 
-      it("routes 3-49 to Flucelvax, 50-64 to mFLUSIVA and 65+ to Fluad, with no note", async () => {
-        const body = await run(withMflusiva, ["3-49", "50-64", "50-64", "65+"]);
+      const upcoming = (body: { rows: Array<{ key: string; upcoming7d: number }> }, key: string) =>
+        body.rows.find((r) => r.key === key)!.upcoming7d;
+      const FLUCELVAX = "vaccine:v-flucelvax-pfs";
+      const MFLUSIVA = "80777050020";
 
-        expect(body.rows.find((r: { key: string }) => r.key === "vaccine:v-flucelvax-pfs").upcoming7d).toBe(1);
-        expect(body.rows.find((r: { key: string }) => r.key === "80777050020").upcoming7d).toBe(2);
-        expect(body.rows.find((r: { key: string }) => r.key === "70461012303").upcoming7d).toBe(1);
+      it("routes 3-49 to Flucelvax and 65+ to Fluad, and splits 50-64 40/60 by default, with no note", async () => {
+        // 5 x 50-64 at the default 40%: round(2.0) = 2 mFLUSIVA, 3 Flucelvax, plus 1 from 3-49.
+        const body = await run(withMflusiva, ["3-49", "50-64", "50-64", "50-64", "50-64", "50-64", "65+"]);
+
+        expect(upcoming(body, FLUCELVAX)).toBe(1 + 3);
+        expect(upcoming(body, MFLUSIVA)).toBe(2);
+        expect(upcoming(body, "70461012303")).toBe(1);
+        expect(body.mflusivaPct).toBe(40);
         expect(body.fluNote).toBeNull();
+      });
+
+      it("uses the saved share: 0% sends all 50-64 to Flucelvax", async () => {
+        const body = await run(withMflusiva, ["50-64", "50-64", "50-64"], 0);
+        expect(upcoming(body, MFLUSIVA)).toBe(0);
+        expect(upcoming(body, FLUCELVAX)).toBe(3);
+        expect(body.mflusivaPct).toBe(0);
+      });
+
+      it("uses the saved share: 100% sends all 50-64 to mFLUSIVA", async () => {
+        const body = await run(withMflusiva, ["50-64", "50-64", "50-64"], 100);
+        expect(upcoming(body, MFLUSIVA)).toBe(3);
+        expect(upcoming(body, FLUCELVAX)).toBe(0);
+        expect(body.mflusivaPct).toBe(100);
+      });
+
+      it("uses the saved share (75%) and keeps the two parts adding up to the original count", async () => {
+        const body = await run(withMflusiva, ["50-64", "50-64", "50-64"], 75);
+        // round(2.25) = 2 mFLUSIVA, remainder 1.
+        expect(upcoming(body, MFLUSIVA)).toBe(2);
+        expect(upcoming(body, FLUCELVAX)).toBe(1);
+      });
+
+      it("an odd count rounds half up with no lost or extra doses (1 at 40% -> 0 + 1; 2 at 40% -> 1 + 1)", async () => {
+        const one = await run(withMflusiva, ["50-64"]);
+        expect(upcoming(one, MFLUSIVA) + upcoming(one, FLUCELVAX)).toBe(1);
+        expect(upcoming(one, MFLUSIVA)).toBe(0);
+        const two = await run(withMflusiva, ["50-64", "50-64"]);
+        expect(upcoming(two, MFLUSIVA)).toBe(1);
+        expect(upcoming(two, FLUCELVAX)).toBe(1);
+      });
+
+      it("falls back to the 40% default when the share cannot be read", async () => {
+        const body = await run(withMflusiva, ["50-64", "50-64", "50-64", "50-64", "50-64"], "error");
+        expect(upcoming(body, MFLUSIVA)).toBe(2);
+        expect(upcoming(body, FLUCELVAX)).toBe(3);
       });
 
       it("counts 50-64 as Flucelvax and says so when mFLUSIVA is not in the catalog", async () => {

@@ -156,6 +156,8 @@ type RecommendationResponse = {
   // with, and whether that's still just the default (0012 pending).
   walkInPct: number;
   walkInPctPending: boolean;
+  /** Share (0-100) of 50-64 flu counted as mFLUSIVA; absent on older responses (reads as 40). */
+  mflusivaPct?: number;
   // V-ordering-trend: true when the route's administeredSummary call
   // failed — every row's given7d is 0 for this response, and the trend
   // estimate never wins a row's target while this is true. Shown as a
@@ -605,6 +607,9 @@ export default function OrderingPage() {
   // control.
   const [walkInPctText, setWalkInPctText] = useState("");
   const [walkInPctStatus, setWalkInPctStatus] = useState<SaveStatus>("idle");
+  // V-Q16: "50-64 flu as mFLUSIVA %" — same local text + save status shape.
+  const [mflusivaPctText, setMflusivaPctText] = useState("");
+  const [mflusivaPctStatus, setMflusivaPctStatus] = useState<SaveStatus>("idle");
 
   // V-T26 item 2: "Copy recommended → Your target" — a two-step
   // confirm (Will's brief: "small 'Overwrite existing Your targets?'
@@ -633,6 +638,8 @@ export default function OrderingPage() {
     setInactiveExpanded(false);
     setWalkInPctText("");
     setWalkInPctStatus("idle");
+    setMflusivaPctText("");
+    setMflusivaPctStatus("idle");
     setCopyConfirming(false);
     setCopying(false);
     setCopyResult(null);
@@ -702,6 +709,10 @@ export default function OrderingPage() {
   useEffect(() => {
     if (data) setWalkInPctText(String(data.walkInPct));
   }, [data?.walkInPct]);
+
+  useEffect(() => {
+    if (data) setMflusivaPctText(String(data.mflusivaPct ?? 40));
+  }, [data?.mflusivaPct]);
 
   const loadAddressStatus = useCallback(async (token: string) => {
     setAddressStatusError(null);
@@ -928,6 +939,49 @@ export default function OrderingPage() {
       await loadRecommendation(session.accessToken);
     } catch {
       setWalkInPctStatus("error");
+    }
+  }
+
+  // V-Q16: save the "50-64 flu as mFLUSIVA %" setting on blur/Enter; an
+  // invalid entry reverts to the last saved value.
+  async function handleSaveMflusivaPct() {
+    if (!session) return;
+    const saved = data?.mflusivaPct ?? 40;
+    const trimmed = mflusivaPctText.trim();
+    const parsed = Number(trimmed);
+    if (trimmed === "" || !Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+      setMflusivaPctText(String(saved));
+      setMflusivaPctStatus("error");
+      return;
+    }
+    if (parsed === saved) {
+      setMflusivaPctStatus("idle");
+      return;
+    }
+    setMflusivaPctStatus("saving");
+    try {
+      const response = await fetch("/api/ordering/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
+        body: JSON.stringify({ mflusivaPct: parsed }),
+      });
+      if (!response.ok) {
+        setMflusivaPctText(String(saved));
+        setMflusivaPctStatus("error");
+        return;
+      }
+      setMflusivaPctStatus("saved");
+      setTimeout(() => setMflusivaPctStatus((current) => (current === "saved" ? "idle" : current)), 2000);
+      await loadRecommendation(session.accessToken);
+    } catch {
+      setMflusivaPctText(String(saved));
+      setMflusivaPctStatus("error");
+    }
+  }
+
+  function handleMflusivaPctKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
     }
   }
 
@@ -1215,6 +1269,24 @@ export default function OrderingPage() {
                 >
                   saves after a 1-minute database step
                 </span>
+              </span>
+              <span style={styles.muted}>
+                <label htmlFor="mflusiva-pct">50–64 flu as mFLUSIVA %</label>{" "}
+                <input
+                  id="mflusiva-pct"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  style={styles.walkInInput}
+                  value={mflusivaPctText}
+                  disabled={data?.walkInPctPending}
+                  title={data?.walkInPctPending ? "saves after a 1-minute database step" : undefined}
+                  onChange={(e) => setMflusivaPctText(e.target.value)}
+                  onBlur={() => void handleSaveMflusivaPct()}
+                  onKeyDown={handleMflusivaPctKeyDown}
+                />
+                <SaveStatusIndicator status={mflusivaPctStatus} />
               </span>
               {showEmailSetupLink && (
                 <a href="#" style={styles.link} onClick={(e) => { e.preventDefault(); setShowEmailModal(true); setMenuOpen(false); }}>
