@@ -20,11 +20,12 @@ import {
   MFLUSIVA_FALLBACK_NOTE,
   hasActiveMflusiva,
   matchFluAgeBandToVaccine,
+  splitFlu5064,
   type FluMappingCatalogVaccine,
 } from "@/lib/ordering-flu-mapping";
 import { getOrCreateAddressForUser } from "@/lib/on-hand/address";
 import { isMissingColumnError, isMissingTableError } from "@/lib/schema-degradation";
-import { getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
+import { DEFAULT_MFLUSIVA_PCT, getMflusivaPct, getWalkInPct, walkInPctToRate } from "@/lib/ordering-settings";
 import { extractUnitFromRawLine } from "@/lib/on-hand/quantity-cell";
 import { computeDemandTarget } from "@/lib/ordering-recommendation";
 import { administeredSummary } from "@/lib/administered/store";
@@ -112,6 +113,7 @@ import { remainingPackages } from "@/lib/ordering-ordered-today";
  *     "targetsPending": false,   // true before 0011 has been applied
  *     "walkInPct": 25,           // the effective walk-up % this response was computed with
  *     "walkInPctPending": false, // true before 0012 has been applied (walkInPct is the default, 25)
+ *     "mflusivaPct": 40,         // the share of 50-64 flu counted as mFLUSIVA (rest = Flucelvax); default 40
  *     "fluNote": null,           // set (string) when 50-64 flu was counted as Flucelvax because no active mFLUSIVA is on file
  *     "trendUnavailable": false, // true when administeredSummary threw — every row's given7d is 0 for this response
  *     "groupTargets": { "Flu": 200 },  // group-scoped overrides still on file, by group display name — NOT applied to any row below, see doc comment above
@@ -338,6 +340,18 @@ export async function GET(request: Request) {
     const upcomingByVaccineId = new Map<string, number>();
     // Set when 50-64 flu appointments had to be counted as Flucelvax because no active mFLUSIVA is on file.
     let fluNote: string | null = null;
+    // V-Q16: total 50-64 flu appointments seen; split mFLUSIVA / Flucelvax after the loop.
+    let flu5064Count = 0;
+    // V-Q16: the saved share is ALWAYS read (the Ordering page's cog shows
+    // it even with no 50-64 appointments); a failed read falls back to
+    // the default rather than breaking the page.
+    let mflusivaPct = DEFAULT_MFLUSIVA_PCT;
+    try {
+      mflusivaPct = (await getMflusivaPct(supabase)).pct;
+    } catch (err) {
+      console.error("GET /api/ordering/recommendation: failed to load ordering.mflusiva_pct", err);
+    }
+    let fluMappingCatalogForSplit: FluMappingCatalogVaccine[] = [];
 
     const credentials = await getAcuityCredentials();
     if (credentials) {
@@ -387,6 +401,12 @@ export async function GET(request: Request) {
             if (fluAgeBand === "50-64" && count > 0 && !hasActiveMflusiva(fluMappingCatalog)) {
               fluNote = MFLUSIVA_FALLBACK_NOTE;
             }
+            if (fluAgeBand === "50-64" && hasActiveMflusiva(fluMappingCatalog)) {
+              // V-Q16: only a share of 50-64 goes to mFLUSIVA; split below.
+              flu5064Count += count;
+              fluMappingCatalogForSplit = fluMappingCatalog;
+              continue;
+            }
             const fluMatch = matchFluAgeBandToVaccine(fluAgeBand, fluMappingCatalog);
             if (fluMatch) {
               upcomingByVaccineId.set(fluMatch.id, (upcomingByVaccineId.get(fluMatch.id) ?? 0) + count);
@@ -415,6 +435,25 @@ export async function GET(request: Request) {
           // lines.
           if (!match) continue;
           upcomingByVaccineId.set(match.id, (upcomingByVaccineId.get(match.id) ?? 0) + count);
+        }
+
+        // V-Q16 (Will 2026-11-11): count mflusivaPct% of the 50-64 flu
+        // appointments as mFLUSIVA and the rest as Flucelvax, the
+        // pre-V-Q11 product for that band. No dose is ever dropped: if
+        // there is no Flucelvax product to take the remainder, all of
+        // the 50-64 count stays on mFLUSIVA (the pre-split behavior).
+        if (flu5064Count > 0) {
+          const mflusivaMatch = matchFluAgeBandToVaccine("50-64", fluMappingCatalogForSplit);
+          const flucelvaxMatch = matchFluAgeBandToVaccine("3-49", fluMappingCatalogForSplit);
+          const split = flucelvaxMatch
+            ? splitFlu5064(flu5064Count, mflusivaPct)
+            : { mflusiva: flu5064Count, flucelvax: 0 };
+          if (mflusivaMatch && split.mflusiva > 0) {
+            upcomingByVaccineId.set(mflusivaMatch.id, (upcomingByVaccineId.get(mflusivaMatch.id) ?? 0) + split.mflusiva);
+          }
+          if (flucelvaxMatch && split.flucelvax > 0) {
+            upcomingByVaccineId.set(flucelvaxMatch.id, (upcomingByVaccineId.get(flucelvaxMatch.id) ?? 0) + split.flucelvax);
+          }
         }
       } catch (err) {
         const message = err instanceof AcuityApiError ? err.message : "Failed to poll Acuity for appointments.";
@@ -784,6 +823,7 @@ export async function GET(request: Request) {
       targetsPending,
       walkInPct,
       walkInPctPending,
+      mflusivaPct,
       trendUnavailable,
       fluNote,
       orderedTodayPending,

@@ -114,3 +114,15 @@ export function matchFluAgeBandToVaccine(
   // same as before this fix.
   return null;
 }
+
+/**
+ * Splits a count of 50-64 flu appointments into the part counted as
+ * mFLUSIVA and the part counted as Flucelvax (V-Q16). mFLUSIVA gets
+ * round-half-up(count * pct / 100) and Flucelvax gets the remainder, so
+ * the two parts always add up to `count` exactly. Integer math only
+ * (no floating-point drift on .5 cases).
+ */
+export function splitFlu5064(count: number, mflusivaPct: number): { mflusiva: number; flucelvax: number } {
+  const mflusiva = Math.floor((count * mflusivaPct + 50) / 100);
+  return { mflusiva, flucelvax: count - mflusiva };
+}

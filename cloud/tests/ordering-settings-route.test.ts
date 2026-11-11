@@ -26,19 +26,22 @@ function putRequest(body: unknown) {
 
 function fakeSupabase(options: {
   storedValue?: unknown;
+  /** per-key stored values (takes precedence over storedValue for that key) */
+  storedByKey?: Record<string, unknown>;
   selectError?: unknown;
   upsert?: (row: unknown) => Promise<{ error: unknown }>;
 }) {
-  const { storedValue, selectError = null, upsert = vi.fn(async () => ({ error: null })) } = options;
+  const { storedValue, storedByKey = {}, selectError = null, upsert = vi.fn(async () => ({ error: null })) } = options;
   return {
     from: (table: string) => {
       if (table !== "app_setting") throw new Error(`unexpected table ${table}`);
       return {
         select: () => ({
-          eq: () => ({
+          eq: (_col: string, key: string) => ({
             maybeSingle: async () => {
               if (selectError) return { data: null, error: selectError };
-              if (storedValue === undefined) return { data: null, error: null };
+              if (key in storedByKey) return { data: { value: storedByKey[key] }, error: null };
+              if (key === "ordering.mflusiva_pct" || storedValue === undefined) return { data: null, error: null };
               return { data: { value: storedValue }, error: null };
             },
           }),
@@ -60,7 +63,7 @@ describe("GET /api/ordering/settings", () => {
     const response = await GET(authedRequest());
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ walkInPct: 30, pending: false });
+    expect(body).toEqual({ walkInPct: 30, mflusivaPct: 40, pending: false });
   });
 
   it("returns the default (25) when no row has been saved yet", async () => {
@@ -68,7 +71,7 @@ describe("GET /api/ordering/settings", () => {
 
     const response = await GET(authedRequest());
     const body = await response.json();
-    expect(body).toEqual({ walkInPct: 25, pending: false });
+    expect(body).toEqual({ walkInPct: 25, mflusivaPct: 40, pending: false });
   });
 
   it("returns the default (25) with pending:true when app_setting doesn't exist yet (0012 pending)", async () => {
@@ -79,7 +82,47 @@ describe("GET /api/ordering/settings", () => {
     const response = await GET(authedRequest());
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ walkInPct: 25, pending: true });
+    expect(body).toEqual({ walkInPct: 25, mflusivaPct: 40, pending: true });
+  });
+
+  it("returns the saved 50-64 mFLUSIVA share", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(
+      fakeSupabase({ storedByKey: { "ordering.walk_in_pct": 30, "ordering.mflusiva_pct": 75 } }) as never
+    );
+    const body = await (await GET(authedRequest())).json();
+    expect(body).toEqual({ walkInPct: 30, mflusivaPct: 75, pending: false });
+  });
+
+  it("reads 40 for the mFLUSIVA share when the stored value is not a valid pct", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(
+      fakeSupabase({ storedByKey: { "ordering.mflusiva_pct": 140 } }) as never
+    );
+    const body = await (await GET(authedRequest())).json();
+    expect(body.mflusivaPct).toBe(40);
+  });
+
+  it("still returns the walk-up % (mFLUSIVA share 40) when only the mFLUSIVA read fails", async () => {
+    const supabase = fakeSupabase({ storedByKey: { "ordering.walk_in_pct": 30 } }) as unknown as {
+      from: (t: string) => { select: () => { eq: (c: string, k: string) => { maybeSingle: () => Promise<unknown> } } };
+    };
+    const originalFrom = supabase.from;
+    supabase.from = (table: string) => {
+      const real = originalFrom(table);
+      return {
+        ...real,
+        select: () => ({
+          eq: (col: string, key: string) =>
+            key === "ordering.mflusiva_pct"
+              ? { maybeSingle: async () => ({ data: null, error: new Error("connection reset") }) }
+              : real.select().eq(col, key),
+        }),
+      };
+    };
+    vi.mocked(getSupabaseServerClient).mockReturnValue(supabase as never);
+
+    const response = await GET(authedRequest());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ walkInPct: 30, mflusivaPct: 40, pending: false });
   });
 
   it("returns 401 without a bearer token (real auth, unmocked path exercised elsewhere in this repo's convention)", async () => {
@@ -149,6 +192,46 @@ describe("PUT /api/ordering/settings", () => {
   it("rejects a non-numeric pct", async () => {
     const response = await PUT(putRequest({ walkInPct: "25" }));
     expect(response.status).toBe(400);
+  });
+
+  it("saves a valid mFLUSIVA share under its own key, without touching walk-up %", async () => {
+    const upsert = vi.fn(async () => ({ error: null }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ upsert }) as never);
+
+    const response = await PUT(putRequest({ mflusivaPct: 55 }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ mflusivaPct: 55 });
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ key: "ordering.mflusiva_pct", value: 55 }));
+  });
+
+  it("accepts mFLUSIVA share boundaries 0 and 100", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({}) as never);
+    expect((await PUT(putRequest({ mflusivaPct: 0 }))).status).toBe(200);
+    expect((await PUT(putRequest({ mflusivaPct: 100 }))).status).toBe(200);
+  });
+
+  it.each([[-1], [101], [40.5], ["40"], [null]])("rejects mflusivaPct %s", async (bad) => {
+    const upsert = vi.fn(async () => ({ error: null }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ upsert }) as never);
+    const response = await PUT(putRequest({ mflusivaPct: bad }));
+    expect(response.status).toBe(400);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a body with neither setting", async () => {
+    const response = await PUT(putRequest({}));
+    expect(response.status).toBe(400);
+  });
+
+  it("returns pending:true when saving the mFLUSIVA share before app_setting exists", async () => {
+    const upsert = vi.fn(async () => ({
+      error: { code: "42P01", message: 'relation "app_setting" does not exist' },
+    }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ upsert }) as never);
+    const response = await PUT(putRequest({ mflusivaPct: 30 }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ pending: true });
   });
 
   it("rejects malformed JSON", async () => {

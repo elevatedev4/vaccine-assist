@@ -70,3 +70,41 @@ export async function getWalkInPct(supabase: ReturnType<typeof getSupabaseServer
   }
   return { pct: DEFAULT_WALK_IN_PCT, pending: false };
 }
+
+/**
+ * "50-64 flu as mFLUSIVA %" (V-Q16, Will 2026-11-11): the share of 50-64
+ * flu appointments the Ordering page counts as mFLUSIVA; the rest count
+ * as Flucelvax (not everyone can get mFLUSIVA). Stored in the same
+ * generic `app_setting` table as the walk-up % (key/value, so NO
+ * migration), account-wide like the walk-up %. A missing row, a missing
+ * table or a malformed stored value all read as DEFAULT_MFLUSIVA_PCT.
+ */
+export const MFLUSIVA_PCT_SETTING_KEY = "ordering.mflusiva_pct";
+
+export const DEFAULT_MFLUSIVA_PCT = 40;
+
+/** A valid share is an integer 0-100, same rule as the walk-up %. */
+export function isValidMflusivaPct(value: unknown): value is number {
+  return isValidWalkInPct(value);
+}
+
+export async function getMflusivaPct(supabase: ReturnType<typeof getSupabaseServerClient>): Promise<WalkInPctResult> {
+  const { data, error } = await supabase
+    .from("app_setting")
+    .select("value")
+    .eq("key", MFLUSIVA_PCT_SETTING_KEY)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingTableError(error)) {
+      return { pct: DEFAULT_MFLUSIVA_PCT, pending: true };
+    }
+    throw error;
+  }
+
+  const value = data?.value;
+  if (isValidMflusivaPct(value)) {
+    return { pct: value, pending: false };
+  }
+  return { pct: DEFAULT_MFLUSIVA_PCT, pending: false };
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasActiveMflusiva, matchFluAgeBandToVaccine, type FluMappingCatalogVaccine } from "@/lib/ordering-flu-mapping";
+import { hasActiveMflusiva, matchFluAgeBandToVaccine, splitFlu5064, type FluMappingCatalogVaccine } from "@/lib/ordering-flu-mapping";
 
 describe("matchFluAgeBandToVaccine", () => {
   const catalog: FluMappingCatalogVaccine[] = [
@@ -109,5 +109,41 @@ describe("matchFluAgeBandToVaccine", () => {
     it("'unknown' still has no product-level mapping", () => {
       expect(matchFluAgeBandToVaccine("unknown", withMflusiva)).toBeNull();
     });
+  });
+});
+
+describe("splitFlu5064", () => {
+  it("0% sends everything to Flucelvax", () => {
+    expect(splitFlu5064(7, 0)).toEqual({ mflusiva: 0, flucelvax: 7 });
+  });
+
+  it("100% sends everything to mFLUSIVA", () => {
+    expect(splitFlu5064(7, 100)).toEqual({ mflusiva: 7, flucelvax: 0 });
+  });
+
+  it("40% of 10 is 4 / 6", () => {
+    expect(splitFlu5064(10, 40)).toEqual({ mflusiva: 4, flucelvax: 6 });
+  });
+
+  it("rounds half up on odd counts", () => {
+    expect(splitFlu5064(1, 40)).toEqual({ mflusiva: 0, flucelvax: 1 }); // 0.4
+    expect(splitFlu5064(2, 40)).toEqual({ mflusiva: 1, flucelvax: 1 }); // 0.8
+    expect(splitFlu5064(3, 50)).toEqual({ mflusiva: 2, flucelvax: 1 }); // 1.5
+    expect(splitFlu5064(5, 50)).toEqual({ mflusiva: 3, flucelvax: 2 }); // 2.5
+  });
+
+  it("the two parts always add up to the original count", () => {
+    for (let count = 0; count <= 60; count++) {
+      for (let pct = 0; pct <= 100; pct += 1) {
+        const { mflusiva, flucelvax } = splitFlu5064(count, pct);
+        expect(mflusiva + flucelvax).toBe(count);
+        expect(mflusiva).toBeGreaterThanOrEqual(0);
+        expect(flucelvax).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it("a zero count stays zero", () => {
+    expect(splitFlu5064(0, 40)).toEqual({ mflusiva: 0, flucelvax: 0 });
   });
 });
