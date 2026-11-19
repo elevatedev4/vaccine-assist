@@ -21,6 +21,9 @@ public enum TrayMenuAction
     FaxOpenFolder,
     FaxImportFile,
 
+    /// <summary>"Barcode check" (Will, 2026-11-18) — opens the scan-and-check window.</summary>
+    BarcodeCheck,
+
     /// <summary>The "Version" submenu (Stable + testing versions) — TrayIconController builds its children from Versioning/VersionMenuBuilder.</summary>
     Version,
 }
@@ -104,6 +107,10 @@ public static class TrayMenuBuilder
         items.Add(new TrayMenuItemDescriptor("Vaccines-Send PCP faxes", true, TrayMenuAction.FaxImportFile, null, false));
         items.Add(new TrayMenuItemDescriptor("Vaccine faxes — Settings", true, TrayMenuAction.FaxSettings, null, false));
         items.Add(new TrayMenuItemDescriptor("Open fax folder", true, TrayMenuAction.FaxOpenFolder, null, false));
+        items.Add(Separator);
+        // Barcode check (Will, 2026-11-18, HQ MSG#1555): "a simple page that
+        // we can open from the menu" — a small scan-and-check window.
+        items.Add(new TrayMenuItemDescriptor("Barcode check", true, TrayMenuAction.BarcodeCheck, null, false));
         items.Add(Separator);
         // Version control (Will, 2026-10-18): Stable is the default every
         // normal start; testing versions are only ever picked from here.

@@ -44,6 +44,8 @@ public class TrayMenuBuilderTests
                 TrayMenuAction.FaxSettings,
                 TrayMenuAction.FaxOpenFolder,
                 TrayMenuAction.Separator,
+                TrayMenuAction.BarcodeCheck, // Barcode check (2026-11-18): scan-and-check window
+                TrayMenuAction.Separator,
                 TrayMenuAction.Version, // version control (2026-10-18): Stable + testing versions submenu
                 TrayMenuAction.Separator,
                 TrayMenuAction.SignOut,
@@ -102,6 +104,18 @@ public class TrayMenuBuilderTests
         {
             Assert.True(item.Enabled);
         }
+    }
+
+    [Fact]
+    public void HasExactlyOneBarcodeCheckRow()
+    {
+        var items = TrayMenuBuilder.Build();
+
+        var row = items.Single(i => i.Action == TrayMenuAction.BarcodeCheck);
+        Assert.Equal("Barcode check", row.Text);
+        Assert.True(row.Enabled);
+        Assert.False(row.IsCheckable);
+        Assert.Null(row.RelativePath);
     }
 
     [Fact]

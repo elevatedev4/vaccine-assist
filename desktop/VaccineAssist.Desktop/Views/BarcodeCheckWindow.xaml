@@ -1,0 +1,109 @@
+<Window x:Class="VaccineAssist.Desktop.Views.BarcodeCheckWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Vaccine Assist — Barcode check"
+        Width="560" Height="520"
+        MinWidth="440" MinHeight="420"
+        WindowStartupLocation="CenterScreen">
+    <!--
+        Will, 2026-11-18 (HQ MSG#1555): a simple page opened from the menu —
+        choose a spreadsheet with one column of numbers, scan numbers with a
+        barcode scanner (digits + Enter), and get FOUND / NOT FOUND with a
+        short sound. Close clears the file; it is always blank on reopen.
+        Self-contained: this window, BarcodeCheck/BarcodeCheckViewModel.cs
+        and nothing else of the app is touched.
+    -->
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Barcode check" FontSize="18" FontWeight="Bold"/>
+
+        <!-- File chooser -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="ChooseFileButton" Grid.Column="0" Content="Choose file…" Padding="14,6"
+                    Click="ChooseFileButton_OnClick"/>
+            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="{Binding LoadedSummary}" Foreground="DarkSlateGray"/>
+            </StackPanel>
+        </Grid>
+
+        <TextBlock Grid.Row="3" Text="{Binding Message}" Foreground="#B00020" TextWrapping="Wrap" Margin="0,8,0,0">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasMessage}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+
+        <!-- Scan box: digits + Enter from the barcode scanner -->
+        <StackPanel Grid.Row="5">
+            <TextBlock Text="Scan a number (then Enter)" Foreground="DarkSlateGray" Margin="0,0,0,4"/>
+            <TextBox x:Name="ScanBox" FontSize="28" Padding="8,6"
+                     IsEnabled="{Binding HasList}"
+                     PreviewKeyDown="ScanBox_OnPreviewKeyDown"/>
+        </StackPanel>
+
+        <!-- Last result, big -->
+        <Border Grid.Row="7" CornerRadius="8" BorderThickness="2">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Background" Value="#F4F4F4"/>
+                    <Setter Property="BorderBrush" Value="#CCCCCC"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding LastOutcome}" Value="Found">
+                            <Setter Property="Background" Value="#C8F0CF"/>
+                            <Setter Property="BorderBrush" Value="#1B8A34"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding LastOutcome}" Value="NotFound">
+                            <Setter Property="Background" Value="#F8CDD0"/>
+                            <Setter Property="BorderBrush" Value="#C62828"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="{Binding ResultTitle}" FontSize="52" FontWeight="Bold" HorizontalAlignment="Center">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="#333333"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding LastOutcome}" Value="Found">
+                                    <Setter Property="Foreground" Value="#14672A"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding LastOutcome}" Value="NotFound">
+                                    <Setter Property="Foreground" Value="#A31515"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <TextBlock Text="{Binding LastScanned}" FontSize="26" HorizontalAlignment="Center" Foreground="#222222"/>
+            </StackPanel>
+        </Border>
+
+        <Button Grid.Row="9" Content="Close" Padding="26,6" HorizontalAlignment="Right"
+                Click="CloseButton_OnClick"/>
+    </Grid>
+</Window>

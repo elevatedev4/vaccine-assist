@@ -62,6 +62,9 @@ public sealed class TrayIconController : IDisposable
     /// what it opens changed.</summary>
     public event EventHandler? FaxImportFileRequested;
 
+    /// <summary>"Barcode check" tray row — opens the scan-and-check window.</summary>
+    public event EventHandler? BarcodeCheckRequested;
+
     /// <summary>Raised with the cloud route to navigate to (e.g. "/lots") when a Navigate row is clicked.</summary>
     public event EventHandler<string>? NavigationRequested;
 
@@ -287,6 +290,9 @@ public sealed class TrayIconController : IDisposable
                 break;
             case TrayMenuAction.FaxImportFile:
                 FaxImportFileRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case TrayMenuAction.BarcodeCheck:
+                BarcodeCheckRequested?.Invoke(this, EventArgs.Empty);
                 break;
             case TrayMenuAction.Navigate:
                 if (descriptor.RelativePath is { Length: > 0 } path)

@@ -37,6 +37,7 @@ public sealed class PioneerOverlayController : IDisposable
     private readonly Action<string> _navigateTo;
     private readonly Action _showDataEntryPopup;
     private readonly Action _showMacroCodesPopup;
+    private readonly Action? _showBarcodeCheck;
     private readonly Action _exit;
     private readonly AppSettings _settings;
     private readonly VersionMenuSource? _versions;
@@ -75,9 +76,11 @@ public sealed class PioneerOverlayController : IDisposable
         Action showMacroCodesPopup,
         Action exit,
         AppSettings settings,
-        VersionMenuSource? versions = null)
+        VersionMenuSource? versions = null,
+        Action? showBarcodeCheck = null)
     {
         _versions = versions;
+        _showBarcodeCheck = showBarcodeCheck;
         _navigateTo = navigateTo ?? throw new ArgumentNullException(nameof(navigateTo));
         _showDataEntryPopup = showDataEntryPopup ?? throw new ArgumentNullException(nameof(showDataEntryPopup));
         _showMacroCodesPopup = showMacroCodesPopup ?? throw new ArgumentNullException(nameof(showMacroCodesPopup));
@@ -206,6 +209,10 @@ public sealed class PioneerOverlayController : IDisposable
         window.NavigationRequested += (_, path) => SafeInvoke(() => _navigateTo(path));
         window.DataEntryRequested += (_, _) => SafeInvoke(_showDataEntryPopup);
         window.MacroCodesRequested += (_, _) => SafeInvoke(_showMacroCodesPopup);
+        if (_showBarcodeCheck is not null)
+        {
+            window.BarcodeCheckRequested += (_, _) => SafeInvoke(_showBarcodeCheck);
+        }
         window.ExitRequested += (_, _) => SafeInvoke(_exit);
         window.Versions = _versions;
         window.VersionSwitchRequested += (_, versionRef) => RaiseVersionSwitch(versionRef);

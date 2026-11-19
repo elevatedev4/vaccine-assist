@@ -56,6 +56,10 @@ public sealed partial class PioneerOverlayWindow : Window
     public event EventHandler? DataEntryRequested;
     public event EventHandler? MacroCodesRequested;
 
+    /// <summary>Raised when the "Barcode check" row is clicked. The row is
+    /// only added to the menu while something is subscribed.</summary>
+    public event EventHandler? BarcodeCheckRequested;
+
     /// <summary>Raised when the menu's trailing "Exit" row is clicked — same
     /// *Requested shape as the others so PioneerOverlayController wires it
     /// the same way (see class doc comment). Owner's ask, 2026-09-21: "a
@@ -123,6 +127,15 @@ public sealed partial class PioneerOverlayWindow : Window
             var captured = item;
             menuItem.Click += (_, _) => Raise(captured);
             menu.Items.Add(menuItem);
+        }
+
+        // Barcode check (Will, 2026-11-18): same row the tray menu has.
+        if (BarcodeCheckRequested is not null)
+        {
+            var barcodeItem = new MenuItem { Header = "Barcode check" };
+            barcodeItem.Click += (_, _) => BarcodeCheckRequested?.Invoke(this, EventArgs.Empty);
+            menu.Items.Add(new Separator());
+            menu.Items.Add(barcodeItem);
         }
 
         // Owner's ask (2026-09-21): "Add 'Exit' to the popup menu ... for a

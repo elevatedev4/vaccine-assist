@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using VaccineAssist.Desktop.BarcodeCheck;
 using VaccineAssist.Desktop.Common;
 using VaccineAssist.Desktop.Fax;
 using VaccineAssist.Desktop.Hotkeys;
@@ -112,6 +113,10 @@ public partial class MainWindow : Window
     /// <summary>At most one Send PCP faxes window at a time (V-T65 R4) —
     /// same re-activate-not-stack rule as _openFaxSettingsWindow.</summary>
     private FaxSendWindow? _openFaxSendWindow;
+
+    /// <summary>At most one Barcode check window at a time (Will,
+    /// 2026-11-18) — re-activate-not-stack, like the fax windows above.</summary>
+    private BarcodeCheckWindow? _openBarcodeCheckWindow;
 
     /// <summary>
     /// BUG FIX (Will, 2026-09-14): null when TrayIconController's
@@ -345,6 +350,7 @@ public partial class MainWindow : Window
             trayIconController.FaxOpenFolderRequested += (_, _) => OpenFaxFolder();
             trayIconController.FaxImportFileRequested += (_, _) => ShowFaxSendWindow();
             trayIconController.VersionSwitchRequested += (_, versionRef) => SwitchVersion(versionRef);
+            trayIconController.BarcodeCheckRequested += (_, _) => ShowBarcodeCheckWindow();
             // V-T65 R5 (Will, verbatim: "allow the app to work from the
             // background to send faxes ... make sure the status is
             // displayed correctly") — tray tooltip reflects the
@@ -374,7 +380,8 @@ public partial class MainWindow : Window
                 showMacroCodesPopup: ShowMacroCodesPopup,
                 exit: ExitApplication,
                 settings: _settings,
-                versions: _versionMenuSource);
+                versions: _versionMenuSource,
+                showBarcodeCheck: ShowBarcodeCheckWindow);
             pioneerOverlayController.VersionSwitchRequested += (_, versionRef) => SwitchVersion(versionRef);
             // V-T41 R5 (item 4): the entry-status panel's X button.
             pioneerOverlayController.EntryStatusCancelRequested += (_, _) => CancelVaccineEntryRun();
@@ -680,6 +687,9 @@ public partial class MainWindow : Window
 
         _openFaxSendWindow?.Close();
         _openFaxSendWindow = null;
+
+        _openBarcodeCheckWindow?.Close();
+        _openBarcodeCheckWindow = null;
 
         // Covers both exit paths: MainWindow closing directly (chrome/
         // Alt+F4, or the tray's Exit — both only reach here now via
@@ -1263,6 +1273,44 @@ public partial class MainWindow : Window
         };
         _openFaxSendWindow = window;
         window.Show();
+    }
+
+    /// <summary>
+    /// Barcode check (Will, 2026-11-18, HQ MSG#1555): menu row -> one small
+    /// window where a list of numbers is loaded and scans are checked
+    /// against it. Self-contained; a failure here is logged and swallowed
+    /// so it can never take the app down. Closing the window wipes the list
+    /// (BarcodeCheckWindow's Closed handler), so every open starts blank.
+    /// </summary>
+    private void ShowBarcodeCheckWindow()
+    {
+        try
+        {
+            if (_openBarcodeCheckWindow is not null)
+            {
+                _openBarcodeCheckWindow.Activate();
+                return;
+            }
+
+            var sounds = new BarcodeSoundPlayer();
+            var window = new BarcodeCheckWindow(new BarcodeCheckViewModel(sounds));
+            window.Closed += (_, _) =>
+            {
+                sounds.Dispose();
+                if (ReferenceEquals(_openBarcodeCheckWindow, window))
+                {
+                    _openBarcodeCheckWindow = null;
+                }
+            };
+            _openBarcodeCheckWindow = window;
+            window.Show();
+            window.Activate();
+        }
+        catch (Exception ex)
+        {
+            AppFileLog.LogException("MainWindow.ShowBarcodeCheckWindow", ex);
+            _openBarcodeCheckWindow = null;
+        }
     }
 
     /// <summary>V-T65 R6 (Will, verbatim, 2026-09-29): the "duplicates
