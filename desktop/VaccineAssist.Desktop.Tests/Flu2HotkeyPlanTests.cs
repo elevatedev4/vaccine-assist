@@ -51,7 +51,11 @@ public class Flu2HotkeyPlanTests
     [InlineData(40, "pfizer", "p")]
     [InlineData(40, "moderna", "m")]
     [InlineData(12, "moderna", "m")]
-    [InlineData(11, "pfizer", "3")]    // kids are Moderna 3-11 whatever the adult setting
+    [InlineData(11, "pfizer", "5")]    // 5-11 is Pfizer 5-11 whatever the adult setting (Will, 2026-11-25)
+    [InlineData(11, "moderna", "5")]
+    [InlineData(10, "pfizer", "5")]
+    [InlineData(5, "moderna", "5")]
+    [InlineData(4, "pfizer", "3")]     // 3-4 stays Moderna 3-11
     [InlineData(3, "moderna", "3")]
     public void C_PicksThePreferredCovidForTheAgeAndSetting(int age, string adultSetting, string classicKey)
     {
@@ -105,7 +109,52 @@ public class Flu2HotkeyPlanTests
     {
         Assert.Null(Flu2HotkeyPlan.PreferredCovidFor(2, "pfizer"));
         Assert.Equal("p", Flu2HotkeyPlan.PreferredCovidFor(12, "pfizer")!.ClassicKey);
-        Assert.Equal("3", Flu2HotkeyPlan.PreferredCovidFor(11, "moderna")!.ClassicKey);
+        Assert.Equal("5", Flu2HotkeyPlan.PreferredCovidFor(11, "moderna")!.ClassicKey);
+    }
+
+    [Theory]
+    [InlineData(3, "3", "Moderna 3-11")]
+    [InlineData(4, "3", "Moderna 3-11")]
+    [InlineData(5, "5", "Pfizer 5-11")]
+    [InlineData(10, "5", "Pfizer 5-11")]
+    [InlineData(11, "5", "Pfizer 5-11")]
+    public void PreferredCovidFor_KidsAges_Pfizer5To11_Moderna3To4(int age, string classicKey, string label)
+    {
+        var choice = Flu2HotkeyPlan.PreferredCovidFor(age, "moderna")!;
+        Assert.Equal(classicKey, choice.ClassicKey);
+        Assert.Equal(label, choice.Label);
+    }
+
+    [Theory]
+    [InlineData(12, "pfizer", "p")]
+    [InlineData(12, "moderna", "m")]
+    public void PreferredCovidFor_TwelvePlus_FollowsTheSetting(int age, string setting, string classicKey)
+    {
+        Assert.Equal(classicKey, Flu2HotkeyPlan.PreferredCovidFor(age, setting)!.ClassicKey);
+    }
+
+    [Fact]
+    public void PreferredCovidFor_UnderThree_IsNull()
+    {
+        Assert.Null(Flu2HotkeyPlan.PreferredCovidFor(2, "pfizer"));
+        Assert.Null(Flu2HotkeyPlan.PreferredCovidFor(0, "moderna"));
+    }
+
+    [Fact]
+    public void RequiredLabels_Pfizer5To11_MustBeSeenOnThePageBeforeKey5IsPressed()
+    {
+        var req = Assert.Single(Flu2HotkeyPlan.RequiredLabels);
+        Assert.Equal("5", req.Letter);
+        Assert.Equal("pfizer 5", req.Match);   // matches "Pfizer 5-11" and "Pfizer 5–11 (Comirnaty 2026-27)"
+
+        var plan = Flu2HotkeyPlan.For(10, "pfizer");
+        Assert.Equal("5", plan.Keys["c"].To);
+        using var doc = JsonDocument.Parse(plan.ToJson());
+        Assert.Equal("5", doc.RootElement.GetProperty("need")[0].GetProperty("letter").GetString());
+
+        var script = Flu2HotkeyScript.Build(plan);
+        Assert.Contains("if (!offered(m.to))", script);   // missing 5 mapping -> notice, nothing pressed
+        Assert.Contains("does not offer the key", script);
     }
 
     [Fact]
@@ -197,8 +246,7 @@ public class HotkeyLabelTests
         var covid = hints.Single(h => h.Match == "covid");
         Assert.Equal("C", covid.Key);
         Assert.Equal(0, covid.At);
-        Assert.Contains("press C", covid.Text);
-        Assert.Contains("preferred COVID", covid.Text);
+        Assert.Equal("— press C: 12+ preferred, 5-11 Pfizer, 3-4 Moderna", covid.Text);
     }
 
     [Fact]

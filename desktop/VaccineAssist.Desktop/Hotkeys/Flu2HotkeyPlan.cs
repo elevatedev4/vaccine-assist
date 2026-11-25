@@ -91,6 +91,18 @@ public sealed class Flu2HotkeyPlan
         new ClassicLabel("vaqta", "v"),
     };
 
+    /// <summary>
+    /// Keys the page must be SEEN to offer before we rewrite to them (Pfizer 5-11, 2026-11-25): the page has to
+    /// show an underlined key <see cref="ClassicLabel.Letter"/> inside a label containing
+    /// <see cref="ClassicLabel.Match"/>. If it does not (an older cloud without Pfizer 5-11), the rewrite shows a
+    /// notice instead of pressing a key that could select the wrong product. Matched on "pfizer 5" so the
+    /// hyphen or en dash in "5-11" does not matter.
+    /// </summary>
+    public static IReadOnlyList<ClassicLabel> RequiredLabels { get; } = new[]
+    {
+        new ClassicLabel("pfizer 5", "5"),
+    };
+
     private Flu2HotkeyPlan(
         IReadOnlyList<string> blocked,
         IReadOnlyDictionary<string, HotkeyAction> keys,
@@ -146,7 +158,7 @@ public sealed class Flu2HotkeyPlan
             : new[]
             {
                 HotkeyHint.For("Flu", "F", "\u2014 press F for the preferred flu shot for this patient's age"),
-                HotkeyHint.For("COVID", "C", "\u2014 press C for the preferred COVID vaccine"),
+                HotkeyHint.For("COVID", "C", "\u2014 press C: 12+ preferred, 5-11 Pfizer, 3-4 Moderna"),
             };
     }
 
@@ -169,7 +181,7 @@ public sealed class Flu2HotkeyPlan
             : new HotkeyAction(null, $"{product.DisplayName} has no hotkey.");
     }
 
-    /// <summary>C: the preferred COVID vaccine for the age under the location setting (12+ -> adult setting, 3-11 -> Moderna kids), as that product's classic key.</summary>
+    /// <summary>C: the preferred COVID vaccine for the age under the location setting (12+ -> adult setting, 5-11 -> Pfizer 5-11, 3-4 -> Moderna 3-11), as that product's classic key.</summary>
     public static HotkeyAction SmartCovid(int? ageYears, string? preferredCovidAdult)
     {
         if (ageYears is not int age)
@@ -194,7 +206,10 @@ public sealed class Flu2HotkeyPlan
                 : new PreferredCovidChoice("p", "Pfizer 12+ (Comirnaty)");
         }
 
-        return new PreferredCovidChoice("3", "Moderna 3-11");
+        // Will, 2026-11-25: "For ages 5-11, default to the Pfizer vaccine not Moderna." Ages 3-4 stay Moderna 3-11.
+        return ageYears >= 5
+            ? new PreferredCovidChoice("5", "Pfizer 5-11")
+            : new PreferredCovidChoice("3", "Moderna 3-11");
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -203,5 +218,5 @@ public sealed class Flu2HotkeyPlan
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public string ToJson() => JsonSerializer.Serialize(new { blocked = Blocked, keys = Keys, relabel = Relabel, hints = Hints, classic = ClassicLabels }, JsonOptions);
+    public string ToJson() => JsonSerializer.Serialize(new { blocked = Blocked, keys = Keys, relabel = Relabel, hints = Hints, classic = ClassicLabels, need = RequiredLabels }, JsonOptions);
 }

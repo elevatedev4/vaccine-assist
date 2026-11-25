@@ -46,6 +46,24 @@ public static class Flu2HotkeyScript
       } catch (err) { }
       return true;
     }
+    function offered(to) {
+      // A key in cfg.need is only pressed when the page visibly underlines it in the expected product label;
+      // otherwise the caller shows a notice and presses nothing (never the wrong product).
+      try {
+        var need = cfg.need || [];
+        for (var n = 0; n < need.length; n++) {
+          if (need[n].letter !== to) continue;
+          var us = document.querySelectorAll('u.macro-hotkey');
+          for (var i = 0; i < us.length; i++) {
+            var p = us[i].parentElement;
+            if (!p) continue;
+            if ((us[i].textContent || '').toLowerCase() === to && (p.textContent || '').toLowerCase().indexOf(need[n].match) >= 0) return true;
+          }
+          return false;
+        }
+      } catch (err) { return false; }
+      return true;
+    }
     function notice(msg) {
       var d = document.getElementById('va-hk-notice');
       if (!d) {
@@ -76,6 +94,7 @@ public static class Flu2HotkeyScript
         e.stopImmediatePropagation();
         e.preventDefault();
         if (m.notice) { notice(m.notice); return; }
+        if (!offered(m.to)) { notice('This page does not offer the key ' + m.to.toUpperCase() + ' (Pfizer 5-11) - click the product instead.'); return; }
         busy = true;
         try {
           document.dispatchEvent(new KeyboardEvent('keydown', { key: m.to, bubbles: true, cancelable: true }));
