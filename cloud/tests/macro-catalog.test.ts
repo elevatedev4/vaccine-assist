@@ -25,7 +25,7 @@ describe("macroBaseShortCode", () => {
 
 describe("sectionForType", () => {
   it("classifies every COVID sheet Type as COVID", () => {
-    for (const type of ["Pfizer 12+", "Moderna 12+", "Moderna 3-11"]) {
+    for (const type of ["Pfizer 12+", "Moderna 12+", "Moderna 3-11", "Pfizer 5-11"]) {
       expect(sectionForType(type)).toBe("COVID");
     }
   });
@@ -128,6 +128,17 @@ describe("lookupMacroCatalog", () => {
     expect(lookupMacroCatalog("comirnaty12")).toMatchObject({ type: "Pfizer 12+", section: "COVID", age: "12+", ageMinMonths: 144 });
     expect(lookupMacroCatalog("spikevax6mo11")).toMatchObject({ type: "Moderna 3-11", section: "COVID", age: "3–11", ageMinMonths: 36 });
     expect(lookupMacroCatalog("prevnar20")).toMatchObject({ type: "Pneumonia 20", section: "Pneumonia" });
+  });
+
+  it("resolves Pfizer 5-11 (comirnaty511) as a COVID product for ages 5-11 (60 months), distinct from comirnaty12", () => {
+    expect(lookupMacroCatalog("comirnaty511")).toMatchObject({
+      type: "Pfizer 5-11",
+      section: "COVID",
+      age: "5–11",
+      ageBase: "5–11",
+      ageMinMonths: 60,
+    });
+    expect(lookupMacroCatalog("comirnaty511").type).not.toBe(lookupMacroCatalog("comirnaty12").type);
   });
 
   it("puts mFLUSIVA and FluMist in the Flu section (round-3: 'Add mFLUSIVA and FluMist to the flu/covid section')", () => {
@@ -279,6 +290,7 @@ describe("lookupMacroCatalog", () => {
       "comirnaty12",
       "mnexspike",
       "spikevax6mo11",
+      "comirnaty511",
       "flucelvaxmdv",
       "flucelvaxpfs",
       "mflusiva",

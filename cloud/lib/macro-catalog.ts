@@ -113,7 +113,7 @@ export function topGroupForSection(section: MacroSection): MacroTopGroup {
  * listed (including a short code with no catalog entry at all) falls
  * through to "Other" in sectionForType. */
 const SECTION_TYPES: Readonly<Record<Exclude<MacroSection, "Other">, ReadonlySet<string>>> = {
-  COVID: new Set(["Pfizer 12+", "Moderna 12+", "Moderna 3-11"]),
+  COVID: new Set(["Pfizer 12+", "Moderna 12+", "Moderna 3-11", "Pfizer 5-11"]),
   Flu: new Set(["Flu (regular)", "Flu (65+)", "Flu (nasal)", "Flu mRNA (50+)"]),
   Pneumonia: new Set(["Pneumonia 20", "Pneumonia 21"]),
   RSV: new Set(["RSV", "RSV (preg)"]),
@@ -250,6 +250,9 @@ const RAW_MACRO_CATALOG: Readonly<Record<string, RawCatalogEntry>> = {
   comirnaty12: { type: "Pfizer 12+", sheetOrder: 1, age: "12+", ageBase: "12+", ageMinMonths: 144 },
   mnexspike: { type: "Moderna 12+", sheetOrder: 2, age: "12+", ageBase: "12+", ageMinMonths: 144 },
   spikevax6mo11: { type: "Moderna 3-11", sheetOrder: 3, age: "3–11", ageBase: "3–11", ageMinMonths: 36 },
+  // Pfizer 5-11 (Comirnaty 2026-27 5-11y), 0.3 mL single-dose vial. sheetOrder 3 ties with Moderna 3-11 (the two kids
+  // COVID products sit side by side; ties fall back to display name). Keyed by its REAL short code verbatim, like comirnaty12.
+  comirnaty511: { type: "Pfizer 5-11", sheetOrder: 3, age: "5–11", ageBase: "5–11", ageMinMonths: 60 },
   flucelvaxmdv: {
     type: "Flu (regular)",
     sheetOrder: 4,

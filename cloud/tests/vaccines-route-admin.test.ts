@@ -722,6 +722,84 @@ describe("POST /api/vaccines", () => {
     });
   });
 
+  // Pfizer 5-11 (2026-11-25): the macro/short code is "comirnaty511", which
+  // deriveShortCode can never produce from the name, so POST takes an
+  // explicit optional short_code.
+  function postBody(body: unknown) {
+    return authedRequest("/api/vaccines", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("uses an explicit short_code (trimmed, lowercased) instead of deriving one, with the dashed NDC", async () => {
+    const single = vi.fn(async () => ({
+      data: { id: "v511", name: "Comirnaty 2026-27 5-11y", ndc: "00069-2609-10", active: false, short_code: "comirnaty511" },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const insert = vi.fn(() => ({ select }));
+    const eqShortCode = vi.fn(async () => ({ data: [], error: null }));
+    let call = 0;
+    const from = vi.fn(() => {
+      call += 1;
+      if (call === 1) return { select: () => ({ ilike: async () => ({ data: [], error: null }) }) };
+      if (call === 2) return { select: () => ({ eq: eqShortCode }) };
+      return { insert };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(
+      postBody({ name: "Comirnaty 2026-27 5-11y", ndc: "00069260910", short_code: " Comirnaty511 ", active: false })
+    );
+
+    expect(response.status).toBe(201);
+    expect(eqShortCode).toHaveBeenCalledWith("short_code", "comirnaty511");
+    expect(insert).toHaveBeenCalledWith({ name: "Comirnaty 2026-27 5-11y", ndc: "00069-2609-10", active: false, short_code: "comirnaty511" });
+  });
+
+  it("still derives the short_code from the name when short_code is omitted or null", async () => {
+    for (const extra of [{}, { short_code: null }]) {
+      const single = vi.fn(async () => ({ data: { id: "v1", name: "Abrysvo (1 ct)", short_code: "abrysvo-1-ct" }, error: null }));
+      const insert = vi.fn(() => ({ select: () => ({ single }) }));
+      let call = 0;
+      const from = vi.fn(() => {
+        call += 1;
+        return call <= 2 ? noExistingMatchesFrom() : { insert };
+      });
+      vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+      const response = await POST(postBody({ name: "Abrysvo (1 ct)", ...extra }));
+      expect(response.status).toBe(201);
+      expect(insert).toHaveBeenCalledWith(expect.objectContaining({ short_code: "abrysvo-1-ct" }));
+    }
+  });
+
+  it.each([["comirnaty-511"], ["com irnaty"], [""], ["   "], ["a".repeat(41)], [511], [true]])(
+    "rejects an invalid short_code (%j) with 400 before touching Supabase",
+    async (shortCode) => {
+      const response = await POST(postBody({ name: "Comirnaty 2026-27 5-11y", short_code: shortCode }));
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain("short_code");
+      expect(getSupabaseServerClient).not.toHaveBeenCalled();
+    }
+  );
+
+  it("rejects an explicit short_code that already exists with 409, without inserting", async () => {
+    const insert = vi.fn();
+    let call = 0;
+    const from = vi.fn(() => {
+      call += 1;
+      if (call === 1) return { select: () => ({ ilike: async () => ({ data: [], error: null }) }) };
+      return { select: () => ({ eq: async () => ({ data: [{ id: "v0", short_code: "comirnaty511" }], error: null }) }), insert };
+    });
+    vi.mocked(getSupabaseServerClient).mockReturnValue({ from } as never);
+
+    const response = await POST(postBody({ name: "Comirnaty 2026-27 5-11y", short_code: "comirnaty511" }));
+    expect(response.status).toBe(409);
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("rejects a duplicate short_code (derived from a different name) with 409, without inserting", async () => {
     let call = 0;
     const from = vi.fn(() => {

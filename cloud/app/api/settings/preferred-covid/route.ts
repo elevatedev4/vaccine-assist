@@ -3,23 +3,28 @@ import { requireAuthenticatedUser } from "@/lib/auth";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { isMissingTableError } from "@/lib/schema-degradation";
 import { getPreferredCovid } from "@/lib/preferred-covid-settings";
-import { PREFERRED_COVID_SETTING_KEY, isValidPreferredCovid } from "@/lib/preferred-covid";
+import { PREFERRED_COVID_SETTING_KEY, isValidPreferredCovid, normalizePreferredCovid } from "@/lib/preferred-covid";
 
 /**
  * GET/PUT /api/settings/preferred-covid - the pharmacy-wide preferred COVID
- * vaccine for ages 12+ and for ages 3-11 (V-Q11, Will 2026-10-20). Edited on
- * the Data Entry tab; read by the macro-codes "C" hotkey. Backed by the
- * existing generic `app_setting` table (0012) - no new migration. Authed
- * like every other settings route (requireAuthenticatedUser).
+ * vaccine for ages 12+, for ages 5-11 and for ages 3-4 (V-Q11, Will
+ * 2026-10-20; 5-11 added 2026-11-25). Edited on the Data Entry tab; read
+ * by the macro-codes "C" hotkey. Backed by the existing generic
+ * `app_setting` table (0012) - no new migration. Authed like every other
+ * settings route (requireAuthenticatedUser).
  *
  * RESPONSE CONTRACTS:
- *   GET -> { adult: "pfizer" | "moderna", kids: "moderna", pending: boolean, saved: boolean }
- *          (defaults pfizer / moderna when nothing is saved; pending:true
- *          means app_setting does not exist yet; saved:true only when a
- *          valid macro.preferred_covid row is stored, false for the
- *          built-in default)
- *   PUT body { adult, kids } (both required, both valid)
- *       -> { adult, kids } on success
+ *   GET -> { adult: "pfizer" | "moderna", kids: "moderna",
+ *            kids511: "pfizer" | "moderna", pending: boolean, saved: boolean }
+ *          (defaults pfizer / moderna / pfizer when nothing is saved; a row
+ *          saved before kids511 existed reads back with kids511 "pfizer";
+ *          pending:true means app_setting does not exist yet; saved:true
+ *          only when a valid macro.preferred_covid row is stored, false for
+ *          the built-in default)
+ *   PUT body { adult, kids, kids511? } (adult and kids required and valid;
+ *       kids511 optional - omitted means the default - but must be valid
+ *       when present)
+ *       -> { adult, kids, kids511 } on success (always the full value)
  *       or { pending: true } (200) before 0012 has been applied
  */
 
@@ -58,9 +63,9 @@ export async function PUT(request: Request) {
   }
 
   if (!isValidPreferredCovid(body)) {
-    return NextResponse.json({ error: "adult and kids must each be a valid preferred COVID choice." }, { status: 400 });
+    return NextResponse.json({ error: "adult, kids and (when given) kids511 must each be a valid preferred COVID choice." }, { status: 400 });
   }
-  const value = { adult: body.adult, kids: body.kids };
+  const value = normalizePreferredCovid(body);
 
   let supabase;
   try {

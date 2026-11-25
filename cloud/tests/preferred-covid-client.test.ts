@@ -11,10 +11,10 @@ function fetchReturning(response: Response | Error) {
 describe("loadPreferredCovid", () => {
   it("returns the saved setting on success and sends the bearer token", async () => {
     const fetchImpl = fetchReturning(
-      new Response(JSON.stringify({ adult: "moderna", kids: "moderna", pending: false }), { status: 200 })
+      new Response(JSON.stringify({ adult: "moderna", kids: "moderna", kids511: "moderna", pending: false }), { status: 200 })
     );
     const result = await loadPreferredCovid("tok", fetchImpl);
-    expect(result).toEqual({ ok: true, setting: { adult: "moderna", kids: "moderna" } });
+    expect(result).toEqual({ ok: true, setting: { adult: "moderna", kids: "moderna", kids511: "moderna" } });
     expect(fetchImpl).toHaveBeenCalledWith("/api/settings/preferred-covid", { headers: { Authorization: "Bearer tok" } });
   });
 
@@ -31,7 +31,12 @@ describe("loadPreferredCovid", () => {
 
   it("a successful response with nothing saved yields the defaults as a real loaded value", async () => {
     const result = await loadPreferredCovid("tok", fetchReturning(new Response(JSON.stringify({ adult: "pfizer", kids: "moderna", pending: true }), { status: 200 })));
-    expect(result).toEqual({ ok: true, setting: { adult: "pfizer", kids: "moderna" } });
+    expect(result).toEqual({ ok: true, setting: { adult: "pfizer", kids: "moderna", kids511: "pfizer" } });
+  });
+
+  it("an OLD response without kids511 loads with the Pfizer 5-11 default filled in", async () => {
+    const result = await loadPreferredCovid("tok", fetchReturning(new Response(JSON.stringify({ adult: "moderna", kids: "moderna", pending: false }), { status: 200 })));
+    expect(result).toEqual({ ok: true, setting: { adult: "moderna", kids: "moderna", kids511: "pfizer" } });
   });
 });
 

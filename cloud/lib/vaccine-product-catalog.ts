@@ -151,6 +151,28 @@ const CATALOG: ProductCatalogEntry[] = [
     source: "primevaccines.pfizer.com F000065562",
   },
   {
+    // Pfizer 5-11 (Will 2026-11-25: "Pfizer 5-11, Comirnaty 2026-27 (5-11y)
+    // 0.3 ml vial 00069-2609-10"). Deliberately AFTER the 12+ row above:
+    // the matcher walks this array in order, and a bare "Comirnaty" name
+    // must keep resolving to the 12+ row. This row is reached by its NDC
+    // (checked before any name rule) or by its exact/base name; the
+    // DB row should be named WITHOUT parentheses ("Comirnaty 2026-27
+    // 5-11y") because normalizeProductBaseName strips a parenthetical,
+    // which would reduce "Comirnaty 2026-27 (5-11y)" to a bare
+    // "comirnaty" that the 12+ row's rules claim first. The productName's
+    // parenthetical "5-11y" survives lotsDisplayName on purpose, so
+    // Ordering/Lots show "Comirnaty 2026-2027 5-11y" and never collapse
+    // onto the 12+ row's "Comirnaty 2026-2027". dosesPerPackage 10 is the
+    // single-dose-vial carton count implied by the "-10" package code of
+    // NDC 00069-2609-10 (not yet confirmed against a package insert).
+    match: { ndc: "00069260910", name: "Comirnaty 2026-27 5-11y" },
+    productName: "Comirnaty 2026-2027 (5-11y)",
+    ageRange: "5-11",
+    dosesPerPackage: 10,
+    packageNdc: "00069-2609-10",
+    source: "Will 2026-11-25 (0.3 mL single-dose vial, NDC 00069-2609-10); carton count 10 assumed from the NDC package code",
+  },
+  {
     match: { ndc: "58160082152", name: "Engerix 20 (age 20+)" },
     productName: "Engerix-B (adult 20 mcg)",
     ageRange: "20+",
@@ -607,6 +629,19 @@ export function ndcBelongsToOtherProduct(
 export function formatProductDisplayName(productName: string, ageRange: string | null): string {
   if (!ageRange) return productName;
   return ageRange.includes("(") || ageRange.includes(")") ? `${productName} — ${ageRange}` : `${productName} (${ageRange})`;
+}
+
+/**
+ * True for a Comirnaty catalog row that is the 5-11 (child) product — e.g.
+ * "Comirnaty 2026-27 5-11y". Name-PREFIX lookups that mean "the adult/12+
+ * Comirnaty row" (the Pioneer BOH alias, the ordering recommendation's
+ * "covid"/"covid pfizer" composites) use this to skip it: with two
+ * Comirnaty rows in the catalog a bare startsWith("comirnaty") would
+ * otherwise land on whichever one the database returns first.
+ */
+export function isComirnatyChildName(name: string | null | undefined): boolean {
+  const trimmed = (name ?? "").trim();
+  return /^comirnaty\b/i.test(trimmed) && /\b5\s*[-–]\s*11(?!\d)/.test(trimmed);
 }
 
 /** The Ordering page's display name for a row — see

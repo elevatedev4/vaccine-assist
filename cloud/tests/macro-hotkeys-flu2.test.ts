@@ -19,7 +19,7 @@ import {
   type MacroTopGroupBlock,
 } from "@/lib/macro-codes";
 import type { ProductView } from "@/lib/product-view";
-import { DEFAULT_PREFERRED_COVID } from "@/lib/preferred-covid";
+import { DEFAULT_PREFERRED_COVID, type PreferredCovidSettingInput } from "@/lib/preferred-covid";
 
 // Synthetic catalog fixture, same builders as tests/macro-hotkeys.test.ts.
 const TODAY = "2026-01-01";
@@ -40,6 +40,7 @@ const ENTRIES = [
   ["pfizer", "Pfizer 12+", "comirnaty12"],
   ["moderna", "Moderna 12+", "mnexspike"],
   ["modernakids", "Moderna 3-11", "spikevax6mo11"],
+  ["pfizerkids", "Pfizer 5-11", "comirnaty511"],
   ["capvaxive", "Capvaxive", "capvaxive"],
   ["vaqta", "Vaqta", "vaqtaadult"],
 ] as const;
@@ -58,7 +59,7 @@ function codeOf(result: ReturnType<typeof press>): string | null {
   return result.action.type === "copy" ? result.action.row.shortCode : null;
 }
 
-function flu2(age: number | null, covid = DEFAULT_PREFERRED_COVID): HotkeyContext {
+function flu2(age: number | null, covid: PreferredCovidSettingInput = DEFAULT_PREFERRED_COVID): HotkeyContext {
   return { map: MACRO_HOTKEYS_FLU2, smart: makeFlu2SmartResolver(age, covid) };
 }
 
@@ -69,6 +70,12 @@ describe("flu2 hotkey map", () => {
     expect(MACRO_HOTKEYS_FLU2.v).toEqual(["mflusiva"]);
     expect(MACRO_HOTKEYS_FLU2.p).toEqual(["comirnaty12"]);
     expect(MACRO_HOTKEYS_FLU2.m).toEqual(["mnexspike"]);
+  });
+
+  it("maps 5 to Pfizer 5-11 (same key as the classic map)", () => {
+    expect(MACRO_HOTKEYS_FLU2["5"]).toEqual(["comirnaty511"]);
+    expect(MACRO_HOTKEYS["5"]).toEqual(["comirnaty511"]);
+    expect(hotkeyForProduct("comirnaty511", MACRO_HOTKEYS_FLU2)).toBe("5");
   });
 
   it("leaves F and C to the per-patient resolver and releases L", () => {
@@ -158,15 +165,39 @@ describe("X / D / V pick a specific flu product regardless of age", () => {
 });
 
 describe("C (preferred COVID from the location setting)", () => {
-  it("default setting: 12+ -> Pfizer, 3-11 -> Moderna kids", () => {
+  it("default setting: 12+ -> Pfizer 12+, 5-11 -> Pfizer 5-11, 3-4 -> Moderna kids", () => {
     expect(codeOf(press("c", flu2(12)))).toBe("comirnaty12");
     expect(codeOf(press("c", flu2(40)))).toBe("comirnaty12");
-    expect(codeOf(press("c", flu2(11)))).toBe("spikevax6mo11");
+    expect(codeOf(press("c", flu2(11)))).toBe("comirnaty511");
+    expect(codeOf(press("c", flu2(5)))).toBe("comirnaty511");
+    expect(codeOf(press("c", flu2(4)))).toBe("spikevax6mo11");
     expect(codeOf(press("c", flu2(3)))).toBe("spikevax6mo11");
   });
 
-  it("follows a changed 12+ setting", () => {
-    expect(codeOf(press("c", flu2(30, { adult: "moderna", kids: "moderna" })))).toBe("mnexspike");
+  it("follows a changed 12+ setting without moving the kids picks", () => {
+    const moderna12 = { adult: "moderna", kids: "moderna", kids511: "pfizer" } as const;
+    expect(codeOf(press("c", flu2(30, moderna12)))).toBe("mnexspike");
+    expect(codeOf(press("c", flu2(11, moderna12)))).toBe("comirnaty511");
+    expect(codeOf(press("c", flu2(4, moderna12)))).toBe("spikevax6mo11");
+  });
+
+  it("follows a changed 5-11 setting (Moderna 3-11) for ages 5 through 11 only", () => {
+    const modernaKids = { adult: "pfizer", kids: "moderna", kids511: "moderna" } as const;
+    expect(codeOf(press("c", flu2(5, modernaKids)))).toBe("spikevax6mo11");
+    expect(codeOf(press("c", flu2(11, modernaKids)))).toBe("spikevax6mo11");
+    expect(codeOf(press("c", flu2(12, modernaKids)))).toBe("comirnaty12");
+  });
+
+  it("an old saved setting (no kids511) picks Pfizer 5-11 for ages 5-11", () => {
+    const oldStored = { adult: "pfizer", kids: "moderna" } as const;
+    expect(codeOf(press("c", flu2(8, oldStored)))).toBe("comirnaty511");
+    expect(codeOf(press("c", flu2(3, oldStored)))).toBe("spikevax6mo11");
+  });
+
+  it("the 5 key picks Pfizer 5-11 whatever the age or setting", () => {
+    expect(codeOf(press("5", flu2(40)))).toBe("comirnaty511");
+    expect(codeOf(press("5", { map: MACRO_HOTKEYS }))).toBe("comirnaty511");
+    expect(codeOf(press("5", flu2(8, { adult: "pfizer", kids: "moderna", kids511: "moderna" })))).toBe("comirnaty511");
   });
 
   it("does nothing but show a message for an unknown age or under 3", () => {
@@ -178,6 +209,8 @@ describe("C (preferred COVID from the location setting)", () => {
   it("says so when the preferred product is not on the visible list", () => {
     const empty = hotkeyTransition(INITIAL_HOTKEY_STATE, "c", [], flu2(30));
     expect(empty.action).toEqual({ type: "notice", message: "Pfizer 12+ isn't on the list right now." });
+    const emptyKids = hotkeyTransition(INITIAL_HOTKEY_STATE, "c", [], flu2(8));
+    expect(emptyKids.action).toEqual({ type: "notice", message: "Pfizer 5-11 isn't on the list right now." });
   });
 
   it("P and M still pick Pfizer and Moderna", () => {

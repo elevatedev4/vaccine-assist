@@ -482,6 +482,47 @@ describe("GET /api/ordering/recommendation", () => {
     expect(modernaRow.upcoming7d).toBe(1);
   });
 
+  // Pfizer 5-11 (2026-11-25): with TWO Comirnaty rows in the catalog the
+  // age-less "COVID-Pfizer" composite must keep landing on the 12+ row even
+  // when the database returns the 5-11 row first, and the 5-11 row must be
+  // listed on its own (never merged into the 12+ row) with no appointments
+  // attributed to it.
+  it("keeps COVID composite counts on the 12+ Comirnaty row when a Pfizer 5-11 row exists (listed first)", async () => {
+    const catalogWith511 = [
+      { id: "v-comirnaty511", name: "Comirnaty 2026-27 5-11y", short_code: "comirnaty511", ndc: "00069-2609-10", active: true },
+      { id: "v-comirnaty", name: "Comirnaty 2026-27 12+", short_code: "comirnaty12", ndc: null, active: true },
+      { id: "v-mnexspike", name: "mNEXSPIKE", short_code: "mnexspike", ndc: null, active: true },
+    ];
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase([], catalogWith511) as never);
+    vi.mocked(getAcuityCredentials).mockResolvedValue({ userId: "u", apiKey: "k", source: "env" });
+    vi.mocked(fetchAppointmentTypes).mockResolvedValue([]);
+    vi.mocked(fetchAppointmentsForRange).mockResolvedValue({
+      appointments: [
+        {
+          date: "2026-08-19",
+          appointmentTypeId: 1,
+          hourOfDay: 10,
+          vaccineNames: ["COVID-Pfizer"],
+          testNames: [],
+          covidBrand: "pfizer",
+          covidAgeBucket: "12-64",
+          fluAgeBucket: "unknown",
+          createdDate: "2026-08-10",
+        },
+      ],
+      possiblyTruncated: false,
+    });
+
+    const response = await GET(authedRequest());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    const adultRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-comirnaty");
+    expect(adultRow.upcoming7d).toBe(1);
+    const childRow = body.rows.find((r: { key: string }) => r.key === "vaccine:v-comirnaty511");
+    expect(childRow?.upcoming7d ?? 0).toBe(0);
+  });
+
   // V-covid-season-agnostic-match (review follow-up, live bug after
   // d7e123f): the lot-list apply renamed the on-file DB rows mid-season
   // ("Comirnaty 2025-26 12+" -> "Comirnaty 2026-27 12+", "mNEXSPIKE" ->

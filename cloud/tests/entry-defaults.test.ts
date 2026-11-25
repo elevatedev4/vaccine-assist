@@ -49,6 +49,7 @@ describe("defaultQuantity", () => {
     expect(defaultQuantity("comirnaty12")).toBe("0.3");
     expect(defaultQuantity("mnexspike")).toBe("0.2");
     expect(defaultQuantity("spikevax6mo11")).toBe("0.25");
+    expect(defaultQuantity("comirnaty511")).toBe("0.3");
     expect(defaultQuantity("flumist")).toBe("0.2");
     expect(defaultQuantity("engerix")).toBe("1");
     expect(defaultQuantity("vaqtaadult")).toBe("1");
