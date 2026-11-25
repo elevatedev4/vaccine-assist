@@ -4,10 +4,12 @@ import {
   displayNameFor,
   findInCatalog,
   formatProductDisplayName,
+  isComirnatyChildName,
   lookupProduct,
   normalizeProductBaseName,
   type ProductCatalogEntry,
 } from "@/lib/vaccine-product-catalog";
+import { formatNdcForStorage } from "@/lib/ndc";
 
 // The 27 active catalog vaccine names on file (V-T26 item 7, Will
 // 2026-09-09 research pass) — every one of these must resolve to a
@@ -225,6 +227,49 @@ describe("season-agnostic name matching against the REAL seed catalog", () => {
     const product = lookupProduct({ name: "Comirnaty 2026-27 12+" });
     expect(product).toMatchObject({ productName: "Comirnaty 2026-2027 Formula", dosesPerPackage: 10 });
     expect(product?.packageNdc).not.toBeNull();
+  });
+});
+
+describe("Pfizer 5-11 (Comirnaty 2026-27 5-11y, NDC 00069-2609-10)", () => {
+  const CHILD = { productName: "Comirnaty 2026-2027 (5-11y)", ageRange: "5-11", packageNdc: "00069-2609-10" };
+
+  it("resolves by its NDC, with or without dashes", () => {
+    expect(lookupProduct({ ndc: "00069-2609-10" })).toMatchObject(CHILD);
+    expect(lookupProduct({ ndc: "00069260910" })).toMatchObject(CHILD);
+  });
+
+  it("resolves by the DB row name (no parentheses), with the ndc missing", () => {
+    expect(lookupProduct({ name: "Comirnaty 2026-27 5-11y" })).toMatchObject(CHILD);
+    expect(lookupProduct({ name: "Comirnaty 2026-27 5-11y", ndc: null })).toMatchObject(CHILD);
+  });
+
+  it("does not take over the 12+ Comirnaty: its name, a bare 'Comirnaty' and its NDC still resolve to 12+", () => {
+    expect(lookupProduct({ name: "Comirnaty 2026-27 12+" })).toMatchObject({ productName: "Comirnaty 2026-2027 Formula" });
+    expect(lookupProduct({ name: "Comirnaty" })).toMatchObject({ productName: "Comirnaty 2026-2027 Formula" });
+    expect(lookupProduct({ ndc: "00069252810" })).toMatchObject({ productName: "Comirnaty 2026-2027 Formula" });
+  });
+
+  it("shows as 'Comirnaty 2026-2027 5-11y' - a different row name than the 12+ product", () => {
+    const child = displayNameFor("Comirnaty 2026-27 5-11y", "00069-2609-10");
+    const adult = displayNameFor("Comirnaty 2026-27 12+", "00069-2631-10");
+    expect(child).not.toBe(adult);
+    expect(child).toContain("5-11y");
+  });
+
+  it("package size is 10 doses and the NDC is stored dashed", () => {
+    expect(lookupProduct({ name: "Comirnaty 2026-27 5-11y" })?.dosesPerPackage).toBe(10);
+    expect(formatNdcForStorage("00069260910")).toBe("00069-2609-10");
+    expect(formatNdcForStorage("00069-2609-10")).toBe("00069-2609-10");
+  });
+
+  it("isComirnatyChildName spots the 5-11 row only", () => {
+    expect(isComirnatyChildName("Comirnaty 2026-27 5-11y")).toBe(true);
+    expect(isComirnatyChildName("Comirnaty 2026-2027 5-11y")).toBe(true);
+    expect(isComirnatyChildName("Comirnaty 5–11")).toBe(true);
+    expect(isComirnatyChildName("Comirnaty 2026-27 12+")).toBe(false);
+    expect(isComirnatyChildName("Comirnaty")).toBe(false);
+    expect(isComirnatyChildName("Spikevax 5-11")).toBe(false);
+    expect(isComirnatyChildName("")).toBe(false);
   });
 });
 

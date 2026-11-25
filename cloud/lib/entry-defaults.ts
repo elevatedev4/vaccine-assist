@@ -35,7 +35,7 @@ const BASE_DIRECTIONS = "For administration by healthcare provider in pharmacy."
  * Default dispensed quantity (mL), keyed by short_code base — same key
  * set as lib/macro-catalog.ts's RAW_MACRO_CATALOG. Values are Will's
  * own numbers (verbatim from his catalog, 2026-09-11): mNEXSPIKE 0.2,
- * Comirnaty 12+ 0.3, Spikevax 6mo-11 0.25, FluMist 0.2 (nasal, per
+ * Comirnaty 12+ 0.3, Comirnaty 5-11 0.3 (Will 2026-11-25: 0.3 mL vial), Spikevax 6mo-11 0.25, FluMist 0.2 (nasal, per
  * nostril 0.1 -> quantity 0.2 total), Engerix-B adult 20mcg/1mL -> "1",
  * Vaqta adult -> "1"; everything else in the catalog is 0.5 mL. A
  * short_code with no entry here (including an unrecognized one) has NO
@@ -43,6 +43,7 @@ const BASE_DIRECTIONS = "For administration by healthcare provider in pharmacy."
  */
 export const DEFAULT_QUANTITY_BY_BASE_CODE: Readonly<Record<string, string>> = {
   comirnaty12: "0.3",
+  comirnaty511: "0.3",
   mnexspike: "0.2",
   spikevax6mo11: "0.25",
   flucelvaxmdv: "0.5",

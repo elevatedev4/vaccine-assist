@@ -5,6 +5,7 @@ import {
   DEFAULT_PREFERRED_COVID,
   PREFERRED_COVID_ADULT_OPTIONS,
   PREFERRED_COVID_KIDS_OPTIONS,
+  PREFERRED_COVID_KIDS511_OPTIONS,
   type PreferredCovidSetting,
 } from "@/lib/preferred-covid";
 import { loadPreferredCovid, preferredCovidSaveOutcome } from "@/lib/preferred-covid-client";
@@ -12,8 +13,8 @@ import { loadPreferredCovid, preferredCovidSaveOutcome } from "@/lib/preferred-c
 /**
  * Data Entry tab: which COVID vaccine the C hotkey picks (V-Q11, Will
  * 2026-10-20: "make it where you can choose the preferred covid vaccine in
- * data entry tab"). One choice for patients 12+, one for children 3-11;
- * each change saves immediately to /api/settings/preferred-covid. Shows
+ * data entry tab"). One choice for patients 12+, one for children 5-11
+ * (Pfizer 5-11 by default) and one for children 3-4; each change saves immediately to /api/settings/preferred-covid. Shows
  * the saved value only once it has loaded; a failed load shows an error with
  * Retry and keeps the selects disabled, so the defaults are never mistaken for
  * (or saved over) the real setting.
@@ -160,7 +161,19 @@ export function PreferredCovidSettingEditor({
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
-          <label htmlFor="preferred-covid-kids" style={styles.compactLabel}>Ages 3-11</label>
+          <label htmlFor="preferred-covid-kids511" style={styles.compactLabel}>Ages 5-11</label>
+          <select
+            id="preferred-covid-kids511"
+            style={styles.compactSelect}
+            value={setting.kids511}
+            disabled={!editable}
+            onChange={(e) => void save({ ...setting, kids511: e.target.value as PreferredCovidSetting["kids511"] })}
+          >
+            {PREFERRED_COVID_KIDS511_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <label htmlFor="preferred-covid-kids" style={styles.compactLabel}>Ages 3-4</label>
           <select
             id="preferred-covid-kids"
             style={styles.compactSelect}
@@ -206,7 +219,21 @@ export function PreferredCovidSettingEditor({
         </select>
       </div>
       <div style={styles.row}>
-        <label htmlFor="preferred-covid-kids" style={styles.label}>Ages 3-11</label>
+        <label htmlFor="preferred-covid-kids511" style={styles.label}>Ages 5-11</label>
+        <select
+          id="preferred-covid-kids511"
+          style={styles.select}
+          value={setting.kids511}
+          disabled={!editable}
+          onChange={(e) => void save({ ...setting, kids511: e.target.value as PreferredCovidSetting["kids511"] })}
+        >
+          {PREFERRED_COVID_KIDS511_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+      <div style={styles.row}>
+        <label htmlFor="preferred-covid-kids" style={styles.label}>Ages 3-4</label>
         <select
           id="preferred-covid-kids"
           style={styles.select}

@@ -16,13 +16,16 @@ const root = path.resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(path.join(root, rel), "utf8");
 
 describe("PreferredCovidSettingEditor rendering", () => {
-  it("compact variant shows the labelled block with both age selects", () => {
+  it("compact variant shows the labelled block with all three age selects", () => {
     const html = renderToStaticMarkup(createElement(PreferredCovidSettingEditor, { accessToken: "t", variant: "compact" }));
     expect(html).toContain("Preferred COVID (C hotkey)");
     expect(html).toContain("Ages 12+");
-    expect(html).toContain("Ages 3-11");
+    expect(html).toContain("Ages 5-11");
+    expect(html).toContain("Ages 3-4");
+    expect(html).not.toContain("Ages 3-11");
     expect(html).toContain("Pfizer 12+");
     expect(html).toContain("Moderna 12+");
+    expect(html).toContain("Pfizer 5-11");
     expect(html).toContain("Moderna 3-11");
   });
 
@@ -31,7 +34,9 @@ describe("PreferredCovidSettingEditor rendering", () => {
     expect(html).toContain("Preferred COVID vaccine");
     expect(html).toContain("The C hotkey in the desktop macro list picks this vaccine");
     expect(html).toContain("Ages 12+");
-    expect(html).toContain("Ages 3-11");
+    expect(html).toContain("Ages 5-11");
+    expect(html).toContain("Ages 3-4");
+    expect(html).toContain("Pfizer 5-11");
     expect(html).not.toContain("Preferred COVID (C hotkey)");
   });
 

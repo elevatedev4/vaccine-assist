@@ -220,7 +220,7 @@ function deriveShortCode(name: string): string {
  * null (validated/formatted by lib/ndc.ts's formatNdcForStorage — the
  * SAME helper PATCH /api/vaccines/[id] uses for its own `ndc` field, so a
  * new row's NDC is stored in the identical dashed 5-4-2 form), active?:
- * boolean (default true) }. Same auth guard as every other /api/vaccines*
+ * boolean (default true), short_code?: string }. Same auth guard as every other /api/vaccines*
  * route. Rejects a duplicate name (case-insensitive, trimmed) with 409 —
  * this table has no unique constraint on `name`, so the check is done
  * here rather than relying on the database to reject it.
@@ -234,6 +234,13 @@ function deriveShortCode(name: string): string {
  * posture as the name check), and any genuine Supabase insert failure
  * now logs its actual `.message` so a future failure is diagnosable from
  * the server log alone. Returns { vaccine } 201.
+ *
+ * Optional `short_code` (Pfizer 5-11, 2026-11-25): a product whose macro
+ * code is fixed in code (lib/macro-catalog.ts's "comirnaty511") cannot
+ * use the name-derived code ("comirnaty-2026-27-5-11y"), so the caller may
+ * pass it explicitly. Trimmed and lowercased, then it must be 1-40 chars
+ * of a-z/0-9 only (400 otherwise); the same 409 duplicate check applies.
+ * Omitted (or null) keeps the derived code, exactly as before.
  */
 export async function POST(request: Request) {
   const auth = await requireAuthenticatedUser(request);
@@ -241,7 +248,7 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { name, ndc, active } = body ?? {};
+    const { name, ndc, active, short_code: requestedShortCode } = body ?? {};
 
     if (typeof name !== "string" || !name.trim()) {
       return NextResponse.json({ error: "name is required." }, { status: 400 });
@@ -266,7 +273,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "active must be a boolean." }, { status: 400 });
     }
 
-    const shortCode = deriveShortCode(trimmedName);
+    let shortCode: string;
+    if (requestedShortCode !== undefined && requestedShortCode !== null) {
+      if (typeof requestedShortCode !== "string" || !/^[a-z0-9]{1,40}$/.test(requestedShortCode.trim().toLowerCase())) {
+        return NextResponse.json({ error: "short_code must be 1-40 letters/digits (no spaces or dashes)." }, { status: 400 });
+      }
+      shortCode = requestedShortCode.trim().toLowerCase();
+    } else {
+      shortCode = deriveShortCode(trimmedName);
+    }
     if (!shortCode) {
       return NextResponse.json({ error: "name must contain at least one letter or digit." }, { status: 400 });
     }

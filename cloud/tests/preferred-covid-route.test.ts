@@ -56,33 +56,50 @@ afterEach(() => {
 });
 
 describe("GET /api/settings/preferred-covid", () => {
-  it("returns the defaults (Pfizer 12+, Moderna 3-11) when nothing is saved", async () => {
+  it("returns the defaults (Pfizer 12+, Pfizer 5-11, Moderna 3-4) when nothing is saved", async () => {
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({}) as never);
     const response = await GET(authedRequest());
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false, saved: false });
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", kids511: "pfizer", pending: false, saved: false });
   });
 
   it("returns the saved choice", async () => {
     vi.mocked(getSupabaseServerClient).mockReturnValue(
+      fakeSupabase({ storedValue: { adult: "moderna", kids: "moderna", kids511: "moderna" } }) as never
+    );
+    const response = await GET(authedRequest());
+    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna", kids511: "moderna", pending: false, saved: true });
+  });
+
+  it("an OLD stored row (no kids511) is still saved:true and reads back with the Pfizer 5-11 default", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(
       fakeSupabase({ storedValue: { adult: "moderna", kids: "moderna" } }) as never
     );
     const response = await GET(authedRequest());
-    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna", pending: false, saved: true });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna", kids511: "pfizer", pending: false, saved: true });
   });
 
   it("reports saved:true for a stored row even when it equals the built-in default", async () => {
     vi.mocked(getSupabaseServerClient).mockReturnValue(
-      fakeSupabase({ storedValue: { adult: "pfizer", kids: "moderna" } }) as never
+      fakeSupabase({ storedValue: { adult: "pfizer", kids: "moderna", kids511: "pfizer" } }) as never
     );
     const response = await GET(authedRequest());
-    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false, saved: true });
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", kids511: "pfizer", pending: false, saved: true });
   });
 
   it("falls back to the defaults for a malformed stored value", async () => {
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ storedValue: { adult: "novavax" } }) as never);
     const response = await GET(authedRequest());
-    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: false, saved: false });
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", kids511: "pfizer", pending: false, saved: false });
+  });
+
+  it("falls back to the defaults for a stored value with an invalid kids511", async () => {
+    vi.mocked(getSupabaseServerClient).mockReturnValue(
+      fakeSupabase({ storedValue: { adult: "moderna", kids: "moderna", kids511: "novavax" } }) as never
+    );
+    const response = await GET(authedRequest());
+    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna", kids511: "pfizer", pending: false, saved: false });
   });
 
   it("degrades to the defaults with pending:true before app_setting exists", async () => {
@@ -91,7 +108,7 @@ describe("GET /api/settings/preferred-covid", () => {
     );
     const response = await GET(authedRequest());
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", pending: true, saved: false });
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", kids511: "pfizer", pending: true, saved: false });
   });
 
   it("500s on any other database error", async () => {
@@ -118,18 +135,33 @@ describe("PUT /api/settings/preferred-covid", () => {
     const upsert = vi.fn(async () => ({ error: null }));
     vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ upsert }) as never);
 
-    const response = await PUT(putRequest({ adult: "moderna", kids: "moderna", extra: "ignored" }));
+    const response = await PUT(putRequest({ adult: "moderna", kids: "moderna", kids511: "moderna", extra: "ignored" }));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna" });
+    expect(await response.json()).toEqual({ adult: "moderna", kids: "moderna", kids511: "moderna" });
     expect(upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ key: "macro.preferred_covid", value: { adult: "moderna", kids: "moderna" } })
+      expect.objectContaining({ key: "macro.preferred_covid", value: { adult: "moderna", kids: "moderna", kids511: "moderna" } })
+    );
+  });
+
+  it("an old client's PUT without kids511 is accepted and stored with the Pfizer 5-11 default", async () => {
+    const upsert = vi.fn(async () => ({ error: null }));
+    vi.mocked(getSupabaseServerClient).mockReturnValue(fakeSupabase({ upsert }) as never);
+
+    const response = await PUT(putRequest({ adult: "pfizer", kids: "moderna" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ adult: "pfizer", kids: "moderna", kids511: "pfizer" });
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "macro.preferred_covid", value: { adult: "pfizer", kids: "moderna", kids511: "pfizer" } })
     );
   });
 
   it.each([
     [{ adult: "novavax", kids: "moderna" }],
     [{ adult: "pfizer", kids: "pfizer" }],
+    [{ adult: "pfizer", kids: "moderna", kids511: "novavax" }],
+    [{ adult: "pfizer", kids: "moderna", kids511: null }],
     [{ adult: "pfizer" }],
     [{}],
     [null],
