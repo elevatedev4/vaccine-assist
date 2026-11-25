@@ -71,6 +71,7 @@ const styles = {
   th: { textAlign: "left" as const, padding: "2px 6px", borderBottom: "1px solid #ccc", whiteSpace: "nowrap" as const },
   td: { textAlign: "left" as const, padding: "2px 6px", verticalAlign: "middle" as const },
   type: { fontWeight: 600 },
+  shortCode: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" },
   quantityInput: { width: "8ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
   directionsInput: { width: "100%", minWidth: "22ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
   cashPriceInput: { width: "7ch", padding: "2px 4px", boxSizing: "border-box" as const, border: "1px solid #bbb" },
@@ -479,6 +480,7 @@ export default function EntryValuesPage() {
           {vaccineDisplayName(row.displayName)}
           {isPreferredAdultCovidRow({ name: row.displayName, shortCode: row.shortCode }, preferredCovid) && <PreferredBadge />}
         </td>
+        <td style={{ ...styles.td, ...styles.shortCode, ...groupBorder }}>{row.shortCode ?? ""}</td>
         <td style={{ ...styles.td, ...groupBorder }}>{formatNdcDashed(row.ndc)}</td>
         <td style={{ ...styles.td, ...groupBorder }}>{doseColumnLabel(row.doseNumber)}</td>
         <td style={{ ...styles.td, ...groupBorder, background: quantityBlank ? BLANK_QUANTITY_HIGHLIGHT : undefined }}>
@@ -578,6 +580,7 @@ export default function EntryValuesPage() {
               <tr>
                 <th style={styles.th}>Type</th>
                 <th style={styles.th}>Product</th>
+                <th style={styles.th}>Short code</th>
                 <th style={styles.th}>NDC</th>
                 <th style={styles.th}>Dose</th>
                 <th style={styles.th}>Quantity</th>
