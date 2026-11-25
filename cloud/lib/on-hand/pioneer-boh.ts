@@ -2,7 +2,7 @@ import { read, utils } from "xlsx";
 import { normalizeNdc } from "@/lib/ndc";
 import { matchVaccineName, type CatalogVaccine } from "@/lib/vaccine-matching";
 import { parseOnHandContent } from "@/lib/on-hand-parser";
-import { lookupProduct } from "@/lib/vaccine-product-catalog";
+import { isComirnatyChildName, lookupProduct } from "@/lib/vaccine-product-catalog";
 import { parseQuantityCell } from "@/lib/on-hand/quantity-cell";
 
 /**
@@ -261,7 +261,9 @@ const PIONEER_NAME_ALIASES: { requiredTokens: string[]; matchesCatalogName: (nam
     // "2025-26" -> "2026-27" rename (same namePrefix tolerance
     // lib/vaccine-product-catalog.ts's Comirnaty row already uses).
     requiredTokens: ["comirnaty", "0.1mg"],
-    matchesCatalogName: (name) => name.trim().toLowerCase().startsWith("comirnaty"),
+    // The 5-11 Comirnaty row (Will 2026-11-25) is a different product: its
+    // lines match by NDC, never through this 0.1mg 12+ alias.
+    matchesCatalogName: (name) => name.trim().toLowerCase().startsWith("comirnaty") && !isComirnatyChildName(name),
   },
   {
     // "Flucelvax 2026-2027 Syringe" -> "Flucelvax PFS" specifically (a

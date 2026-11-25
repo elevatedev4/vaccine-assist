@@ -30,7 +30,7 @@ import { computeDemandTarget } from "@/lib/ordering-recommendation";
 import { administeredSummary } from "@/lib/administered/store";
 import { vaccineDisplayName } from "@/lib/vaccine-display-name";
 import { deriveProductViewFields } from "@/lib/product-view";
-import { computeOrderPackages } from "@/lib/vaccine-product-catalog";
+import { computeOrderPackages, isComirnatyChildName } from "@/lib/vaccine-product-catalog";
 import { remainingPackages } from "@/lib/ordering-ordered-today";
 
 /**
@@ -198,7 +198,11 @@ const COMPOSITE_BASE_TO_CATALOG_NAME_PREFIX: Record<string, string> = {
 function matchOrderingVaccineName(base: string, catalog: CatalogVaccine[]): CatalogVaccine | null {
   const targetPrefix = COMPOSITE_BASE_TO_CATALOG_NAME_PREFIX[base.trim().toLowerCase()];
   if (targetPrefix) {
-    const direct = catalog.find((vaccine) => vaccine.name.trim().toLowerCase().startsWith(targetPrefix));
+    // Skip the Comirnaty 5-11 row (2026-11-25): these composites carry no age,
+    // so they keep pointing at the 12+ row exactly as before it existed.
+    const direct = catalog.find(
+      (vaccine) => vaccine.name.trim().toLowerCase().startsWith(targetPrefix) && !isComirnatyChildName(vaccine.name)
+    );
     if (direct) return direct;
   }
   return matchVaccineName(base, catalog);

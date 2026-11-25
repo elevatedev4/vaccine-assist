@@ -1,5 +1,5 @@
 import { stripCovidMakerPrefix } from "@/lib/vaccine-display-name";
-import { PREFERRED_COVID_ADULT_OPTIONS, type PreferredCovidSetting } from "@/lib/preferred-covid";
+import { PREFERRED_COVID_ADULT_OPTIONS, type PreferredCovidSettingInput } from "@/lib/preferred-covid";
 
 /**
  * Which Lots / Entry values rows get the "Preferred" badge (Will
@@ -36,7 +36,7 @@ const CHILD_AGE_BAND = /\b(?:3\s*[-–]\s*4|5\s*[-–]\s*11|6\s*mo)/i;
 
 export function isPreferredAdultCovidRow(
   row: PreferredCovidRowInput,
-  setting: PreferredCovidSetting | null | undefined
+  setting: PreferredCovidSettingInput | null | undefined
 ): boolean {
   if (!setting) return false;
   if (row.active === false || row.expired === true) return false;

@@ -763,6 +763,11 @@ describe("covidMacroLabel (V-T-macro-round15: 'Pfizer 12+ (Comirnaty 2026-27)')"
     expect(covidMacroLabel({ displayName: "Comirnaty 2026-2027 Formula", age: "12+" })).toBe("Pfizer 12+ (Comirnaty 2026-27)");
   });
 
+  it("Pfizer 5-11: the 5-11y name and the en-dash age give 'Pfizer 5–11 (Comirnaty 2026-27)'", () => {
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-2027 5-11y", age: "5–11" })).toBe("Pfizer 5–11 (Comirnaty 2026-27)");
+    expect(covidMacroLabel({ displayName: "Comirnaty 2026-27 5-11y", age: "5–11" })).toBe("Pfizer 5–11 (Comirnaty 2026-27)");
+  });
+
   it("Spikevax 3-11", () => {
     expect(covidMacroLabel({ displayName: "Spikevax", age: "3–11" })).toBe("Moderna 3–11 (Spikevax)");
   });
@@ -916,6 +921,19 @@ describe("filterMacroProductsByAge", () => {
     // (12+), Boostrix (10+), Gardasil (9–45), Shingrix (50+ (19+ IC))
     // don't.
     expect(names).toEqual(["Flucelvax MDV", "Spikevax"].sort());
+  });
+
+  it("Pfizer 5-11 shows at ages 5 and 11 and is hidden at 4 and 12 (Pfizer 12+ is the reverse)", () => {
+    const codes = [
+      { code: "comirnaty511", name: "Comirnaty 2026-2027 5-11y" },
+      { code: "comirnaty12", name: "Comirnaty" },
+    ];
+    const namesAt = (age: number) =>
+      filterMacroProductsByAge(topGroupsFor(codes), age).flatMap((g) => g.sections.flatMap((s) => s.products.map((p) => p.displayName)));
+    expect(namesAt(5)).toEqual(["Comirnaty 2026-2027 5-11y"]);
+    expect(namesAt(11)).toEqual(["Comirnaty 2026-2027 5-11y"]);
+    expect(namesAt(4)).toEqual([]);
+    expect(namesAt(12)).toEqual(["Comirnaty"]);
   });
 
   it("omits a section/group entirely when nothing in it matches the age", () => {

@@ -341,6 +341,21 @@ describe("matchPioneerBohRows", () => {
       expect(matched[0]).toMatchObject({ vaccineId: "v-comirnaty", matched: true });
     });
 
+    it("Pfizer 5-11 row: the '0.1mg' 12+ alias skips it even when it is listed FIRST, and its own NDC matches it", () => {
+      const bothComirnaty: CatalogVaccine[] = [
+        { id: "v-comirnaty511", name: "Comirnaty 2026-27 5-11y", short_code: "comirnaty511", ndc: "00069-2609-10" },
+        { id: "v-comirnaty", name: "Comirnaty 2026-27 12+", short_code: "comirnaty12", ndc: null },
+      ];
+      const rows = parsePioneerBohMatrix([
+        ["Item Name", "NDC/UPC", "Current BOH", "Stock size"],
+        ["Mpb Comirnaty 0.1mg Refr Pfs10", "", 30, 0.3],
+        ["Comirnaty 2026-27 5-11y Vial", "00069260910", 20, 0.3],
+      ]);
+      const matched = matchPioneerBohRows(rows, bothComirnaty);
+      expect(matched[0]).toMatchObject({ vaccineId: "v-comirnaty", matched: true });
+      expect(matched[1]).toMatchObject({ vaccineId: "v-comirnaty511", matched: true });
+    });
+
     it("Pioneer name alias: 'Flucelvax' + '2026-2027' matches Flucelvax PFS specifically, not MDV, with no ndc cell", () => {
       const bothFlucelvax: CatalogVaccine[] = [
         ...flucelvaxCatalog,

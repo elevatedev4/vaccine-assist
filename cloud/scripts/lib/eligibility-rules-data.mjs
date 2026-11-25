@@ -86,6 +86,15 @@ export const ELIGIBILITY_RULES = [
     sourceNote: "mxe CASE 'comirnaty12': age<12 fails.",
   },
   {
+    shortCode: "comirnaty511",
+    minAge: 5,
+    maxAge: 11,
+    conditionNote: null,
+    pregnancyWarning: false,
+    priority: 0,
+    sourceNote: "Pfizer 5-11 (Comirnaty 2026-27 5-11y), added 2026-11-25 - ages 5 through 11 only. Not from the old macro.",
+  },
+  {
     shortCode: "pfizer342425",
     minAge: 3,
     maxAge: 4,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isPreferredAdultCovidRow } from "@/lib/preferred-covid-badge";
 
+// Old-shape settings (no kids511) on purpose: the badge only reads `adult`.
 const PFIZER = { adult: "pfizer", kids: "moderna" } as const;
 const MODERNA = { adult: "moderna", kids: "moderna" } as const;
 
@@ -33,6 +34,13 @@ describe("isPreferredAdultCovidRow", () => {
     expect(isPreferredAdultCovidRow({ name: "Comirnaty 5-11" }, PFIZER)).toBe(false);
     expect(isPreferredAdultCovidRow({ name: "Pfizer Comirnaty 3-4 yr" }, PFIZER)).toBe(false);
     expect(isPreferredAdultCovidRow({ name: "Comirnaty 6 mo-4 yr" }, PFIZER)).toBe(false);
+  });
+
+  it("never badges Pfizer 5-11 as the 12+ preference (by name or short code)", () => {
+    expect(isPreferredAdultCovidRow({ name: "Comirnaty 2026-27 5-11y" }, PFIZER)).toBe(false);
+    expect(isPreferredAdultCovidRow({ name: "Comirnaty 2026-2027 5-11y", shortCode: "comirnaty511" }, PFIZER)).toBe(false);
+    expect(isPreferredAdultCovidRow({ name: "Pfizer 5-11 Comirnaty 2026-27", shortCode: "comirnaty511" }, PFIZER)).toBe(false);
+    expect(isPreferredAdultCovidRow({ name: "x", shortCode: "comirnaty511" }, PFIZER)).toBe(false);
   });
 
   it("shows nothing for non-COVID rows, empty names or an unloaded setting", () => {

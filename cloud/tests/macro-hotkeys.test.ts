@@ -82,11 +82,13 @@ function buildVisibleTopGroups(
 describe("MACRO_HOTKEYS", () => {
   it("maps every key from Will's brief with no letter reused across products", () => {
     expect(Object.keys(MACRO_HOTKEYS).sort()).toEqual(
-      ["3", "b", "c", "d", "e", "f", "g", "i", "l", "m", "n", "o", "p", "r", "s", "t", "u", "v"].sort()
+      ["3", "5", "b", "c", "d", "e", "f", "g", "i", "l", "m", "n", "o", "p", "r", "s", "t", "u", "v"].sort()
     );
     expect(MACRO_HOTKEYS.f).toEqual(["flucelvaxmdv", "flucelvaxpfs"]);
     expect(MACRO_HOTKEYS.i).toEqual(["mmr", "priorix"]);
     expect(MACRO_HOTKEYS["3"]).toEqual(["spikevax6mo11"]);
+    // Pfizer 5-11 (Will 2026-11-25: "Hotkey can be 5").
+    expect(MACRO_HOTKEYS["5"]).toEqual(["comirnaty511"]);
     // Round 2 (Will's verbatim answer, 2026-09-28): "Fluad's key is D
     // (not A)."
     expect(MACRO_HOTKEYS.d).toEqual(["fluad"]);
@@ -97,6 +99,7 @@ describe("MACRO_HOTKEYS", () => {
 describe("hotkeyForProduct", () => {
   it("resolves an exact single-dose short code", () => {
     expect(hotkeyForProduct("comirnaty12")).toBe("p");
+    expect(hotkeyForProduct("comirnaty511")).toBe("5");
     expect(hotkeyForProduct("mnexspike")).toBe("m");
     expect(hotkeyForProduct("abrysvo")).toBe("r");
   });

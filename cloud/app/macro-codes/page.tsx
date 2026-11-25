@@ -367,7 +367,8 @@ function readStoredPreferredCovid(): PreferredCovidSetting {
     const raw = window.localStorage.getItem(PREFERRED_COVID_STORAGE_KEY);
     if (raw) {
       const parsed: unknown = JSON.parse(raw);
-      if (isValidPreferredCovid(parsed)) return parsed;
+      // An older stored value has no kids511 - normalize fills it with the default.
+      if (isValidPreferredCovid(parsed)) return normalizePreferredCovid(parsed);
     }
   } catch {
     // fall through to the defaults

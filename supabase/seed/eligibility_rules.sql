@@ -3,7 +3,7 @@
 -- vaccine-add-new.mxe's 24+ age/eligibility CASE blocks). Re-run
 -- `npm run seed:eligibility` after editing that file.
 --
--- 28 rules. Each INSERT is a select-by-short_code
+-- 29 rules. Each INSERT is a select-by-short_code
 -- join against the vaccine table (see supabase/seed/vaccines.sql) — a
 -- rule whose short_code isn't in the current formulary inserts zero rows
 -- rather than failing. See eligibility-rules-data.mjs for the two CASE
@@ -11,7 +11,7 @@
 -- and every short_code-mapping judgment call.
 
 delete from eligibility_rule
-where vaccine_id in (select id from vaccine where short_code in ('spikevax12', 'mnexspike', 'spikevax311', 'spikevax6mo11', 'comirnaty12', 'pfizer342425', 'flucelvaxpfs', 'afluriamdv', 'fluad', 'arexvy', 'shingrix1', 'shingrix2', 'engerix1', 'engerix2', 'engerix3', 'prevnar20', 'boostrix', 'gardasil1', 'gardasil2', 'gardasil3', 'menveo', 'vaqtaadult1', 'vaqtaadult2', 'typhim', 'mmr1', 'mmr2', 'priorix1', 'priorix2'));
+where vaccine_id in (select id from vaccine where short_code in ('spikevax12', 'mnexspike', 'spikevax311', 'spikevax6mo11', 'comirnaty12', 'comirnaty511', 'pfizer342425', 'flucelvaxpfs', 'afluriamdv', 'fluad', 'arexvy', 'shingrix1', 'shingrix2', 'engerix1', 'engerix2', 'engerix3', 'prevnar20', 'boostrix', 'gardasil1', 'gardasil2', 'gardasil3', 'menveo', 'vaqtaadult1', 'vaqtaadult2', 'typhim', 'mmr1', 'mmr2', 'priorix1', 'priorix2'));
 
 insert into eligibility_rule (vaccine_id, min_age, max_age, condition_note, pregnancy_warning, priority)
 select id, 12, null, null, false, 0
@@ -32,6 +32,10 @@ from vaccine where short_code = 'spikevax6mo11';
 insert into eligibility_rule (vaccine_id, min_age, max_age, condition_note, pregnancy_warning, priority)
 select id, 12, null, null, false, 0
 from vaccine where short_code = 'comirnaty12';
+
+insert into eligibility_rule (vaccine_id, min_age, max_age, condition_note, pregnancy_warning, priority)
+select id, 5, 11, null, false, 0
+from vaccine where short_code = 'comirnaty511';
 
 insert into eligibility_rule (vaccine_id, min_age, max_age, condition_note, pregnancy_warning, priority)
 select id, 3, 4, null, false, 0

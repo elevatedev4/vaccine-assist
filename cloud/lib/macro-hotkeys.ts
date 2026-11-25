@@ -24,7 +24,7 @@
 import { macroBaseShortCode } from "@/lib/macro-catalog";
 import type { MacroDoseButton, MacroProductGroup, MacroRow, MacroTopGroupBlock } from "@/lib/macro-codes";
 import { preferredFluForAge } from "@/lib/flu-preference";
-import { preferredCovidForAge, type PreferredCovidSetting } from "@/lib/preferred-covid";
+import { preferredCovidForAge, type PreferredCovidSettingInput } from "@/lib/preferred-covid";
 
 /**
  * Lowercase key -> the catalog short code(s) (see lib/macro-catalog.ts's
@@ -45,6 +45,7 @@ export const MACRO_HOTKEYS: Readonly<Record<string, readonly string[]>> = {
   l: ["mflusiva"],
   d: ["fluad"],
   "3": ["spikevax6mo11"],
+  "5": ["comirnaty511"],
   p: ["comirnaty12"],
   m: ["mnexspike"],
   r: ["abrysvo"],
@@ -90,6 +91,7 @@ export const MACRO_HOTKEYS_FLU2: HotkeyMap = {
   v: ["mflusiva"],
   d: ["fluad"],
   "3": ["spikevax6mo11"],
+  "5": ["comirnaty511"],
   p: ["comirnaty12"],
   m: ["mnexspike"],
   r: ["abrysvo"],
@@ -134,11 +136,11 @@ export type HotkeyContext = { map?: HotkeyMap; smart?: SmartHotkeyResolver };
  *   F -> the preferred flu product for the age (lib/flu-preference.ts, the
  *        same rule as the desktop prompt, so F never triggers it)
  *   C -> the preferred COVID vaccine for the age under the location setting
- *        (12+ -> the 12+ preference, 3-11 -> the kids preference)
+ *        (12+ -> the 12+ preference, 5-11 -> the 5-11 preference, 3-4 -> the 3-4 preference)
  * An unknown age, or one with no product (under 3), yields a short
  * message instead of codes. Any other key returns null (not a smart key).
  */
-export function makeFlu2SmartResolver(ageYears: number | null, covid: PreferredCovidSetting): SmartHotkeyResolver {
+export function makeFlu2SmartResolver(ageYears: number | null, covid: PreferredCovidSettingInput): SmartHotkeyResolver {
   return (lowerKey) => {
     if (lowerKey === "f") {
       if (ageYears === null) return { message: "F needs the patient's age - use Ctrl+Keypad 2." };
